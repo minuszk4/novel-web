@@ -1,0 +1,12 @@
+{
+  "name": "novel-web-openapi-tooling",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "lint": "redocly lint ../../apps/api/src/main/resources/openapi.yaml --format=github-actions",
+    "diff": "redocly diff"
+  },
+  "devDependencies": {
+    "@redocly/cli": "2.77.0"
+  }
+}

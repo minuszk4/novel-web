@@ -1,0 +1,69 @@
+<div class="app-frame">
+  <aside class="sidebar" aria-label="Điều hướng chính">
+    <a class="brand brand-sidebar" routerLink="/app/home" aria-label="Novel, về trang chủ">
+      <span class="brand-mark" aria-hidden="true">N</span>
+      <span class="brand-word">novel<span class="brand-period">.</span><small>READING STUDIO</small></span>
+    </a>
+
+    <p class="nav-caption">KHÔNG GIAN ĐỌC</p>
+    <nav class="primary-nav" aria-label="Không gian đọc">
+      <a routerLink="/app/home" routerLinkActive="selected" [routerLinkActiveOptions]="{ exact: true }">
+        <span class="nav-symbol" aria-hidden="true">⌂</span><span>Trang chủ</span>
+      </a>
+      <a routerLink="/app/library" routerLinkActive="selected">
+        <span class="nav-symbol" aria-hidden="true">▤</span><span>Thư viện</span>
+      </a>
+      <a routerLink="/app/search" routerLinkActive="selected">
+        <span class="nav-symbol" aria-hidden="true">⌕</span><span>Tìm kiếm</span>
+      </a>
+    </nav>
+
+    <p class="nav-caption nav-caption-spaced">CÁ NHÂN</p>
+    <nav class="primary-nav" aria-label="Tiện ích cá nhân">
+      <a routerLink="/app/cultivation" routerLinkActive="selected">
+        <span class="nav-symbol cultivation-symbol" aria-hidden="true">✧</span><span>Hành trình tu luyện</span>
+      </a>
+      <a routerLink="/app/settings" routerLinkActive="selected">
+        <span class="nav-symbol" aria-hidden="true">⚙</span><span>Cài đặt</span>
+      </a>
+    </nav>
+
+    <div class="sidebar-bottom">
+      <div class="sidebar-note"><span class="status-dot"></span><span>Không gian riêng tư<br /><small>Chỉ bạn xem được nội dung</small></span></div>
+      <div class="demo-user"><span class="avatar" aria-hidden="true">D</span><span><strong>Độc giả demo</strong><small>Chưa đăng nhập</small></span><span class="more-mark" aria-hidden="true">···</span></div>
+    </div>
+  </aside>
+
+  <div class="app-pane">
+    <header class="topbar">
+      <div class="topbar-context"><span class="context-mark" aria-hidden="true">✦</span><span>Góc đọc của bạn</span></div>
+      <div class="topbar-actions">
+        <a class="quiet-link" routerLink="/app/import">+ Thêm truyện</a>
+        <span class="topbar-avatar" aria-label="Tài khoản demo">D</span>
+      </div>
+    </header>
+    <div class="demo-banner" role="status">
+      <span class="demo-banner-icon" aria-hidden="true">i</span>
+      @if (systemStatus.connection() === 'checking') {
+        <p><strong>Bản demo tương tác.</strong> Đang kiểm tra API local; Google, xử lý file và MoMo Test chưa được bật.</p>
+      } @else if (systemStatus.connection() === 'offline') {
+        <p><strong>API local chưa phản hồi.</strong> Giao diện vẫn ở chế độ demo; Google, xử lý file và MoMo Test chưa được bật.</p>
+        <button class="status-retry" type="button" (click)="systemStatus.refresh()">Thử lại</button>
+      } @else {
+        @if (systemStatus.status(); as status) {
+          <p><strong>API {{ status.apiVersion }} đang phản hồi.</strong> Google {{ status.integrations.googleOidcEnabled ? 'đã bật' : 'chưa kết nối' }} · MoMo {{ status.integrations.momoTestEnabled ? status.integrations.momoEnvironment : 'Test chưa bật' }} · Import {{ status.features.importProcessingEnabled ? 'sẵn sàng' : 'chưa bật' }}. Dữ liệu demo vẫn chỉ nằm trong bộ nhớ trình duyệt.</p>
+        } @else {
+          <p><strong>API trả trạng thái không hợp lệ.</strong> Các tích hợp vẫn bị xem là chưa khả dụng.</p>
+          <button class="status-retry" type="button" (click)="systemStatus.refresh()">Thử lại</button>
+        }
+      }
+    </div>
+    <main class="app-main" id="main-content"><router-outlet /></main>
+    <nav class="mobile-nav" aria-label="Điều hướng di động">
+      <a routerLink="/app/home" routerLinkActive="selected" [routerLinkActiveOptions]="{ exact: true }"><span aria-hidden="true">⌂</span><small>Trang chủ</small></a>
+      <a routerLink="/app/library" routerLinkActive="selected"><span aria-hidden="true">▤</span><small>Thư viện</small></a>
+      <a routerLink="/app/search" routerLinkActive="selected"><span aria-hidden="true">⌕</span><small>Tìm kiếm</small></a>
+      <a routerLink="/app/settings" routerLinkActive="selected"><span aria-hidden="true">◉</span><small>Tài khoản</small></a>
+    </nav>
+  </div>
+</div>

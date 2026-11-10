@@ -1,0 +1,3 @@
+# Temporary vulnerability exceptions only. Every active entry must include its expiry
+# and the metadata required by tools/security/validate-trivy-ignores.ps1.
+# No vulnerability exceptions are currently active.

@@ -1,0 +1,20 @@
+<section class="page-wrap settings-page">
+  <div class="page-heading"><p class="eyebrow">TÙY CHỈNH CỦA BẠN</p><h1>Cài đặt</h1><p>Thiết lập giao diện đọc và các lựa chọn riêng tư.</p></div>
+  <div class="settings-layout"><nav class="settings-nav" aria-label="Mục cài đặt"><a class="settings-nav-active" href="#reader-settings">Trình đọc</a><a href="#privacy-settings">Quyền riêng tư</a><a href="#account-settings">Tài khoản</a><a routerLink="/app/cultivation">Hành trình tu luyện</a></nav>
+    <div class="settings-content">
+      <section id="reader-settings" class="settings-card"><div class="settings-card-heading"><p class="eyebrow">TRẢI NGHIỆM ĐỌC</p><h2>Trình đọc</h2><p>Thay đổi để dễ đọc hơn. Tùy chọn được giữ tạm trong phiên demo.</p></div>
+        <label class="setting-control-label" for="font-size-setting">Cỡ chữ <strong>{{ demo.readerFontSize() }} px</strong></label><input id="font-size-setting" class="range-control" type="range" min="16" max="28" step="1" [value]="demo.readerFontSize()" (input)="demo.changeReaderFontSize(+$any($event.target).value)" /><div class="range-labels"><span>16 px</span><span>28 px</span></div>
+        <fieldset class="settings-theme-picker"><legend>Màu nền của trình đọc</legend><div><button type="button" [class.theme-selected]="demo.readerTheme() === 'light'" (click)="demo.setReaderTheme('light')"><span class="theme-swatch swatch-light"></span>Sáng</button><button type="button" [class.theme-selected]="demo.readerTheme() === 'sepia'" (click)="demo.setReaderTheme('sepia')"><span class="theme-swatch swatch-sepia"></span>Sepia</button><button type="button" [class.theme-selected]="demo.readerTheme() === 'dark'" (click)="demo.setReaderTheme('dark')"><span class="theme-swatch swatch-dark"></span>Tối</button></div></fieldset>
+        <div class="settings-inline-action"><p><strong>Khôi phục cài đặt đọc</strong><small>Đưa cỡ chữ và màu nền về mặc định.</small></p><button class="button button-outline button-small" type="button" (click)="demo.resetReaderPreferences()">Đặt lại</button></div>
+      </section>
+
+      <section id="privacy-settings" class="settings-card"><div class="settings-card-heading"><p class="eyebrow">DỮ LIỆU VÀ QUYỀN RIÊNG TƯ</p><h2>Lựa chọn tùy chọn</h2><p>Hai lựa chọn riêng biệt. Mặc định tắt và không cần bật để đọc. Trong demo, đổi switch chỉ mô phỏng; không có dữ liệu nào được gửi.</p></div>
+        <label class="toggle-row"><span><strong>Phân tích sử dụng</strong><small>Cho phép gửi sự kiện sử dụng tổng quát để cải thiện sản phẩm. Không gửi tên truyện/chương.</small></span><input type="checkbox" [checked]="demo.analyticsEnabled()" (change)="demo.analyticsEnabled.set($any($event.target).checked)" /><span class="toggle-track" aria-hidden="true"></span></label>
+        <label class="toggle-row"><span><strong>Chia sẻ nội dung với dịch vụ bên ngoài</strong><small>Chỉ cần khi bạn yêu cầu tính năng dùng provider. Chưa có provider nào được kết nối.</small></span><input type="checkbox" [checked]="demo.providerSharingEnabled()" (change)="demo.providerSharingEnabled.set($any($event.target).checked)" /><span class="toggle-track" aria-hidden="true"></span></label>
+      </section>
+
+      <section id="account-settings" class="settings-card account-demo-card"><div class="settings-card-heading"><p class="eyebrow">TÀI KHOẢN</p><h2>Chưa đăng nhập</h2><p>Bản demo không tạo hồ sơ, phiên đăng nhập hoặc kết nối Google.</p></div><a class="text-link" routerLink="/sign-in">Xem trạng thái đăng nhập →</a></section>
+      <p class="settings-save-note" role="status"><span aria-hidden="true">i</span> Mọi thiết lập trên trang này chỉ nằm trong bộ nhớ của tab hiện tại và sẽ đặt lại khi tải lại.</p>
+    </div>
+  </div>
+</section>

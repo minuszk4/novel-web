@@ -1,0 +1,6 @@
+extends:
+  - minimal
+  - diff-recommended
+rules:
+  operation-operationId: error
+  operation-summary: error

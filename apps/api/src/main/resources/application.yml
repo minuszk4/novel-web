@@ -1,0 +1,32 @@
+spring:
+  application:
+    name: novel-web-api
+  mvc:
+    problemdetails:
+      enabled: true
+
+server:
+  port: ${PORT:8080}
+  error:
+    include-message: never
+    include-stacktrace: never
+    include-exception: false
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: never
+      probes:
+        enabled: true
+
+novel:
+  environment: ${NOVEL_ENVIRONMENT:local}
+  web:
+    cors:
+      allowed-origins:
+        - http://localhost:4200
+        - http://127.0.0.1:4200

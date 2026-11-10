@@ -1,0 +1,4 @@
+databaseChangeLog:
+  - include:
+      file: changes/001-identity-policy.sql
+      relativeToChangelogFile: true

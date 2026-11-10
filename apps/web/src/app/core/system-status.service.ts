@@ -1,0 +1,56 @@
+import { HttpClient } from '@angular/common/http';
+import { Injectable, inject, signal } from '@angular/core';
+import { timeout } from 'rxjs';
+import type { Subscription } from 'rxjs';
+import type { ApiSystemStatus } from './models';
+
+@Injectable({ providedIn: 'root' })
+export class SystemStatusService {
+  private readonly http = inject(HttpClient);
+
+  readonly connection = signal<'checking' | 'online' | 'offline'>('checking');
+  readonly status = signal<ApiSystemStatus | null>(null);
+  private request?: Subscription;
+
+  constructor() {
+    this.refresh();
+  }
+
+  refresh(): void {
+    this.request?.unsubscribe();
+    this.connection.set('checking');
+    this.request = this.http.get<unknown>('/api/v1/system/status')
+      .pipe(timeout(3_000))
+      .subscribe({
+        next: (payload) => {
+          if (!isApiSystemStatus(payload)) {
+            this.status.set(null);
+            this.connection.set('offline');
+            return;
+          }
+          this.status.set(payload);
+          this.connection.set('online');
+        },
+        error: () => {
+          this.status.set(null);
+          this.connection.set('offline');
+        },
+      });
+  }
+}
+
+function isApiSystemStatus(value: unknown): value is ApiSystemStatus {
+  if (typeof value !== 'object' || value === null) return false;
+
+  const status = value as Partial<ApiSystemStatus>;
+  const integrations = status.integrations;
+  const features = status.features;
+  return typeof status.apiVersion === 'string'
+    && typeof status.environment === 'string'
+    && typeof integrations?.googleOidcEnabled === 'boolean'
+    && typeof integrations.momoTestEnabled === 'boolean'
+    && typeof integrations.momoEnvironment === 'string'
+    && typeof features?.importProcessingEnabled === 'boolean'
+    && typeof features.cultivationEnabled === 'boolean'
+    && typeof features.commerceSandboxEnabled === 'boolean';
+}

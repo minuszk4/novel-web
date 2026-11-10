@@ -1,0 +1,21 @@
+<section class="page-wrap narrow-page mobile-form-page">
+  <a class="back-link" routerLink="/sign-in">← Quay lại</a>
+  <div class="stepper" aria-label="Bước 1 trên 2"><span class="stepper-current">01</span><span class="stepper-line"></span><span>THIẾT LẬP BẢN DEMO</span></div>
+  <div class="page-heading"><p class="eyebrow">TRƯỚC KHI BẮT ĐẦU</p><h1>Một vài điều cần biết</h1><p>Trong sản phẩm thật, bạn cần xem và xác nhận các chính sách hiện hành trước khi lưu nội dung vào tài khoản.</p></div>
+
+  <div class="prototype-notice" role="note"><strong>Đang ở chế độ mô phỏng.</strong> Các chính sách dưới đây là nội dung mẫu; lựa chọn của bạn chỉ giữ trong bộ nhớ tạm, không được ghi nhận như chấp thuận pháp lý.</div>
+
+  <div class="consent-list">
+    <label class="consent-row"><input type="checkbox" [checked]="demo.termsAccepted()" (change)="demo.acceptTerms($any($event.target).checked)" /><span class="check-visual" aria-hidden="true"></span><span class="consent-copy"><strong>Tôi đồng ý với Điều khoản sử dụng</strong><small>Bản mẫu · Điều khoản thật sẽ hiển thị trước khi phát hành</small><span class="consent-detail">Bạn có quyền quản lý thư viện riêng. Việc nhập riêng tư không cấp quyền xuất bản, chia sẻ hay bán nội dung.</span></span><span class="version-tag">DEMO v0.1</span></label>
+    <label class="consent-row"><input type="checkbox" [checked]="demo.privacyAcknowledged()" (change)="demo.acknowledgePrivacy($any($event.target).checked)" /><span class="check-visual" aria-hidden="true"></span><span class="consent-copy"><strong>Tôi xác nhận đã đọc Thông báo quyền riêng tư</strong><small>Bản mẫu · Nội dung thật và ngày hiệu lực chưa được cấu hình</small><span class="consent-detail">Bản demo không tải tệp lên máy chủ, không bật phân tích và không tạo hồ sơ tu luyện cá nhân.</span></span><span class="version-tag">DEMO v0.1</span></label>
+  </div>
+
+  <div class="optional-consent"><span class="optional-mark" aria-hidden="true">○</span><p><strong>Phân tích sử dụng đang tắt.</strong><br />Đây là lựa chọn riêng, không cần thiết để dùng các tính năng đọc.</p><span class="off-tag">TẮT</span></div>
+
+  <div class="form-actions mobile-form-actions">
+    @if (!demo.canContinueSetup) { <small class="mobile-action-hint">Chọn cả hai mục ở trên để tiếp tục.</small> }
+    <button class="button button-primary button-full" type="button" [disabled]="!demo.canContinueSetup" (click)="continue()">Vào không gian đọc <span aria-hidden="true">→</span></button>
+    <a class="text-link" routerLink="/sign-in">Để sau — quay lại đăng nhập</a>
+  </div>
+  <p class="form-footnote">Cần chọn cả hai mục để tiếp tục luồng demo. “Để sau” không bỏ qua các xác nhận bắt buộc.</p>
+</section>

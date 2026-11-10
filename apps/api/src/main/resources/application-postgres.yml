@@ -1,0 +1,16 @@
+spring:
+  config:
+    import: optional:file:./.env[.properties]
+  datasource:
+    url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/novelweb}
+    username: ${DATABASE_USERNAME:novelweb}
+    password: ${DATABASE_PASSWORD}
+    hikari:
+      pool-name: NovelWebPostgresPool
+      maximum-pool-size: ${DATABASE_POOL_MAX_SIZE:5}
+      minimum-idle: 1
+      connection-timeout: 3000
+      validation-timeout: 1000
+  liquibase:
+    enabled: true
+    change-log: classpath:db/changelog/db.changelog-master.yaml

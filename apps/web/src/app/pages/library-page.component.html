@@ -1,0 +1,11 @@
+<section class="page-wrap">
+  <div class="page-heading page-heading-inline"><div><p class="eyebrow">GÓC ĐỌC CÁ NHÂN</p><h1>Thư viện</h1><p>Nơi lưu những câu chuyện bạn muốn giữ lại.</p></div><a class="button button-primary" routerLink="/app/import">+ Thêm truyện</a></div>
+  <div class="library-toolbar"><div class="library-tabs" role="tablist" aria-label="Lọc thư viện"><button class="library-tab active" type="button" role="tab" aria-selected="true">Tất cả <span>{{ demo.importedWork() ? 1 : 0 }}</span></button><button class="library-tab" type="button" role="tab" aria-selected="false" disabled>Đang đọc <span>0</span></button><button class="library-tab" type="button" role="tab" aria-selected="false" disabled>Đọc sau <span>0</span></button></div><span class="private-tag">CHỈ MÌNH BẠN</span></div>
+
+  @if (demo.importedWork(); as work) {
+    <article class="library-work-row"><div class="mini-cover" aria-hidden="true">✧</div><div class="library-work-copy"><span class="private-tag">RIÊNG TƯ</span><h2>{{ work.title }}</h2><p>{{ work.author }} <span>·</span> Tệp {{ work.sourceName }}</p><small>Metadata demo · chưa có chương để đọc</small></div><button class="icon-button" type="button" aria-label="Tùy chọn cho tác phẩm" title="Tùy chọn chưa khả dụng">···</button></article>
+  } @else {
+    <div class="empty-state-panel"><div class="empty-illustration small-empty" aria-hidden="true"><span class="empty-book empty-book-one"></span><span class="empty-book empty-book-two"></span><span class="empty-star">✧</span></div><h2>Chưa có gì trên kệ</h2><p>Thêm tác phẩm từ tệp của bạn. Bản demo không tải lên hoặc phân tích nội dung tệp.</p><a class="button button-outline" routerLink="/app/import">Thêm tác phẩm</a><a class="text-link" routerLink="/works/demo-story">Hoặc đọc thử tác phẩm mẫu →</a></div>
+  }
+  <p class="privacy-footnote"><span aria-hidden="true">◉</span> Nội dung thư viện được thiết kế riêng tư theo mặc định. Chế độ demo chỉ giữ một mục metadata đến khi bạn tải lại trang.</p>
+</section>

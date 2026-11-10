@@ -1,0 +1,2027 @@
+openapi: 3.1.0
+info:
+  title: Novel Web API
+  version: 1.1.0
+  description: >-
+    Contract for the Novel Web API. System status and health are implemented in the local foundation.
+    Auth, Library and Reader operations tagged x-implementation-status=planned describe the G2 target;
+    they are not enabled or implemented in this API yet.
+servers:
+  - url: http://127.0.0.1:8080
+tags:
+  - name: System
+    description: Implemented read-only status and health operations.
+  - name: Auth
+    description: Planned first-party session, Google GIS and policy-consent operations for G2.
+    x-implementation-status: planned
+  - name: Library
+    description: Planned owner-scoped private library and import operations for G2.
+    x-implementation-status: planned
+  - name: Reader
+    description: Planned source-only reader, preferences, progress and bookmark operations for G2.
+    x-implementation-status: planned
+paths:
+  /api/v1/system/status:
+    get:
+      operationId: getSystemStatus
+      tags: [System]
+      summary: Get API and integration availability
+      description: Returns feature availability only; no account data or provider secrets are exposed.
+      security: []
+      responses:
+        '200':
+          description: Current API slice status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiSystemStatus'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '500':
+          $ref: '#/components/responses/Problem'
+  /actuator/health:
+    get:
+      operationId: getHealth
+      tags: [System]
+      summary: Get API health
+      description: Returns the aggregate health status exposed by Spring Boot Actuator; details are not exposed.
+      security: []
+      responses:
+        '200':
+          description: API and configured dependencies are healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '503':
+          description: API or a required dependency is not healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+  /api/v1/auth/google/bootstrap:
+    get:
+      operationId: getGoogleSignInBootstrap
+      tags: [Auth]
+      x-implementation-status: planned
+      summary: Create a short-lived Google sign-in attempt
+      description: >-
+        Rate-limited. Stores a one-use nonce attempt and returns only the public GIS client ID,
+        fixed credential callback URI, locale and nonce. `returnTo` must be a safe relative path;
+        the server stores it with the attempt and never accepts an arbitrary callback host.
+      security: []
+      parameters:
+        - name: returnTo
+          in: query
+          required: false
+          description: Safe relative application path; invalid or external values fall back to /app/home.
+          schema:
+            type: string
+            maxLength: 512
+          example: /app/home
+        - name: locale
+          in: query
+          required: false
+          schema:
+            type: string
+            default: vi
+            example: vi
+      responses:
+        '200':
+          description: Short-lived, one-use sign-in bootstrap
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GoogleSignInBootstrap'
+        '429':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/auth/google/credential:
+    post:
+      operationId: submitGoogleCredential
+      tags: [Auth]
+      x-implementation-status: planned
+      summary: Validate GIS credential and establish an application session
+      description: >-
+        Fixed GIS redirect callback. This is the only unauthenticated mutation exempt from the
+        application CSRF header: it requires the GIS double-submit `g_csrf_token` cookie and matching
+        form field, a live one-use nonce attempt, valid Google claims/signature and an allowed origin.
+        Google posts the credential directly to the API; Angular must not receive or store it.
+      security: []
+      parameters:
+        - name: g_csrf_token
+          in: cookie
+          required: true
+          description: GIS double-submit token; must match the form field byte-for-byte.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 4096
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/GoogleCredentialForm'
+      responses:
+        '303':
+          description: Credential accepted; browser is redirected to the server-stored safe return path.
+          headers:
+            Location:
+              required: true
+              description: Same-origin relative application path only.
+              schema:
+                type: string
+                pattern: '^/(?!/)(?!.*\\)'
+            Set-Cookie:
+              required: true
+              description: >-
+                Rotated opaque session cookie with Secure, HttpOnly, SameSite=Lax, Path=/ and no Domain.
+                The cookie value is never returned in JSON or logged.
+              schema:
+                type: string
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '409':
+          description: Generic account-link or identity conflict; does not disclose account existence.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '429':
+          $ref: '#/components/responses/Problem'
+  /api/v1/auth/csrf:
+    get:
+      operationId: getCsrfToken
+      tags: [Auth]
+      x-implementation-status: planned
+      summary: Get an in-memory CSRF token for the current session
+      description: >-
+        Returns a short-lived synchronizer token bound to the current application session. The client
+        keeps it in memory and sends it as X-CSRF-Token on cookie-authenticated mutations. This endpoint
+        does not expose the session cookie and must not be cached.
+      security:
+        - appSession: []
+      responses:
+        '200':
+          description: CSRF token for the current session
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CsrfToken'
+        '401':
+          $ref: '#/components/responses/Problem'
+  /api/v1/auth/me:
+    get:
+      operationId: getCurrentUser
+      tags: [Auth]
+      x-implementation-status: planned
+      summary: Get the current application user and access state
+      description: Returns only first-party profile, consent, role and feature-availability data; never returns Google subject, credential, session secret or provider claims.
+      security:
+        - appSession: []
+      responses:
+        '200':
+          description: Current application user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CurrentUserResponse'
+        '401':
+          $ref: '#/components/responses/Problem'
+  /api/v1/auth/policies/current:
+    get:
+      operationId: getCurrentPolicies
+      tags: [Auth]
+      x-implementation-status: planned
+      summary: Get active Terms and Privacy Notice versions
+      description: Public, same-origin policy documents. The client displays these exact versions and must not invent or silently substitute one.
+      security: []
+      responses:
+        '200':
+          description: Active policy documents and effective dates
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CurrentPoliciesResponse'
+  /api/v1/auth/policies/accept:
+    post:
+      operationId: acceptCurrentPolicies
+      tags: [Auth]
+      x-implementation-status: planned
+      summary: Record explicit acceptance of current required policies
+      description: >-
+        Both decisions and exact current versions are required. The server records separate append-only
+        policy events with server timestamps; it creates neither event if either choice is missing or stale.
+        Repeating the same accepted version pair is idempotent.
+      security:
+        - appSession: []
+          csrfToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PolicyAcceptanceRequest'
+      responses:
+        '200':
+          description: Both current policy decisions are recorded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyAcceptanceResponse'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '409':
+          description: One or both submitted versions are no longer current; no partial acceptance is recorded.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          $ref: '#/components/responses/Problem'
+  /api/v1/auth/logout:
+    post:
+      operationId: logoutCurrentSession
+      tags: [Auth]
+      x-implementation-status: planned
+      summary: Revoke the current application session
+      description: Revokes the current session; repeated revocation has no further effect. Requires the application session and CSRF token; does not sign the user out of Google.
+      security:
+        - appSession: []
+          csrfToken: []
+      responses:
+        '204':
+          description: Session revoked or already absent; cookie cleared.
+          headers:
+            Set-Cookie:
+              description: Expired session cookie with the same Path and host-only scope.
+              schema:
+                type: string
+        '403':
+          $ref: '#/components/responses/Problem'
+  /api/v1/auth/sessions:
+    get:
+      operationId: listCurrentUserSessions
+      tags: [Auth]
+      x-implementation-status: planned
+      summary: List the current user's active sessions
+      description: Returns coarse device and time metadata only; no raw IP address, session secret or token.
+      security:
+        - appSession: []
+      responses:
+        '200':
+          description: Active sessions belonging to the current user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionListResponse'
+        '401':
+          $ref: '#/components/responses/Problem'
+  /api/v1/auth/sessions/{sessionId}:
+    delete:
+      operationId: revokeUserSession
+      tags: [Auth]
+      x-implementation-status: planned
+      summary: Revoke another active session
+      description: A caller cannot revoke the current session through this route; use the logout operation instead.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
+      responses:
+        '204':
+          description: Session revoked.
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          description: The requested session is the current session and requires the logout flow.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+  /api/v1/auth/logout-all:
+    post:
+      operationId: logoutAllSessions
+      tags: [Auth]
+      x-implementation-status: planned
+      summary: Revoke all sessions for the current user
+      description: Requires recent authentication or a server-issued one-use confirmation token. Does not revoke Google browser sessions.
+      security:
+        - appSession: []
+          csrfToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogoutAllRequest'
+      responses:
+        '204':
+          description: All current-user application sessions are revoked and the current cookie is cleared.
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+  /api/v1/libraries:
+    get:
+      operationId: listCurrentUserLibraries
+      tags: [Library]
+      x-implementation-status: planned
+      summary: List libraries owned by the current user
+      description: Never accepts an owner or user ID from the browser; each returned library is scoped to the authenticated principal.
+      security:
+        - appSession: []
+      parameters:
+        - name: cursor
+          in: query
+          schema:
+            type: string
+            maxLength: 2048
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 25
+      responses:
+        '200':
+          description: Libraries owned by the current user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LibraryListResponse'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          description: Current required policy acceptance is incomplete; private library metadata is not returned.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+  /api/v1/works:
+    get:
+      operationId: listPrivateWorks
+      tags: [Library]
+      x-implementation-status: planned
+      summary: List works in an owned library
+      description: Cursor is bound to the library and sort/filter fingerprint. Owner identity is derived from the session.
+      security:
+        - appSession: []
+      parameters:
+        - name: libraryId
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: q
+          in: query
+          description: Optional title/author search; source chapter text is not searched by this endpoint.
+          schema:
+            type: string
+            maxLength: 160
+        - name: cursor
+          in: query
+          schema:
+            type: string
+            maxLength: 2048
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 25
+      responses:
+        '200':
+          description: Private works visible to the current user in the selected library
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkListResponse'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+  /api/v1/works/{workId}:
+    get:
+      operationId: getOwnedWork
+      tags: [Library]
+      x-implementation-status: planned
+      summary: Get work metadata in the caller's private library
+      security:
+        - appSession: []
+      parameters:
+        - name: workId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Owned work metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkSummary'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+  /api/v1/works/{workId}/reader-manifest:
+    get:
+      operationId: getReaderManifest
+      tags: [Reader]
+      x-implementation-status: planned
+      summary: Get an owned work's table of contents and reader access state
+      description: >-
+        Authorizes the work before building the manifest. It contains chapter metadata and access state only;
+        it never includes chapter body, translated text or signed asset URLs for inaccessible content.
+      security:
+        - appSession: []
+      parameters:
+        - name: workId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: cursor
+          in: query
+          description: Opaque cursor for a bounded chapter list page.
+          schema:
+            type: string
+            maxLength: 2048
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        '200':
+          description: Reader manifest with chapter access metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReaderManifest'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+  /api/v1/chapters/{chapterId}/content:
+    get:
+      operationId: getReadableChapterContent
+      tags: [Reader]
+      x-implementation-status: planned
+      summary: Get source-only content for an authorized chapter
+      description: >-
+        Rechecks ownership/access on every request and returns sanitized semantic source segments only in G2.
+        Locked or otherwise inaccessible body text is never included in the response or an asset URL.
+      security:
+        - appSession: []
+      parameters:
+        - name: chapterId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: revision
+          in: query
+          description: Optional immutable source revision ID; defaults to the current readable revision.
+          schema:
+            type: string
+            format: uuid
+        - name: cursor
+          in: query
+          description: Opaque cursor for a bounded segment batch.
+          schema:
+            type: string
+            maxLength: 2048
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 250
+      responses:
+        '200':
+          description: Sanitized source-only chapter content
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChapterContent'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          description: The chapter exists but the caller cannot read its content; no body text is returned.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+  /api/v1/imports/rights-statement/current:
+    get:
+      operationId: getCurrentImportRightsStatement
+      tags: [Library]
+      x-implementation-status: planned
+      summary: Get the exact current private-import rights statement
+      description: Returns display copy and version only; this route creates no import job, storage key or upload target.
+      security: []
+      responses:
+        '200':
+          description: Current import-rights statement
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportRightsStatement'
+  /api/v1/imports:
+    post:
+      operationId: createPrivateImport
+      tags: [Library]
+      x-implementation-status: planned
+      summary: Create an owned staging import after rights and policy checks
+      description: >-
+        The server derives the owner from the session and validates the current statement version, explicit
+        rights confirmation, file limits and account policy consent before creating a job, object key or
+        short-lived upload target. Browser filename, MIME type and declared size are untrusted hints.
+      security:
+        - appSession: []
+          csrfToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateImportRequest'
+      responses:
+        '201':
+          description: Owned staging job and short-lived upload target created
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            Location:
+              schema:
+                type: string
+                format: uri-reference
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportCreatedResponse'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          description: Current Terms or Privacy Notice acceptance is required; no job or upload target is created.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: Rights statement version is stale; no job or upload target is created.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Missing rights confirmation or file metadata violates configured limits; no job or upload target is created.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '429':
+          $ref: '#/components/responses/Problem'
+  /api/v1/imports/{importId}:
+    get:
+      operationId: getPrivateImport
+      tags: [Library]
+      x-implementation-status: planned
+      summary: Get the caller's import state and safe preview summary
+      description: Owner-scoped; out-of-scope job IDs use the same 404 response as missing jobs. Never returns uploaded bytes.
+      security:
+        - appSession: []
+      parameters:
+        - name: importId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Import job status and bounded summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportJob'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+  /api/v1/imports/{importId}/parse:
+    post:
+      operationId: startPrivateImportParse
+      tags: [Library]
+      x-implementation-status: planned
+      summary: Verify an uploaded object and enqueue private parsing
+      description: >-
+        Verifies ownership, upload existence, checksum, type and server-side limits before queuing an isolated
+        parser. Repeated calls for one import return the same active parse job. Does not publish or commit a work.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - name: importId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '202':
+          description: Parse job accepted; poll the import resource for state changes.
+          headers:
+            Location:
+              schema:
+                type: string
+                format: uri-reference
+            Retry-After:
+              schema:
+                type: integer
+                minimum: 1
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportJob'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '422':
+          $ref: '#/components/responses/Problem'
+  /api/v1/imports/{importId}/preview:
+    get:
+      operationId: getPrivateImportPreview
+      tags: [Library]
+      x-implementation-status: planned
+      summary: Get parsed metadata and chapter mapping before commit
+      description: Preview content is private staging data, returned only to the import owner; it does not create public catalog rows.
+      security:
+        - appSession: []
+      parameters:
+        - name: importId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: cursor
+          in: query
+          schema:
+            type: string
+            maxLength: 2048
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        '200':
+          description: Private parse preview and paginated chapter summary
+          headers:
+            ETag:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportPreview'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+    patch:
+      operationId: updatePrivateImportPreview
+      tags: [Library]
+      x-implementation-status: planned
+      summary: Edit allowed metadata and chapter order in an owned preview
+      description: Changes only staging metadata/mapping. It does not publish content or alter the uploaded source file.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - name: importId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: If-Match
+          in: header
+          required: true
+          description: ETag returned by the preview GET; stale edits are rejected.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImportPreviewPatch'
+      responses:
+        '200':
+          description: Updated private preview
+          headers:
+            ETag:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportPreview'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '412':
+          $ref: '#/components/responses/Problem'
+        '422':
+          $ref: '#/components/responses/Problem'
+  /api/v1/imports/{importId}/commit:
+    post:
+      operationId: commitPrivateImport
+      tags: [Library]
+      x-implementation-status: planned
+      summary: Atomically commit a ready import as a private work
+      description: >-
+        Requires an owned, successfully parsed job, unchanged preview ETag and an Idempotency-Key.
+        Creates the work and chapter rows atomically with visibility=private; the import-rights statement
+        is not a publication, sharing or sale license. Current account policy acceptance is checked again
+        at commit time; any failure leaves no partial work or chapter rows.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - name: importId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: If-Match
+          in: header
+          required: true
+          description: Preview ETag most recently reviewed by the user.
+          schema:
+            type: string
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            minLength: 16
+            maxLength: 128
+      responses:
+        '201':
+          description: Private work committed; replay with the same key returns the existing result.
+          headers:
+            Location:
+              schema:
+                type: string
+                format: uri-reference
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkSummary'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '412':
+          $ref: '#/components/responses/Problem'
+        '422':
+          $ref: '#/components/responses/Problem'
+  /api/v1/imports/{importId}/cancel:
+    post:
+      operationId: cancelPrivateImport
+      tags: [Library]
+      x-implementation-status: planned
+      summary: Cancel and schedule deletion of an owned staging import
+      description: Idempotent; cancels pending work and schedules deletion of staging objects and parse artifacts according to retention policy.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - name: importId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Import cancelled or already cancelled.
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+  /api/v1/me/reader-preferences:
+    get:
+      operationId: getReaderPreferences
+      tags: [Reader]
+      x-implementation-status: planned
+      summary: Get the current user's reader preferences
+      security:
+        - appSession: []
+      responses:
+        '200':
+          description: Validated current preferences or server defaults
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReaderPreferences'
+        '401':
+          $ref: '#/components/responses/Problem'
+    put:
+      operationId: updateReaderPreferences
+      tags: [Reader]
+      x-implementation-status: planned
+      summary: Save validated reader preferences
+      description: User-scoped and idempotent; preferences contain no chapter content or progress anchor.
+      security:
+        - appSession: []
+          csrfToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReaderPreferences'
+      responses:
+        '200':
+          description: Preferences saved and normalized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReaderPreferences'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '422':
+          $ref: '#/components/responses/Problem'
+  /api/v1/works/{workId}/progress:
+    get:
+      operationId: getWorkReadingProgress
+      tags: [Reader]
+      x-implementation-status: planned
+      summary: Get this user's progress in an owned work
+      security:
+        - appSession: []
+      parameters:
+        - name: workId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Progress snapshot; empty works return a default version-zero snapshot.
+          headers:
+            ETag:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadingProgress'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+    put:
+      operationId: saveWorkReadingProgress
+      tags: [Reader]
+      x-implementation-status: planned
+      summary: Save a stable chapter/segment anchor for this user's work
+      description: >-
+        Owner-scoped, versioned and idempotent for a given representation. The server validates chapter
+        membership and anchor; client timestamps are not authoritative. Stale versions return 409 with
+        the latest safe progress snapshot so the client can reconcile rather than overwrite silently.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - name: workId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SaveReadingProgressRequest'
+      responses:
+        '200':
+          description: Updated authoritative progress snapshot
+          headers:
+            ETag:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadingProgress'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          description: Progress version is stale; the response includes the latest safe snapshot for reconciliation.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProgressConflictProblem'
+        '422':
+          $ref: '#/components/responses/Problem'
+  /api/v1/works/{workId}/bookmarks:
+    get:
+      operationId: listWorkBookmarks
+      tags: [Reader]
+      x-implementation-status: planned
+      summary: List private bookmarks in an owned work
+      security:
+        - appSession: []
+      parameters:
+        - name: workId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: cursor
+          in: query
+          schema:
+            type: string
+            maxLength: 2048
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        '200':
+          description: Private bookmarks; no other user's annotations are returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookmarkListResponse'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+    post:
+      operationId: createWorkBookmark
+      tags: [Reader]
+      x-implementation-status: planned
+      summary: Create a private bookmark at a stable chapter anchor
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - name: workId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            minLength: 16
+            maxLength: 128
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateBookmarkRequest'
+      responses:
+        '201':
+          description: Private bookmark created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Bookmark'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '422':
+          $ref: '#/components/responses/Problem'
+  /api/v1/bookmarks/{bookmarkId}:
+    delete:
+      operationId: deleteOwnedBookmark
+      tags: [Reader]
+      x-implementation-status: planned
+      summary: Delete one of the current user's bookmarks
+      description: Owner-scoped; a bookmark belonging to another user is indistinguishable from a missing bookmark.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - name: bookmarkId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Bookmark deleted.
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+  /api/v1/me/reading-history:
+    get:
+      operationId: listCurrentUserReadingHistory
+      tags: [Reader]
+      x-implementation-status: planned
+      summary: List recently read owned works without returning chapter content
+      security:
+        - appSession: []
+      parameters:
+        - name: cursor
+          in: query
+          schema:
+            type: string
+            maxLength: 2048
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 25
+      responses:
+        '200':
+          description: Cursor-paginated private reading history
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadingHistoryResponse'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+components:
+  securitySchemes:
+    appSession:
+      type: apiKey
+      in: cookie
+      name: __Host-novel_session
+      description: Opaque, rotated, host-only session cookie with Secure, HttpOnly, SameSite=Lax and Path=/ attributes.
+    csrfToken:
+      type: apiKey
+      in: header
+      name: X-CSRF-Token
+      description: Short-lived synchronizer token returned by GET /api/v1/auth/csrf; held by the browser in memory.
+  schemas:
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [UP, DOWN, OUT_OF_SERVICE, UNKNOWN]
+        groups:
+          type: array
+          description: Health groups included by Spring Boot Actuator; component details are hidden.
+          items:
+            type: string
+    ApiSystemStatus:
+      type: object
+      required: [apiVersion, environment, integrations, features]
+      properties:
+        apiVersion:
+          type: string
+          const: v1
+        environment:
+          type: string
+          example: local
+        integrations:
+          type: object
+          required: [googleOidcEnabled, momoTestEnabled, momoEnvironment]
+          properties:
+            googleOidcEnabled:
+              type: boolean
+              const: false
+            momoTestEnabled:
+              type: boolean
+              const: false
+            momoEnvironment:
+              type: string
+              const: TEST
+        features:
+          type: object
+          required: [importProcessingEnabled, cultivationEnabled, commerceSandboxEnabled]
+          properties:
+            importProcessingEnabled:
+              type: boolean
+              const: false
+            cultivationEnabled:
+              type: boolean
+              const: false
+            commerceSandboxEnabled:
+              type: boolean
+              const: false
+    GoogleSignInBootstrap:
+      type: object
+      additionalProperties: false
+      required: [clientId, loginUri, nonce, locale, attemptExpiresAt]
+      properties:
+        clientId:
+          type: string
+          description: Public Google Identity Services web client ID for this environment.
+        loginUri:
+          type: string
+          format: uri
+          description: Fixed backend callback URI; never supplied by the browser.
+        nonce:
+          type: string
+          minLength: 16
+          description: One-use nonce bound to the server-side sign-in attempt.
+        locale:
+          type: string
+          example: vi
+        attemptExpiresAt:
+          type: string
+          format: date-time
+    GoogleCredentialForm:
+      type: object
+      additionalProperties: false
+      required: [credential, g_csrf_token]
+      properties:
+        credential:
+          type: string
+          minLength: 1
+          maxLength: 16384
+          description: Google ID-token credential posted directly by GIS; discard after validation.
+        g_csrf_token:
+          type: string
+          minLength: 1
+          maxLength: 4096
+          description: Must exactly match the g_csrf_token cookie.
+    CsrfToken:
+      type: object
+      additionalProperties: false
+      required: [token, expiresAt]
+      properties:
+        token:
+          type: string
+          minLength: 32
+          description: Opaque synchronizer token bound to the current application session.
+        expiresAt:
+          type: string
+          format: date-time
+    CurrentUserResponse:
+      type: object
+      additionalProperties: false
+      required: [user, identityProviders, policy, roles, features]
+      properties:
+        user:
+          $ref: '#/components/schemas/CurrentUser'
+        identityProviders:
+          type: array
+          items:
+            type: string
+            enum: [google]
+        policy:
+          $ref: '#/components/schemas/UserPolicyState'
+        roles:
+          type: array
+          items:
+            $ref: '#/components/schemas/RoleScope'
+        features:
+          $ref: '#/components/schemas/UserFeatureFlags'
+    CurrentUser:
+      type: object
+      additionalProperties: false
+      required: [id, displayName, status]
+      properties:
+        id:
+          type: string
+          format: uuid
+        displayName:
+          type: string
+          minLength: 1
+          maxLength: 120
+        contactEmail:
+          type: [string, 'null']
+          format: email
+        avatarUrl:
+          type: [string, 'null']
+          format: uri
+        status:
+          type: string
+          enum: [active, pending, suspended]
+    UserPolicyState:
+      type: object
+      additionalProperties: false
+      required: [termsAcceptedVersion, privacyNoticeAcknowledgedVersion, requiredAcceptanceComplete]
+      properties:
+        termsAcceptedVersion:
+          type: [string, 'null']
+        privacyNoticeAcknowledgedVersion:
+          type: [string, 'null']
+        requiredAcceptanceComplete:
+          type: boolean
+    RoleScope:
+      type: object
+      additionalProperties: false
+      required: [scope, permissions]
+      properties:
+        scope:
+          type: string
+          maxLength: 128
+        permissions:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+            maxLength: 128
+    UserFeatureFlags:
+      type: object
+      additionalProperties: false
+      required: [privateLibraryEnabled, importEnabled, readerEnabled, cultivationEnabled, commerceSandboxEnabled]
+      properties:
+        privateLibraryEnabled:
+          type: boolean
+        importEnabled:
+          type: boolean
+        readerEnabled:
+          type: boolean
+        cultivationEnabled:
+          type: boolean
+        commerceSandboxEnabled:
+          type: boolean
+    CurrentPoliciesResponse:
+      type: object
+      additionalProperties: false
+      required: [terms, privacyNotice]
+      properties:
+        terms:
+          $ref: '#/components/schemas/PolicyDocument'
+        privacyNotice:
+          $ref: '#/components/schemas/PolicyDocument'
+    PolicyDocument:
+      type: object
+      additionalProperties: false
+      required: [version, effectiveAt, documentUrl]
+      properties:
+        version:
+          type: string
+          minLength: 1
+          maxLength: 64
+        effectiveAt:
+          type: string
+          format: date-time
+        documentUrl:
+          type: string
+          format: uri-reference
+          description: Same-origin URL only.
+    PolicyAcceptanceRequest:
+      type: object
+      additionalProperties: false
+      required: [termsVersion, privacyNoticeVersion, termsAccepted, privacyNoticeAcknowledged]
+      properties:
+        termsVersion:
+          type: string
+          minLength: 1
+          maxLength: 64
+        privacyNoticeVersion:
+          type: string
+          minLength: 1
+          maxLength: 64
+        termsAccepted:
+          type: boolean
+          const: true
+        privacyNoticeAcknowledged:
+          type: boolean
+          const: true
+    PolicyAcceptanceResponse:
+      type: object
+      additionalProperties: false
+      required: [termsAcceptedVersion, termsAcceptedAt, privacyNoticeAcknowledgedVersion, privacyNoticeAcknowledgedAt]
+      properties:
+        termsAcceptedVersion:
+          type: string
+        termsAcceptedAt:
+          type: string
+          format: date-time
+        privacyNoticeAcknowledgedVersion:
+          type: string
+        privacyNoticeAcknowledgedAt:
+          type: string
+          format: date-time
+    SessionListResponse:
+      type: object
+      additionalProperties: false
+      required: [sessions]
+      properties:
+        sessions:
+          type: array
+          items:
+            $ref: '#/components/schemas/SessionSummary'
+    SessionSummary:
+      type: object
+      additionalProperties: false
+      required: [id, deviceSummary, createdAt, lastSeenAt, expiresAt, current]
+      properties:
+        id:
+          type: string
+          maxLength: 128
+          description: Opaque identifier for revocation; not the session secret.
+        deviceSummary:
+          type: string
+          maxLength: 160
+          description: Coarse browser/device label; no raw IP address.
+        createdAt:
+          type: string
+          format: date-time
+        lastSeenAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+        current:
+          type: boolean
+    LogoutAllRequest:
+      type: object
+      additionalProperties: false
+      required: [confirmationToken]
+      properties:
+        confirmationToken:
+          type: string
+          minLength: 16
+          maxLength: 512
+          description: Short-lived, one-use server-issued confirmation; recent re-authentication may be represented by this token.
+    LibrarySummary:
+      type: object
+      additionalProperties: false
+      required: [id, name, visibility, isDefault, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+        visibility:
+          type: string
+          const: private
+        isDefault:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+    LibraryListResponse:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/LibrarySummary'
+        nextCursor:
+          type: [string, 'null']
+          maxLength: 2048
+          description: Opaque cursor bound to the current user and sort; null when no next page exists.
+    WorkSummary:
+      type: object
+      additionalProperties: false
+      required: [id, libraryId, title, author, language, visibility, chapterCount, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        libraryId:
+          type: string
+          format: uuid
+        title:
+          type: string
+          minLength: 1
+          maxLength: 300
+        author:
+          type: string
+          maxLength: 200
+        language:
+          type: string
+          maxLength: 35
+        visibility:
+          type: string
+          const: private
+        chapterCount:
+          type: integer
+          minimum: 0
+        createdAt:
+          type: string
+          format: date-time
+        lastReadAt:
+          type: [string, 'null']
+          format: date-time
+    WorkListResponse:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/WorkSummary'
+        nextCursor:
+          type: [string, 'null']
+          maxLength: 2048
+          description: Opaque cursor bound to library, sort and query filter.
+    ReaderManifest:
+      type: object
+      additionalProperties: false
+      required: [work, sourceLanguage, chapters, nextCursor]
+      properties:
+        work:
+          $ref: '#/components/schemas/WorkSummary'
+        sourceLanguage:
+          type: string
+          maxLength: 35
+        chapters:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/ReaderChapterSummary'
+        nextCursor:
+          type: [string, 'null']
+          maxLength: 2048
+          description: Opaque cursor bound to work and chapter order.
+    ReaderChapterSummary:
+      type: object
+      additionalProperties: false
+      required: [id, ordinal, title, accessState]
+      properties:
+        id:
+          type: string
+          format: uuid
+        ordinal:
+          type: integer
+          minimum: 1
+        title:
+          type: string
+          minLength: 1
+          maxLength: 300
+        accessState:
+          type: string
+          enum: [readable, preview, locked, owned, unavailable]
+    ChapterContent:
+      type: object
+      additionalProperties: false
+      required: [chapterId, workId, sourceRevisionId, sourceLanguage, segments, nextSegmentCursor]
+      properties:
+        chapterId:
+          type: string
+          format: uuid
+        workId:
+          type: string
+          format: uuid
+        sourceRevisionId:
+          type: string
+          format: uuid
+        sourceLanguage:
+          type: string
+          maxLength: 35
+        segments:
+          type: array
+          maxItems: 1000
+          description: Sanitized semantic source text; raw HTML and executable markup are never returned.
+          items:
+            $ref: '#/components/schemas/SourceSegment'
+        nextSegmentCursor:
+          type: [string, 'null']
+          maxLength: 2048
+          description: Opaque cursor for the next source segment batch.
+    SourceSegment:
+      type: object
+      additionalProperties: false
+      required: [anchor, type, sourceText]
+      properties:
+        anchor:
+          type: string
+          minLength: 1
+          maxLength: 256
+        type:
+          type: string
+          enum: [heading, paragraph, quote]
+        sourceText:
+          type: string
+          maxLength: 20000
+    ImportRightsStatement:
+      type: object
+      additionalProperties: false
+      required: [version, effectiveAt, displayText]
+      properties:
+        version:
+          type: string
+          minLength: 1
+          maxLength: 64
+        effectiveAt:
+          type: string
+          format: date-time
+        displayText:
+          type: string
+          minLength: 1
+          maxLength: 8000
+          description: Exact approved statement shown before any file bytes are uploaded or processed.
+    CreateImportRequest:
+      type: object
+      additionalProperties: false
+      required: [libraryId, source, rightsStatementVersion, rightsConfirmed]
+      properties:
+        libraryId:
+          type: string
+          format: uuid
+        source:
+          $ref: '#/components/schemas/ImportSourceDescriptor'
+        rightsStatementVersion:
+          type: string
+          minLength: 1
+          maxLength: 64
+        rightsConfirmed:
+          type: boolean
+          const: true
+        options:
+          $ref: '#/components/schemas/ImportOptions'
+    ImportSourceDescriptor:
+      type: object
+      additionalProperties: false
+      required: [kind, filename, contentType, sizeBytes]
+      properties:
+        kind:
+          type: string
+          const: upload
+        filename:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: Display metadata only; not trusted as a path or file type.
+        contentType:
+          type: [string, 'null']
+          maxLength: 160
+          description: Browser-declared MIME hint; verified against bytes by the server.
+        sizeBytes:
+          type: integer
+          minimum: 1
+          description: Declared size hint; server independently checks the uploaded object size.
+    ImportOptions:
+      type: object
+      additionalProperties: false
+      properties:
+        deduplicateByHash:
+          type: boolean
+          default: true
+        defaultLanguage:
+          type: string
+          maxLength: 35
+    ImportUploadTarget:
+      type: object
+      additionalProperties: false
+      required: [method, url, headers, expiresAt]
+      properties:
+        method:
+          type: string
+          const: PUT
+        url:
+          type: string
+          format: uri
+          description: Short-lived presigned upload URL on a server-configured storage host allowlist; treat as a secret, do not log or persist it.
+        headers:
+          type: object
+          additionalProperties:
+            type: string
+          description: Exact headers required by the object-storage upload target.
+        expiresAt:
+          type: string
+          format: date-time
+    ImportCreatedResponse:
+      type: object
+      additionalProperties: false
+      required: [job, uploadTarget]
+      properties:
+        job:
+          $ref: '#/components/schemas/ImportJob'
+        uploadTarget:
+          $ref: '#/components/schemas/ImportUploadTarget'
+    ImportJob:
+      type: object
+      additionalProperties: false
+      required: [id, status, createdAt, expiresAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [upload_pending, uploaded, queued, scanning, parsing, ready_to_commit, committed, failed, cancelled, expired]
+        createdAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+        warnings:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/ImportWarning'
+        failureCode:
+          type: [string, 'null']
+          maxLength: 96
+        previewSummary:
+          $ref: '#/components/schemas/ImportPreviewSummary'
+    ImportWarning:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          maxLength: 96
+        message:
+          type: string
+          maxLength: 500
+          description: Safe actionable text; never includes chapter body or raw parser internals.
+    ImportPreviewSummary:
+      type: object
+      additionalProperties: false
+      required: [title, author, chapterCount]
+      properties:
+        title:
+          type: string
+          maxLength: 300
+        author:
+          type: string
+          maxLength: 200
+        chapterCount:
+          type: integer
+          minimum: 0
+    ImportPreview:
+      type: object
+      additionalProperties: false
+      required: [importId, version, title, author, chapterCount, language, chapters, nextCursor, warnings]
+      properties:
+        importId:
+          type: string
+          format: uuid
+        version:
+          type: integer
+          minimum: 1
+        title:
+          type: string
+          maxLength: 300
+        author:
+          type: string
+          maxLength: 200
+        chapterCount:
+          type: integer
+          minimum: 0
+        language:
+          type: string
+          maxLength: 35
+        chapters:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/ImportChapterPreview'
+        nextCursor:
+          type: [string, 'null']
+          maxLength: 2048
+        warnings:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/ImportWarning'
+    ImportChapterPreview:
+      type: object
+      additionalProperties: false
+      required: [id, ordinal, title]
+      properties:
+        id:
+          type: string
+          format: uuid
+        ordinal:
+          type: integer
+          minimum: 1
+        title:
+          type: string
+          minLength: 1
+          maxLength: 300
+    ImportPreviewPatch:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 300
+        author:
+          type: string
+          maxLength: 200
+        language:
+          type: string
+          maxLength: 35
+        chapterOrder:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            type: string
+            format: uuid
+    ReaderPreferences:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, theme, fontFamily, fontSize, lineHeight, contentWidth]
+      properties:
+        schemaVersion:
+          type: integer
+          const: 1
+        theme:
+          type: string
+          enum: [light, sepia, dark]
+        fontFamily:
+          type: string
+          enum: [serif, sans]
+        fontSize:
+          type: integer
+          minimum: 16
+          maximum: 28
+        lineHeight:
+          type: number
+          minimum: 1.2
+          maximum: 2.2
+        contentWidth:
+          type: integer
+          minimum: 560
+          maximum: 900
+    ReadingProgress:
+      type: object
+      additionalProperties: false
+      required: [workId, chapterId, segmentAnchor, scrollRatio, version, updatedAt]
+      properties:
+        workId:
+          type: string
+          format: uuid
+        chapterId:
+          type: [string, 'null']
+          format: uuid
+        segmentAnchor:
+          type: [string, 'null']
+          maxLength: 256
+        scrollRatio:
+          type: number
+          minimum: 0
+          maximum: 1
+        version:
+          type: integer
+          minimum: 0
+        updatedAt:
+          type: [string, 'null']
+          format: date-time
+    ProgressConflictProblem:
+      allOf:
+        - $ref: '#/components/schemas/Problem'
+        - type: object
+          required: [latestProgress]
+          properties:
+            latestProgress:
+              $ref: '#/components/schemas/ReadingProgress'
+    SaveReadingProgressRequest:
+      type: object
+      additionalProperties: false
+      required: [expectedVersion, chapterId, segmentAnchor, scrollRatio]
+      properties:
+        expectedVersion:
+          type: integer
+          minimum: 0
+        chapterId:
+          type: [string, 'null']
+          format: uuid
+        segmentAnchor:
+          type: [string, 'null']
+          maxLength: 256
+        scrollRatio:
+          type: number
+          minimum: 0
+          maximum: 1
+    BookmarkListResponse:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/Bookmark'
+        nextCursor:
+          type: [string, 'null']
+          maxLength: 2048
+    Bookmark:
+      type: object
+      additionalProperties: false
+      required: [id, workId, chapterId, segmentAnchor, label, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        workId:
+          type: string
+          format: uuid
+        chapterId:
+          type: string
+          format: uuid
+        segmentAnchor:
+          type: [string, 'null']
+          maxLength: 256
+        label:
+          type: string
+          minLength: 1
+          maxLength: 160
+        createdAt:
+          type: string
+          format: date-time
+    CreateBookmarkRequest:
+      type: object
+      additionalProperties: false
+      required: [chapterId, segmentAnchor, label]
+      properties:
+        chapterId:
+          type: string
+          format: uuid
+        segmentAnchor:
+          type: [string, 'null']
+          maxLength: 256
+        label:
+          type: string
+          minLength: 1
+          maxLength: 160
+    ReadingHistoryResponse:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/ReadingHistoryItem'
+        nextCursor:
+          type: [string, 'null']
+          maxLength: 2048
+    ReadingHistoryItem:
+      type: object
+      additionalProperties: false
+      required: [work, progress]
+      properties:
+        work:
+          $ref: '#/components/schemas/WorkSummary'
+        progress:
+          $ref: '#/components/schemas/ReadingProgress'
+    Problem:
+      type: object
+      required: [type, title, status, detail, code, correlationId]
+      properties:
+        type:
+          type: string
+          example: about:blank
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+        code:
+          type: string
+        correlationId:
+          type: string
+          minLength: 1
+        fieldErrors:
+          type: array
+          items:
+            type: object
+            required: [field, code, message]
+            properties:
+              field:
+                type: string
+              code:
+                type: string
+              message:
+                type: string
+  responses:
+    Problem:
+      description: Safe problem response
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'

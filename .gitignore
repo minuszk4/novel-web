@@ -1,0 +1,17 @@
+# Local planning and research documents
+/.ai/
+
+# Build artifacts and installed packages
+**/node_modules/
+**/target/
+**/dist/
+**/coverage/
+**/reports/
+
+# Temporary Spring Initializr download
+/apps/api-scaffold.zip
+
+# Local credentials and environment overrides
+**/.env
+**/.env.*
+!**/.env.example

@@ -1,0 +1,27 @@
+<section class="home-page">
+  <div class="home-welcome"><div><p class="eyebrow">MỘT KHÔNG GIAN CHO NHỮNG CÂU CHUYỆN</p><h1>Chào bạn, độc giả<span class="brand-period">.</span></h1><p>Một góc yên tĩnh đang chờ bạn.</p></div><a class="button button-primary" routerLink="/app/import">+ Thêm truyện</a></div>
+
+  @if (demo.importedWork(); as work) {
+    <section class="continue-section" aria-labelledby="continue-title">
+      <div class="section-heading"><div><p class="eyebrow">GẦN ĐÂY TRONG THƯ VIỆN</p><h2 id="continue-title">Câu chuyện của bạn</h2></div><a class="text-link" routerLink="/app/library">Mở thư viện →</a></div>
+      <article class="work-card work-card-featured">
+        <div class="cover-placeholder" aria-hidden="true"><span class="cover-topline">NOVEL · PRIVATE LIBRARY</span><span class="cover-emblem">✧</span><span class="cover-title">{{ work.title }}</span><span class="cover-bottomline">ĐƯỢC THÊM RIÊNG TƯ</span></div>
+        <div class="work-card-content"><div class="work-meta"><span class="private-tag">RIÊNG TƯ</span><span class="meta-dot">·</span><span>Vừa thêm vào thư viện</span></div><h3>{{ work.title }}</h3><p class="work-author">{{ work.author }}</p><p class="work-note">Tệp đã được ghi nhận trong demo. Chưa có mục lục hoặc nội dung chương để đọc.</p><a class="button button-outline" routerLink="/app/library">Xem trong thư viện</a></div>
+      </article>
+    </section>
+  } @else {
+    <section class="continue-section" aria-labelledby="continue-title">
+      <div class="section-heading"><div><p class="eyebrow">TIẾP TỤC ĐỌC</p><h2 id="continue-title">Nơi câu chuyện dừng lại</h2></div></div>
+      <div class="empty-library-card"><div class="empty-illustration" aria-hidden="true"><span class="empty-book empty-book-one"></span><span class="empty-book empty-book-two"></span><span class="empty-star">✧</span></div><div><p class="eyebrow">CHƯA CÓ TÁC PHẨM</p><h3>Thư viện của bạn đang chờ trang đầu tiên</h3><p>Thêm một tệp bạn có quyền sử dụng. Nội dung sẽ ở chế độ riêng tư trong thư viện của bạn.</p><a class="button button-primary" routerLink="/app/import">Thêm truyện đầu tiên <span aria-hidden="true">→</span></a></div></div>
+    </section>
+  }
+
+  <section class="quick-links-section" aria-labelledby="quick-title"><div class="section-heading"><div><p class="eyebrow">KHÔNG GIAN CỦA BẠN</p><h2 id="quick-title">Đi đến đâu tiếp theo?</h2></div></div><div class="quick-link-grid">
+    <a class="quick-card" routerLink="/app/library"><span class="quick-icon library-icon" aria-hidden="true">▤</span><span><strong>Thư viện</strong><small>Sắp xếp những tác phẩm đã thêm</small></span><span class="quick-arrow" aria-hidden="true">↗</span></a>
+    <a class="quick-card" routerLink="/app/search"><span class="quick-icon search-icon" aria-hidden="true">⌕</span><span><strong>Tìm kiếm</strong><small>Tìm trong nội dung riêng tư của bạn</small></span><span class="quick-arrow" aria-hidden="true">↗</span></a>
+    <a class="quick-card" routerLink="/app/cultivation"><span class="quick-icon cultivation-icon" aria-hidden="true">✧</span><span><strong>Hành trình tu luyện</strong><small>Cấp bậc đọc, hoàn toàn tùy chọn</small></span><span class="quick-arrow" aria-hidden="true">↗</span></a>
+    <a class="quick-card" routerLink="/works/demo-story"><span class="quick-icon reader-icon" aria-hidden="true">Aa</span><span><strong>Thử trình đọc</strong><small>Một câu chuyện ngắn do Novel viết</small></span><span class="quick-arrow" aria-hidden="true">↗</span></a>
+  </div></section>
+
+  <aside class="home-cultivation-note"><span class="cultivation-note-mark" aria-hidden="true">✧</span><div><p class="eyebrow">TIẾN BỘ KHÔNG ÁP LỰC</p><h2>Đọc đều, lên cảnh giới theo thời gian</h2><p>Hành trình tu luyện chỉ bật khi bạn chọn. Không có bảng xếp hạng, không mất cấp khi nghỉ, không mua XP bằng credit.</p></div><a class="text-link" routerLink="/app/cultivation">Khám phá cấp bậc →</a></aside>
+</section>

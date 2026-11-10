@@ -1,0 +1,10 @@
+<section class="page-wrap">
+  <div class="page-heading"><p class="eyebrow">TÌM TRONG KHÔNG GIAN CỦA BẠN</p><h1>Tìm kiếm</h1><p>Kết quả chỉ đến từ metadata trong thư viện demo của bạn.</p></div>
+  <label class="search-box" for="library-search"><span aria-hidden="true">⌕</span><input id="library-search" type="search" placeholder="Tên tác phẩm hoặc tác giả" [value]="query()" (input)="updateQuery($event)" /></label>
+  <div class="search-results-heading"><h2>Kết quả riêng tư</h2><span>{{ hasMatch && demo.importedWork() ? '1 kết quả' : '0 kết quả' }}</span></div>
+  @if (hasMatch && demo.importedWork(); as work) {
+    <article class="library-work-row search-result"><div class="mini-cover" aria-hidden="true">✧</div><div class="library-work-copy"><span class="private-tag">RIÊNG TƯ</span><h2>{{ work.title }}</h2><p>{{ work.author }}</p><small>Tệp đã thêm trong phiên demo này</small></div><a class="text-link" routerLink="/app/library">Mở trong thư viện →</a></article>
+  } @else {
+    <div class="empty-state-panel search-empty"><div class="search-empty-mark" aria-hidden="true">⌕</div><h2>{{ query() ? 'Không tìm thấy kết quả' : 'Thư viện vẫn đang trống' }}</h2><p>{{ query() ? 'Thử một từ khóa khác hoặc xóa nội dung tìm kiếm.' : 'Khi bạn thêm metadata tác phẩm, có thể tìm lại tại đây.' }}</p><a class="text-link" routerLink="/app/import">Thêm truyện vào thư viện →</a></div>
+  }
+</section>
