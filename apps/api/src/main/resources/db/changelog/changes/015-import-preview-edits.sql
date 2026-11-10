@@ -14,7 +14,7 @@ ALTER TABLE import_parse_jobs
 --rollback ALTER TABLE import_parse_jobs DROP CONSTRAINT ck_import_parse_preview_version_state;
 --rollback ALTER TABLE import_parse_jobs DROP COLUMN preview_version;
 
---changeset novelweb:imports-065-preview-edit-transition-guard splitStatements:false
+--changeset novelweb:imports-065-preview-edit-transition-guard splitStatements:false rollbackSplitStatements:false
 CREATE OR REPLACE FUNCTION guard_import_parse_job_update()
 RETURNS trigger
 LANGUAGE plpgsql
