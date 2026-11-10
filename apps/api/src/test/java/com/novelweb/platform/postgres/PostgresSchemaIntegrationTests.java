@@ -11,6 +11,8 @@ import java.sql.Savepoint;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Base64;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
@@ -31,6 +33,7 @@ import com.novelweb.identity.auth.GoogleIdentityService;
 import com.novelweb.identity.auth.GoogleIdentityTestFixtures;
 import com.novelweb.identity.auth.UnavailableGoogleIdentityException;
 import com.novelweb.identity.auth.GoogleIdTokenVerifier;
+import com.novelweb.identity.session.SessionService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -39,6 +42,7 @@ import org.springframework.test.context.ActiveProfiles;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -69,6 +73,9 @@ class PostgresSchemaIntegrationTests {
 
     @Autowired
     private GoogleIdentityService googleIdentityService;
+
+    @Autowired
+    private SessionService sessionService;
 
     @Test
     void liquibaseAppliesTheBaselineAndCreatesExpectedTables() throws SQLException {
@@ -540,6 +547,267 @@ class PostgresSchemaIntegrationTests {
             assertEquals("Suspended Reader", storedUserDisplayName(userId));
         } finally {
             deleteMappedIdentity(userId, subject);
+        }
+    }
+
+    @Test
+    void sessionCreationPersistsOnlyTheHashAndValidatesAnActiveUser() throws Exception {
+        UUID userId = createSessionTestUser("Session Reader");
+        try {
+            SessionService.IssuedSession issued = sessionService.create(userId).orElseThrow();
+            assertEquals(userId, issued.userId());
+            assertEquals(43, issued.cookieValue().length());
+            assertTrue(sessionHashMatches(issued.cookieValue(), userId));
+            assertFalse(Arrays.equals(issued.cookieValue().getBytes(StandardCharsets.UTF_8),
+                    sessionTokenHash(issued.cookieValue())));
+
+            SessionService.SessionPrincipal principal = sessionService.validateAndTouch(issued.cookieValue())
+                    .orElseThrow();
+            assertEquals(userId, principal.userId());
+            assertEquals(issued.expiresAt(), principal.expiresAt());
+        } finally {
+            deleteSessionTestUser(userId);
+        }
+    }
+
+    @Test
+    void malformedTokensAreRejectedAndRevokeIsIdempotent() throws Exception {
+        UUID userId = createSessionTestUser("Revoke Reader");
+        try {
+            SessionService.IssuedSession issued = sessionService.create(userId).orElseThrow();
+            assertTrue(sessionService.validateAndTouch("not-a-session").isEmpty());
+            assertFalse(sessionService.revoke("not-a-session"));
+
+            String tampered = (issued.cookieValue().charAt(0) == 'A' ? "B" : "A")
+                    + issued.cookieValue().substring(1);
+            assertTrue(sessionService.validateAndTouch(tampered).isEmpty());
+
+            assertTrue(sessionService.revoke(issued.cookieValue()));
+            assertFalse(sessionService.revoke(issued.cookieValue()));
+            assertTrue(sessionService.validateAndTouch(issued.cookieValue()).isEmpty());
+        } finally {
+            deleteSessionTestUser(userId);
+        }
+    }
+
+    @Test
+    void idleAndAbsoluteExpirationBothRejectTheSession() throws Exception {
+        UUID userId = createSessionTestUser("Expired Session Reader");
+        try {
+            SessionService.IssuedSession idleExpired = sessionService.create(userId).orElseThrow();
+            SessionService.IssuedSession absoluteExpired = sessionService.create(userId).orElseThrow();
+            try (Connection connection = dataSource.getConnection();
+                 PreparedStatement expire = connection.prepareStatement("""
+                         UPDATE sessions
+                         SET created_at = CASE WHEN id_hash = ?
+                                               THEN clock_timestamp() - INTERVAL '9 days'
+                                               ELSE clock_timestamp() - INTERVAL '31 days' END,
+                             last_seen_at = CASE WHEN id_hash = ?
+                                                 THEN clock_timestamp() - INTERVAL '8 days'
+                                                 ELSE clock_timestamp() - INTERVAL '1 day' END,
+                             expires_at = CASE WHEN id_hash = ?
+                                               THEN clock_timestamp() + INTERVAL '20 days'
+                                               ELSE clock_timestamp() - INTERVAL '1 second' END
+                         WHERE user_id = ?
+                         """)) {
+                expire.setBytes(1, sessionTokenHash(idleExpired.cookieValue()));
+                expire.setBytes(2, sessionTokenHash(idleExpired.cookieValue()));
+                expire.setBytes(3, sessionTokenHash(idleExpired.cookieValue()));
+                expire.setObject(4, userId);
+                assertEquals(2, expire.executeUpdate());
+            }
+
+            assertTrue(sessionService.validateAndTouch(idleExpired.cookieValue()).isEmpty());
+            assertTrue(sessionService.validateAndTouch(absoluteExpired.cookieValue()).isEmpty());
+        } finally {
+            deleteSessionTestUser(userId);
+        }
+    }
+
+    @Test
+    void activityTouchesAfterThrottleIntervalButDoesNotWriteOnEveryRequest() throws Exception {
+        UUID userId = createSessionTestUser("Active Session Reader");
+        try {
+            SessionService.IssuedSession issued = sessionService.create(userId).orElseThrow();
+            byte[] tokenHash = sessionTokenHash(issued.cookieValue());
+            try (Connection connection = dataSource.getConnection();
+                 PreparedStatement age = connection.prepareStatement("""
+                         UPDATE sessions
+                         SET created_at = clock_timestamp() - INTERVAL '1 day',
+                             last_seen_at = clock_timestamp() - INTERVAL '10 minutes',
+                             expires_at = clock_timestamp() + INTERVAL '29 days'
+                         WHERE id_hash = ?
+                         """)) {
+                age.setBytes(1, tokenHash);
+                assertEquals(1, age.executeUpdate());
+            }
+
+            Instant agedLastSeen = storedSessionLastSeen(tokenHash);
+            assertTrue(sessionService.validateAndTouch(issued.cookieValue()).isPresent());
+            Instant touchedLastSeen = storedSessionLastSeen(tokenHash);
+            assertTrue(touchedLastSeen.isAfter(agedLastSeen));
+
+            assertTrue(sessionService.validateAndTouch(issued.cookieValue()).isPresent());
+            assertEquals(touchedLastSeen, storedSessionLastSeen(tokenHash));
+        } finally {
+            deleteSessionTestUser(userId);
+        }
+    }
+
+    @Test
+    void rotationRevokesOldSecretAndRevokeAllInvalidatesReplacement() throws Exception {
+        UUID userId = createSessionTestUser("Rotating Session Reader");
+        try {
+            SessionService.IssuedSession original = sessionService.create(userId).orElseThrow();
+            SessionService.IssuedSession rotated = sessionService.rotate(original.cookieValue()).orElseThrow();
+
+            assertNotEquals(original.cookieValue(), rotated.cookieValue());
+            assertEquals(original.expiresAt(), rotated.expiresAt(), "rotation must preserve absolute expiry");
+            assertTrue(sessionService.validateAndTouch(original.cookieValue()).isEmpty());
+            assertEquals(userId, sessionService.validateAndTouch(rotated.cookieValue()).orElseThrow().userId());
+            assertEquals(1, activeSessionCount(userId));
+            assertEquals(1, sessionService.revokeAll(userId));
+            assertEquals(0, sessionService.revokeAll(userId));
+            assertTrue(sessionService.validateAndTouch(rotated.cookieValue()).isEmpty());
+        } finally {
+            deleteSessionTestUser(userId);
+        }
+    }
+
+    @Test
+    void concurrentRotationOfOneSecretHasExactlyOneWinner() throws Exception {
+        UUID userId = createSessionTestUser("Concurrent Session Reader");
+        int consumers = 8;
+        ExecutorService executor = Executors.newFixedThreadPool(consumers);
+        CountDownLatch ready = new CountDownLatch(consumers);
+        CountDownLatch start = new CountDownLatch(1);
+        List<Future<Optional<SessionService.IssuedSession>>> results = new ArrayList<>();
+
+        try {
+            SessionService.IssuedSession original = sessionService.create(userId).orElseThrow();
+            for (int index = 0; index < consumers; index++) {
+                results.add(executor.submit(() -> {
+                    ready.countDown();
+                    if (!start.await(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("session rotation requests did not reach the barrier");
+                    }
+                    return sessionService.rotate(original.cookieValue());
+                }));
+            }
+
+            assertTrue(ready.await(5, TimeUnit.SECONDS));
+            start.countDown();
+            SessionService.IssuedSession winner = null;
+            int winnerCount = 0;
+            for (Future<Optional<SessionService.IssuedSession>> result : results) {
+                Optional<SessionService.IssuedSession> rotated = result.get(15, TimeUnit.SECONDS);
+                if (rotated.isPresent()) {
+                    winner = rotated.orElseThrow();
+                    winnerCount++;
+                }
+            }
+            assertEquals(1, winnerCount);
+            assertTrue(sessionService.validateAndTouch(original.cookieValue()).isEmpty());
+            assertEquals(userId, sessionService.validateAndTouch(winner.cookieValue()).orElseThrow().userId());
+            assertEquals(1, activeSessionCount(userId));
+        } finally {
+            start.countDown();
+            executor.shutdownNow();
+            assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
+            deleteSessionTestUser(userId);
+        }
+    }
+
+    @Test
+    void suspendedUsersCannotCreateOrContinueASession() throws Exception {
+        UUID userId = createSessionTestUser("Suspended Session Reader");
+        try {
+            SessionService.IssuedSession issued = sessionService.create(userId).orElseThrow();
+            try (Connection connection = dataSource.getConnection();
+                 PreparedStatement suspend = connection.prepareStatement(
+                         "UPDATE users SET status = 'suspended' WHERE id = ?")) {
+                suspend.setObject(1, userId);
+                assertEquals(1, suspend.executeUpdate());
+            }
+
+            assertTrue(sessionService.create(userId).isEmpty());
+            assertTrue(sessionService.validateAndTouch(issued.cookieValue()).isEmpty());
+            assertTrue(sessionService.rotate(issued.cookieValue()).isEmpty());
+        } finally {
+            deleteSessionTestUser(userId);
+        }
+    }
+
+    private UUID createSessionTestUser(String displayName) throws SQLException {
+        UUID userId = UUID.randomUUID();
+        String email = "session-" + userId + "@example.test";
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement insert = connection.prepareStatement("""
+                     INSERT INTO users (id, display_name, contact_email, email_verified_at, status)
+                     VALUES (?, ?, ?, clock_timestamp(), 'active')
+                     """)) {
+            insert.setObject(1, userId);
+            insert.setString(2, displayName);
+            insert.setString(3, email);
+            assertEquals(1, insert.executeUpdate());
+        }
+        return userId;
+    }
+
+    private boolean sessionHashMatches(String token, UUID userId) throws Exception {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement(
+                     "SELECT id_hash FROM sessions WHERE user_id = ?")) {
+            select.setObject(1, userId);
+            try (ResultSet row = select.executeQuery()) {
+                assertTrue(row.next());
+                boolean matches = MessageDigest.isEqual(sessionTokenHash(token), row.getBytes(1));
+                assertFalse(row.next(), "the test user should have exactly one session");
+                return matches;
+            }
+        }
+    }
+
+    private static byte[] sessionTokenHash(String token) throws Exception {
+        byte[] secret = Base64.getUrlDecoder().decode(token);
+        return MessageDigest.getInstance("SHA-256").digest(secret);
+    }
+
+    private Instant storedSessionLastSeen(byte[] tokenHash) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement(
+                     "SELECT last_seen_at FROM sessions WHERE id_hash = ?")) {
+            select.setBytes(1, tokenHash);
+            try (ResultSet row = select.executeQuery()) {
+                assertTrue(row.next());
+                return row.getObject(1, java.time.OffsetDateTime.class).toInstant();
+            }
+        }
+    }
+
+    private int activeSessionCount(UUID userId) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement(
+                     "SELECT COUNT(*) FROM sessions WHERE user_id = ? AND revoked_at IS NULL")) {
+            select.setObject(1, userId);
+            try (ResultSet row = select.executeQuery()) {
+                assertTrue(row.next());
+                return row.getInt(1);
+            }
+        }
+    }
+
+    private void deleteSessionTestUser(UUID userId) throws SQLException {
+        try (Connection connection = dataSource.getConnection()) {
+            try (PreparedStatement deleteSessions = connection.prepareStatement(
+                    "DELETE FROM sessions WHERE user_id = ?")) {
+                deleteSessions.setObject(1, userId);
+                deleteSessions.executeUpdate();
+            }
+            try (PreparedStatement deleteUser = connection.prepareStatement("DELETE FROM users WHERE id = ?")) {
+                deleteUser.setObject(1, userId);
+                deleteUser.executeUpdate();
+            }
         }
     }
 

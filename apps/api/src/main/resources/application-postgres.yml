@@ -21,3 +21,8 @@ novel:
       rate-limit-hmac-key: ${GOOGLE_AUTH_RATE_LIMIT_HMAC_KEY:}
       rate-limit-refill-interval: ${GOOGLE_AUTH_RATE_LIMIT_REFILL_INTERVAL:6s}
       web-client-id: ${GOOGLE_AUTH_WEB_CLIENT_ID:}
+  identity:
+    session:
+      absolute-ttl: ${NOVEL_SESSION_ABSOLUTE_TTL:30d}
+      idle-ttl: ${NOVEL_SESSION_IDLE_TTL:7d}
+      touch-interval: ${NOVEL_SESSION_TOUCH_INTERVAL:5m}
