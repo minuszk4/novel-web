@@ -14,6 +14,13 @@ export interface PrivateWork {
   visibility: 'private';
 }
 
+export type LibraryReadingStatus = 'reading' | 'want-to-read' | 'paused' | 'completed' | 'dropped';
+
+export interface LibraryCollection {
+  id: string;
+  name: string;
+}
+
 export interface RankRule {
   key: string;
   name: string;

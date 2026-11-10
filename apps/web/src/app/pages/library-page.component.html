@@ -1,11 +1,126 @@
-<section class="page-wrap">
-  <div class="page-heading page-heading-inline"><div><p class="eyebrow">GÓC ĐỌC CÁ NHÂN</p><h1>Thư viện</h1><p>Nơi lưu những câu chuyện bạn muốn giữ lại.</p></div><a class="button button-primary" routerLink="/app/import">+ Thêm truyện</a></div>
-  <div class="library-toolbar"><div class="library-tabs" role="tablist" aria-label="Lọc thư viện"><button class="library-tab active" type="button" role="tab" aria-selected="true">Tất cả <span>{{ demo.importedWork() ? 1 : 0 }}</span></button><button class="library-tab" type="button" role="tab" aria-selected="false" disabled>Đang đọc <span>0</span></button><button class="library-tab" type="button" role="tab" aria-selected="false" disabled>Đọc sau <span>0</span></button></div><span class="private-tag">CHỈ MÌNH BẠN</span></div>
+<section class="page-wrap library-page">
+  <div class="page-heading page-heading-inline">
+    <div>
+      <p class="eyebrow">GÓC ĐỌC CÁ NHÂN</p>
+      <h1>Thư viện</h1>
+      <p>Nơi lưu những câu chuyện bạn muốn giữ lại.</p>
+    </div>
+    <a class="button button-primary" routerLink="/app/import">+ Thêm truyện</a>
+  </div>
+
+  @if (!isOnline()) {
+    <p class="library-status-message library-offline-message" role="status" aria-live="polite">
+      <span aria-hidden="true">⌁</span> Bạn đang ngoại tuyến. Thư viện demo vẫn mở được; thay đổi chưa đồng bộ với tài khoản.
+    </p>
+  }
+  @if (demo.libraryStorageMessage(); as storageMessage) {
+    <p class="library-status-message library-storage-message" role="status" aria-live="polite">{{ storageMessage }}</p>
+  }
+
+  <div class="library-toolbar">
+    <div class="library-tabs" aria-label="Lọc thư viện theo trạng thái">
+      @for (filter of filters; track filter.value) {
+        <button
+          class="library-tab"
+          [class.active]="activeFilter() === filter.value"
+          type="button"
+          [attr.aria-pressed]="activeFilter() === filter.value"
+          (click)="activeFilter.set(filter.value)"
+        >
+          {{ filter.label }} <span>{{ countFor(filter.value) }}</span>
+        </button>
+      }
+    </div>
+    <span class="private-tag">CHỈ MÌNH BẠN</span>
+  </div>
 
   @if (demo.importedWork(); as work) {
-    <article class="library-work-row"><div class="mini-cover" aria-hidden="true">✧</div><div class="library-work-copy"><span class="private-tag">RIÊNG TƯ</span><h2>{{ work.title }}</h2><p>{{ work.author }} <span>·</span> Tệp {{ work.sourceName }}</p><small>Metadata demo · chưa có chương để đọc</small></div><button class="icon-button" type="button" aria-label="Tùy chọn cho tác phẩm" title="Tùy chọn chưa khả dụng">···</button></article>
+    @if (visibleWork()) {
+      <article class="library-work-row">
+        <div class="mini-cover" aria-hidden="true">✧</div>
+        <div class="library-work-copy">
+          <span class="private-tag">RIÊNG TƯ · DEMO</span>
+          <h2>{{ work.title }}</h2>
+          <p>{{ work.author }} <span>·</span> Tệp {{ work.sourceName }}</p>
+          <small>Metadata · thêm ngày <time [attr.datetime]="work.importedAt">{{ work.importedAt | date: 'dd/MM/yyyy' }}</time> · chưa có chương để đọc</small>
+        </div>
+        <label class="library-status-select">
+          <span>Trạng thái đọc</span>
+          <select
+            [attr.aria-label]="'Trạng thái đọc: ' + work.title"
+            (change)="setReadingStatus($event, work.id)"
+          >
+            @for (status of readingStatuses; track status.value) {
+              <option [value]="status.value" [selected]="demo.readingStatusFor(work.id) === status.value">
+                {{ status.label }}
+              </option>
+            }
+          </select>
+        </label>
+      </article>
+
+      <section class="library-collections" aria-labelledby="collections-title">
+        <div class="library-section-heading">
+          <div>
+            <p class="eyebrow">SẮP XẾP THEO CÁCH CỦA BẠN</p>
+            <h2 id="collections-title">Bộ sưu tập</h2>
+          </div>
+          <span>{{ demo.libraryCollections().length }} bộ sưu tập</span>
+        </div>
+
+        <form class="library-collection-form" (submit)="$event.preventDefault(); createCollection()">
+          <label class="visually-hidden" for="new-library-collection">Tên bộ sưu tập mới</label>
+          <input
+            id="new-library-collection"
+            type="text"
+            maxlength="40"
+            autocomplete="off"
+            placeholder="Ví dụ: Đọc cuối tuần"
+            [value]="collectionName()"
+            [attr.aria-describedby]="collectionError() ? 'collection-error' : null"
+            (input)="updateCollectionName($event)"
+          />
+          <button class="button button-outline" type="submit">Tạo bộ sưu tập</button>
+        </form>
+        @if (collectionError(); as error) {
+          <p id="collection-error" class="library-inline-error" role="alert">{{ error }}</p>
+        }
+
+        @if (demo.libraryCollections().length) {
+          <div class="library-collection-list" aria-label="Gắn tác phẩm vào bộ sưu tập">
+            @for (collection of demo.libraryCollections(); track collection.id) {
+              <button
+                class="library-collection-chip"
+                [class.selected]="demo.isWorkInCollection(work.id, collection.id)"
+                type="button"
+                [attr.aria-pressed]="demo.isWorkInCollection(work.id, collection.id)"
+                (click)="toggleCollection(work.id, collection.id)"
+              >
+                {{ collection.name }}
+                <span>{{ demo.isWorkInCollection(work.id, collection.id) ? 'Đã thêm' : '+ Thêm' }}</span>
+              </button>
+            }
+          </div>
+        } @else {
+          <p class="library-collection-empty">Chưa có bộ sưu tập. Tạo một bộ để gom những truyện bạn muốn đọc cùng nhau.</p>
+        }
+      </section>
+    } @else {
+      <div class="empty-state-panel library-filter-empty">
+        <h2>Không có truyện trong mục này</h2>
+        <p>Tác phẩm hiện tại đang ở trạng thái “{{ statusLabel(demo.readingStatusFor(work.id)) }}”.</p>
+        <button class="button button-outline" type="button" (click)="activeFilter.set('all')">Xem tất cả</button>
+      </div>
+    }
   } @else {
-    <div class="empty-state-panel"><div class="empty-illustration small-empty" aria-hidden="true"><span class="empty-book empty-book-one"></span><span class="empty-book empty-book-two"></span><span class="empty-star">✧</span></div><h2>Chưa có gì trên kệ</h2><p>Thêm tác phẩm từ tệp của bạn. Bản demo không tải lên hoặc phân tích nội dung tệp.</p><a class="button button-outline" routerLink="/app/import">Thêm tác phẩm</a><a class="text-link" routerLink="/works/demo-story">Hoặc đọc thử tác phẩm mẫu →</a></div>
+    <div class="empty-state-panel">
+      <div class="empty-illustration small-empty" aria-hidden="true"><span class="empty-book empty-book-one"></span><span class="empty-book empty-book-two"></span><span class="empty-star">✧</span></div>
+      <h2>Chưa có gì trên kệ</h2>
+      <p>Thêm tác phẩm từ tệp của bạn. Bản demo không tải lên hoặc phân tích nội dung tệp.</p>
+      <a class="button button-outline" routerLink="/app/import">Thêm tác phẩm</a>
+      <a class="text-link" routerLink="/works/demo-story">Hoặc đọc thử tác phẩm mẫu →</a>
+    </div>
   }
-  <p class="privacy-footnote"><span aria-hidden="true">◉</span> Nội dung thư viện được thiết kế riêng tư theo mặc định. Chế độ demo chỉ giữ một mục metadata đến khi bạn tải lại trang.</p>
+
+  <p class="privacy-footnote"><span aria-hidden="true">◉</span> Bản demo chỉ lưu metadata, trạng thái và bộ sưu tập trong trình duyệt này. Chưa có đồng bộ tài khoản hoặc tải nội dung truyện lên máy chủ.</p>
 </section>

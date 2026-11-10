@@ -326,8 +326,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, label:has(input:focu
 .home-cultivation-note h2 { margin: 0; font-family: var(--font-display); font-size: 17px; }
 .home-cultivation-note p:last-child { margin: 4px 0 0; color: var(--muted); font-size: 10px; }
 .home-cultivation-note .text-link { white-space: nowrap; font-size: 10px; }
-.library-toolbar { min-height: 50px; display: flex; align-items: center; justify-content: space-between; margin: 27px 0 15px; border-bottom: 1px solid var(--border); }
-.library-tabs { display: flex; align-items: stretch; gap: 18px; height: 50px; }
+.library-toolbar { min-height: 50px; display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 27px 0 15px; border-bottom: 1px solid var(--border); }
+.library-tabs { display: flex; align-items: stretch; flex: 1; min-width: 0; gap: 18px; height: 50px; overflow-x: auto; }
 .library-tab { position: relative; display: inline-flex; align-items: center; gap: 7px; padding: 0 3px; color: var(--muted); background: transparent; border: 0; font-size: 11px; }
 .library-tab.active { color: var(--primary); font-weight: 700; }
 .library-tab.active::after { position: absolute; right: 0; bottom: -1px; left: 0; height: 2px; background: var(--primary); content: ''; }
@@ -340,6 +340,27 @@ button:focus-visible, a:focus-visible, input:focus-visible, label:has(input:focu
 .library-work-copy p { overflow: hidden; margin: 0; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .library-work-copy p span { margin: 0 3px; color: #a0a4aa; }
 .library-work-copy small { display: block; margin-top: 3px; color: var(--subtle); font-size: 9px; }
+.library-status-select { display: grid; flex: 0 0 165px; gap: 5px; color: var(--muted); font-size: 9px; }
+.library-status-select select { width: 100%; min-height: 37px; padding: 0 9px; border: 1px solid var(--border); border-radius: 6px; color: var(--text); background: #fff; font: inherit; font-size: 10px; }
+.library-collections { margin-top: 19px; padding: 18px; border: 1px solid var(--border-soft); border-radius: 9px; background: #fff; }
+.library-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.library-section-heading .eyebrow { margin: 0 0 4px; }
+.library-section-heading h2 { margin: 0; font-family: var(--font-display); font-size: 17px; }
+.library-section-heading > span { color: var(--muted); font-size: 10px; }
+.library-collection-form { display: flex; gap: 8px; margin-top: 13px; }
+.library-collection-form input { flex: 1; min-width: 0; min-height: 38px; padding: 0 10px; border: 1px solid var(--border); border-radius: 6px; color: var(--text); background: #fff; font: inherit; font-size: 10px; }
+.library-collection-form .button { min-height: 38px; padding-inline: 12px; font-size: 10px; }
+.library-collection-list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 13px; }
+.library-collection-chip { display: inline-flex; align-items: center; gap: 9px; min-height: 34px; padding: 0 10px; border: 1px solid #d9dce3; border-radius: 18px; color: #505969; background: #fff; font: inherit; font-size: 10px; cursor: pointer; }
+.library-collection-chip span { color: var(--subtle); font-size: 8px; }
+.library-collection-chip.selected { border-color: #b7c2ee; color: #334b9f; background: #f0f3ff; }
+.library-collection-chip.selected span { color: #334b9f; font-weight: 700; }
+.library-collection-empty { margin: 12px 0 0; color: var(--muted); font-size: 10px; }
+.library-inline-error { margin: 7px 0 0; color: #a33030; font-size: 10px; }
+.library-status-message { display: flex; gap: 8px; margin: 15px 0 0; padding: 10px 12px; border: 1px solid #e7dfcd; border-radius: 7px; color: #66522a; background: #fcf8ef; font-size: 10px; line-height: 1.5; }
+.library-offline-message > span { font-weight: 700; }
+.library-storage-message { border-color: #efd2a5; color: #80520f; background: #fff8eb; }
+.library-filter-empty { margin-top: 15px; }
 .icon-button { width: 36px; height: 36px; display: grid; place-items: center; border: 0; border-radius: 6px; color: var(--muted); background: transparent; font-size: 19px; }
 .icon-button:hover { background: #f1f2f5; }
 .empty-state-panel { min-height: 280px; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 30px; border: 1px dashed #d8d9d6; border-radius: 11px; background: rgb(255 255 255 / 53%); text-align: center; }
@@ -656,13 +677,17 @@ button:focus-visible, a:focus-visible, input:focus-visible, label:has(input:focu
   .home-cultivation-note { align-items: flex-start; flex-wrap: wrap; gap: 12px; padding: 15px; }
   .home-cultivation-note > div { min-width: calc(100% - 60px); }
   .home-cultivation-note .text-link { margin-left: 49px; }
-  .library-toolbar { align-items: flex-end; }
-  .library-tabs { gap: 12px; }
-  .library-tab { font-size: 9px; }
+  .library-toolbar { align-items: flex-start; flex-wrap: wrap; }
+  .library-tabs { flex-basis: 100%; gap: 12px; }
+  .library-tab { flex: 0 0 auto; font-size: 9px; }
   .library-toolbar > .private-tag { font-size: 7px; }
-  .library-work-row { gap: 11px; padding: 12px; }
+  .library-work-row { flex-wrap: wrap; gap: 11px; padding: 12px; }
   .library-work-copy h2 { font-size: 14px; }
   .library-work-copy p { font-size: 9px; }
+  .library-status-select { flex: 1 1 100%; margin-left: 66px; }
+  .library-collections { padding: 14px; }
+  .library-collection-form { align-items: stretch; flex-direction: column; }
+  .library-collection-form .button { width: 100%; }
   .search-box kbd { display: none; }
   .search-result { flex-wrap: wrap; }
   .search-result .text-link { margin-left: 65px; }
