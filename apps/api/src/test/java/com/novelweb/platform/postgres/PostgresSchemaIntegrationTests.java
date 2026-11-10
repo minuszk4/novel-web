@@ -93,6 +93,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 
@@ -234,7 +235,7 @@ class PostgresSchemaIntegrationTests {
                      "SELECT COUNT(*) FROM databasechangelog");
              ResultSet changesets = changesetCount.executeQuery()) {
             changesets.next();
-            assertEquals(63, changesets.getInt(1), "unexpected number of applied changesets");
+            assertEquals(65, changesets.getInt(1), "unexpected number of applied changesets");
         }
 
         Set<String> actualTables = new HashSet<>();
@@ -754,10 +755,12 @@ class PostgresSchemaIntegrationTests {
 
         try {
             insertImportRightsStatement(version, statementText, approverId, "APPROVED", -1);
-            String longTitle = "📖".repeat(400);
-            byte[] validEpub = tinyEpub(longTitle, "Chapter One", "A short private preview.");
+            String longTitle = "📖".repeat(120);
+            byte[] validEpub = tinyEpub(longTitle, "Chapter One", "A short private preview.",
+                    "Chapter One", "A short private preview.");
             byte[] malformedEpub = tinyEpub("A Broken Novel", "broken", "<opf-malformed");
-            assertTrue(validEpub.length <= 1024, "integration EPUB fixture must fit the configured upload cap");
+            assertTrue(validEpub.length <= 1024,
+                    "integration EPUB fixture must fit the configured upload cap: " + validEpub.length);
             assertTrue(malformedEpub.length <= 1024, "malformed integration EPUB must fit the configured upload cap");
             insertUploadedEpubImportFixture(validJobId, actorId, library.id(), validReceipt,
                     version, statementText, validEpub, 0);
@@ -798,15 +801,122 @@ class PostgresSchemaIntegrationTests {
             assertEquals(1, importParseJobCount(validJobId), "repeated parse calls must reuse the parser job");
 
             JsonNode readyStatus = awaitImportStatus(actorCookie, validJobId, "ready_to_commit");
-            assertEquals("📖".repeat(300), readyStatus.path("previewSummary").path("title").asText());
+            assertEquals("📖".repeat(120), readyStatus.path("previewSummary").path("title").asText());
             assertEquals("An Author", readyStatus.path("previewSummary").path("author").asText());
-            assertEquals(1, readyStatus.path("previewSummary").path("chapterCount").asInt());
+            assertEquals(2, readyStatus.path("previewSummary").path("chapterCount").asInt());
             assertEquals("ready_to_commit", importParseJobStatus(validJobId));
             assertTrue(importParsePreviewByteCount(validJobId) > 0);
             assertTrue(importParsePreviewByteCount(validJobId) <= 1_048_576);
             assertEquals(32, importParseEtagBytes(validJobId));
             assertEquals(workCountBefore, workCountForLibrary(library.id()));
             assertEquals(chapterCountBefore, chapterCountForLibrary(library.id()));
+
+            MvcResult foreignPreview = mockMvc.perform(get("/api/v1/imports/{id}/preview", validJobId)
+                            .cookie(otherCookie))
+                    .andReturn();
+            assertEquals(404, foreignPreview.getResponse().getStatus());
+            MvcResult firstPageResult = mockMvc.perform(get("/api/v1/imports/{id}/preview", validJobId)
+                            .queryParam("limit", "1")
+                            .cookie(actorCookie))
+                    .andReturn();
+            assertEquals(200, firstPageResult.getResponse().getStatus());
+            assertTrue(firstPageResult.getResponse().getHeader("Cache-Control").contains("no-store"));
+            String originalEtag = firstPageResult.getResponse().getHeader("ETag");
+            JsonNode firstPage = objectMapper.readTree(firstPageResult.getResponse().getContentAsString());
+            assertEquals(1, firstPage.path("version").asInt());
+            assertEquals(2, firstPage.path("chapterCount").asInt());
+            assertEquals(1, firstPage.path("chapters").size());
+            assertTrue(firstPage.path("nextCursor").isTextual());
+            assertFalse(firstPageResult.getResponse().getContentAsString().contains("sourcePath"));
+            assertFalse(firstPageResult.getResponse().getContentAsString().contains("textPreview"));
+            String firstChapterId = firstPage.path("chapters").get(0).path("id").asText();
+
+            String originalCursor = firstPage.path("nextCursor").asText();
+            MvcResult secondPageResult = mockMvc.perform(get("/api/v1/imports/{id}/preview", validJobId)
+                            .queryParam("limit", "1")
+                            .queryParam("cursor", originalCursor)
+                            .cookie(actorCookie))
+                    .andReturn();
+            assertEquals(200, secondPageResult.getResponse().getStatus());
+            assertEquals(originalEtag, secondPageResult.getResponse().getHeader("ETag"));
+            JsonNode secondPage = objectMapper.readTree(secondPageResult.getResponse().getContentAsString());
+            assertEquals(1, secondPage.path("chapters").size());
+            String secondChapterId = secondPage.path("chapters").get(0).path("id").asText();
+            assertNotEquals(firstChapterId, secondChapterId);
+
+            byte[] invalidOrder = objectMapper.writeValueAsBytes(Map.of("chapterOrder", List.of(firstChapterId)));
+            MvcResult invalidMapping = mockMvc.perform(patch("/api/v1/imports/{id}/preview", validJobId)
+                            .cookie(actorCookie)
+                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                            .header("If-Match", originalEtag)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(invalidOrder))
+                    .andReturn();
+            assertEquals(422, invalidMapping.getResponse().getStatus());
+            assertEquals(originalEtag, mockMvc.perform(get("/api/v1/imports/{id}/preview", validJobId)
+                            .queryParam("limit", "1")
+                            .cookie(actorCookie)).andReturn().getResponse().getHeader("ETag"));
+
+            MvcResult missingPatchCsrf = mockMvc.perform(patch("/api/v1/imports/{id}/preview", validJobId)
+                            .cookie(actorCookie)
+                            .header("If-Match", originalEtag)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"title\":\"Edited Book\"}"))
+                    .andReturn();
+            assertEquals(403, missingPatchCsrf.getResponse().getStatus());
+            MvcResult foreignPatch = mockMvc.perform(patch("/api/v1/imports/{id}/preview", validJobId)
+                            .cookie(otherCookie)
+                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, otherCsrf)
+                            .header("If-Match", originalEtag)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"title\":\"Other Owner\"}"))
+                    .andReturn();
+            assertEquals(404, foreignPatch.getResponse().getStatus());
+
+            byte[] validEdit = objectMapper.writeValueAsBytes(Map.of(
+                    "title", "Edited Book",
+                    "author", "Edited Author",
+                    "language", "en",
+                    "chapterOrder", List.of(secondChapterId, firstChapterId)));
+            MvcResult updatedPreviewResult = mockMvc.perform(patch("/api/v1/imports/{id}/preview", validJobId)
+                            .cookie(actorCookie)
+                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                            .header("If-Match", originalEtag)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(validEdit))
+                    .andReturn();
+            assertEquals(200, updatedPreviewResult.getResponse().getStatus());
+            String updatedEtag = updatedPreviewResult.getResponse().getHeader("ETag");
+            assertNotEquals(originalEtag, updatedEtag);
+            JsonNode updatedPreview = objectMapper.readTree(updatedPreviewResult.getResponse().getContentAsString());
+            assertEquals(2, updatedPreview.path("version").asInt());
+            assertEquals("Edited Book", updatedPreview.path("title").asText());
+            assertEquals("Edited Author", updatedPreview.path("author").asText());
+            assertEquals("en", updatedPreview.path("language").asText());
+            assertEquals(secondChapterId, updatedPreview.path("chapters").get(0).path("id").asText());
+            assertEquals(1, updatedPreview.path("chapters").get(0).path("ordinal").asInt());
+            assertEquals(1, importParseAttempt(validJobId));
+            assertEquals(2, importPreviewVersion(validJobId));
+            assertEquals(workCountBefore, workCountForLibrary(library.id()));
+            assertEquals(chapterCountBefore, chapterCountForLibrary(library.id()));
+
+            MvcResult staleEdit = mockMvc.perform(patch("/api/v1/imports/{id}/preview", validJobId)
+                            .cookie(actorCookie)
+                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                            .header("If-Match", originalEtag)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"title\":\"Stale Edit\"}"))
+                    .andReturn();
+            assertEquals(412, staleEdit.getResponse().getStatus());
+            MvcResult staleCursor = mockMvc.perform(get("/api/v1/imports/{id}/preview", validJobId)
+                            .queryParam("limit", "1")
+                            .queryParam("cursor", originalCursor)
+                            .cookie(actorCookie))
+                    .andReturn();
+            assertEquals(400, staleCursor.getResponse().getStatus());
+            JsonNode editedStatus = objectMapper.readTree(mockMvc.perform(get("/api/v1/imports/{id}", validJobId)
+                            .cookie(actorCookie)).andReturn().getResponse().getContentAsString());
+            assertEquals("Edited Book", editedStatus.path("previewSummary").path("title").asText());
 
             MvcResult failedRequest = mockMvc.perform(post("/api/v1/imports/{id}/parse", invalidJobId)
                             .cookie(actorCookie)
@@ -3889,23 +3999,47 @@ class PostgresSchemaIntegrationTests {
         }
     }
 
-    private static byte[] tinyEpub(String title, String chapterTitle, String chapterBody) throws IOException {
+    private static byte[] tinyEpub(String title, String... chapterTitleAndBodies) throws IOException {
+        if (chapterTitleAndBodies.length == 0 || chapterTitleAndBodies.length % 2 != 0) {
+            throw new IllegalArgumentException("Provide title/body pairs for the EPUB spine");
+        }
         String container = "<container><rootfiles><rootfile full-path=\"package.opf\" "
                 + "media-type=\"application/oebps-package+xml\"/></rootfiles></container>";
         String packageDocument = "<package xmlns=\"http://www.idpf.org/2007/opf\" version=\"3.0\" "
                 + "unique-identifier=\"uid\"><metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\"><dc:title>"
                 + title + "</dc:title><dc:identifier id=\"uid\">urn:test</dc:identifier>"
-                + "<dc:creator>An Author</dc:creator></metadata><manifest>"
-                + "<item id=\"chapter\" href=\"chapter.xhtml\" media-type=\"application/xhtml+xml\"/>"
-                + "</manifest><spine><itemref idref=\"chapter\"/></spine></package>";
-        String chapter = "<html xmlns=\"http://www.w3.org/1999/xhtml\"><head><title>" + chapterTitle
-                + "</title></head><body><h1>" + chapterTitle + "</h1><p>" + chapterBody + "</p></body></html>";
+                + "<dc:creator>An Author</dc:creator></metadata><manifest>";
+        StringBuilder spine = new StringBuilder("<spine>");
+        List<String> chapterDocuments = new ArrayList<>();
+        Map<String, String> chapterPathsByContent = new HashMap<>();
+        for (int index = 0; index < chapterTitleAndBodies.length; index += 2) {
+            String chapterTitle = chapterTitleAndBodies[index];
+            String chapterBody = chapterTitleAndBodies[index + 1];
+            String key = chapterTitle + "\u0000" + chapterBody;
+            String id = chapterPathsByContent.get(key);
+            if (id == null) {
+                id = "chapter" + (index / 2);
+                String path = id + ".xhtml";
+                chapterPathsByContent.put(key, id);
+                packageDocument += "<item id=\"" + id + "\" href=\"" + path
+                        + "\" media-type=\"application/xhtml+xml\"/>";
+                chapterDocuments.add(path + "\u0000<html xmlns=\"http://www.w3.org/1999/xhtml\"><head><title>"
+                        + chapterTitle + "</title></head><body><h1>" + chapterTitle + "</h1><p>"
+                        + chapterBody + "</p></body></html>");
+            }
+            spine.append("<itemref idref=\"").append(id).append("\"/>");
+        }
+        packageDocument += "</manifest>" + spine + "</spine></package>";
         try (ByteArrayOutputStream bytes = new ByteArrayOutputStream();
              ZipOutputStream archive = new ZipOutputStream(bytes, StandardCharsets.UTF_8)) {
             writeStoredZipEntry(archive, "mimetype", "application/epub+zip".getBytes(StandardCharsets.US_ASCII));
             writeDeflatedZipEntry(archive, "META-INF/container.xml", container);
             writeDeflatedZipEntry(archive, "package.opf", packageDocument);
-            writeDeflatedZipEntry(archive, "chapter.xhtml", chapter);
+            for (String chapterDocument : chapterDocuments) {
+                int separator = chapterDocument.indexOf('\u0000');
+                writeDeflatedZipEntry(archive, chapterDocument.substring(0, separator),
+                        chapterDocument.substring(separator + 1));
+            }
             archive.finish();
             return bytes.toByteArray();
         }
@@ -3951,6 +4085,30 @@ class PostgresSchemaIntegrationTests {
             select.setObject(1, importId);
             try (ResultSet row = select.executeQuery()) {
                 row.next();
+                return row.getInt(1);
+            }
+        }
+    }
+
+    private int importParseAttempt(UUID importId) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement(
+                     "SELECT attempt FROM import_parse_jobs WHERE import_id = ?")) {
+            select.setObject(1, importId);
+            try (ResultSet row = select.executeQuery()) {
+                assertTrue(row.next());
+                return row.getInt(1);
+            }
+        }
+    }
+
+    private int importPreviewVersion(UUID importId) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement(
+                     "SELECT preview_version FROM import_parse_jobs WHERE import_id = ?")) {
+            select.setObject(1, importId);
+            try (ResultSet row = select.executeQuery()) {
+                assertTrue(row.next());
                 return row.getInt(1);
             }
         }

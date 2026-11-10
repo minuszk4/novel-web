@@ -125,6 +125,71 @@ public class ImportParseJobRepository {
         }
     }
 
+    public PreviewLookup findPreview(UUID userId, UUID importId) {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement("""
+                     SELECT (j.expires_at > clock_timestamp()) AS live,
+                            p.status AS parse_status, p.preview_data::text AS preview_json,
+                            p.preview_etag, p.preview_version, p.warnings::text AS warnings
+                     FROM import_jobs AS j
+                     LEFT JOIN import_parse_jobs AS p ON p.import_id = j.id
+                     WHERE j.id = ? AND j.user_id = ?
+                     """)) {
+            select.setObject(1, importId);
+            select.setObject(2, userId);
+            try (ResultSet row = select.executeQuery()) {
+                if (!row.next()) return PreviewLookup.notFound();
+                if (!row.getBoolean("live")) return PreviewLookup.expired();
+                if (!"ready_to_commit".equals(row.getString("parse_status"))) {
+                    return PreviewLookup.notReady(row.getString("parse_status"));
+                }
+                return PreviewLookup.ready(new PreviewRecord(row.getString("preview_json"),
+                        row.getBytes("preview_etag"), row.getInt("preview_version"), row.getString("warnings")));
+            }
+        } catch (SQLException exception) {
+            throw new IllegalStateException("Unable to read the owned private import preview", exception);
+        }
+    }
+
+    public PreviewUpdateResult updatePreview(
+            UUID userId, UUID importId, byte[] expectedEtag, String previewJson, byte[] newEtag) {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement update = connection.prepareStatement("""
+                     UPDATE import_parse_jobs AS p
+                     SET preview_data = ?::jsonb, preview_etag = ?, preview_version = preview_version + 1,
+                         updated_at = clock_timestamp()
+                     FROM import_jobs AS j
+                     WHERE p.import_id = ? AND j.id = p.import_id AND j.user_id = ?
+                       AND p.status = 'ready_to_commit' AND j.expires_at > clock_timestamp()
+                       AND p.preview_etag = ? AND p.preview_version < 2147483647
+                     RETURNING p.preview_data::text AS preview_json, p.preview_etag,
+                               p.preview_version, p.warnings::text AS warnings
+                     """)) {
+            update.setString(1, previewJson);
+            update.setBytes(2, newEtag);
+            update.setObject(3, importId);
+            update.setObject(4, userId);
+            update.setBytes(5, expectedEtag);
+            try (ResultSet row = update.executeQuery()) {
+                if (row.next()) {
+                    return PreviewUpdateResult.updated(new PreviewRecord(row.getString("preview_json"),
+                            row.getBytes("preview_etag"), row.getInt("preview_version"),
+                            row.getString("warnings")));
+                }
+            }
+        } catch (SQLException exception) {
+            throw new IllegalStateException("Unable to update the private import preview", exception);
+        }
+
+        PreviewLookup latest = findPreview(userId, importId);
+        return switch (latest.outcome()) {
+            case NOT_FOUND -> PreviewUpdateResult.notFound();
+            case EXPIRED -> PreviewUpdateResult.expired();
+            case NOT_READY -> PreviewUpdateResult.notReady(latest.parseStatus());
+            case READY -> PreviewUpdateResult.stale(latest.preview());
+        };
+    }
+
     public Optional<ParseClaim> claimNext() {
         try (Connection connection = dataSource.getConnection()) {
             connection.setAutoCommit(false);
@@ -188,7 +253,9 @@ public class ImportParseJobRepository {
             connection.setAutoCommit(false);
             try (PreparedStatement update = connection.prepareStatement("""
                     UPDATE import_parse_jobs AS p
-                    SET status = ?, preview_data = ?::jsonb, preview_etag = ?, warnings = ?::jsonb,
+                    SET status = ?, preview_data = ?::jsonb, preview_etag = ?,
+                        preview_version = CASE WHEN ? = 'ready_to_commit' THEN 1 ELSE NULL END,
+                        warnings = ?::jsonb,
                         failure_code = ?, lease_expires_at = NULL,
                         updated_at = clock_timestamp(), completed_at = clock_timestamp()
                     FROM import_jobs AS j
@@ -200,10 +267,11 @@ public class ImportParseJobRepository {
                 update.setString(1, status);
                 update.setString(2, previewJson);
                 update.setBytes(3, etag);
-                update.setString(4, warningsJson);
-                update.setString(5, failureCode);
-                update.setObject(6, claim.importId());
-                update.setInt(7, claim.attempt());
+                update.setString(4, status);
+                update.setString(5, warningsJson);
+                update.setString(6, failureCode);
+                update.setObject(7, claim.importId());
+                update.setInt(8, claim.attempt());
                 boolean changed = update.executeUpdate() == 1;
                 connection.commit();
                 return changed;
@@ -286,6 +354,37 @@ public class ImportParseJobRepository {
                              long sizeBytes, byte[] sha256) { }
 
     public record PreviewSummary(String title, String author, int chapterCount) { }
+
+    public enum PreviewLookupOutcome { READY, NOT_FOUND, NOT_READY, EXPIRED }
+
+    public record PreviewRecord(String previewJson, byte[] etag, int version, String warningsJson) { }
+
+    public record PreviewLookup(PreviewLookupOutcome outcome, PreviewRecord preview, String parseStatus) {
+        static PreviewLookup ready(PreviewRecord preview) {
+            return new PreviewLookup(PreviewLookupOutcome.READY, preview, "ready_to_commit");
+        }
+        static PreviewLookup notFound() { return new PreviewLookup(PreviewLookupOutcome.NOT_FOUND, null, null); }
+        static PreviewLookup expired() { return new PreviewLookup(PreviewLookupOutcome.EXPIRED, null, null); }
+        static PreviewLookup notReady(String status) {
+            return new PreviewLookup(PreviewLookupOutcome.NOT_READY, null, status);
+        }
+    }
+
+    public enum PreviewUpdateOutcome { UPDATED, NOT_FOUND, NOT_READY, EXPIRED, STALE }
+
+    public record PreviewUpdateResult(PreviewUpdateOutcome outcome, PreviewRecord preview, String parseStatus) {
+        static PreviewUpdateResult updated(PreviewRecord preview) {
+            return new PreviewUpdateResult(PreviewUpdateOutcome.UPDATED, preview, "ready_to_commit");
+        }
+        static PreviewUpdateResult notFound() { return new PreviewUpdateResult(PreviewUpdateOutcome.NOT_FOUND, null, null); }
+        static PreviewUpdateResult expired() { return new PreviewUpdateResult(PreviewUpdateOutcome.EXPIRED, null, null); }
+        static PreviewUpdateResult notReady(String status) {
+            return new PreviewUpdateResult(PreviewUpdateOutcome.NOT_READY, null, status);
+        }
+        static PreviewUpdateResult stale(PreviewRecord preview) {
+            return new PreviewUpdateResult(PreviewUpdateOutcome.STALE, preview, "ready_to_commit");
+        }
+    }
 
     public record ImportStatus(UUID id, String status, Instant createdAt, Instant expiresAt, boolean live,
                                String warningsJson, String failureCode, PreviewSummary previewSummary) { }

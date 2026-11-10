@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 4.0.0
+  version: 4.1.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -1374,9 +1374,11 @@ paths:
     get:
       operationId: getPrivateImportPreview
       tags: [Library]
-      x-implementation-status: planned
+      x-implementation-status: implemented-postgres-profile
       summary: Get parsed metadata and chapter mapping before commit
-      description: Preview content is private staging data, returned only to the import owner; it does not create public catalog rows.
+      description: >-
+        Returns only the owned import's editable metadata and chapter titles. Chapter body, source paths, identifiers,
+        and publisher metadata remain private in staging. Signed cursors are bound to the owner, import and preview ETag.
       security:
         - appSession: []
       parameters:
@@ -1415,14 +1417,23 @@ paths:
           $ref: '#/components/responses/Problem'
         '404':
           $ref: '#/components/responses/Problem'
+        '400':
+          $ref: '#/components/responses/Problem'
         '409':
+          $ref: '#/components/responses/Problem'
+        '410':
+          $ref: '#/components/responses/Problem'
+        '503':
           $ref: '#/components/responses/Problem'
     patch:
       operationId: updatePrivateImportPreview
       tags: [Library]
-      x-implementation-status: planned
+      x-implementation-status: implemented-postgres-profile
       summary: Edit allowed metadata and chapter order in an owned preview
-      description: Changes only staging metadata/mapping. It does not publish content or alter the uploaded source file.
+      description: >-
+        Accepts title, author, language, and a complete permutation of chapter IDs. A successful change increments
+        the preview version and ETag in one compare-and-set update. It changes only private staging metadata/mapping;
+        it does not publish content or alter the uploaded source file.
       security:
         - appSession: []
           csrfToken: []
@@ -1462,9 +1473,19 @@ paths:
           $ref: '#/components/responses/Problem'
         '404':
           $ref: '#/components/responses/Problem'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '410':
+          $ref: '#/components/responses/Problem'
         '412':
           $ref: '#/components/responses/Problem'
         '422':
+          $ref: '#/components/responses/Problem'
+        '428':
+          $ref: '#/components/responses/Problem'
+        '503':
           $ref: '#/components/responses/Problem'
   /api/v1/imports/{importId}/commit:
     post:
