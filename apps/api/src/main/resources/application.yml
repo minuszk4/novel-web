@@ -30,3 +30,9 @@ novel:
       allowed-origins:
         - http://localhost:4200
         - http://127.0.0.1:4200
+  imports:
+    staging:
+      root: ${NOVEL_IMPORT_STAGING_ROOT:${java.io.tmpdir}/novel-web-import-staging}
+      max-upload-bytes: ${NOVEL_IMPORT_MAX_UPLOAD_BYTES:52428800}
+      upload-target-ttl: ${NOVEL_IMPORT_TARGET_TTL:15m}
+      job-ttl: ${NOVEL_IMPORT_JOB_TTL:24h}

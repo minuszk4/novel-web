@@ -1,6 +1,8 @@
 package com.novelweb.platform.postgres;
 
 import java.net.InetAddress;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -11,11 +13,14 @@ import java.sql.SQLException;
 import java.sql.Savepoint;
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.HashSet;
 import java.util.HexFormat;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -93,6 +98,10 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
         "novel.auth.google.credential-callback-uri=https://api.example.test/api/v1/auth/google/credential",
         "novel.security.csrf.hmac-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
         "novel.library.cursor.hmac-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "novel.imports.staging.root=${java.io.tmpdir}/novel-web-import-postgres-tests",
+        "novel.imports.staging.max-upload-bytes=1024",
+        "novel.imports.staging.upload-target-ttl=10m",
+        "novel.imports.staging.job-ttl=1h",
         "novel.web.cors.allowed-origins=https://app.example.test"
 })
 class PostgresSchemaIntegrationTests {
@@ -125,7 +134,8 @@ class PostgresSchemaIntegrationTests {
             "library_collections",
             "library_collection_works",
             "import_rights_statements",
-            "import_rights_acceptances");
+            "import_rights_acceptances",
+            "import_jobs");
 
     @Autowired
     private DataSource dataSource;
@@ -156,6 +166,9 @@ class PostgresSchemaIntegrationTests {
 
     @Autowired
     private LibraryUserStateService libraryUserStateService;
+
+    @Autowired
+    private com.novelweb.library.imports.ImportStagingFileStore importStagingFileStore;
 
     @Autowired
     private MockMvc mockMvc;
@@ -191,7 +204,7 @@ class PostgresSchemaIntegrationTests {
                      "SELECT COUNT(*) FROM databasechangelog");
              ResultSet changesets = changesetCount.executeQuery()) {
             changesets.next();
-            assertEquals(51, changesets.getInt(1), "unexpected number of applied changesets");
+            assertEquals(55, changesets.getInt(1), "unexpected number of applied changesets");
         }
 
         Set<String> actualTables = new HashSet<>();
@@ -215,7 +228,9 @@ class PostgresSchemaIntegrationTests {
     void importRightsStatementIsApprovedVersionedFailClosedAndAudited() throws Exception {
         UUID actorId = createSessionTestUser("Import Rights Reader");
         UUID blockedActorId = createSessionTestUser("Policy Blocked Import Reader");
+        UUID unconfiguredActorId = createSessionTestUser("Unconfigured Import Creator");
         UUID approverId = createSessionTestUser("Import Rights Approver");
+        var unconfiguredLibrary = libraryService.createLibrary(unconfiguredActorId, "No rights shelf");
         String statementVersion = "private-import-test-v1";
         String statementText = "# Synthetic import rights\n\nFor private test import only.";
         try {
@@ -223,6 +238,22 @@ class PostgresSchemaIntegrationTests {
             assertEquals(503, unconfigured.getResponse().getStatus());
             assertTrue(unconfigured.getResponse().getContentAsString()
                     .contains("IMPORT_RIGHTS_STATEMENT_NOT_CONFIGURED"));
+            addCurrentPolicyAcceptances(unconfiguredActorId);
+            SessionService.IssuedSession unconfiguredSession = sessionService.create(unconfiguredActorId).orElseThrow();
+            jakarta.servlet.http.Cookie unconfiguredCookie = new jakarta.servlet.http.Cookie(
+                    "__Host-novel_session", unconfiguredSession.cookieValue());
+            MvcResult createWithoutStatement = mockMvc.perform(post("/api/v1/imports")
+                            .cookie(unconfiguredCookie)
+                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME,
+                                    csrfTokenService.tokenFor(unconfiguredSession.cookieValue()))
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(importCreateJson(unconfiguredLibrary.id(), UUID.randomUUID(), statementVersion,
+                                    "story.txt", "text/plain", 12, true)))
+                    .andReturn();
+            assertEquals(503, createWithoutStatement.getResponse().getStatus());
+            assertTrue(createWithoutStatement.getResponse().getContentAsString()
+                    .contains("IMPORT_RIGHTS_STATEMENT_NOT_CONFIGURED"));
+            assertEquals(0, importJobCount());
 
             insertImportRightsStatement(statementVersion, statementText, approverId, "APPROVED", -1);
             insertImportRightsStatement("private-import-draft-v2", "Draft copy", null, "DRAFT", 3);
@@ -360,11 +391,294 @@ class PostgresSchemaIntegrationTests {
         } finally {
             deleteImportRightsTestAcceptances(actorId);
             deleteImportRightsTestAcceptances(blockedActorId);
+            deleteLibrary(unconfiguredLibrary.id());
             deleteSessionTestUser(actorId);
             deleteSessionTestUser(blockedActorId);
+            deleteSessionTestUser(unconfiguredActorId);
             deleteImportRightsTestStatement(statementVersion);
             deleteImportRightsTestStatement("private-import-test-v2");
             deleteImportRightsTestStatement("private-import-draft-v2");
+            deleteSessionTestUser(approverId);
+        }
+    }
+
+    @Test
+    void importCreationRequiresEveryGateAndIssuesOneActorBoundUploadTarget() throws Exception {
+        UUID actorId = createSessionTestUser("Import Creation Owner");
+        UUID otherActorId = createSessionTestUser("Import Creation Other Actor");
+        UUID blockedActorId = createSessionTestUser("Import Creation Policy Blocked");
+        UUID approverId = createSessionTestUser("Import Creation Approver");
+        var library = libraryService.createLibrary(actorId, "Private import shelf");
+        var otherLibrary = libraryService.createLibrary(otherActorId, "Other private shelf");
+        var blockedLibrary = libraryService.createLibrary(blockedActorId, "Policy blocked shelf");
+        String version = "private-import-create-v1";
+        String statementText = "# Synthetic test rights\n\nTest-only private import statement.";
+        byte[] content = "A short private test story.".getBytes(StandardCharsets.UTF_8);
+        UUID rightsReceiptId = null;
+        UUID importId = null;
+        try {
+            insertImportRightsStatement(version, statementText, approverId, "APPROVED", -1);
+            addCurrentPolicyAcceptances(actorId);
+            UUID blockedReceiptId = UUID.randomUUID();
+            insertImportRightsAcceptance(blockedActorId, blockedReceiptId, version, statementText);
+
+            SessionService.IssuedSession actorSession = sessionService.create(actorId).orElseThrow();
+            SessionService.IssuedSession otherSession = sessionService.create(otherActorId).orElseThrow();
+            SessionService.IssuedSession blockedSession = sessionService.create(blockedActorId).orElseThrow();
+            jakarta.servlet.http.Cookie actorCookie = new jakarta.servlet.http.Cookie(
+                    "__Host-novel_session", actorSession.cookieValue());
+            jakarta.servlet.http.Cookie otherCookie = new jakarta.servlet.http.Cookie(
+                    "__Host-novel_session", otherSession.cookieValue());
+            jakarta.servlet.http.Cookie blockedCookie = new jakarta.servlet.http.Cookie(
+                    "__Host-novel_session", blockedSession.cookieValue());
+            String actorCsrf = csrfTokenService.tokenFor(actorSession.cookieValue());
+            String otherCsrf = csrfTokenService.tokenFor(otherSession.cookieValue());
+            String blockedCsrf = csrfTokenService.tokenFor(blockedSession.cookieValue());
+            String filename = "C:\\fakepath\\private-test.txt";
+
+            MvcResult missingCsrf = mockMvc.perform(post("/api/v1/imports")
+                            .cookie(actorCookie)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(importCreateJson(library.id(), UUID.randomUUID(), version, filename,
+                                    "text/plain", content.length, true)))
+                    .andReturn();
+            assertEquals(403, missingCsrf.getResponse().getStatus());
+            assertEquals(0, importJobCount());
+
+            MvcResult missingPolicy = mockMvc.perform(post("/api/v1/imports")
+                            .cookie(blockedCookie)
+                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, blockedCsrf)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(importCreateJson(blockedLibrary.id(), blockedReceiptId, version, filename,
+                                    "text/plain", content.length, true)))
+                    .andReturn();
+            assertEquals(403, missingPolicy.getResponse().getStatus());
+            assertTrue(missingPolicy.getResponse().getContentAsString().contains("POLICY_ACCEPTANCE_REQUIRED"));
+            assertTrue(importRightsAcceptanceConsumedAt(blockedReceiptId).isEmpty());
+            assertEquals(0, importJobCount());
+
+            String missingRights = importCreateJson(library.id(), UUID.randomUUID(), version, filename,
+                    "text/plain", content.length, null);
+            MvcResult missing = mockMvc.perform(post("/api/v1/imports")
+                            .cookie(actorCookie)
+                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(missingRights))
+                    .andReturn();
+            assertEquals(422, missing.getResponse().getStatus());
+            assertTrue(missing.getResponse().getContentAsString().contains("IMPORT_RIGHTS_CONFIRMATION_REQUIRED"));
+
+            String falseRights = importCreateJson(library.id(), UUID.randomUUID(), version, filename,
+                    "text/plain", content.length, false);
+            MvcResult unconfirmed = mockMvc.perform(post("/api/v1/imports")
+                            .cookie(actorCookie)
+                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(falseRights))
+                    .andReturn();
+            assertEquals(422, unconfirmed.getResponse().getStatus());
+            assertEquals(0, importJobCount(actorId));
+
+            MvcResult accepted = mockMvc.perform(post("/api/v1/imports/rights-statement/acceptance")
+                            .cookie(actorCookie)
+                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                            .header("Idempotency-Key", UUID.randomUUID().toString())
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"statementVersion\":\"" + version + "\",\"confirmed\":true}"))
+                    .andReturn();
+            assertEquals(200, accepted.getResponse().getStatus());
+            rightsReceiptId = UUID.fromString(objectMapper.readTree(accepted.getResponse().getContentAsString())
+                    .path("id").asText());
+
+            MvcResult stale = mockMvc.perform(post("/api/v1/imports")
+                            .cookie(actorCookie)
+                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(importCreateJson(library.id(), rightsReceiptId, "old-statement-v0", filename,
+                                    "text/plain", content.length, true)))
+                    .andReturn();
+            assertEquals(409, stale.getResponse().getStatus());
+            assertTrue(stale.getResponse().getContentAsString().contains("IMPORT_RIGHTS_STATEMENT_STALE"));
+
+            MvcResult unsupportedType = mockMvc.perform(post("/api/v1/imports")
+                            .cookie(actorCookie)
+                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(importCreateJson(library.id(), rightsReceiptId, version, "story.exe",
+                                    "application/octet-stream", content.length, true)))
+                    .andReturn();
+            assertEquals(422, unsupportedType.getResponse().getStatus());
+
+            MvcResult mismatchedType = mockMvc.perform(post("/api/v1/imports")
+                            .cookie(actorCookie)
+                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(importCreateJson(library.id(), rightsReceiptId, version, "story.txt",
+                                    "application/epub+zip", content.length, true)))
+                    .andReturn();
+            assertEquals(422, mismatchedType.getResponse().getStatus());
+
+            MvcResult oversized = mockMvc.perform(post("/api/v1/imports")
+                            .cookie(actorCookie)
+                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(importCreateJson(library.id(), rightsReceiptId, version, "story.txt",
+                                    "text/plain", 1025, true)))
+                    .andReturn();
+            assertEquals(422, oversized.getResponse().getStatus());
+
+            MvcResult forgedFields = mockMvc.perform(post("/api/v1/imports")
+                            .cookie(actorCookie)
+                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(importCreateJson(library.id(), rightsReceiptId, version, filename,
+                                    "text/plain", content.length, true, Map.of(
+                                            "userId", otherActorId.toString(),
+                                            "storageKey", "../../outside.upload",
+                                            "createdAt", "2000-01-01T00:00:00Z"))))
+                    .andReturn();
+            assertEquals(400, forgedFields.getResponse().getStatus());
+            assertEquals(0, importJobCount());
+            assertFalse(Files.exists(importStagingFileStore.targetPath(UUID.randomUUID())));
+
+            MvcResult foreignLibrary = mockMvc.perform(post("/api/v1/imports")
+                            .cookie(actorCookie)
+                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(importCreateJson(otherLibrary.id(),
+                                    rightsReceiptId, version, filename, "text/plain", content.length, true)))
+                    .andReturn();
+            assertEquals(404, foreignLibrary.getResponse().getStatus());
+            assertEquals(0, importJobCount());
+
+            MvcResult created = mockMvc.perform(post("/api/v1/imports")
+                            .cookie(actorCookie)
+                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(importCreateJson(library.id(), rightsReceiptId, version, filename,
+                                    "text/plain", content.length, true)))
+                    .andReturn();
+            assertEquals(201, created.getResponse().getStatus());
+            assertTrue(created.getResponse().getHeader("Cache-Control").contains("no-store"));
+            assertTrue(created.getResponse().getHeader("Location").startsWith("/api/v1/imports/"));
+            JsonNode createdBody = objectMapper.readTree(created.getResponse().getContentAsString());
+            importId = UUID.fromString(createdBody.path("job").path("id").asText());
+            assertEquals("upload_pending", createdBody.path("job").path("status").asText());
+            assertEquals("PUT", createdBody.path("uploadTarget").path("method").asText());
+            assertEquals("/api/v1/imports/" + importId + "/content",
+                    createdBody.path("uploadTarget").path("url").asText());
+            String originalToken = createdBody.path("uploadTarget").path("headers")
+                    .path("X-Import-Upload-Token").asText();
+            assertFalse(originalToken.isBlank());
+            assertEquals(1, importJobCount(actorId));
+            assertEquals(actorId, importJobOwner(importId));
+            assertEquals(library.id(), importJobLibrary(importId));
+            assertEquals("private-test.txt", importJobFilename(importId));
+            assertEquals("staging/" + importId + ".upload", importJobStorageKey(importId));
+            assertTrue(Arrays.equals(sha256(originalToken.getBytes(StandardCharsets.US_ASCII)),
+                    importJobTokenHash(importId)));
+            assertTrue(importRightsAcceptanceConsumedAt(rightsReceiptId).isPresent());
+
+            MvcResult retry = mockMvc.perform(post("/api/v1/imports")
+                            .cookie(actorCookie)
+                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(importCreateJson(library.id(), rightsReceiptId, version, filename,
+                                    "text/plain", content.length, true)))
+                    .andReturn();
+            assertEquals(201, retry.getResponse().getStatus());
+            JsonNode retryBody = objectMapper.readTree(retry.getResponse().getContentAsString());
+            assertEquals(importId.toString(), retryBody.path("job").path("id").asText());
+            String rotatedToken = retryBody.path("uploadTarget").path("headers")
+                    .path("X-Import-Upload-Token").asText();
+            assertNotEquals(originalToken, rotatedToken);
+            assertEquals(1, importJobCount(actorId));
+
+            MvcResult wrongActor = mockMvc.perform(put("/api/v1/imports/{id}/content", importId)
+                            .cookie(otherCookie)
+                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, otherCsrf)
+                            .header("X-Import-Upload-Token", rotatedToken)
+                            .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                            .content(content))
+                    .andReturn();
+            assertEquals(404, wrongActor.getResponse().getStatus());
+            MvcResult revokedToken = mockMvc.perform(put("/api/v1/imports/{id}/content", importId)
+                            .cookie(actorCookie)
+                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                            .header("X-Import-Upload-Token", originalToken)
+                            .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                            .content(content))
+                    .andReturn();
+            assertEquals(404, revokedToken.getResponse().getStatus());
+            assertFalse(Files.exists(importStagingFileStore.targetPath(importId)));
+
+            MvcResult uploaded = mockMvc.perform(put("/api/v1/imports/{id}/content", importId)
+                            .cookie(actorCookie)
+                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                            .header("X-Import-Upload-Token", rotatedToken)
+                            .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                            .content(content))
+                    .andReturn();
+            assertEquals(204, uploaded.getResponse().getStatus());
+            assertTrue(uploaded.getResponse().getHeader("Cache-Control").contains("no-store"));
+            assertTrue(Arrays.equals(content, Files.readAllBytes(importStagingFileStore.targetPath(importId))));
+            assertEquals("uploaded", importJobStatus(importId));
+            assertTrue(Arrays.equals(sha256(content), importJobContentHash(importId)));
+            assertEquals(content.length, importJobActualSize(importId));
+            assertNull(importJobTokenHash(importId));
+
+            MvcResult replayedUpload = mockMvc.perform(put("/api/v1/imports/{id}/content", importId)
+                            .cookie(actorCookie)
+                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                            .header("X-Import-Upload-Token", rotatedToken)
+                            .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                            .content(content))
+                    .andReturn();
+            assertEquals(404, replayedUpload.getResponse().getStatus());
+
+            MvcResult secondAcceptance = mockMvc.perform(post("/api/v1/imports/rights-statement/acceptance")
+                            .cookie(actorCookie)
+                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                            .header("Idempotency-Key", UUID.randomUUID().toString())
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"statementVersion\":\"" + version + "\",\"confirmed\":true}"))
+                    .andReturn();
+            UUID secondReceipt = UUID.fromString(objectMapper.readTree(
+                    secondAcceptance.getResponse().getContentAsString()).path("id").asText());
+            MvcResult secondCreated = mockMvc.perform(post("/api/v1/imports")
+                            .cookie(actorCookie)
+                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(importCreateJson(library.id(), secondReceipt, version, "oversized.txt",
+                                    "text/plain", 10, true)))
+                    .andReturn();
+            assertEquals(201, secondCreated.getResponse().getStatus());
+            UUID oversizedJobId = UUID.fromString(objectMapper.readTree(secondCreated.getResponse().getContentAsString())
+                    .path("job").path("id").asText());
+            String oversizedToken = objectMapper.readTree(secondCreated.getResponse().getContentAsString())
+                    .path("uploadTarget").path("headers").path("X-Import-Upload-Token").asText();
+            MvcResult overrun = mockMvc.perform(put("/api/v1/imports/{id}/content", oversizedJobId)
+                            .cookie(actorCookie)
+                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                            .header("X-Import-Upload-Token", oversizedToken)
+                            .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                            .content(new byte[1025]))
+                    .andReturn();
+            assertEquals(413, overrun.getResponse().getStatus());
+            assertFalse(Files.exists(importStagingFileStore.targetPath(oversizedJobId)));
+            assertEquals("upload_pending", importJobStatus(oversizedJobId));
+        } finally {
+            deleteImportJobs(actorId);
+            deleteImportRightsTestAcceptances(actorId);
+            deleteImportJobs(blockedActorId);
+            deleteImportRightsTestAcceptances(blockedActorId);
+            deleteLibrary(library.id());
+            deleteLibrary(otherLibrary.id());
+            deleteLibrary(blockedLibrary.id());
+            deleteSessionTestUser(actorId);
+            deleteSessionTestUser(otherActorId);
+            deleteSessionTestUser(blockedActorId);
+            deleteImportRightsTestStatement(version);
             deleteSessionTestUser(approverId);
         }
     }
@@ -1364,7 +1678,7 @@ class PostgresSchemaIntegrationTests {
     }
 
     @AfterAll
-    void integrationFixturesAreRemoved() throws SQLException {
+    void integrationFixturesAreRemoved() throws SQLException, java.io.IOException {
         for (String table : List.of(
                 "users",
                 "external_identities",
@@ -1372,6 +1686,7 @@ class PostgresSchemaIntegrationTests {
                 "google_auth_attempts",
                 "google_auth_bootstrap_rate_limits",
                 "policy_acceptances",
+                "import_jobs",
                 "import_rights_acceptances",
                 "import_rights_statements",
                 "auth_events",
@@ -1397,6 +1712,7 @@ class PostgresSchemaIntegrationTests {
                 assertEquals(0, rows.getInt(1), "integration fixtures remain in " + table);
             }
         }
+        assertEquals(0, stagedUploadCount(), "integration upload objects remain in local staging storage");
         try (Connection connection = dataSource.getConnection();
              PreparedStatement deleteDocuments = connection.prepareStatement("DELETE FROM policy_documents")) {
             deleteDocuments.executeUpdate();
@@ -2921,6 +3237,23 @@ class PostgresSchemaIntegrationTests {
         }
     }
 
+    private void insertImportRightsAcceptance(UUID userId, UUID receiptId, String version, String text)
+            throws SQLException, NoSuchAlgorithmException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement insert = connection.prepareStatement("""
+                     INSERT INTO import_rights_acceptances
+                         (id, user_id, idempotency_key, statement_version, statement_sha256, source)
+                     VALUES (?, ?, ?, ?, ?, 'web-import-flow')
+                     """)) {
+            insert.setObject(1, receiptId);
+            insert.setObject(2, userId);
+            insert.setObject(3, UUID.randomUUID());
+            insert.setString(4, version);
+            insert.setBytes(5, sha256(text));
+            assertEquals(1, insert.executeUpdate());
+        }
+    }
+
     private void deleteImportRightsTestStatement(String version) throws SQLException {
         try (Connection connection = dataSource.getConnection()) {
             connection.setAutoCommit(false);
@@ -2969,6 +3302,192 @@ class PostgresSchemaIntegrationTests {
                 connection.rollback();
                 throw exception;
             }
+        }
+    }
+
+    private String importCreateJson(
+            UUID libraryId, UUID receiptId, String version, String filename, String contentType,
+            int sizeBytes, Boolean rightsConfirmed) throws Exception {
+        return importCreateJson(libraryId, receiptId, version, filename, contentType, sizeBytes,
+                rightsConfirmed, Map.of());
+    }
+
+    private String importCreateJson(
+            UUID libraryId, UUID receiptId, String version, String filename, String contentType,
+            int sizeBytes, Boolean rightsConfirmed, Map<String, Object> extraFields) throws Exception {
+        Map<String, Object> requestBody = new LinkedHashMap<>();
+        requestBody.put("libraryId", libraryId);
+        requestBody.put("source", Map.of(
+                "kind", "upload", "filename", filename, "contentType", contentType, "sizeBytes", sizeBytes));
+        requestBody.put("rightsAcceptanceId", receiptId);
+        requestBody.put("rightsStatementVersion", version);
+        requestBody.put("rightsConfirmed", rightsConfirmed);
+        requestBody.putAll(extraFields);
+        return objectMapper.writeValueAsString(requestBody);
+    }
+
+    private int importJobCount() throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement("SELECT COUNT(*) FROM import_jobs");
+             ResultSet row = select.executeQuery()) {
+            assertTrue(row.next());
+            return row.getInt(1);
+        }
+    }
+
+    private int importJobCount(UUID userId) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement(
+                     "SELECT COUNT(*) FROM import_jobs WHERE user_id = ?")) {
+            select.setObject(1, userId);
+            try (ResultSet row = select.executeQuery()) {
+                assertTrue(row.next());
+                return row.getInt(1);
+            }
+        }
+    }
+
+    private UUID importJobOwner(UUID jobId) throws SQLException {
+        return importJobUuid(jobId, "user_id");
+    }
+
+    private UUID importJobLibrary(UUID jobId) throws SQLException {
+        return importJobUuid(jobId, "library_id");
+    }
+
+    private UUID importJobUuid(UUID jobId, String column) throws SQLException {
+        if (!Set.of("user_id", "library_id").contains(column)) throw new IllegalArgumentException("column");
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement(
+                     "SELECT " + column + " FROM import_jobs WHERE id = ?")) {
+            select.setObject(1, jobId);
+            try (ResultSet row = select.executeQuery()) {
+                assertTrue(row.next());
+                return row.getObject(1, UUID.class);
+            }
+        }
+    }
+
+    private String importJobFilename(UUID jobId) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement(
+                     "SELECT original_filename FROM import_jobs WHERE id = ?")) {
+            select.setObject(1, jobId);
+            try (ResultSet row = select.executeQuery()) {
+                assertTrue(row.next());
+                return row.getString(1);
+            }
+        }
+    }
+
+    private String importJobStorageKey(UUID jobId) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement(
+                     "SELECT storage_key FROM import_jobs WHERE id = ?")) {
+            select.setObject(1, jobId);
+            try (ResultSet row = select.executeQuery()) {
+                assertTrue(row.next());
+                return row.getString(1);
+            }
+        }
+    }
+
+    private byte[] importJobTokenHash(UUID jobId) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement(
+                     "SELECT upload_token_sha256 FROM import_jobs WHERE id = ?")) {
+            select.setObject(1, jobId);
+            try (ResultSet row = select.executeQuery()) {
+                assertTrue(row.next());
+                return row.getBytes(1);
+            }
+        }
+    }
+
+    private String importJobStatus(UUID jobId) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement("SELECT status FROM import_jobs WHERE id = ?")) {
+            select.setObject(1, jobId);
+            try (ResultSet row = select.executeQuery()) {
+                assertTrue(row.next());
+                return row.getString(1);
+            }
+        }
+    }
+
+    private byte[] importJobContentHash(UUID jobId) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement(
+                     "SELECT content_sha256 FROM import_jobs WHERE id = ?")) {
+            select.setObject(1, jobId);
+            try (ResultSet row = select.executeQuery()) {
+                assertTrue(row.next());
+                return row.getBytes(1);
+            }
+        }
+    }
+
+    private long importJobActualSize(UUID jobId) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement(
+                     "SELECT actual_size_bytes FROM import_jobs WHERE id = ?")) {
+            select.setObject(1, jobId);
+            try (ResultSet row = select.executeQuery()) {
+                assertTrue(row.next());
+                return row.getLong(1);
+            }
+        }
+    }
+
+    private Optional<Instant> importRightsAcceptanceConsumedAt(UUID receiptId) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement(
+                     "SELECT consumed_at FROM import_rights_acceptances WHERE id = ?")) {
+            select.setObject(1, receiptId);
+            try (ResultSet row = select.executeQuery()) {
+                assertTrue(row.next());
+                OffsetDateTime consumedAt = row.getObject(1, OffsetDateTime.class);
+                return consumedAt == null ? Optional.empty() : Optional.of(consumedAt.toInstant());
+            }
+        }
+    }
+
+    private long stagedUploadCount() throws java.io.IOException {
+        Path root = Path.of(System.getProperty("java.io.tmpdir"), "novel-web-import-postgres-tests");
+        if (!Files.isDirectory(root)) return 0;
+        try (var files = Files.list(root)) {
+            return files.filter(path -> path.getFileName().toString().endsWith(".upload")).count();
+        }
+    }
+
+    private void deleteImportJobs(UUID userId) throws SQLException {
+        List<UUID> jobs = new ArrayList<>();
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement("SELECT id FROM import_jobs WHERE user_id = ?")) {
+            select.setObject(1, userId);
+            try (ResultSet rows = select.executeQuery()) {
+                while (rows.next()) jobs.add(rows.getObject(1, UUID.class));
+            }
+        }
+        for (UUID jobId : jobs) {
+            try {
+                importStagingFileStore.delete(jobId);
+            } catch (java.io.IOException exception) {
+                throw new SQLException("Unable to clean import integration fixture", exception);
+            }
+        }
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement delete = connection.prepareStatement("DELETE FROM import_jobs WHERE user_id = ?")) {
+            delete.setObject(1, userId);
+            delete.executeUpdate();
+        }
+    }
+
+    private void deleteLibrary(UUID libraryId) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement delete = connection.prepareStatement("DELETE FROM libraries WHERE id = ?")) {
+            delete.setObject(1, libraryId);
+            delete.executeUpdate();
         }
     }
 
@@ -3237,6 +3756,10 @@ class PostgresSchemaIntegrationTests {
 
     private static byte[] sha256(String value) throws NoSuchAlgorithmException {
         return MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static byte[] sha256(byte[] value) throws NoSuchAlgorithmException {
+        return MessageDigest.getInstance("SHA-256").digest(value);
     }
 
     private void deleteAuthAttempt(byte[] nonceHash) throws SQLException {

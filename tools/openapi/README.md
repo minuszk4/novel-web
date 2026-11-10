@@ -1,6 +1,6 @@
 # OpenAPI contract checks
 
-This tooling lints implemented read-only status/health, PostgreSQL-profile Google bootstrap/callback, session/policy routes, actor-scoped library/work listing, personal library-state/collection routes and import-rights statement/acceptance routes. Upload/staging and source-only Reader operations remain tagged `planned`. Lint verifies OpenAPI structure; it does not prove that an endpoint exists in Spring Boot or that a deployment has owner-approved rights text/provider credentials. Progression, translation, publishing and commerce contracts are not yet included.
+This tooling lints implemented read-only status/health, PostgreSQL-profile Google bootstrap/callback, session/policy routes, actor-scoped library/work listing, personal library state/collection, import-rights statement/receipt, import-job creation and local upload-staging routes. Signature/archive validation, parser, preview, commit, cancel and source-only Reader operations remain tagged `planned`. Lint verifies OpenAPI structure; it does not prove that a deployment has owner-approved rights text, production object storage or provider credentials. Progression, translation, publishing and commerce contracts are not yet included.
 
 ## Run locally
 

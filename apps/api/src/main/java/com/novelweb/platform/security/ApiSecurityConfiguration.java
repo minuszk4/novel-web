@@ -63,6 +63,8 @@ public class ApiSecurityConfiguration {
                                 "/api/v1/imports/rights-statement/current").permitAll();
                         authorize.requestMatchers(HttpMethod.POST,
                                 "/api/v1/imports/rights-statement/acceptance").permitAll();
+                        authorize.requestMatchers(HttpMethod.POST, "/api/v1/imports").permitAll();
+                        authorize.requestMatchers(HttpMethod.PUT, "/api/v1/imports/*/content").permitAll();
                     }
                     authorize.anyRequest().denyAll();
                 })
@@ -85,7 +87,8 @@ public class ApiSecurityConfiguration {
         apiConfiguration.setAllowedOrigins(properties.allowedOrigins());
         apiConfiguration.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
         apiConfiguration.setAllowedHeaders(List.of(
-                "Accept", "Content-Type", "Idempotency-Key", SessionCsrfTokenService.TOKEN_HEADER_NAME));
+                "Accept", "Content-Type", "Idempotency-Key", "X-Import-Upload-Token",
+                SessionCsrfTokenService.TOKEN_HEADER_NAME));
         apiConfiguration.setExposedHeaders(List.of("X-Correlation-Id"));
         apiConfiguration.setAllowCredentials(true);
         apiConfiguration.setMaxAge(Duration.ofMinutes(30));

@@ -1,13 +1,13 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 2.0.0
+  version: 3.0.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
     implemented only in the configured PostgreSQL profile. The import-rights statement read and acceptance routes
-    are also implemented in that profile; upload/staging and remaining Library and Reader operations tagged planned
-    describe the G2 target.
+    are also implemented in that profile; private job creation and local staging upload are now implemented too.
+    Parser, preview, commit and remaining Library and Reader operations tagged planned describe the G2 target.
 servers:
   - url: http://127.0.0.1:8080
 tags:
@@ -17,7 +17,7 @@ tags:
     description: Google GIS, session and required policy routes are available only in the PostgreSQL profile; other Auth operations remain planned.
     x-implementation-status: partial
   - name: Library
-    description: Library/work listing, personal reading-state/collection and import-rights statement/receipt operations are available in the PostgreSQL profile; upload/staging and other operations remain planned for G2.
+    description: Library/work listing, personal reading-state/collection, import-rights and local upload-staging operations are available in the PostgreSQL profile; parsing and other operations remain planned for G2.
     x-implementation-status: partial
   - name: Reader
     description: Planned source-only reader, preferences, progress and bookmark operations for G2.
@@ -1105,13 +1105,18 @@ paths:
     post:
       operationId: createPrivateImport
       tags: [Library]
-      x-implementation-status: planned
+      x-implementation-status: implemented
       summary: Create an owned staging import after rights and policy checks
       description: >-
-        The server derives the owner from the session and validates/consumes the actor-bound one-time rights
-        acceptance receipt, current statement version, explicit rights confirmation, file limits and account policy
-        consent in the same transaction that creates a job. Only after that transaction succeeds may a short-lived
-        upload target be returned. Browser filename, MIME type and declared size are untrusted hints.
+        The server derives the actor from the active session, requires current Terms and Privacy acceptance, confirms
+        the current approved rights version, locks and consumes an actor-bound one-time receipt, checks library write
+        access and validates supported filename/MIME hints and the configured size limit in one PostgreSQL transaction.
+        It creates a private staging job and returns a short-lived same-origin upload target only after commit. The
+        target includes a random one-time token; only its SHA-256 is persisted. Retrying the same receipt and metadata
+        returns the same pending job with a rotated target token. A changed request cannot reuse the receipt. Browser
+        filename, MIME type and declared size remain untrusted; bytes are checked against the declared length when
+        uploaded and require format/signature and archive safety checks before parsing. Local filesystem staging is
+        intended for the single-node development profile; production object-storage deployment remains a gate.
       security:
         - appSession: []
           csrfToken: []
@@ -1146,18 +1151,102 @@ paths:
               schema:
                 $ref: '#/components/schemas/Problem'
         '409':
-          description: Rights statement version is stale; no job or upload target is created.
+          description: The rights version is stale or the one-time receipt was reused with different metadata; no new job or target is created.
           content:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
         '422':
-          description: Missing rights confirmation or file metadata violates configured limits; no job or upload target is created.
+          description: Missing rights confirmation or unsupported/invalid file metadata; no job or upload target is created.
           content:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
-        '429':
+        '503':
+          description: Approved rights/policy content or local staging storage is unavailable; no new job/target is created.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+  /api/v1/imports/{importId}/content:
+    put:
+      operationId: uploadPrivateImportContent
+      tags: [Library]
+      x-implementation-status: implemented
+      summary: Upload bytes to a short-lived private staging target
+      description: >-
+        Requires the creating account's session, session-bound CSRF token and one-time upload token returned by
+        POST /api/v1/imports. The token is actor/job-bound, expires, and is consumed on success. The server streams
+        to a server-generated path, enforces the declared and configured byte limit, calculates SHA-256 and never
+        uses the client filename or storage key as a path. Bytes remain private staging content. This local profile
+        does not yet parse or accept the file as safe content; signature, EPUB/archive and parser validation must
+        pass before a later parse route can be enabled.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - name: importId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: X-Import-Upload-Token
+          in: header
+          required: true
+          description: Short-lived one-time bearer token from the create response. Do not log or persist it.
+          schema:
+            type: string
+            minLength: 40
+            maxLength: 128
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '204':
+          description: Bytes streamed to private staging and upload token consumed
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          description: Session-bound CSRF validation failed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: The job, actor-bound upload target or token is unavailable.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '410':
+          description: The one-time upload target expired.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '413':
+          description: Uploaded bytes exceed the configured maximum.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Actual byte count does not match the declared file size.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '503':
           $ref: '#/components/responses/Problem'
   /api/v1/imports/{importId}:
     get:
@@ -2321,8 +2410,6 @@ components:
         rightsConfirmed:
           type: boolean
           const: true
-        options:
-          $ref: '#/components/schemas/ImportOptions'
     ImportSourceDescriptor:
       type: object
       additionalProperties: false
@@ -2339,21 +2426,11 @@ components:
         contentType:
           type: [string, 'null']
           maxLength: 160
-          description: Browser-declared MIME hint; verified against bytes by the server.
+          description: Browser-declared MIME hint; allowlisted during target creation and verified against bytes before parsing.
         sizeBytes:
           type: integer
           minimum: 1
-          description: Declared size hint; server independently checks the uploaded object size.
-    ImportOptions:
-      type: object
-      additionalProperties: false
-      properties:
-        deduplicateByHash:
-          type: boolean
-          default: true
-        defaultLanguage:
-          type: string
-          maxLength: 35
+          description: Declared size hint; the server enforces the configured cap and exact streamed byte count.
     ImportUploadTarget:
       type: object
       additionalProperties: false
@@ -2364,13 +2441,13 @@ components:
           const: PUT
         url:
           type: string
-          format: uri
-          description: Short-lived presigned upload URL on a server-configured storage host allowlist; treat as a secret, do not log or persist it.
+          format: uri-reference
+          description: Short-lived same-origin API path for the private upload target; do not log or persist the one-time token in headers.
         headers:
           type: object
           additionalProperties:
             type: string
-          description: Exact headers required by the object-storage upload target.
+          description: Exact headers required by the API upload target, including the one-time token.
         expiresAt:
           type: string
           format: date-time
