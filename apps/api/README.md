@@ -106,3 +106,18 @@ Run the local test and report lifecycle from `apps/api`:
 ```
 
 JUnit XML/text reports are written to `target/surefire-reports/`; JaCoCo HTML/XML coverage is written to `target/site/jacoco/`. CI uploads both report folders for 14 days. Coverage is recorded as an initial foundation baseline; no threshold is enforced while the business API and feature test suite are still absent.
+
+### PostgreSQL 17 integration tests
+
+The default `mvnw verify` remains database-free; the three PostgreSQL integration tests are skipped unless `postgres.integration=true` is explicitly set. To execute them locally, use the **disposable Compose project** procedure above, keep it separate from `novel-web-local`, and provide the temporary connection settings before running Maven:
+
+```powershell
+$pgTestPassword = [guid]::NewGuid().ToString('N')
+$env:POSTGRES_PASSWORD = $pgTestPassword
+$env:DATABASE_PASSWORD = $pgTestPassword
+$env:DATABASE_USERNAME = 'novelweb'
+$env:DATABASE_URL = 'jdbc:postgresql://localhost:55432/novelweb'
+.\mvnw.cmd -B -ntp -Ppostgres '-Dpostgres.integration=true' '-Dspring.profiles.active=postgres' verify
+```
+
+Use the same disposable project name and port from startup through cleanup; remove only that project with `docker compose -p $disposableProject --profile database down --volumes`. The suite verifies the 11 Liquibase changesets, the six application tables, case-insensitive uniqueness for verified email with reuse after account deletion, and rejection of protocol-relative auth return paths. Constraint fixtures run in rollback-only transactions. Repository transactions, concurrent locking and business endpoints remain future integration coverage. CI runs this suite against a PostgreSQL 17 service container.
