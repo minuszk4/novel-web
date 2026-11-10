@@ -32,6 +32,3 @@ novel:
   security:
     csrf:
       hmac-key: ${NOVEL_CSRF_HMAC_KEY:}
-  policy:
-    terms-version: ${NOVEL_TERMS_VERSION:}
-    privacy-notice-version: ${NOVEL_PRIVACY_NOTICE_VERSION:}

@@ -39,6 +39,7 @@ import com.novelweb.identity.auth.GoogleIdentityService;
 import com.novelweb.identity.auth.GoogleIdentityTestFixtures;
 import com.novelweb.identity.auth.UnavailableGoogleIdentityException;
 import com.novelweb.identity.auth.GoogleIdTokenVerifier;
+import org.junit.jupiter.api.BeforeAll;
 import com.novelweb.identity.session.SessionService;
 import com.novelweb.identity.session.SessionCsrfTokenService;
 import com.novelweb.identity.session.LogoutAllConfirmationService;
@@ -81,8 +82,6 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
         "novel.auth.google.web-client-id=novel-web-integration-test.apps.googleusercontent.com",
         "novel.auth.google.credential-callback-uri=https://api.example.test/api/v1/auth/google/credential",
         "novel.security.csrf.hmac-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        "novel.policy.terms-version=terms-current-1",
-        "novel.policy.privacy-notice-version=privacy-current-1",
         "novel.web.cors.allowed-origins=https://app.example.test"
 })
 class PostgresSchemaIntegrationTests {
@@ -97,6 +96,7 @@ class PostgresSchemaIntegrationTests {
             "google_auth_attempts",
             "google_auth_bootstrap_rate_limits",
             "policy_acceptances",
+            "policy_documents",
             "auth_events",
             "session_revoke_confirmations");
 
@@ -130,6 +130,24 @@ class PostgresSchemaIntegrationTests {
     @MockitoBean
     private JwtDecoder jwtDecoder;
 
+    @BeforeAll
+    void insertPolicyDocumentFixtures() throws SQLException {
+        insertPolicyTestDocuments();
+    }
+
+    private void insertPolicyTestDocuments() throws SQLException {
+        insertPolicyDocument("TERMS", "terms-old", -3,
+                "# Test terms v1\n\nSynthetic test document; not legal copy.");
+        insertPolicyDocument("TERMS", "terms-current-1", -2,
+                "# Test terms v2\n\nSynthetic test document; not legal copy.");
+        insertPolicyDocument("TERMS", "terms-future-2", 1,
+                "# Future test terms\n\nSynthetic test document; not legal copy.");
+        insertPolicyDocument("PRIVACY_NOTICE", "privacy-old", -2,
+                "# Test privacy v1\n\nSynthetic test document; not legal copy.");
+        insertPolicyDocument("PRIVACY_NOTICE", "privacy-current-1", -1,
+                "# Test privacy v2\n\nSynthetic test document; not legal copy.");
+    }
+
     @Test
     void liquibaseAppliesTheBaselineAndCreatesExpectedTables() throws SQLException {
         try (Connection connection = dataSource.getConnection();
@@ -137,7 +155,7 @@ class PostgresSchemaIntegrationTests {
                      "SELECT COUNT(*) FROM databasechangelog");
              ResultSet changesets = changesetCount.executeQuery()) {
             changesets.next();
-            assertEquals(15, changesets.getInt(1), "unexpected number of applied baseline changesets");
+            assertEquals(18, changesets.getInt(1), "unexpected number of applied baseline changesets");
         }
 
         Set<String> actualTables = new HashSet<>();
@@ -157,6 +175,154 @@ class PostgresSchemaIntegrationTests {
         assertEquals(EXPECTED_APPLICATION_TABLES, actualTables);
     }
 
+    @Test
+    void currentPolicyRouteReturnsTheLatestEffectiveVersionAndSameOriginDocuments() throws Exception {
+        MvcResult current = mockMvc.perform(get("/api/v1/auth/policies/current")).andReturn();
+        assertEquals(200, current.getResponse().getStatus());
+        assertTrue(current.getResponse().getHeader("Cache-Control").contains("no-store"));
+        assertEquals("no-cache", current.getResponse().getHeader("Pragma"));
+        JsonNode policies = objectMapper.readTree(current.getResponse().getContentAsString());
+        assertEquals("terms-current-1", policies.path("terms").path("version").asText());
+        assertEquals("privacy-current-1", policies.path("privacyNotice").path("version").asText());
+        assertTrue(Instant.parse(policies.path("terms").path("effectiveAt").asText()).isBefore(Instant.now()));
+        assertEquals("/api/v1/auth/policies/terms/terms-current-1",
+                policies.path("terms").path("documentUrl").asText());
+        assertEquals("/api/v1/auth/policies/privacy-notice/privacy-current-1",
+                policies.path("privacyNotice").path("documentUrl").asText());
+
+        MvcResult document = mockMvc.perform(get("/api/v1/auth/policies/terms/terms-current-1")).andReturn();
+        assertEquals(200, document.getResponse().getStatus());
+        assertTrue(document.getResponse().getContentType().startsWith("text/markdown"));
+        assertTrue(document.getResponse().getHeader("Cache-Control").contains("max-age=3600"));
+        assertEquals("nosniff", document.getResponse().getHeader("X-Content-Type-Options"));
+        assertTrue(document.getResponse().getContentAsString().contains("Synthetic test document"));
+
+        MvcResult unknownVersion = mockMvc.perform(get("/api/v1/auth/policies/terms/missing-version")).andReturn();
+        assertEquals(404, unknownVersion.getResponse().getStatus());
+        assertTrue(unknownVersion.getResponse().getContentAsString().contains("POLICY_DOCUMENT_NOT_FOUND"));
+
+        MvcResult futureVersion = mockMvc.perform(get("/api/v1/auth/policies/terms/terms-future-2")).andReturn();
+        assertEquals(404, futureVersion.getResponse().getStatus());
+        assertTrue(futureVersion.getResponse().getContentAsString().contains("POLICY_DOCUMENT_NOT_FOUND"));
+    }
+
+    @Test
+    void policyAcceptanceRequiresBothCurrentExplicitChoicesIsAtomicAndIdempotent() throws Exception {
+        UUID userId = createSessionTestUser("Policy Acceptance Reader");
+        try {
+            SessionService.IssuedSession session = sessionService.create(userId).orElseThrow();
+            String csrfToken = csrfTokenService.tokenFor(session.cookieValue());
+            jakarta.servlet.http.Cookie cookie = new jakarta.servlet.http.Cookie(
+                    "__Host-novel_session", session.cookieValue());
+
+            MvcResult missingChoice = mockMvc.perform(post("/api/v1/auth/policies/accept")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(Map.of(
+                                    "termsVersion", "terms-current-1",
+                                    "privacyNoticeVersion", "privacy-current-1",
+                                    "termsAccepted", true)))
+                            .header("X-CSRF-Token", csrfToken)
+                            .cookie(cookie))
+                    .andReturn();
+            assertEquals(422, missingChoice.getResponse().getStatus());
+            assertTrue(missingChoice.getResponse().getContentAsString().contains("POLICY_ACCEPTANCE_REQUIRED"));
+            assertEquals(0, policyAcceptanceCount(userId));
+
+            MvcResult stale = mockMvc.perform(post("/api/v1/auth/policies/accept")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(Map.of(
+                                    "termsVersion", "terms-old",
+                                    "privacyNoticeVersion", "privacy-current-1",
+                                    "termsAccepted", true,
+                                    "privacyNoticeAcknowledged", true)))
+                            .header("X-CSRF-Token", csrfToken)
+                            .cookie(cookie))
+                    .andReturn();
+            assertEquals(409, stale.getResponse().getStatus());
+            JsonNode staleProblem = objectMapper.readTree(stale.getResponse().getContentAsString());
+            assertEquals("POLICY_VERSION_STALE", staleProblem.path("code").asText());
+            assertEquals("terms-current-1", staleProblem.path("currentTermsVersion").asText());
+            assertEquals(0, policyAcceptanceCount(userId));
+
+            Map<String, Object> acceptedBody = Map.of(
+                    "termsVersion", "terms-current-1",
+                    "privacyNoticeVersion", "privacy-current-1",
+                    "termsAccepted", true,
+                    "privacyNoticeAcknowledged", true);
+            MvcResult accepted = mockMvc.perform(post("/api/v1/auth/policies/accept")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(acceptedBody))
+                            .header("X-CSRF-Token", csrfToken)
+                            .cookie(cookie))
+                    .andReturn();
+            assertEquals(200, accepted.getResponse().getStatus());
+            assertTrue(accepted.getResponse().getHeader("Cache-Control").contains("no-store"));
+            JsonNode acceptance = objectMapper.readTree(accepted.getResponse().getContentAsString());
+            Instant termsAcceptedAt = Instant.parse(acceptance.path("termsAcceptedAt").asText());
+            Instant privacyAcknowledgedAt = Instant.parse(
+                    acceptance.path("privacyNoticeAcknowledgedAt").asText());
+            assertTrue(termsAcceptedAt.isBefore(Instant.now().plusSeconds(1)));
+            assertTrue(privacyAcknowledgedAt.isBefore(Instant.now().plusSeconds(1)));
+            assertEquals(2, policyAcceptanceCount(userId));
+            assertEquals(2, policyAcceptanceCountBySource(userId, "web-onboarding"));
+
+            MvcResult retry = mockMvc.perform(post("/api/v1/auth/policies/accept")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(acceptedBody))
+                            .header("X-CSRF-Token", csrfToken)
+                            .cookie(cookie))
+                    .andReturn();
+            assertEquals(200, retry.getResponse().getStatus());
+            JsonNode retriedAcceptance = objectMapper.readTree(retry.getResponse().getContentAsString());
+            assertEquals(acceptance.path("termsAcceptedAt").asText(),
+                    retriedAcceptance.path("termsAcceptedAt").asText());
+            assertEquals(acceptance.path("privacyNoticeAcknowledgedAt").asText(),
+                    retriedAcceptance.path("privacyNoticeAcknowledgedAt").asText());
+            assertEquals(2, policyAcceptanceCount(userId));
+
+            MvcResult currentUser = mockMvc.perform(get("/api/v1/auth/me").cookie(cookie)).andReturn();
+            assertTrue(objectMapper.readTree(currentUser.getResponse().getContentAsString())
+                    .path("policy").path("requiredAcceptanceComplete").asBoolean());
+        } finally {
+            deleteSessionTestUser(userId);
+        }
+    }
+
+    @Test
+    void policyRoutesFailClosedUntilBothApprovedDocumentsAreProvisioned() throws Exception {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement deleteDocuments = connection.prepareStatement("DELETE FROM policy_documents")) {
+            assertEquals(5, deleteDocuments.executeUpdate());
+        }
+
+        UUID userId = createSessionTestUser("Unconfigured Policy Reader");
+        try {
+            SessionService.IssuedSession session = sessionService.create(userId).orElseThrow();
+            String csrfToken = csrfTokenService.tokenFor(session.cookieValue());
+            MvcResult current = mockMvc.perform(get("/api/v1/auth/policies/current")).andReturn();
+            assertEquals(503, current.getResponse().getStatus());
+            assertTrue(current.getResponse().getContentAsString().contains("POLICY_NOT_CONFIGURED"));
+
+            MvcResult acceptance = mockMvc.perform(post("/api/v1/auth/policies/accept")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(Map.of(
+                                    "termsVersion", "terms-current-1",
+                                    "privacyNoticeVersion", "privacy-current-1",
+                                    "termsAccepted", true,
+                                    "privacyNoticeAcknowledged", true)))
+                            .header("X-CSRF-Token", csrfToken)
+                            .cookie(new jakarta.servlet.http.Cookie(
+                                    "__Host-novel_session", session.cookieValue())))
+                    .andReturn();
+            assertEquals(503, acceptance.getResponse().getStatus());
+            assertTrue(acceptance.getResponse().getContentAsString().contains("POLICY_NOT_CONFIGURED"));
+            assertEquals(0, policyAcceptanceCount(userId));
+        } finally {
+            deleteSessionTestUser(userId);
+            insertPolicyTestDocuments();
+        }
+    }
+
     @AfterAll
     void integrationFixturesAreRemoved() throws SQLException {
         for (String table : List.of(
@@ -174,6 +340,16 @@ class PostgresSchemaIntegrationTests {
                 assertTrue(rows.next());
                 assertEquals(0, rows.getInt(1), "integration fixtures remain in " + table);
             }
+        }
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement deleteDocuments = connection.prepareStatement("DELETE FROM policy_documents")) {
+            deleteDocuments.executeUpdate();
+        }
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement count = connection.prepareStatement("SELECT COUNT(*) FROM policy_documents");
+             ResultSet rows = count.executeQuery()) {
+            assertTrue(rows.next());
+            assertEquals(0, rows.getInt(1), "policy document test fixtures remain");
         }
     }
 
@@ -634,8 +810,8 @@ class PostgresSchemaIntegrationTests {
                             .header("X-CSRF-Token", firstToken)
                             .cookie(new jakarta.servlet.http.Cookie("__Host-novel_session", original.cookieValue())))
                     .andReturn();
-            assertEquals(403, revokedMutation.getResponse().getStatus());
-            assertTrue(revokedMutation.getResponse().getContentAsString().contains("FORBIDDEN"));
+            assertEquals(401, revokedMutation.getResponse().getStatus());
+            assertTrue(revokedMutation.getResponse().getContentAsString().contains("UNAUTHENTICATED"));
             assertFalse(revokedMutation.getResponse().getContentAsString().contains("CSRF_FAILED"));
         } finally {
             deleteSessionTestUser(userId);
@@ -664,8 +840,8 @@ class PostgresSchemaIntegrationTests {
                             .header("X-CSRF-Token", csrfToken)
                             .cookie(new jakarta.servlet.http.Cookie("__Host-novel_session", session.cookieValue())))
                     .andReturn();
-            assertEquals(403, validCsrf.getResponse().getStatus());
-            assertTrue(validCsrf.getResponse().getContentAsString().contains("FORBIDDEN"));
+            assertEquals(422, validCsrf.getResponse().getStatus());
+            assertTrue(validCsrf.getResponse().getContentAsString().contains("POLICY_ACCEPTANCE_REQUIRED"));
             assertFalse(validCsrf.getResponse().getContentAsString().contains("CSRF_FAILED"));
         } finally {
             deleteSessionTestUser(userId);
@@ -1499,6 +1675,46 @@ class PostgresSchemaIntegrationTests {
             insert.setString(4, version);
             insert.setString(5, decision);
             assertEquals(1, insert.executeUpdate());
+        }
+    }
+
+    private void insertPolicyDocument(String type, String version, int effectiveDayOffset, String document)
+            throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement insert = connection.prepareStatement("""
+                     INSERT INTO policy_documents (policy_type, version, effective_at, document_markdown)
+                     VALUES (?, ?, clock_timestamp() + (? * INTERVAL '1 day'), ?)
+                     """)) {
+            insert.setString(1, type);
+            insert.setString(2, version);
+            insert.setInt(3, effectiveDayOffset);
+            insert.setString(4, document);
+            assertEquals(1, insert.executeUpdate());
+        }
+    }
+
+    private int policyAcceptanceCount(UUID userId) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement(
+                     "SELECT COUNT(*) FROM policy_acceptances WHERE user_id = ?")) {
+            select.setObject(1, userId);
+            try (ResultSet rows = select.executeQuery()) {
+                assertTrue(rows.next());
+                return rows.getInt(1);
+            }
+        }
+    }
+
+    private int policyAcceptanceCountBySource(UUID userId, String source) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement(
+                     "SELECT COUNT(*) FROM policy_acceptances WHERE user_id = ? AND source = ?")) {
+            select.setObject(1, userId);
+            select.setString(2, source);
+            try (ResultSet rows = select.executeQuery()) {
+                assertTrue(rows.next());
+                return rows.getInt(1);
+            }
         }
     }
 

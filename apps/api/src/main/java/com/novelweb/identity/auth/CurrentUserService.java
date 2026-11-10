@@ -13,7 +13,6 @@ import java.util.UUID;
 
 import javax.sql.DataSource;
 
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Service;
 
@@ -22,16 +21,8 @@ import org.springframework.stereotype.Service;
 public class CurrentUserService {
 
     private final DataSource dataSource;
-    private final String currentTermsVersion;
-    private final String currentPrivacyNoticeVersion;
-
-    public CurrentUserService(
-            DataSource dataSource,
-            @Value("${novel.policy.terms-version:}") String currentTermsVersion,
-            @Value("${novel.policy.privacy-notice-version:}") String currentPrivacyNoticeVersion) {
+    public CurrentUserService(DataSource dataSource) {
         this.dataSource = dataSource;
-        this.currentTermsVersion = normalizeVersion(currentTermsVersion);
-        this.currentPrivacyNoticeVersion = normalizeVersion(currentPrivacyNoticeVersion);
     }
 
     public Optional<CurrentUserResponse> findActiveUser(UUID userId) {
@@ -61,7 +52,23 @@ public class CurrentUserService {
                                   AND p.decision = 'PRIVACY_NOTICE_ACKNOWLEDGED'
                                 ORDER BY p.recorded_at DESC, p.id DESC
                                 LIMIT 1
-                            ) AS privacy_notice_acknowledged_version
+                            ) AS privacy_notice_acknowledged_version,
+                            (
+                                SELECT d.version
+                                FROM policy_documents d
+                                WHERE d.policy_type = 'TERMS'
+                                  AND d.effective_at <= clock_timestamp()
+                                ORDER BY d.effective_at DESC
+                                LIMIT 1
+                            ) AS current_terms_version,
+                            (
+                                SELECT d.version
+                                FROM policy_documents d
+                                WHERE d.policy_type = 'PRIVACY_NOTICE'
+                                  AND d.effective_at <= clock_timestamp()
+                                ORDER BY d.effective_at DESC
+                                LIMIT 1
+                            ) AS current_privacy_notice_version
                      FROM users u
                      WHERE u.id = ? AND u.status = 'active'
                      """)) {
@@ -73,8 +80,10 @@ public class CurrentUserService {
 
                 String acceptedTermsVersion = row.getString("terms_accepted_version");
                 String acknowledgedPrivacyVersion = row.getString("privacy_notice_acknowledged_version");
-                boolean requiredAcceptanceComplete = !currentTermsVersion.isBlank()
-                        && !currentPrivacyNoticeVersion.isBlank()
+                String currentTermsVersion = row.getString("current_terms_version");
+                String currentPrivacyNoticeVersion = row.getString("current_privacy_notice_version");
+                boolean requiredAcceptanceComplete = currentTermsVersion != null
+                        && currentPrivacyNoticeVersion != null
                         && currentTermsVersion.equals(acceptedTermsVersion)
                         && currentPrivacyNoticeVersion.equals(acknowledgedPrivacyVersion);
 
@@ -119,10 +128,6 @@ public class CurrentUserService {
         } finally {
             providerArray.free();
         }
-    }
-
-    private static String normalizeVersion(String version) {
-        return version == null ? "" : version.trim();
     }
 
     public record CurrentUserResponse(

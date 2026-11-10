@@ -4,16 +4,15 @@ info:
   version: 1.1.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
-    Google sign-in bootstrap is implemented only in the configured PostgreSQL profile. Remaining Auth,
-    Library and Reader operations tagged x-implementation-status=planned describe the G2 target and are
-    not enabled in this API yet.
+    Google sign-in/session and policy-document/acceptance routes are implemented only in the configured
+    PostgreSQL profile. Remaining Auth, Library and Reader operations tagged planned describe the G2 target.
 servers:
   - url: http://127.0.0.1:8080
 tags:
   - name: System
     description: Implemented read-only status and health operations.
   - name: Auth
-    description: Google GIS bootstrap is PostgreSQL-profile-only; credential/session/policy operations remain planned for G2.
+    description: Google GIS, session and required policy routes are available only in the PostgreSQL profile; other Auth operations remain planned.
     x-implementation-status: partial
   - name: Library
     description: Planned owner-scoped private library and import operations for G2.
@@ -221,8 +220,8 @@ paths:
       description: >-
         Returns only the authenticated principal's first-party profile, linked provider names, latest recorded
         policy versions, base personal scope and server feature flags. requiredAcceptanceComplete is true only
-        when both configured active policy versions match the latest recorded decisions; it stays false when
-        either active version is not configured. Product permissions and features remain disabled until their
+        when both active policy records match the latest recorded decisions; it stays false until both approved
+        policy documents are available and accepted. Product permissions and features remain disabled until their
         backend routes are implemented. The response is no-store and never returns Google subject, credential,
         session secret or raw provider claims.
       security:
@@ -251,9 +250,12 @@ paths:
     get:
       operationId: getCurrentPolicies
       tags: [Auth]
-      x-implementation-status: planned
+      x-implementation-status: implemented-postgres-profile
       summary: Get active Terms and Privacy Notice versions
-      description: Public, same-origin policy documents. The client displays these exact versions and must not invent or silently substitute one.
+      description: >-
+        Public metadata for the latest effective Terms and Privacy Notice versions. Each documentUrl is a
+        same-origin versioned Markdown route. Returns POLICY_NOT_CONFIGURED until both legally approved documents
+        have been provisioned. Policy versions and documents are immutable; publish corrections as new versions.
       security: []
       responses:
         '200':
@@ -262,11 +264,61 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CurrentPoliciesResponse'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/auth/policies/terms/{version}:
+    get:
+      operationId: getTermsDocument
+      tags: [Auth]
+      x-implementation-status: implemented-postgres-profile
+      summary: Get an immutable Terms version
+      security: []
+      parameters:
+        - name: version
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/PolicyVersion'
+      responses:
+        '200':
+          description: Versioned Markdown document
+          content:
+            text/markdown:
+              schema:
+                type: string
+        '404':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/auth/policies/privacy-notice/{version}:
+    get:
+      operationId: getPrivacyNoticeDocument
+      tags: [Auth]
+      x-implementation-status: implemented-postgres-profile
+      summary: Get an immutable Privacy Notice version
+      security: []
+      parameters:
+        - name: version
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/PolicyVersion'
+      responses:
+        '200':
+          description: Versioned Markdown document
+          content:
+            text/markdown:
+              schema:
+                type: string
+        '404':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
   /api/v1/auth/policies/accept:
     post:
       operationId: acceptCurrentPolicies
       tags: [Auth]
-      x-implementation-status: planned
+      x-implementation-status: implemented-postgres-profile
       summary: Record explicit acceptance of current required policies
       description: >-
         Both decisions and exact current versions are required. The server records separate append-only
@@ -284,6 +336,11 @@ paths:
       responses:
         '200':
           description: Both current policy decisions are recorded
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
           content:
             application/json:
               schema:
@@ -299,6 +356,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/Problem'
         '422':
+          $ref: '#/components/responses/Problem'
+        '503':
           $ref: '#/components/responses/Problem'
   /api/v1/auth/logout:
     post:
@@ -1482,6 +1541,7 @@ components:
           type: string
           minLength: 1
           maxLength: 64
+          pattern: '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
         effectiveAt:
           type: string
           format: date-time
@@ -1498,16 +1558,23 @@ components:
           type: string
           minLength: 1
           maxLength: 64
+          pattern: '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
         privacyNoticeVersion:
           type: string
           minLength: 1
           maxLength: 64
+          pattern: '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
         termsAccepted:
           type: boolean
           const: true
         privacyNoticeAcknowledged:
           type: boolean
           const: true
+    PolicyVersion:
+      type: string
+      minLength: 1
+      maxLength: 64
+      pattern: '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
     PolicyAcceptanceResponse:
       type: object
       additionalProperties: false
