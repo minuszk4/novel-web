@@ -696,7 +696,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, label:has(input:focu
   .home-cultivation-note .text-link { margin-left: 49px; }
   .library-toolbar { align-items: flex-start; flex-wrap: wrap; }
   .library-tabs { flex-basis: 100%; gap: 12px; }
-  .library-tab { flex: 0 0 auto; font-size: 9px; }
+  .library-tab { flex: 0 0 auto; font-size: 10px; }
   .library-toolbar > .private-tag { font-size: 7px; }
   .library-work-row { flex-wrap: wrap; gap: 11px; padding: 12px; }
   .library-work-copy h2 { font-size: 14px; }
@@ -773,8 +773,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, label:has(input:focu
   .topbar-actions { gap: 9px; }
   .topbar-actions .quiet-link { font-size: 10px; }
   .home-page, .page-wrap { padding-inline: 13px; }
-  .library-tabs { gap: 8px; }
-  .library-tab { gap: 4px; font-size: 8px; }
+  .library-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; height: auto; overflow: visible; }
+  .library-tab { justify-content: center; min-height: 44px; gap: 4px; padding: 4px 0; font-size: 10px; }
   .rank-progress-card { padding: 12px; }
   .progress-foot { font-size: 7px; }
 }

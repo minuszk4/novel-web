@@ -3,7 +3,9 @@ import { HttpTestingController, provideHttpClientTesting } from '@angular/common
 import { TestBed } from '@angular/core/testing';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  AccountLibrarySummary,
   AccountLibraryCollection,
+  AccountWorkSummary,
   AccountWorkState,
   LibraryApiError,
   LibraryApiService,
@@ -11,6 +13,7 @@ import {
 
 const collectionId = '11111111-1111-4111-8111-111111111111';
 const workId = '22222222-2222-4222-8222-222222222222';
+const libraryId = '33333333-3333-4333-8333-333333333333';
 const collection: AccountLibraryCollection = {
   id: collectionId,
   name: 'Đọc cuối tuần',
@@ -25,6 +28,23 @@ const workState: AccountWorkState = {
   version: 2,
   updatedAt: '2026-11-10T10:00:00Z',
   etag: '"v2"',
+};
+const library: AccountLibrarySummary = {
+  id: libraryId,
+  name: 'Thư viện riêng',
+  visibility: 'private',
+  isDefault: true,
+  createdAt: '2026-11-10T10:00:00Z',
+};
+const work: AccountWorkSummary = {
+  id: workId,
+  libraryId,
+  title: 'Gió Qua Núi',
+  author: 'Linh',
+  language: 'vi',
+  visibility: 'private',
+  chapterCount: 4,
+  createdAt: '2026-11-10T10:00:00Z',
 };
 
 describe('LibraryApiService', () => {
@@ -46,6 +66,57 @@ describe('LibraryApiService', () => {
     http.expectOne({ method: 'GET', url: '/api/v1/me/library/collections' }).flush([collection]);
 
     await expect(result).resolves.toEqual([collection]);
+  });
+
+  it('loads and validates actor-scoped library pages', async () => {
+    const result = service.listLibraries('opaque cursor', 20);
+    const request = http.expectOne((candidate) => candidate.method === 'GET'
+      && candidate.url === '/api/v1/libraries'
+      && candidate.params.get('cursor') === 'opaque cursor'
+      && candidate.params.get('limit') === '20');
+    request.flush({ items: [library], nextCursor: 'next-page' });
+
+    await expect(result).resolves.toEqual({ items: [library], nextCursor: 'next-page' });
+  });
+
+  it('loads works in the selected library with bounded filters and cursor', async () => {
+    const result = service.listWorks(libraryId, {
+      q: 'gió núi',
+      tag: 'fantasy',
+      status: 'active',
+      cursor: 'page-2',
+      limit: 10,
+    });
+    const request = http.expectOne((candidate) => candidate.method === 'GET'
+      && candidate.url === '/api/v1/works'
+      && candidate.params.get('libraryId') === libraryId
+      && candidate.params.get('q') === 'gió núi'
+      && candidate.params.get('tag') === 'fantasy'
+      && candidate.params.get('status') === 'active'
+      && candidate.params.get('cursor') === 'page-2'
+      && candidate.params.get('limit') === '10');
+    request.flush({ items: [work], nextCursor: null });
+
+    await expect(result).resolves.toEqual({ items: [work], nextCursor: null });
+  });
+
+  it('rejects invalid list cursors, cross-library rows and malformed pages', async () => {
+    await expect(service.listLibraries('', 25)).rejects.toMatchObject({ code: 'INVALID_LIBRARY_QUERY' });
+    await expect(service.listWorks('not-a-uuid')).rejects.toMatchObject({ code: 'INVALID_LIBRARY_ID' });
+
+    const invalidWork = service.listWorks(libraryId);
+    http.expectOne((candidate) => candidate.url === '/api/v1/works').flush({
+      items: [{ ...work, libraryId: '44444444-4444-4444-8444-444444444444' }],
+      nextCursor: null,
+    });
+    await expect(invalidWork).rejects.toMatchObject({ code: 'INVALID_API_RESPONSE', status: 502 });
+
+    const duplicateLibraries = service.listLibraries();
+    http.expectOne((candidate) => candidate.url === '/api/v1/libraries').flush({
+      items: [library, library],
+      nextCursor: null,
+    });
+    await expect(duplicateLibraries).rejects.toMatchObject({ code: 'INVALID_API_RESPONSE', status: 502 });
   });
 
   it('sends session CSRF before creating and deleting a collection', async () => {

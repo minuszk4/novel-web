@@ -2,12 +2,24 @@ import { Component, HostListener, computed, inject, signal } from '@angular/core
 import { DatePipe } from '@angular/common';
 import { RouterLink } from '@angular/router';
 import { DemoStateService } from '../core/demo-state.service';
-import { AccountLibraryCollection, AccountWorkState, LibraryApiError, LibraryApiService } from '../core/library-api.service';
-import { LibraryReadingStatus } from '../core/models';
+import {
+  AccountLibraryCollection,
+  AccountLibrarySummary,
+  AccountWorkState,
+  AccountWorkSummary,
+  LibraryApiError,
+  LibraryApiService,
+} from '../core/library-api.service';
+import { LibraryReadingStatus, PrivateWork } from '../core/models';
 import { PolicyOnboardingService } from '../core/policy-onboarding.service';
 
 type LibraryFilter = 'all' | LibraryReadingStatus;
 type SyncPhase = 'idle' | 'loading' | 'ready' | 'error' | 'saving';
+type LibraryWorkView = Pick<AccountWorkSummary, 'id' | 'title' | 'author'> & {
+  details: string;
+  addedAt: string;
+  isAccountWork: boolean;
+};
 
 const readingStatusOptions: { value: LibraryReadingStatus; label: string }[] = [
   { value: 'reading', label: 'Đang đọc' },
@@ -29,20 +41,27 @@ export class LibraryPageComponent {
   protected readonly activeFilter = signal<LibraryFilter>('all');
   protected readonly collectionName = signal('');
   protected readonly collectionError = signal<string | null>(null);
-  protected readonly workError = signal<string | null>(null);
   protected readonly pendingDeleteCollectionId = signal<string | null>(null);
   protected readonly accountCollections = signal<AccountLibraryCollection[]>([]);
   protected readonly collectionSync = signal<SyncPhase>('idle');
   protected readonly collectionSyncError = signal<string | null>(null);
-  protected readonly workState = signal<AccountWorkState | null>(null);
-  protected readonly workSync = signal<SyncPhase>('idle');
+  protected readonly accountLibraries = signal<AccountLibrarySummary[]>([]);
+  protected readonly selectedLibraryId = signal<string | null>(null);
+  protected readonly accountWorks = signal<AccountWorkSummary[]>([]);
+  protected readonly nextWorkCursor = signal<string | null>(null);
+  protected readonly catalogSync = signal<SyncPhase>('idle');
+  protected readonly catalogError = signal<string | null>(null);
+  protected readonly isLoadingMoreWorks = signal(false);
+  protected readonly loadMoreError = signal<string | null>(null);
+  protected readonly workStates = signal<Record<string, AccountWorkState>>({});
+  protected readonly workStateSync = signal<Record<string, SyncPhase>>({});
+  protected readonly workStateErrors = signal<Record<string, string>>({});
   protected readonly isOnline = signal(typeof navigator === 'undefined' || navigator.onLine);
   protected readonly isAccountMode = computed(() => this.policy.status() === 'accepted');
   protected readonly filters: { value: LibraryFilter; label: string }[] = [
     { value: 'all', label: 'Tất cả' },
     ...readingStatusOptions,
   ];
-  protected readonly readingStatuses = readingStatusOptions;
   protected readonly collections = computed(() => {
     if (this.isAccountMode()) return this.accountCollections();
     return this.demo.libraryCollections().map((collection) => ({
@@ -50,11 +69,22 @@ export class LibraryPageComponent {
       workCount: this.demo.importedWork() && this.demo.isWorkInCollection(this.demo.importedWork()!.id, collection.id) ? 1 : 0,
     }));
   });
-  protected readonly visibleWork = computed(() => {
-    const work = this.demo.importedWork();
-    if (!work) return null;
+  protected readonly visibleWorks = computed<LibraryWorkView[]>(() => {
+    const accountMode = this.isAccountMode();
+    const works: LibraryWorkView[] = accountMode
+      ? this.accountWorks().map((work) => ({
+        id: work.id,
+        title: work.title,
+        author: work.author,
+        details: `${work.language} · ${work.chapterCount} chương`,
+        addedAt: work.createdAt,
+        isAccountWork: true,
+      }))
+      : this.demo.importedWork()
+        ? [demoWorkView(this.demo.importedWork()!)]
+        : [];
     const filter = this.activeFilter();
-    return filter === 'all' || this.readingStatusFor(work.id) === filter ? work : null;
+    return works.filter((work) => filter === 'all' || this.readingStatusFor(work.id) === filter);
   });
   protected readonly canCreateCollection = computed(() => {
     if (this.isAccountMode()) {
@@ -66,8 +96,7 @@ export class LibraryPageComponent {
   constructor() {
     if (this.isAccountMode()) {
       void this.loadAccountCollections();
-      const work = this.demo.importedWork();
-      if (work && isUuid(work.id)) void this.loadWorkState(work.id);
+      void this.loadAccountCatalog();
     }
   }
 
@@ -82,48 +111,62 @@ export class LibraryPageComponent {
   }
 
   countFor(filter: LibraryFilter): number {
-    const work = this.demo.importedWork();
-    if (!work) return 0;
-    return filter === 'all' || this.readingStatusFor(work.id) === filter ? 1 : 0;
+    if (filter === 'all') return this.isAccountMode() ? this.accountWorks().length : Number(!!this.demo.importedWork());
+    return this.isAccountMode()
+      ? this.accountWorks().filter((work) => this.readingStatusFor(work.id) === filter).length
+      : Number(!!this.demo.importedWork() && this.readingStatusFor(this.demo.importedWork()!.id) === filter);
   }
 
   statusLabel(status: LibraryReadingStatus): string {
     return readingStatusOptions.find((option) => option.value === status)?.label ?? 'Đọc sau';
   }
 
+  filterLabel(filter: LibraryFilter): string {
+    return filter === 'all' ? 'tất cả trạng thái' : this.statusLabel(filter);
+  }
+
   readingStatusFor(workId: string): LibraryReadingStatus {
     if (this.isAccountWork(workId)) {
-      return this.workState()?.readingStatus ?? this.demo.readingStatusFor(workId);
+      return this.workStates()[workId]?.readingStatus ?? 'want-to-read';
     }
     return this.demo.readingStatusFor(workId);
   }
 
   isWorkInCollection(workId: string, collectionId: string): boolean {
     if (this.isAccountWork(workId)) {
-      return this.workState()?.collectionIds.includes(collectionId) ?? false;
+      return this.workStates()[workId]?.collectionIds.includes(collectionId) ?? false;
     }
     return this.demo.isWorkInCollection(workId, collectionId);
   }
 
   canToggleCollection(workId: string): boolean {
     if (!this.isAccountMode()) return !!this.demo.importedWork();
-    return this.isAccountWork(workId) && this.workSync() === 'ready' && !this.isSavingWorkState();
+    return this.isAccountWork(workId) && this.workStatePhase(workId) === 'ready' && !this.isSavingWorkState(workId);
   }
 
-  isSavingWorkState(): boolean {
-    return this.workSync() === 'saving';
+  workStatePhase(workId: string): SyncPhase {
+    return this.workStateSync()[workId] ?? 'loading';
+  }
+
+  workStateError(workId: string): string | null {
+    return this.workStateErrors()[workId] ?? null;
+  }
+
+  isSavingWorkState(workId?: string): boolean {
+    const phases = this.workStateSync();
+    return workId ? phases[workId] === 'saving' : Object.values(phases).some((phase) => phase === 'saving');
   }
 
   setReadingStatus(event: Event, workId: string): void {
-    const requested = (event.target as HTMLSelectElement).value as LibraryReadingStatus;
-    if (!readingStatusOptions.some(({ value }) => value === requested)) return;
+    const status = (event.target as HTMLSelectElement).value as LibraryReadingStatus;
+    if (!readingStatusOptions.some(({ value }) => value === status)) return;
 
     if (!this.isAccountWork(workId)) {
-      this.demo.setReadingStatus(workId, requested);
+      this.demo.setReadingStatus(workId, status);
       return;
     }
-    const state = this.workState();
-    if (state) void this.saveWorkState(workId, { readingStatus: requested, collectionIds: state.collectionIds });
+    const state = this.workStates()[workId];
+    if (state) void this.saveWorkState(workId, { readingStatus: status, collectionIds: state.collectionIds });
   }
 
   updateCollectionName(event: Event): void {
@@ -226,8 +269,8 @@ export class LibraryPageComponent {
       this.demo.toggleWorkCollection(workId, collectionId);
       return;
     }
-    const state = this.workState();
-    if (!state || this.isSavingWorkState()) return;
+    const state = this.workStates()[workId];
+    if (!state || this.isSavingWorkState(workId)) return;
     const collectionIds = new Set(state.collectionIds);
     if (collectionIds.has(collectionId)) collectionIds.delete(collectionId);
     else collectionIds.add(collectionId);
@@ -238,9 +281,103 @@ export class LibraryPageComponent {
     await this.loadAccountCollections();
   }
 
-  async retryWorkState(): Promise<void> {
-    const work = this.demo.importedWork();
-    if (work && isUuid(work.id) && this.isAccountMode()) await this.loadWorkState(work.id);
+  async retryCatalog(): Promise<void> {
+    await this.loadAccountCatalog();
+  }
+
+  async selectLibrary(event: Event): Promise<void> {
+    const libraryId = (event.target as HTMLSelectElement).value;
+    if (!this.accountLibraries().some((library) => library.id === libraryId)) return;
+    this.selectedLibraryId.set(libraryId);
+    await this.loadWorks(libraryId);
+  }
+
+  async loadMoreWorks(): Promise<void> {
+    const libraryId = this.selectedLibraryId();
+    const cursor = this.nextWorkCursor();
+    if (!libraryId || !cursor || this.isLoadingMoreWorks()) return;
+    this.isLoadingMoreWorks.set(true);
+    this.loadMoreError.set(null);
+    try {
+      const page = await this.api.listWorks(libraryId, { cursor, limit: 25 });
+      if (this.selectedLibraryId() !== libraryId) return;
+      const loadedIds = new Set(this.accountWorks().map((work) => work.id));
+      const newWorks = page.items.filter((work) => !loadedIds.has(work.id));
+      this.accountWorks.update((items) => [...items, ...newWorks]);
+      this.nextWorkCursor.set(page.nextCursor);
+      void this.loadWorkStates(newWorks);
+    } catch (error) {
+      if (this.selectedLibraryId() === libraryId) this.loadMoreError.set(catalogErrorMessage(error));
+    } finally {
+      this.isLoadingMoreWorks.set(false);
+    }
+  }
+
+  retryWorkState(workId: string): void {
+    if (this.isAccountWork(workId)) void this.loadWorkState(workId);
+  }
+
+  private async loadAccountCatalog(): Promise<void> {
+    this.catalogSync.set('loading');
+    this.catalogError.set(null);
+    this.accountWorks.set([]);
+    this.nextWorkCursor.set(null);
+    this.loadMoreError.set(null);
+    this.workStates.set({});
+    this.workStateSync.set({});
+    this.workStateErrors.set({});
+    try {
+      const libraries: AccountLibrarySummary[] = [];
+      let cursor: string | undefined;
+      for (let pageNumber = 0; pageNumber < 10; pageNumber += 1) {
+        const page = await this.api.listLibraries(cursor, 100);
+        libraries.push(...page.items);
+        cursor = page.nextCursor ?? undefined;
+        if (!cursor) break;
+      }
+      this.accountLibraries.set(libraries);
+      const selected = libraries.find((library) => library.isDefault) ?? libraries[0] ?? null;
+      this.selectedLibraryId.set(selected?.id ?? null);
+      if (!selected) {
+        this.accountWorks.set([]);
+        this.catalogSync.set('ready');
+        return;
+      }
+      await this.loadWorks(selected.id);
+    } catch (error) {
+      this.catalogSync.set('error');
+      this.catalogError.set(catalogErrorMessage(error));
+    }
+  }
+
+  private async loadWorks(libraryId: string): Promise<void> {
+    this.catalogSync.set('loading');
+    this.catalogError.set(null);
+    this.accountWorks.set([]);
+    this.nextWorkCursor.set(null);
+    this.loadMoreError.set(null);
+    this.workStates.set({});
+    this.workStateSync.set({});
+    this.workStateErrors.set({});
+    try {
+      const page = await this.api.listWorks(libraryId, { limit: 25 });
+      if (this.selectedLibraryId() !== libraryId) return;
+      this.accountWorks.set(page.items);
+      this.nextWorkCursor.set(page.nextCursor);
+      this.catalogSync.set('ready');
+      void this.loadWorkStates(page.items);
+    } catch (error) {
+      if (this.selectedLibraryId() !== libraryId) return;
+      this.catalogSync.set('error');
+      this.catalogError.set(catalogErrorMessage(error));
+    }
+  }
+
+  private async loadWorkStates(works: AccountWorkSummary[]): Promise<void> {
+    const uniqueWorks = [...new Map(works.map((work) => [work.id, work])).values()];
+    for (let index = 0; index < uniqueWorks.length; index += 4) {
+      await Promise.all(uniqueWorks.slice(index, index + 4).map((work) => this.loadWorkState(work.id)));
+    }
   }
 
   private async loadAccountCollections(): Promise<void> {
@@ -259,55 +396,72 @@ export class LibraryPageComponent {
   }
 
   private async loadWorkState(workId: string): Promise<void> {
-    this.workSync.set('loading');
-    this.workError.set(null);
+    this.setWorkStatePhase(workId, 'loading', null);
     try {
-      this.workState.set(await this.api.getWorkState(workId));
-      this.workSync.set('ready');
+      const state = await this.api.getWorkState(workId);
+      this.workStates.update((items) => ({ ...items, [workId]: state }));
+      this.setWorkStatePhase(workId, 'ready', null);
     } catch (error) {
-      this.workSync.set('error');
-      this.workError.set(workErrorMessage(error));
+      this.setWorkStatePhase(workId, 'error', workErrorMessage(error));
     }
   }
 
   private async reloadCurrentWorkState(): Promise<void> {
-    const work = this.demo.importedWork();
-    if (work && this.isAccountWork(work.id)) await this.loadWorkState(work.id);
+    await this.loadWorkStates(this.accountWorks());
   }
 
   private async saveWorkState(workId: string, changes: { readingStatus: LibraryReadingStatus; collectionIds: string[] }): Promise<void> {
-    const current = this.workState();
-    if (!current || this.workSync() !== 'ready') return;
-    this.workSync.set('saving');
-    this.workError.set(null);
+    const current = this.workStates()[workId];
+    if (!current || this.workStatePhase(workId) !== 'ready') return;
+    this.setWorkStatePhase(workId, 'saving', null);
     try {
-      this.workState.set(await this.api.replaceWorkState(workId, current.etag, changes));
-      this.workSync.set('ready');
+      const saved = await this.api.replaceWorkState(workId, current.etag, changes);
+      this.workStates.update((items) => ({ ...items, [workId]: saved }));
+      this.setWorkStatePhase(workId, 'ready', null);
     } catch (error) {
       if (error instanceof LibraryApiError && error.status === 409 && error.latestState) {
-        this.workState.set(error.latestState);
-        this.workSync.set('ready');
-        this.workError.set('Trạng thái đã đổi trên thiết bị khác. Đã tải phiên bản mới; hãy kiểm tra lại lựa chọn.');
+        this.workStates.update((items) => ({ ...items, [workId]: error.latestState! }));
+        this.setWorkStatePhase(workId, 'ready', 'Trạng thái đã đổi trên thiết bị khác. Đã tải phiên bản mới; hãy kiểm tra lại lựa chọn.');
       } else if (error instanceof LibraryApiError && (error.status === 0 || error.status >= 500)) {
         try {
-          this.workState.set(await this.api.getWorkState(workId));
-          this.workSync.set('ready');
-          this.workError.set('Chưa xác nhận được thao tác. Đã tải trạng thái mới nhất; hãy kiểm tra trước khi thử lại.');
+          const latest = await this.api.getWorkState(workId);
+          this.workStates.update((items) => ({ ...items, [workId]: latest }));
+          this.setWorkStatePhase(workId, 'ready', 'Chưa xác nhận được thao tác. Đã tải trạng thái mới nhất; hãy kiểm tra trước khi thử lại.');
         } catch (reloadError) {
-          this.workSync.set('error');
-          this.workError.set(workErrorMessage(reloadError));
+          this.setWorkStatePhase(workId, 'error', workErrorMessage(reloadError));
         }
       } else {
-        this.workSync.set('error');
-        this.workError.set(workErrorMessage(error));
+        this.setWorkStatePhase(workId, 'error', workErrorMessage(error));
       }
     }
   }
 
-  isAccountWork(workId: string): boolean {
-    const work = this.demo.importedWork();
-    return this.isAccountMode() && !!work && work.id === workId && isUuid(workId);
+  private setWorkStatePhase(workId: string, phase: SyncPhase, message: string | null): void {
+    this.workStateSync.update((items) => ({ ...items, [workId]: phase }));
+    this.workStateErrors.update((items) => {
+      if (message === null) {
+        const remaining = { ...items };
+        delete remaining[workId];
+        return remaining;
+      }
+      return { ...items, [workId]: message };
+    });
   }
+
+  isAccountWork(workId: string): boolean {
+    return this.isAccountMode() && isUuid(workId) && this.accountWorks().some((work) => work.id === workId);
+  }
+}
+
+function demoWorkView(work: PrivateWork): LibraryWorkView {
+  return {
+    id: work.id,
+    title: work.title,
+    author: work.author,
+    details: `Tệp ${work.sourceName} · chưa có chương để đọc`,
+    addedAt: work.importedAt,
+    isAccountWork: false,
+  };
 }
 
 function isApiError(value: unknown): value is LibraryApiError {
@@ -327,6 +481,18 @@ function collectionErrorMessage(error: unknown, fallback: string): string {
   if (error.status >= 500) return 'Máy chủ chưa tải được dữ liệu. Thử lại sau ít phút.';
   if (error.code === 'INVALID_API_RESPONSE') return 'Máy chủ trả về dữ liệu không hợp lệ. Tải lại để kiểm tra.';
   return fallback;
+}
+
+function catalogErrorMessage(error: unknown): string {
+  if (!(error instanceof LibraryApiError)) return 'Không tải được thư viện tài khoản. Hãy thử lại.';
+  if (error.status === 404) return 'Thư viện không còn khả dụng hoặc bạn không còn quyền truy cập.';
+  if (error.status === 401 || error.code === 'UNAUTHENTICATED') return 'Phiên đăng nhập hết hạn. Đăng nhập lại rồi thử tải thư viện.';
+  if (error.code === 'POLICY_ACCEPTANCE_REQUIRED') return 'Hãy xác nhận chính sách hiện hành trước khi xem thư viện tài khoản.';
+  if (error.code === 'POLICY_NOT_CONFIGURED') return 'Chính sách tài khoản chưa được cấu hình; chưa thể tải thư viện.';
+  if (error.status === 0) return 'Không kết nối được máy chủ. Kiểm tra mạng rồi thử tải lại.';
+  if (error.status >= 500) return 'Máy chủ chưa tải được thư viện. Thử lại sau ít phút.';
+  if (error.code === 'INVALID_API_RESPONSE') return 'Máy chủ trả về dữ liệu thư viện không hợp lệ. Tải lại để kiểm tra.';
+  return 'Không tải được thư viện tài khoản. Hãy thử lại.';
 }
 
 function workErrorMessage(error: unknown): string {

@@ -63,7 +63,7 @@ for (const viewport of viewports) {
 
     await page.getByRole('textbox', { name: 'Tên bộ sưu tập mới' }).fill('Đọc cuối tuần');
     await page.getByRole('button', { name: 'Tạo bộ sưu tập' }).click();
-    const collection = page.locator('.library-collection-chip');
+    const collection = page.locator('.library-collection-list[aria-label="Bộ sưu tập của Quán Trọ Ánh Trăng"] .library-collection-chip');
     await expect(collection).toHaveAttribute('aria-pressed', 'false');
     await collection.click();
     await expect(collection).toHaveAttribute('aria-pressed', 'true');
@@ -75,7 +75,8 @@ for (const viewport of viewports) {
     await expect(page.getByRole('heading', { name: 'Quán Trọ Ánh Trăng' })).toBeVisible();
     await expect(page.getByRole('combobox', { name: 'Trạng thái đọc: Quán Trọ Ánh Trăng' }))
       .toHaveValue('reading');
-    await expect(page.locator('.library-collection-chip')).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.locator('.library-collection-list[aria-label="Bộ sưu tập của Quán Trọ Ánh Trăng"] .library-collection-chip'))
+      .toHaveAttribute('aria-pressed', 'true');
     await expectNoAxeViolations(page);
 
     await page.context().setOffline(true);
@@ -116,6 +117,30 @@ test('account library uses server collections, CSRF and ETag conflict recovery',
   });
 
   await installAcceptedAccountRoutes(page);
+
+  await page.route('**/api/v1/libraries**', (route) => json(route, {
+    items: [{
+      id: '33333333-3333-4333-8333-333333333333',
+      name: 'Thư viện riêng',
+      visibility: 'private',
+      isDefault: true,
+      createdAt: '2026-11-10T10:00:00Z',
+    }],
+    nextCursor: null,
+  }));
+  await page.route('**/api/v1/works**', (route) => json(route, {
+    items: [{
+      id: workId,
+      libraryId: '33333333-3333-4333-8333-333333333333',
+      title: 'Tác phẩm tài khoản',
+      author: 'Độc giả',
+      language: 'vi',
+      visibility: 'private',
+      chapterCount: 0,
+      createdAt: '2026-11-10T00:00:00Z',
+    }],
+    nextCursor: null,
+  }));
 
   const collection = {
     id: collectionId,
@@ -186,7 +211,8 @@ test('account library uses server collections, CSRF and ETag conflict recovery',
 
   await page.getByRole('textbox', { name: 'Tên bộ sưu tập mới' }).fill(collection.name);
   await page.getByRole('button', { name: 'Tạo bộ sưu tập' }).click();
-  const collectionChip = page.locator('.library-collection-chip');
+  const collectionChip = page.locator('.library-work-collections .library-collection-chip');
+  await page.locator('.library-work-collections summary').click();
   await expect(collectionChip).toHaveAttribute('aria-pressed', 'false');
 
   const status = page.getByRole('combobox', { name: 'Trạng thái đọc: Tác phẩm tài khoản' });
@@ -224,6 +250,97 @@ test('account library uses server collections, CSRF and ETag conflict recovery',
   expect(dimensions.document).toBeLessThanOrEqual(dimensions.viewport);
 });
 
+test('account library loads scoped catalog pages and keeps local demo imports separate', async ({ page }) => {
+  const firstLibraryId = '33333333-3333-4333-8333-333333333333';
+  const secondLibraryId = '44444444-4444-4444-8444-444444444444';
+  const firstWorkId = '55555555-5555-4555-8555-555555555555';
+  const secondWorkId = '66666666-6666-4666-8666-666666666666';
+  await page.addInitScript(() => localStorage.setItem('novel.demo.library.v1', JSON.stringify({
+    version: 1,
+    importedWork: {
+      id: 'demo-local-work',
+      title: 'Bản nhập demo',
+      author: 'Người đọc',
+      sourceName: 'demo.txt',
+      importedAt: '2026-11-10T00:00:00Z',
+      visibility: 'private',
+    },
+    readingStatusByWork: {},
+    collections: [],
+    collectionIdsByWork: {},
+  })));
+  await installAcceptedAccountRoutes(page);
+
+  await page.route('**/api/v1/libraries**', (route) => json(route, {
+    items: [
+      { id: firstLibraryId, name: 'Thư viện chính', visibility: 'private', isDefault: true, createdAt: '2026-11-10T00:00:00Z' },
+      { id: secondLibraryId, name: 'Kệ Workspace', visibility: 'private', isDefault: false, createdAt: '2026-11-09T00:00:00Z' },
+    ],
+    nextCursor: null,
+  }));
+  let pageTwoFailureRetried = false;
+  await page.route('**/api/v1/works**', (route) => {
+    const requestUrl = new URL(route.request().url());
+    const libraryId = requestUrl.searchParams.get('libraryId');
+    if (libraryId === secondLibraryId) {
+      return json(route, { items: [], nextCursor: null });
+    }
+    const cursor = requestUrl.searchParams.get('cursor');
+    if (cursor && !pageTwoFailureRetried) {
+      pageTwoFailureRetried = true;
+      return json(route, { code: 'LIBRARY_UNAVAILABLE' }, 503);
+    }
+    const workId = cursor ? secondWorkId : firstWorkId;
+    const title = cursor ? 'Tác phẩm hai' : 'Tác phẩm một';
+    return json(route, {
+      items: [{
+        id: workId,
+        libraryId: firstLibraryId,
+        title,
+        author: 'Tác giả',
+        language: 'vi',
+        visibility: 'private',
+        chapterCount: 3,
+        createdAt: '2026-11-10T00:00:00Z',
+      }],
+      nextCursor: cursor ? null : 'page-2',
+    });
+  });
+  await page.route('**/api/v1/me/works/*/library-state', (route) => {
+    const workId = new URL(route.request().url()).pathname.split('/')[5];
+    return json(route, {
+      workId,
+      readingStatus: workId === secondWorkId ? 'completed' : 'want-to-read',
+      collectionIds: [],
+      version: 0,
+      updatedAt: null,
+    }, 200, { etag: '"v0"' });
+  });
+
+  await page.goto('/app/library');
+  await expect(page.getByRole('heading', { name: 'Tác phẩm một' })).toBeVisible();
+  await expect(page.getByText('“Bản nhập demo” chỉ được lưu trong demo')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Tất cả 1' })).toBeVisible();
+  await expect(page.getByText('Bộ lọc và số đếm hiện dựa trên 1 tác phẩm đã tải.')).toBeVisible();
+  await page.getByRole('button', { name: 'Hoàn thành 0' }).click();
+  await expect(page.getByRole('heading', { name: 'Không có truyện trong mục này' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Tải thêm tác phẩm' })).toBeVisible();
+  await page.getByRole('button', { name: 'Tải thêm tác phẩm' }).click();
+  await expect(page.locator('.library-status-message.library-sync-error')
+    .filter({ hasText: 'Máy chủ chưa tải được thư viện' })).toBeVisible();
+  await page.getByRole('button', { name: 'Thử lại trang tiếp theo' }).click();
+  await expect(page.getByRole('heading', { name: 'Tác phẩm hai' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Hoàn thành 1' })).toBeVisible();
+  await page.getByRole('button', { name: 'Tất cả 2' }).click();
+  await expect(page.getByRole('heading', { name: 'Tác phẩm một' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Tất cả 2' })).toBeVisible();
+
+  await page.getByRole('combobox', { name: 'Thư viện tài khoản' }).selectOption(secondLibraryId);
+  await expect(page.getByRole('heading', { name: 'Thư viện này chưa có tác phẩm' })).toBeVisible();
+  await expect(page.getByText('“Bản nhập demo” chỉ được lưu trong demo')).toBeVisible();
+  await expectNoAxeViolations(page);
+});
+
 test('account library exposes a retry when collection loading fails', async ({ page }) => {
   await page.addInitScript(() => localStorage.removeItem('novel.demo.library.v1'));
   await installAcceptedAccountRoutes(page);
@@ -238,7 +355,8 @@ test('account library exposes a retry when collection loading fails', async ({ p
   });
 
   await page.goto('/app/library');
-  await expect(page.getByRole('alert')).toContainText('Máy chủ chưa tải được dữ liệu');
+  await expect(page.locator('.library-status-message.library-sync-error').filter({ hasText: 'Máy chủ chưa tải được dữ liệu' }))
+    .toBeVisible();
   await expect(page.getByRole('button', { name: 'Tạo bộ sưu tập' })).toBeDisabled();
   await expectNoAxeViolations(page);
 
@@ -265,6 +383,8 @@ async function installAcceptedAccountRoutes(page: Page): Promise<void> {
   }));
   await page.route('**/api/v1/auth/policies/terms/**', (route) => route.fulfill({ status: 200, contentType: 'text/markdown', body: '# Terms' }));
   await page.route('**/api/v1/auth/policies/privacy-notice/**', (route) => route.fulfill({ status: 200, contentType: 'text/markdown', body: '# Privacy' }));
+  await page.route('**/api/v1/libraries**', (route) => json(route, { items: [], nextCursor: null }));
+  await page.route('**/api/v1/works**', (route) => json(route, { items: [], nextCursor: null }));
   await page.route('**/api/v1/auth/csrf', (route) => json(route, { token: 'session-library-csrf' }));
 }
 
