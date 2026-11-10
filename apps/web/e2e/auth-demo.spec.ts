@@ -68,6 +68,9 @@ for (const viewport of viewports) {
     await expect(providerStatus).toContainText('Google chưa sẵn sàng');
     await expect(providerStatus).toContainText('chưa được cấu hình');
     await expect(page.getByRole('button', { name: 'Sign in with Google' })).toHaveCount(0);
+    const retryBox = await page.getByRole('button', { name: 'Thử lại' }).boundingBox();
+    expect(retryBox?.width).toBeGreaterThanOrEqual(44);
+    expect(retryBox?.height).toBeGreaterThanOrEqual(44);
     await expectNoAxeViolations(page);
 
     await page.getByRole('link', { name: 'Tiếp tục với bản demo' }).click();
