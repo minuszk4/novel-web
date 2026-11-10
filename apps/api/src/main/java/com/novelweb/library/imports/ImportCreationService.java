@@ -456,7 +456,7 @@ public class ImportCreationService {
                     ) AS active_jobs,
                     COALESCE(SUM(jobs.declared_size_bytes) FILTER (
                         WHERE (jobs.status IN ('upload_pending', 'uploaded') AND jobs.expires_at > database_time.now)
-                           OR (jobs.status IN ('upload_pending', 'uploaded', 'failed', 'cancelled', 'expired')
+                           OR (jobs.status IN ('upload_pending', 'uploaded', 'failed', 'cancelled', 'expired', 'committed')
                                AND jobs.staging_file_deleted_at IS NULL)
                     ), 0) AS reserved_bytes
                 FROM import_jobs AS jobs

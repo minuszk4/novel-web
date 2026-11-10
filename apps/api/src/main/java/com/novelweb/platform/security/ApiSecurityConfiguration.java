@@ -69,6 +69,7 @@ public class ApiSecurityConfiguration {
                         authorize.requestMatchers(HttpMethod.POST, "/api/v1/imports/*/parse").permitAll();
                         authorize.requestMatchers(HttpMethod.GET, "/api/v1/imports/*/preview").permitAll();
                         authorize.requestMatchers(HttpMethod.PATCH, "/api/v1/imports/*/preview").permitAll();
+                        authorize.requestMatchers(HttpMethod.POST, "/api/v1/imports/*/commit").permitAll();
                     }
                     authorize.anyRequest().denyAll();
                 })

@@ -44,3 +44,6 @@ databaseChangeLog:
   - include:
       file: changes/015-import-preview-edits.sql
       relativeToChangelogFile: true
+  - include:
+      file: changes/016-import-commit.sql
+      relativeToChangelogFile: true

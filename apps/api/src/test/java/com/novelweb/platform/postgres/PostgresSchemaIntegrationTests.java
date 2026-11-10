@@ -64,7 +64,7 @@ import com.novelweb.library.LibraryUserStateService;
 import com.novelweb.library.WorkspaceRepository;
 import com.novelweb.library.WorkspaceService;
 import com.novelweb.library.imports.ImportStagingCleanupService;
-import com.novelweb.library.imports.ImportParseWorker;
+import com.novelweb.library.imports.ImportParseService;
 import com.novelweb.library.imports.ImportStagingRateLimiter;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
@@ -84,6 +84,7 @@ import org.springframework.test.web.servlet.MvcResult;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -157,7 +158,8 @@ class PostgresSchemaIntegrationTests {
             "import_rights_acceptances",
             "import_jobs",
             "import_actor_rate_limits",
-            "import_parse_jobs");
+            "import_parse_jobs",
+            "import_commits");
 
     @Autowired
     private DataSource dataSource;
@@ -199,7 +201,7 @@ class PostgresSchemaIntegrationTests {
     private ImportStagingRateLimiter importStagingRateLimiter;
 
     @Autowired
-    private ImportParseWorker importParseWorker;
+    private ImportParseService importParseService;
 
     @Autowired
     private MockMvc mockMvc;
@@ -235,7 +237,7 @@ class PostgresSchemaIntegrationTests {
                      "SELECT COUNT(*) FROM databasechangelog");
              ResultSet changesets = changesetCount.executeQuery()) {
             changesets.next();
-            assertEquals(65, changesets.getInt(1), "unexpected number of applied changesets");
+            assertEquals(69, changesets.getInt(1), "unexpected number of applied changesets");
         }
 
         Set<String> actualTables = new HashSet<>();
@@ -927,6 +929,176 @@ class PostgresSchemaIntegrationTests {
                             .cookie(actorCookie)).andReturn().getResponse().getContentAsString());
             assertEquals("Edited Book", editedStatus.path("previewSummary").path("title").asText());
 
+            addCurrentPolicyAcceptances(actorId);
+            String commitKey = "import-commit-idempotency-0001";
+            MvcResult missingCommitEtag = mockMvc.perform(post("/api/v1/imports/{id}/commit", validJobId)
+                            .cookie(actorCookie)
+                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                            .header("Idempotency-Key", commitKey))
+                    .andReturn();
+            assertEquals(428, missingCommitEtag.getResponse().getStatus());
+            MvcResult missingCommitCsrf = mockMvc.perform(post("/api/v1/imports/{id}/commit", validJobId)
+                            .cookie(actorCookie)
+                            .header("If-Match", updatedEtag)
+                            .header("Idempotency-Key", commitKey))
+                    .andReturn();
+            assertEquals(403, missingCommitCsrf.getResponse().getStatus());
+            MvcResult foreignCommit = mockMvc.perform(post("/api/v1/imports/{id}/commit", validJobId)
+                            .cookie(otherCookie)
+                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, otherCsrf)
+                            .header("If-Match", updatedEtag)
+                            .header("Idempotency-Key", commitKey))
+                    .andReturn();
+            assertEquals(404, foreignCommit.getResponse().getStatus());
+            MvcResult staleCommit = mockMvc.perform(post("/api/v1/imports/{id}/commit", validJobId)
+                            .cookie(actorCookie)
+                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                            .header("If-Match", originalEtag)
+                            .header("Idempotency-Key", commitKey))
+                    .andReturn();
+            assertEquals(412, staleCommit.getResponse().getStatus());
+            MvcResult missingCommitKey = mockMvc.perform(post("/api/v1/imports/{id}/commit", validJobId)
+                            .cookie(actorCookie)
+                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                            .header("If-Match", updatedEtag))
+                    .andReturn();
+            assertEquals(400, missingCommitKey.getResponse().getStatus());
+
+            createFailImportCommitSegmentsTrigger();
+            try {
+                MvcResult rollbackCommit = mockMvc.perform(post("/api/v1/imports/{id}/commit", validJobId)
+                                .cookie(actorCookie)
+                                .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                                .header("If-Match", updatedEtag)
+                                .header("Idempotency-Key", commitKey))
+                        .andReturn();
+                assertEquals(503, rollbackCommit.getResponse().getStatus());
+                assertEquals("uploaded", importJobStatus(validJobId));
+                assertEquals("ready_to_commit", importParseJobStatus(validJobId));
+                assertTrue(importParsePreviewByteCount(validJobId) > 0);
+                assertEquals(workCountBefore, workCountForLibrary(library.id()),
+                        "a failed chapter/segment write must roll back the work row");
+                assertEquals(chapterCountBefore, chapterCountForLibrary(library.id()),
+                        "a failed chapter/segment write must roll back all chapter rows");
+            } finally {
+                dropFailImportCommitSegmentsTrigger();
+            }
+
+            Path interruptedStagingCleanup = importStagingFileStore.targetPath(validJobId);
+            Path cleanupBlocker = interruptedStagingCleanup.resolve("interrupted-cleanup.bin");
+            Files.deleteIfExists(interruptedStagingCleanup);
+            Files.createDirectory(interruptedStagingCleanup);
+            Files.writeString(cleanupBlocker, "synthetic interrupted cleanup");
+            try {
+                CountDownLatch commitReady = new CountDownLatch(2);
+                CountDownLatch commitStart = new CountDownLatch(1);
+                ExecutorService commitExecutor = Executors.newFixedThreadPool(2);
+                try {
+                    List<Future<MvcResult>> commitRequests = new ArrayList<>();
+                    for (int index = 0; index < 2; index++) {
+                        commitRequests.add(commitExecutor.submit(() -> {
+                            commitReady.countDown();
+                            if (!commitStart.await(10, TimeUnit.SECONDS)) {
+                                throw new IllegalStateException("concurrent import commit did not start");
+                            }
+                            return mockMvc.perform(post("/api/v1/imports/{id}/commit", validJobId)
+                                            .cookie(actorCookie)
+                                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                                            .header("If-Match", updatedEtag)
+                                            .header("Idempotency-Key", commitKey))
+                                    .andReturn();
+                        }));
+                    }
+                    assertTrue(commitReady.await(10, TimeUnit.SECONDS), "concurrent commit requests did not become ready");
+                    commitStart.countDown();
+                    MvcResult committed = commitRequests.get(0).get(20, TimeUnit.SECONDS);
+                    MvcResult concurrentRetry = commitRequests.get(1).get(20, TimeUnit.SECONDS);
+                    assertEquals(201, committed.getResponse().getStatus());
+                    assertEquals(201, concurrentRetry.getResponse().getStatus());
+                    assertTrue(committed.getResponse().getHeader("Cache-Control").contains("no-store"));
+                    assertEquals("/api/v1/works/" + objectMapper.readTree(committed.getResponse().getContentAsString())
+                            .path("id").asText(), committed.getResponse().getHeader("Location"));
+                    JsonNode committedWork = objectMapper.readTree(committed.getResponse().getContentAsString());
+                    JsonNode concurrentWork = objectMapper.readTree(concurrentRetry.getResponse().getContentAsString());
+                    assertEquals(committedWork.path("id").asText(), concurrentWork.path("id").asText());
+                    assertEquals("Edited Book", committedWork.path("title").asText());
+                    assertEquals("Edited Author", committedWork.path("author").asText());
+                    assertEquals("en", committedWork.path("language").asText());
+                    assertEquals("private", committedWork.path("visibility").asText());
+                    assertEquals(2, committedWork.path("chapterCount").asInt());
+                    UUID committedWorkId = UUID.fromString(committedWork.path("id").asText());
+                    assertEquals(1, workCountForLibrary(library.id()) - workCountBefore);
+                    assertEquals(2, chapterCountForLibrary(library.id()) - chapterCountBefore);
+                    assertEquals(2, revisionCountForWork(committedWorkId));
+                    assertEquals(4, segmentCountForWork(committedWorkId));
+                    assertTrue(revisionContentForWork(committedWorkId).contains("A short private preview."));
+                    assertEquals("committed", importJobStatus(validJobId));
+                    assertEquals("committed", importParseJobStatus(validJobId));
+                    JsonNode committedStatus = objectMapper.readTree(mockMvc.perform(get(
+                                    "/api/v1/imports/{id}", validJobId).cookie(actorCookie))
+                            .andReturn().getResponse().getContentAsString());
+                    assertEquals("committed", committedStatus.path("status").asText());
+                    assertFalse(committedStatus.has("previewSummary"));
+                    assertEquals(0, importParsePreviewByteCount(validJobId),
+                            "committing must clear private preview and source-segment staging JSON");
+                    assertEquals(0, importParseEtagBytes(validJobId));
+                    assertEquals(409, mockMvc.perform(get("/api/v1/imports/{id}/preview", validJobId)
+                                    .cookie(actorCookie)).andReturn().getResponse().getStatus());
+                    assertNull(importJobStagingFileDeletedAt(validJobId),
+                            "the commit must survive a process interruption before staging cleanup");
+                    assertTrue(Files.exists(cleanupBlocker));
+                    assertFalse(importParseService.processNext(), "a committed job must not be reclaimed by the parser worker");
+
+                    MvcResult retryCommit = mockMvc.perform(post("/api/v1/imports/{id}/commit", validJobId)
+                                    .cookie(actorCookie)
+                                    .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                                    .header("If-Match", updatedEtag)
+                                    .header("Idempotency-Key", commitKey))
+                            .andReturn();
+                    assertEquals(201, retryCommit.getResponse().getStatus());
+                    assertEquals(committedWork.path("id").asText(),
+                            objectMapper.readTree(retryCommit.getResponse().getContentAsString()).path("id").asText());
+                    MvcResult reusedKey = mockMvc.perform(post("/api/v1/imports/{id}/commit", validJobId)
+                                    .cookie(actorCookie)
+                                    .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                                    .header("If-Match", originalEtag)
+                                    .header("Idempotency-Key", commitKey))
+                            .andReturn();
+                    assertEquals(409, reusedKey.getResponse().getStatus());
+                    MvcResult keyReusedForOtherImport = mockMvc.perform(post(
+                                    "/api/v1/imports/{id}/commit", invalidJobId)
+                                    .cookie(actorCookie)
+                                    .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                                    .header("If-Match", updatedEtag)
+                                    .header("Idempotency-Key", commitKey))
+                            .andReturn();
+                    assertEquals(409, keyReusedForOtherImport.getResponse().getStatus());
+                    MvcResult otherKey = mockMvc.perform(post("/api/v1/imports/{id}/commit", validJobId)
+                                    .cookie(actorCookie)
+                                    .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                                    .header("If-Match", updatedEtag)
+                                    .header("Idempotency-Key", "import-commit-idempotency-0002"))
+                            .andReturn();
+                    assertEquals(409, otherKey.getResponse().getStatus());
+                    assertEquals(1, workCountForLibrary(library.id()) - workCountBefore,
+                            "same-key retries and concurrent requests must create exactly one work");
+                } finally {
+                    commitExecutor.shutdownNow();
+                }
+
+                    assertThrows(IllegalStateException.class, importStagingCleanupService::cleanupExpiredStaging,
+                            "a failed post-commit file cleanup must leave the committed job retryable");
+                    assertNull(importJobStagingFileDeletedAt(validJobId));
+                    Files.delete(cleanupBlocker);
+                    Files.delete(interruptedStagingCleanup);
+                    assertEquals(1, importStagingCleanupService.cleanupExpiredStaging());
+                    assertNotNull(importJobStagingFileDeletedAt(validJobId));
+                    assertFalse(Files.exists(interruptedStagingCleanup));
+            } finally {
+                if (Files.exists(cleanupBlocker)) Files.delete(cleanupBlocker);
+                Files.deleteIfExists(interruptedStagingCleanup);
+            }
+
             MvcResult failedRequest = mockMvc.perform(post("/api/v1/imports/{id}/parse", invalidJobId)
                             .cookie(actorCookie)
                             .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf))
@@ -936,13 +1108,14 @@ class PostgresSchemaIntegrationTests {
             assertEquals("EPUB_XML_INVALID", failedStatus.path("failureCode").asText());
             assertTrue(failedStatus.path("warnings").size() > 0);
             assertEquals(0, importParsePreviewByteCount(invalidJobId));
-            assertEquals(workCountBefore, workCountForLibrary(library.id()));
-            assertEquals(chapterCountBefore, chapterCountForLibrary(library.id()));
+            assertEquals(workCountBefore + 1, workCountForLibrary(library.id()));
+            assertEquals(chapterCountBefore + 2, chapterCountForLibrary(library.id()));
         } finally {
             importStagingFileStore.delete(validJobId);
             importStagingFileStore.delete(invalidJobId);
             deleteImportJobs(actorId);
             deleteImportRightsTestAcceptances(actorId);
+            deleteImportedWorksForLibrary(library.id());
             deleteLibrary(library.id());
             deleteImportRightsTestStatement(version);
             deleteSessionTestUser(actorId);
@@ -2250,6 +2423,7 @@ class PostgresSchemaIntegrationTests {
                 "policy_acceptances",
                 "import_jobs",
                 "import_parse_jobs",
+                "import_commits",
                 "import_rights_acceptances",
                 "import_rights_statements",
                 "auth_events",
@@ -4206,6 +4380,123 @@ class PostgresSchemaIntegrationTests {
             try (ResultSet row = select.executeQuery()) {
                 row.next();
                 return row.getInt(1);
+            }
+        }
+    }
+
+    private int revisionCountForWork(UUID workId) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement("""
+                     SELECT COUNT(*) FROM chapter_revisions r
+                     JOIN chapters c ON c.id = r.chapter_id
+                     WHERE c.work_id = ?
+                     """)) {
+            select.setObject(1, workId);
+            try (ResultSet row = select.executeQuery()) {
+                assertTrue(row.next());
+                return row.getInt(1);
+            }
+        }
+    }
+
+    private int segmentCountForWork(UUID workId) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement("""
+                     SELECT COUNT(*) FROM segments s
+                     JOIN chapter_revisions r ON r.id = s.chapter_revision_id
+                     JOIN chapters c ON c.id = r.chapter_id
+                     WHERE c.work_id = ?
+                     """)) {
+            select.setObject(1, workId);
+            try (ResultSet row = select.executeQuery()) {
+                assertTrue(row.next());
+                return row.getInt(1);
+            }
+        }
+    }
+
+    private String revisionContentForWork(UUID workId) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement("""
+                     SELECT r.normalized_content FROM chapter_revisions r
+                     JOIN chapters c ON c.id = r.chapter_id
+                     WHERE c.work_id = ?
+                     ORDER BY c.ordinal
+                     """)) {
+            select.setObject(1, workId);
+            try (ResultSet rows = select.executeQuery()) {
+                StringBuilder content = new StringBuilder();
+                while (rows.next()) content.append(rows.getString(1)).append('\n');
+                return content.toString();
+            }
+        }
+    }
+
+    private void createFailImportCommitSegmentsTrigger() throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             var statement = connection.createStatement()) {
+            statement.execute("""
+                    CREATE FUNCTION test_fail_import_commit_segment_insert() RETURNS trigger
+                    LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'synthetic import commit rollback'; END; $$
+                    """);
+            statement.execute("""
+                    CREATE TRIGGER test_fail_import_commit_segment_insert
+                    BEFORE INSERT ON segments FOR EACH ROW
+                    EXECUTE FUNCTION test_fail_import_commit_segment_insert()
+                    """);
+        }
+    }
+
+    private void dropFailImportCommitSegmentsTrigger() throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             var statement = connection.createStatement()) {
+            statement.execute("DROP TRIGGER IF EXISTS test_fail_import_commit_segment_insert ON segments");
+            statement.execute("DROP FUNCTION IF EXISTS test_fail_import_commit_segment_insert()");
+        }
+    }
+
+    private void deleteImportedWorksForLibrary(UUID libraryId) throws SQLException {
+        try (Connection connection = dataSource.getConnection()) {
+            connection.setAutoCommit(false);
+            try {
+                String workIds = "SELECT id FROM works WHERE library_id = ?";
+                try (PreparedStatement deleteSegments = connection.prepareStatement("""
+                        DELETE FROM segments WHERE chapter_revision_id IN (
+                            SELECT r.id FROM chapter_revisions r
+                            JOIN chapters c ON c.id = r.chapter_id
+                            JOIN works w ON w.id = c.work_id
+                            WHERE w.library_id = ?)
+                        """)) {
+                    deleteSegments.setObject(1, libraryId);
+                    deleteSegments.executeUpdate();
+                }
+                try (PreparedStatement clearCurrentRevision = connection.prepareStatement("""
+                        UPDATE chapters SET source_revision_id = NULL
+                        WHERE work_id IN (""" + workIds + ")")) {
+                    clearCurrentRevision.setObject(1, libraryId);
+                    clearCurrentRevision.executeUpdate();
+                }
+                try (PreparedStatement deleteRevisions = connection.prepareStatement("""
+                        DELETE FROM chapter_revisions WHERE chapter_id IN (
+                            SELECT c.id FROM chapters c JOIN works w ON w.id = c.work_id
+                            WHERE w.library_id = ?)
+                        """)) {
+                    deleteRevisions.setObject(1, libraryId);
+                    deleteRevisions.executeUpdate();
+                }
+                try (PreparedStatement deleteChapters = connection.prepareStatement("""
+                        DELETE FROM chapters WHERE work_id IN (""" + workIds + ")")) {
+                    deleteChapters.setObject(1, libraryId);
+                    deleteChapters.executeUpdate();
+                }
+                try (PreparedStatement deleteWorks = connection.prepareStatement("DELETE FROM works WHERE library_id = ?")) {
+                    deleteWorks.setObject(1, libraryId);
+                    deleteWorks.executeUpdate();
+                }
+                connection.commit();
+            } catch (SQLException exception) {
+                connection.rollback();
+                throw exception;
             }
         }
     }

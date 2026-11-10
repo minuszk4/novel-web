@@ -54,7 +54,7 @@ public class ImportStagingCleanupService {
             try {
                 List<Candidate> candidates = lockCandidates(connection);
                 for (Candidate candidate : candidates) {
-                    deleteParserResult(connection, candidate.id());
+                    if (!candidate.status().equals("committed")) deleteParserResult(connection, candidate.id());
                     if (candidate.status().equals("upload_pending") || candidate.status().equals("uploaded")) {
                         expireJob(connection, candidate.id());
                     }
@@ -75,7 +75,8 @@ public class ImportStagingCleanupService {
                 SELECT id, status
                 FROM import_jobs
                 WHERE (status IN ('upload_pending', 'uploaded') AND expires_at <= clock_timestamp())
-                   OR (status IN ('failed', 'cancelled', 'expired') AND staging_file_deleted_at IS NULL)
+                   OR (status IN ('failed', 'cancelled', 'expired', 'committed')
+                       AND staging_file_deleted_at IS NULL)
                 ORDER BY expires_at, id
                 LIMIT ?
                 FOR UPDATE SKIP LOCKED
@@ -117,7 +118,7 @@ public class ImportStagingCleanupService {
              PreparedStatement update = connection.prepareStatement("""
                      UPDATE import_jobs
                      SET staging_file_deleted_at = clock_timestamp()
-                     WHERE id = ? AND status IN ('failed', 'cancelled', 'expired')
+                     WHERE id = ? AND status IN ('failed', 'cancelled', 'expired', 'committed')
                        AND staging_file_deleted_at IS NULL
                      """)) {
             update.setObject(1, jobId);

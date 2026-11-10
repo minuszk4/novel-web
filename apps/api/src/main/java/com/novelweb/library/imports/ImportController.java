@@ -44,14 +44,17 @@ public class ImportController {
     private final ImportCreationService importCreationService;
     private final ImportParseService importParseService;
     private final ImportPreviewService importPreviewService;
+    private final ImportCommitService importCommitService;
 
     public ImportController(
             ImportCreationService importCreationService,
             ImportParseService importParseService,
-            ImportPreviewService importPreviewService) {
+            ImportPreviewService importPreviewService,
+            ImportCommitService importCommitService) {
         this.importCreationService = importCreationService;
         this.importParseService = importParseService;
         this.importPreviewService = importPreviewService;
+        this.importCommitService = importCommitService;
     }
 
     @GetMapping("/{importId}")
@@ -192,6 +195,74 @@ public class ImportController {
             case STALE_ETAG -> problem(HttpStatus.PRECONDITION_FAILED, "IMPORT_PREVIEW_STALE",
                     "The preview changed after it was loaded. Reload it before saving edits.", correlationId);
         };
+    }
+
+    @PostMapping("/{importId}/commit")
+    public ResponseEntity<?> commit(
+            Authentication authentication,
+            @PathVariable UUID importId,
+            @RequestHeader(value = HttpHeaders.IF_MATCH, required = false) String ifMatch,
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+            HttpServletRequest request) {
+        UUID correlationId = correlationId(request);
+        SessionService.SessionPrincipal principal = principal(authentication);
+        if (principal == null) {
+            return problem(HttpStatus.UNAUTHORIZED, "UNAUTHENTICATED",
+                    "Sign in with the account that owns this import.", correlationId);
+        }
+        try {
+            ImportCommitService.CommitResult result = importCommitService.commit(
+                    principal.userId(), importId, ifMatch, idempotencyKey);
+            return switch (result.outcome()) {
+                case COMMITTED -> {
+                    ImportCommitService.CommittedWork work = result.work();
+                    yield noStore(HttpStatus.CREATED)
+                            .header(HttpHeaders.LOCATION, "/api/v1/works/" + work.id())
+                            .body(new CommittedWorkResponse(work.id(), work.libraryId(), work.title(), work.author(),
+                                    work.language(), work.visibility(), work.chapterCount(), work.createdAt()));
+                }
+                case NOT_FOUND -> problem(HttpStatus.NOT_FOUND, "IMPORT_NOT_FOUND",
+                        "This import is unavailable.", correlationId);
+                case EXPIRED -> problem(HttpStatus.GONE, "IMPORT_EXPIRED",
+                        "This private import has expired.", correlationId);
+                case NOT_UPLOADED -> problem(HttpStatus.CONFLICT, "IMPORT_NOT_READY_FOR_COMMIT",
+                        "Upload and parse the file before committing it.", correlationId);
+                case NOT_READY -> problem(HttpStatus.CONFLICT, "IMPORT_PREVIEW_NOT_READY",
+                        "The import does not have a completed preview yet.", correlationId);
+                case STALE_ETAG -> problem(HttpStatus.PRECONDITION_FAILED, "IMPORT_PREVIEW_STALE",
+                        "The preview changed after review. Reload it before committing.", correlationId);
+                case PRECONDITION_REQUIRED -> problem(HttpStatus.PRECONDITION_REQUIRED,
+                        "IMPORT_PREVIEW_ETAG_REQUIRED", "Include the current preview ETag in If-Match.", correlationId);
+                case INVALID_ETAG -> problem(HttpStatus.BAD_REQUEST, "IMPORT_PREVIEW_ETAG_INVALID",
+                        "If-Match must contain the current strong preview ETag.", correlationId);
+                case INVALID_IDEMPOTENCY_KEY -> problem(HttpStatus.BAD_REQUEST, "IDEMPOTENCY_KEY_INVALID",
+                        "Idempotency-Key must be 16 to 128 safe ASCII characters.", correlationId);
+                case IDEMPOTENCY_KEY_REUSED -> problem(HttpStatus.CONFLICT, "IDEMPOTENCY_KEY_REUSED",
+                        "This Idempotency-Key was already used for a different import request.", correlationId);
+                case ALREADY_COMMITTED -> problem(HttpStatus.CONFLICT, "IMPORT_ALREADY_COMMITTED",
+                        "This import has already been committed.", correlationId);
+                case POLICY_REQUIRED -> problem(HttpStatus.FORBIDDEN, "POLICY_ACCEPTANCE_REQUIRED",
+                        "Accept the current Terms and acknowledge the current Privacy Notice first.", correlationId);
+                case POLICY_NOT_CONFIGURED -> problem(HttpStatus.SERVICE_UNAVAILABLE, "POLICY_NOT_CONFIGURED",
+                        "Current approved policy documents are not available.", correlationId);
+                case RIGHTS_NOT_CONFIGURED -> problem(HttpStatus.SERVICE_UNAVAILABLE,
+                        "IMPORT_RIGHTS_STATEMENT_NOT_CONFIGURED",
+                        "An owner-approved import-rights statement is not available.", correlationId);
+                case RIGHTS_STALE -> problem(HttpStatus.CONFLICT, "IMPORT_RIGHTS_STATEMENT_STALE",
+                        "Review the current import-rights statement and start a new import.", correlationId);
+                case LIBRARY_NOT_FOUND -> problem(HttpStatus.NOT_FOUND, "LIBRARY_NOT_FOUND",
+                        "The destination library is unavailable for this account.", correlationId);
+                case CONTENT_UNAVAILABLE -> problem(HttpStatus.UNPROCESSABLE_CONTENT,
+                        "IMPORT_COMMIT_CONTENT_UNAVAILABLE",
+                        "This parser result cannot be committed. Re-import the file with a supported parser version.",
+                        correlationId);
+                case COMMIT_CONFLICT -> problem(HttpStatus.CONFLICT, "IMPORT_COMMIT_CONFLICT",
+                        "This source or request conflicts with an existing committed work.", correlationId);
+            };
+        } catch (IllegalStateException exception) {
+            return problem(HttpStatus.SERVICE_UNAVAILABLE, "IMPORT_COMMIT_UNAVAILABLE",
+                    "The private import could not be committed. Retry with the same Idempotency-Key.", correlationId);
+        }
     }
 
     private static int parsePreviewLimit(String limit) {
@@ -470,5 +541,10 @@ public class ImportController {
     }
 
     public record CreatedResponse(JobResponse job, UploadTargetResponse uploadTarget) {
+    }
+
+    public record CommittedWorkResponse(
+            UUID id, UUID libraryId, String title, String author, String language,
+            String visibility, int chapterCount, Instant createdAt) {
     }
 }

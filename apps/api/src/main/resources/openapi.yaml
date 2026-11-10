@@ -1,15 +1,15 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 4.1.0
+  version: 4.2.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
     implemented only in the configured PostgreSQL profile. The import-rights statement read and acceptance routes
     are also implemented in that profile; private job creation and local staging upload are now implemented too.
     Import staging applies actor-scoped active-job/declared-byte quotas and persistent create/upload token buckets.
-    EPUB 3 parse queue/status routes and bounded private-preview persistence are implemented. Preview content/edit,
-    commit and remaining Library and Reader operations tagged planned describe the G2 target.
+    EPUB 3 parse queue/status, bounded private-preview persistence/edit and atomic private import commit are
+    implemented. Remaining Library and Reader operations tagged planned describe the G2 target.
 servers:
   - url: http://127.0.0.1:8080
 tags:
@@ -1491,13 +1491,17 @@ paths:
     post:
       operationId: commitPrivateImport
       tags: [Library]
-      x-implementation-status: planned
+      x-implementation-status: implemented
       summary: Atomically commit a ready import as a private work
       description: >-
-        Requires an owned, successfully parsed job, unchanged preview ETag and an Idempotency-Key.
-        Creates the work and chapter rows atomically with visibility=private; the import-rights statement
-        is not a publication, sharing or sale license. Current account policy acceptance is checked again
-        at commit time; any failure leaves no partial work or chapter rows.
+        Requires an owned, successfully parsed job, the unchanged strong preview ETag and an Idempotency-Key.
+        The commit path currently accepts only normalized source content from parser schema epub3-v2; older
+        parser results must be imported again.
+        In one PostgreSQL transaction, rechecks current policy, rights receipt/version and library write access;
+        copies normalized source segments into private work/chapter/revision rows; records the idempotency result;
+        and clears private preview staging JSON. Replaying the same user/key/request returns the same work with
+        201. Reusing a key for another import or preview ETag returns 409. The import-rights statement is not a
+        publication, sharing or sale license. Any failed database write rolls back all work/content rows.
       security:
         - appSession: []
           csrfToken: []
@@ -1514,13 +1518,17 @@ paths:
           description: Preview ETag most recently reviewed by the user.
           schema:
             type: string
+            maxLength: 45
+            pattern: '^"[A-Za-z0-9_-]{43}"$'
         - name: Idempotency-Key
           in: header
           required: true
+          description: Stable per-user key for retrying the same import commit; restricted to safe ASCII characters.
           schema:
             type: string
             minLength: 16
             maxLength: 128
+            pattern: '^[A-Za-z0-9._~-]{16,128}$'
       responses:
         '201':
           description: Private work committed; replay with the same key returns the existing result.
@@ -1529,21 +1537,33 @@ paths:
               schema:
                 type: string
                 format: uri-reference
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/WorkSummary'
+        '400':
+          $ref: '#/components/responses/Problem'
         '401':
           $ref: '#/components/responses/Problem'
         '403':
           $ref: '#/components/responses/Problem'
         '404':
           $ref: '#/components/responses/Problem'
+        '410':
+          $ref: '#/components/responses/Problem'
         '409':
           $ref: '#/components/responses/Problem'
         '412':
           $ref: '#/components/responses/Problem'
+        '428':
+          $ref: '#/components/responses/Problem'
         '422':
+          $ref: '#/components/responses/Problem'
+        '503':
           $ref: '#/components/responses/Problem'
   /api/v1/imports/{importId}/cancel:
     post:
