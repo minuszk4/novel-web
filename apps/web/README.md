@@ -20,7 +20,7 @@ cd apps/web
 npm start
 ```
 
-Open `http://localhost:4200`. The interface queries the API status through the Angular dev-server proxy. If the API is stopped, it clearly reports that it is unavailable. Demo state is held in Angular signals in memory and resets on reload.
+Open `http://localhost:4200`. The interface queries the API status through the Angular dev-server proxy. If the API is stopped, it clearly reports that it is unavailable. Demo library metadata, reading status and collections persist in this browser's `localStorage`; consent, reader preferences, bookmarks, reading progress and cultivation controls remain in memory and reset on reload. Demo data is local to this browser and is not an account sync feature.
 
 Run the frontend checks from this directory:
 
@@ -56,7 +56,7 @@ The Reader's mobile header keeps a visible arrow to return to Work Detail while 
 
 Run the live account-library journey from the repository root with `.\tools\e2e\run-library-postgres.ps1`. It starts a randomly named disposable PostgreSQL 17 project and the real API, creates a test-only session/policy/library fixture, then drives the Angular app through its dev-server proxy in Chromium. The test checks account identity in the shell, current policy/document loading, libraries, works and per-work reading state with no API route mocks. The script removes only its own container/network/volume and saves logs plus a screenshot under `.ai/evidence/library-live-postgres-<date>/`. It does not exercise Google GIS, real policy approval or production data.
 
-Mobile import regressions also verify that unsupported-format feedback and the selected filename stay above the fixed action bar, the selected-file “Đổi tệp” control is usable and clears the previous rights affirmation, and Review keeps its submit action above bottom navigation. The metadata-only demo still does not parse or upload bytes.
+Mobile import regressions also verify that unsupported-format feedback and the selected filename stay above the fixed action bar, the selected-file “Đổi tệp” control is usable and clears the previous rights affirmation, and Review keeps its submit action above bottom navigation. These UI checks use the metadata-only demo path; they do not replace the account-import API tests or live storage configuration.
 
 ## Reader keyboard controls
 
@@ -74,13 +74,17 @@ Reader table-of-contents and settings drawers use modal keyboard behavior: focus
 - `/sign-in` — Google provider status and demo entry.
 - `/app/setup` — separate Terms and Privacy demo acknowledgments.
 - `/app/home`, `/app/library`, `/app/search` — private-library shell and metadata.
-- `/app/import`, `/app/import/review` — local file metadata and private-import confirmation.
+- `/app/import`, `/app/import/review` — metadata-only demo import, or account EPUB upload, preview and private-import confirmation when a server session is active.
 - `/works/demo-story`, `/read/demo-story/:chapterId` — original sample story and reader controls.
 - `/app/cultivation` — opt-in/pause interaction, proposed rank ladder, sample XP card.
 - `/app/settings` — reader preferences and optional privacy toggles.
 
 ## Integration boundary
 
-Google Identity Services is not connected. When a valid server session is present, the client reads `/auth/me`, current policy documents and account library/work/reading-state APIs; the shell displays the server account identity. The live integration harness uses only a synthetic test session. File parsing/storage, account import, multi-device content sync and MoMo Test checkout are not connected. File selection reads only filename, declared MIME type and size; it does not read or upload bytes. The story text and the `620 XP` / `34 XP` cultivation example are original illustrative demo data, not imported content or a user's progression. Settings, bookmarks and reading progress remain in memory only.
+Google Identity Services is wired into the sign-in page: it requests the server bootstrap, loads Google's GIS client and renders the provider button. A real sign-in still depends on a configured Google client, allowed origins/callback URI and deployment secrets; the browser journey uses a synthetic test session and has not verified a real Google account.
+
+With a valid server session, the client reads `/auth/me`, current policy documents and account library/work/reading-state APIs; the shell displays the server account identity. The live integration harness exercises those APIs with test-only data. Account import accepts EPUB files up to 50 MiB, records the rights confirmation, uploads the bytes to a one-time target in private server staging, asks the API to scan and parse the book, loads an editable paginated preview, and commits the private work with optimistic-version and idempotency checks. The API's default staging directory is under the machine's temporary directory (`java.io.tmpdir/novel-web-import-staging`); production still needs an explicitly provisioned, private and durable storage location and operational cleanup/backup policy. The test journey does not establish a production storage deployment.
+
+The demo import path is deliberately metadata-only: it reads the selected filename, declared MIME type and size but does not read or upload bytes. The story text and `620 XP` / `34 XP` cultivation example are original illustrative demo data, not imported content or a user's progression. Multi-device sync for demo state and MoMo Test checkout are not connected. Demo library metadata, reading status and collections use this browser's `localStorage`; consent, reader preferences, bookmarks, reading progress and cultivation controls remain in memory only. None of this demo state is server-backed.
 
 The full implementation boundary and remaining work are recorded in the local `.ai` planning documents. Those files are intentionally ignored by Git per the workspace setup.
