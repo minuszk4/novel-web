@@ -5,6 +5,8 @@ import java.util.List;
 
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.env.Environment;
+import org.springframework.core.env.Profiles;
 import org.springframework.http.HttpMethod;
 import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
@@ -18,13 +20,18 @@ import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 public class ApiSecurityConfiguration {
 
     @Bean
-    SecurityFilterChain apiSecurityFilterChain(HttpSecurity http, ApiProblemWriter problemWriter) throws Exception {
+    SecurityFilterChain apiSecurityFilterChain(
+            HttpSecurity http, ApiProblemWriter problemWriter, Environment environment) throws Exception {
         return http
                 .cors(Customizer.withDefaults())
-                .authorizeHttpRequests(authorize -> authorize
-                        .requestMatchers(HttpMethod.GET, "/api/v1/system/status", "/actuator/health",
-                                "/actuator/health/**").permitAll()
-                        .anyRequest().denyAll())
+                .authorizeHttpRequests(authorize -> {
+                    authorize.requestMatchers(HttpMethod.GET, "/api/v1/system/status", "/actuator/health",
+                            "/actuator/health/**").permitAll();
+                    if (environment.acceptsProfiles(Profiles.of("postgres"))) {
+                        authorize.requestMatchers(HttpMethod.GET, "/api/v1/auth/google/bootstrap").permitAll();
+                    }
+                    authorize.anyRequest().denyAll();
+                })
                 .exceptionHandling(exceptions -> exceptions
                         .authenticationEntryPoint((request, response, failure) -> problemWriter.write(
                                 request, response, 403, "Forbidden", "FORBIDDEN",

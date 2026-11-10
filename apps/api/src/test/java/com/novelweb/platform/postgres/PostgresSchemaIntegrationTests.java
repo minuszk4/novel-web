@@ -1,5 +1,6 @@
 package com.novelweb.platform.postgres;
 
+import java.net.InetAddress;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -24,8 +25,12 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
 import javax.sql.DataSource;
 
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 import com.novelweb.identity.auth.GoogleAuthBootstrapRateLimiter;
 import com.novelweb.identity.auth.GoogleAuthAttemptService;
 import com.novelweb.identity.auth.GoogleAccountLinkRequiredException;
@@ -38,20 +43,35 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.http.MediaType;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 
 @SpringBootTest
+@AutoConfigureMockMvc
 @ActiveProfiles("postgres")
 @EnabledIfSystemProperty(named = "postgres.integration", matches = "true")
-@org.springframework.test.context.TestPropertySource(properties =
-        "novel.auth.google.rate-limit-refill-interval=24h")
+@org.springframework.test.context.TestPropertySource(properties = {
+        "novel.auth.google.rate-limit-refill-interval=24h",
+        "novel.auth.google.rate-limit-hmac-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "novel.auth.google.web-client-id=novel-web-integration-test.apps.googleusercontent.com",
+        "novel.auth.google.credential-callback-uri=https://api.example.test/api/v1/auth/google/credential"
+})
 class PostgresSchemaIntegrationTests {
+
+    private static final String BOOTSTRAP_RATE_LIMIT_HMAC_KEY =
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
     private static final Set<String> EXPECTED_APPLICATION_TABLES = Set.of(
             "users",
@@ -76,6 +96,12 @@ class PostgresSchemaIntegrationTests {
 
     @Autowired
     private SessionService sessionService;
+
+    @Autowired
+    private MockMvc mockMvc;
+
+    @Autowired
+    private ObjectMapper objectMapper;
 
     @Test
     void liquibaseAppliesTheBaselineAndCreatesExpectedTables() throws SQLException {
@@ -312,6 +338,83 @@ class PostgresSchemaIntegrationTests {
                     "the refilled token should be consumed once");
         } finally {
             deleteRateLimitBucket(rateLimitKeyHash);
+        }
+    }
+
+    @Test
+    void googleBootstrapHttpEndpointReturnsFreshSafeAttempt() throws Exception {
+        String clientAddress = bootstrapTestClientAddress();
+        List<UUID> correlationIds = new ArrayList<>();
+        try {
+            MvcResult result = mockMvc.perform(get("/api/v1/auth/google/bootstrap")
+                            .param("returnTo", "/library/recent?sort=updated")
+                            .param("locale", "en")
+                            .with(request -> {
+                                request.setRemoteAddr(clientAddress);
+                                return request;
+                            }))
+                    .andReturn();
+            UUID correlationId = UUID.fromString(result.getResponse().getHeader("X-Correlation-Id"));
+            correlationIds.add(correlationId);
+
+            assertEquals(200, result.getResponse().getStatus());
+            assertTrue(result.getResponse().getHeader("Cache-Control").contains("no-store"));
+            assertEquals("no-cache", result.getResponse().getHeader("Pragma"));
+            assertNull(result.getResponse().getHeader("Set-Cookie"));
+
+            JsonNode body = objectMapper.readTree(result.getResponse().getContentAsString());
+            assertEquals("novel-web-integration-test.apps.googleusercontent.com", body.path("clientId").asText());
+            assertEquals("https://api.example.test/api/v1/auth/google/credential", body.path("loginUri").asText());
+            assertTrue(body.path("nonce").asText().matches("[A-Za-z0-9_-]{43}"));
+            assertEquals("en", body.path("locale").asText());
+            assertTrue(Instant.parse(body.path("attemptExpiresAt").asText()).isAfter(Instant.now()));
+            assertEquals("/library/recent?sort=updated", storedBootstrapReturnPath(body.path("nonce").asText()));
+            assertEquals(1, googleAuthAttemptCount(correlationId));
+        } finally {
+            deleteBootstrapFixtures(clientAddress, correlationIds);
+        }
+    }
+
+    @Test
+    void googleCredentialCallbackRemainsDeniedUntilTheFullFlowIsWired() throws Exception {
+        MvcResult result = mockMvc.perform(post("/api/v1/auth/google/credential")
+                        .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                        .param("credential", "synthetic-invalid-token")
+                        .param("g_csrf_token", "synthetic-csrf-token"))
+                .andReturn();
+
+        assertEquals(403, result.getResponse().getStatus());
+        assertTrue(result.getResponse().getContentType().startsWith("application/problem+json"));
+        assertTrue(result.getResponse().getContentAsString().contains("FORBIDDEN"));
+    }
+
+    @Test
+    void googleBootstrapHttpEndpointStopsAtTenAttemptsPerClientAddress() throws Exception {
+        String clientAddress = bootstrapTestClientAddress();
+        List<UUID> correlationIds = new ArrayList<>();
+        try {
+            for (int index = 0; index < 11; index++) {
+                MvcResult result = mockMvc.perform(get("/api/v1/auth/google/bootstrap")
+                                .with(request -> {
+                                    request.setRemoteAddr(clientAddress);
+                                    return request;
+                                }))
+                        .andReturn();
+                UUID correlationId = UUID.fromString(result.getResponse().getHeader("X-Correlation-Id"));
+                correlationIds.add(correlationId);
+
+                if (index < 10) {
+                    assertEquals(200, result.getResponse().getStatus());
+                    assertEquals(1, googleAuthAttemptCount(correlationId));
+                } else {
+                    assertEquals(429, result.getResponse().getStatus());
+                    assertEquals(0, googleAuthAttemptCount(correlationId));
+                    assertTrue(objectMapper.readTree(result.getResponse().getContentAsString())
+                            .path("detail").asText().contains("wait"));
+                }
+            }
+        } finally {
+            deleteBootstrapFixtures(clientAddress, correlationIds);
         }
     }
 
@@ -809,6 +912,59 @@ class PostgresSchemaIntegrationTests {
                 deleteUser.executeUpdate();
             }
         }
+    }
+
+    private String storedBootstrapReturnPath(String nonce) throws SQLException, NoSuchAlgorithmException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement(
+                     "SELECT safe_return_path FROM google_auth_attempts WHERE nonce_hash = ?")) {
+            select.setBytes(1, sha256(nonce));
+            try (ResultSet row = select.executeQuery()) {
+                assertTrue(row.next());
+                return row.getString(1);
+            }
+        }
+    }
+
+    private int googleAuthAttemptCount(UUID correlationId) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement(
+                     "SELECT COUNT(*) FROM google_auth_attempts WHERE correlation_id = ?")) {
+            select.setObject(1, correlationId);
+            try (ResultSet row = select.executeQuery()) {
+                assertTrue(row.next());
+                return row.getInt(1);
+            }
+        }
+    }
+
+    private void deleteBootstrapFixtures(String clientAddress, List<UUID> correlationIds) throws Exception {
+        byte[] keyHash = bootstrapRateLimitKeyHash(clientAddress);
+        try (Connection connection = dataSource.getConnection()) {
+            try (PreparedStatement deleteAttempt = connection.prepareStatement(
+                    "DELETE FROM google_auth_attempts WHERE correlation_id = ?")) {
+                for (UUID correlationId : correlationIds) {
+                    deleteAttempt.setObject(1, correlationId);
+                    deleteAttempt.addBatch();
+                }
+                deleteAttempt.executeBatch();
+            }
+            try (PreparedStatement deleteBucket = connection.prepareStatement(
+                    "DELETE FROM google_auth_bootstrap_rate_limits WHERE rate_limit_key_hash = ?")) {
+                deleteBucket.setBytes(1, keyHash);
+                deleteBucket.executeUpdate();
+            }
+        }
+    }
+
+    private static String bootstrapTestClientAddress() {
+        return "203.0.113." + (1 + Math.floorMod(UUID.randomUUID().hashCode(), 254));
+    }
+
+    private static byte[] bootstrapRateLimitKeyHash(String clientAddress) throws Exception {
+        Mac mac = Mac.getInstance("HmacSHA256");
+        mac.init(new SecretKeySpec(Base64.getUrlDecoder().decode(BOOTSTRAP_RATE_LIMIT_HMAC_KEY), "HmacSHA256"));
+        return mac.doFinal(InetAddress.getByName(clientAddress).getAddress());
     }
 
     private static GoogleIdTokenVerifier.VerifiedGoogleIdentity verifiedIdentity(

@@ -1,6 +1,6 @@
 # OpenAPI contract checks
 
-This tooling lints the implemented read-only endpoints (`GET /api/v1/system/status` and `GET /actuator/health`) plus the planned G2 Auth/session/policy, private library/import and source-only Reader operations tagged `x-implementation-status: planned`. Lint verifies OpenAPI structure; it does not prove that a planned endpoint exists in Spring Boot. These business operations remain unavailable until their API slices and acceptance tests are implemented. Progression, translation, publishing and commerce contracts are not yet included.
+This tooling lints the implemented read-only endpoints (`GET /api/v1/system/status` and `GET /actuator/health`), the PostgreSQL-profile-only Google bootstrap GET, and the remaining planned G2 Auth/session/policy, private library/import and source-only Reader operations. The bootstrap operation is tagged `x-implementation-status: implemented-postgres-profile`; other planned operations are tagged `planned`. Lint verifies OpenAPI structure; it does not prove that a planned endpoint exists in Spring Boot. The credential POST and other business operations remain unavailable until their API slices and acceptance tests are implemented. Progression, translation, publishing and commerce contracts are not yet included.
 
 ## Run locally
 

@@ -4,9 +4,12 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.core.env.Environment;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.hamcrest.Matchers.matchesPattern;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.options;
@@ -15,7 +18,11 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-@SpringBootTest
+@SpringBootTest(properties = {
+        "novel.auth.google.web-client-id=",
+        "novel.auth.google.credential-callback-uri=",
+        "novel.auth.google.rate-limit-hmac-key="
+})
 @AutoConfigureMockMvc
 class ApiFoundationTests {
 
@@ -23,6 +30,9 @@ class ApiFoundationTests {
 
     @Autowired
     private MockMvc mockMvc;
+
+    @Autowired
+    private Environment environment;
 
     @Test
     void statusIsPublicAndKeepsUnimplementedCapabilitiesDisabled() throws Exception {
@@ -59,11 +69,16 @@ class ApiFoundationTests {
     }
 
     @Test
-    void plannedGoogleBootstrapRouteRemainsUnavailableUntilTheAuthFlowIsComplete() throws Exception {
-        mockMvc.perform(get("/api/v1/auth/google/bootstrap"))
-                .andExpect(status().isForbidden())
-                .andExpect(content().contentTypeCompatibleWith("application/problem+json"))
-                .andExpect(jsonPath("$.code").value("FORBIDDEN"));
+    void googleBootstrapRouteFailsClosedWhenConfigurationIsUnavailable() throws Exception {
+        var result = mockMvc.perform(get("/api/v1/auth/google/bootstrap")).andReturn();
+        if (environment.acceptsProfiles(org.springframework.core.env.Profiles.of("postgres"))) {
+            assertEquals(503, result.getResponse().getStatus());
+            assertEquals("application/problem+json", result.getResponse().getContentType());
+            assertTrue(result.getResponse().getContentAsString().contains("AUTH_PROVIDER_UNAVAILABLE"));
+        } else {
+            assertEquals(403, result.getResponse().getStatus());
+            assertTrue(result.getResponse().getContentAsString().contains("FORBIDDEN"));
+        }
     }
 
     @Test

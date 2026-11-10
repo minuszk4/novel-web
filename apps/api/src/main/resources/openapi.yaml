@@ -4,16 +4,17 @@ info:
   version: 1.1.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
-    Auth, Library and Reader operations tagged x-implementation-status=planned describe the G2 target;
-    they are not enabled or implemented in this API yet.
+    Google sign-in bootstrap is implemented only in the configured PostgreSQL profile. Remaining Auth,
+    Library and Reader operations tagged x-implementation-status=planned describe the G2 target and are
+    not enabled in this API yet.
 servers:
   - url: http://127.0.0.1:8080
 tags:
   - name: System
     description: Implemented read-only status and health operations.
   - name: Auth
-    description: Planned first-party session, Google GIS and policy-consent operations for G2.
-    x-implementation-status: planned
+    description: Google GIS bootstrap is PostgreSQL-profile-only; credential/session/policy operations remain planned for G2.
+    x-implementation-status: partial
   - name: Library
     description: Planned owner-scoped private library and import operations for G2.
     x-implementation-status: planned
@@ -65,7 +66,7 @@ paths:
     get:
       operationId: getGoogleSignInBootstrap
       tags: [Auth]
-      x-implementation-status: planned
+      x-implementation-status: implemented-postgres-profile
       summary: Create a short-lived Google sign-in attempt
       description: >-
         Rate-limited. Stores a one-use nonce attempt and returns only the public GIS client ID,
