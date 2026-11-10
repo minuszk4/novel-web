@@ -808,6 +808,14 @@ class PostgresSchemaIntegrationTests {
             assertTrue(importParsePreviewByteCount(validJobId) > 0);
             assertTrue(importParsePreviewByteCount(validJobId) <= 1_048_576);
             assertEquals(32, importParseEtagBytes(validJobId));
+            assertEquals("epub3-v2", importParseParserVersion(validJobId));
+            JsonNode storedParseResult = objectMapper.readTree(importParsePreviewJson(validJobId));
+            assertEquals("epub3-v2", storedParseResult.path("parserVersion").asText());
+            assertEquals(2, storedParseResult.path("chapters").get(0).path("segments").size());
+            assertEquals("h1", storedParseResult.path("chapters").get(0).path("segments")
+                    .get(0).path("kind").asText());
+            assertEquals("A short private preview.", storedParseResult.path("chapters").get(0)
+                    .path("segments").get(1).path("text").asText());
             assertEquals(workCountBefore, workCountForLibrary(library.id()));
             assertEquals(chapterCountBefore, chapterCountForLibrary(library.id()));
 
@@ -829,6 +837,7 @@ class PostgresSchemaIntegrationTests {
             assertTrue(firstPage.path("nextCursor").isTextual());
             assertFalse(firstPageResult.getResponse().getContentAsString().contains("sourcePath"));
             assertFalse(firstPageResult.getResponse().getContentAsString().contains("textPreview"));
+            assertFalse(firstPageResult.getResponse().getContentAsString().contains("segments"));
             String firstChapterId = firstPage.path("chapters").get(0).path("id").asText();
 
             String originalCursor = firstPage.path("nextCursor").asText();
@@ -4098,6 +4107,30 @@ class PostgresSchemaIntegrationTests {
             try (ResultSet row = select.executeQuery()) {
                 assertTrue(row.next());
                 return row.getInt(1);
+            }
+        }
+    }
+
+    private String importParseParserVersion(UUID importId) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement(
+                     "SELECT parser_version FROM import_parse_jobs WHERE import_id = ?")) {
+            select.setObject(1, importId);
+            try (ResultSet row = select.executeQuery()) {
+                assertTrue(row.next());
+                return row.getString(1);
+            }
+        }
+    }
+
+    private String importParsePreviewJson(UUID importId) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement(
+                     "SELECT preview_data::text FROM import_parse_jobs WHERE import_id = ?")) {
+            select.setObject(1, importId);
+            try (ResultSet row = select.executeQuery()) {
+                assertTrue(row.next());
+                return row.getString(1);
             }
         }
     }

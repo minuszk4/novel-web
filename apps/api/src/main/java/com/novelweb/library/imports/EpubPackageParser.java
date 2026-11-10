@@ -5,6 +5,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.text.Normalizer;
 import java.time.Duration;
@@ -52,7 +53,13 @@ public class EpubPackageParser {
     private static final int PREVIEW_TEXT_LIMIT = 280;
     private static final int MAX_PREVIEW_CHAPTERS = 2000;
     private static final int MAX_PREVIEW_TOC_ENTRIES = 10000;
+    private static final int MAX_SOURCE_SEGMENTS = 5000;
+    private static final int MAX_SEGMENT_CODE_POINTS = 4000;
+    private static final int MAX_SEGMENT_UTF8_BYTES = 16_384;
+    private static final int MAX_TOTAL_SEGMENT_UTF8_BYTES = 384 * 1024;
     private static final int MAX_XML_DEPTH = 128;
+    private static final String LEGACY_PARSER_VERSION = "epub3-v1";
+    public static final String PARSER_VERSION = "epub3-v2";
     private static final Set<String> SEGMENT_TAGS = Set.of(
             "p", "h1", "h2", "h3", "h4", "h5", "h6", "li", "blockquote", "pre");
     private static final Set<String> IGNORED_TAGS = Set.of(
@@ -70,6 +77,15 @@ public class EpubPackageParser {
      * Parse a previously uploaded EPUB into a bounded private preview. This method performs no DB or file writes.
      */
     public Preview parse(Path file, String filename, String declaredContentType) throws IOException {
+        return parse(file, filename, declaredContentType, PARSER_VERSION);
+    }
+
+    /** Retains deterministic behavior for durable jobs queued by an earlier parser version. */
+    public Preview parse(Path file, String filename, String declaredContentType, String parserVersion)
+            throws IOException {
+        if (!PARSER_VERSION.equals(parserVersion) && !LEGACY_PARSER_VERSION.equals(parserVersion)) {
+            throw failure("EPUB_PARSER_VERSION_UNSUPPORTED", "The queued EPUB parser version is no longer supported");
+        }
         contentValidator.validate(file, filename, declaredContentType);
         long deadline = deadline();
         long[] expandedBytes = {0};
@@ -80,7 +96,8 @@ public class EpubPackageParser {
                     archive, entries, packagePath, expandedBytes, deadline);
             NavDocument navigation = readNavigation(
                     archive, entries, packageDocument, expandedBytes, deadline);
-            return buildPreview(archive, entries, packageDocument, navigation, expandedBytes, deadline);
+            return buildPreview(archive, entries, packageDocument, navigation,
+                    expandedBytes, deadline, parserVersion);
         } catch (EpubParseException exception) {
             throw exception;
         } catch (XMLStreamException | IllegalArgumentException exception) {
@@ -371,11 +388,12 @@ public class EpubPackageParser {
 
     private Preview buildPreview(
             ZipFile archive, Map<String, ZipEntry> entries, PackageDocument document,
-            NavDocument navigation, long[] expandedBytes, long deadline)
+            NavDocument navigation, long[] expandedBytes, long deadline, String parserVersion)
             throws IOException, XMLStreamException {
         List<Warning> warnings = new ArrayList<>();
         List<Chapter> chapters = new ArrayList<>();
         Map<String, Integer> chapterIndices = new HashMap<>();
+        SegmentBudget segmentBudget = new SegmentBudget();
         for (int index = 0; index < document.spine().size(); index++) {
             checkDeadline(deadline);
             SpineRef reference = document.spine().get(index);
@@ -389,12 +407,14 @@ public class EpubPackageParser {
                 warnings.add(new Warning("EPUB_SPINE_ITEM_UNSUPPORTED",
                         "A non-XHTML spine resource was retained as an empty preview chapter."));
                 Chapter chapter = new Chapter(index, item.path(), "Unsupported content", reference.linear(), 0,
-                        "", true, "", "");
+                        "", true, "", "", List.of());
                 chapterIndices.put(item.path(), index);
                 chapters.add(chapter);
                 continue;
             }
-            ChapterText chapterText = readChapterText(archive, entry, expandedBytes, deadline);
+            ChapterText chapterText = LEGACY_PARSER_VERSION.equals(parserVersion)
+                    ? readChapterTextV1(archive, entry, expandedBytes, deadline)
+                    : readChapterText(archive, entry, expandedBytes, deadline, segmentBudget);
             if (chapterText.scripted()) {
                 warnings.add(new Warning("EPUB_SCRIPT_IGNORED", "Scripted EPUB content is ignored in the text preview."));
             }
@@ -404,7 +424,7 @@ public class EpubPackageParser {
             chapterIndices.put(item.path(), index);
             chapters.add(new Chapter(index, item.path(), null, reference.linear(),
                     chapterText.segmentCount(), chapterText.preview(), chapterText.segmentCount() == 0,
-                    chapterText.documentTitle(), chapterText.firstHeading()));
+                    chapterText.documentTitle(), chapterText.firstHeading(), chapterText.segments()));
         }
         if (chapters.stream().noneMatch(chapter -> !chapter.empty())) {
             throw failure("EPUB_NO_READABLE_CHAPTERS", "EPUB has no readable XHTML chapter content");
@@ -449,11 +469,115 @@ public class EpubPackageParser {
             warnings.add(new Warning("EPUB_ENCRYPTED_RESOURCES_UNSUPPORTED",
                     "Encrypted fonts or other encrypted EPUB resources are not processed."));
         }
-        return new Preview(document.metadata(), List.copyOf(chapters), List.copyOf(toc), List.copyOf(warnings));
+        return new Preview(parserVersion, document.metadata(), List.copyOf(chapters),
+                List.copyOf(toc), List.copyOf(warnings));
+    }
+
+    private ChapterText readChapterTextV1(
+            ZipFile archive, ZipEntry entry, long[] expandedBytes, long deadline)
+            throws IOException, XMLStreamException {
+        XmlSource source = openXml(archive, entry, expandedBytes, deadline);
+        XMLStreamReader xml = source.reader();
+        boolean inBody = false;
+        int ignoredDepth = 0;
+        int depth = 0;
+        StringBuilder documentTitle = new StringBuilder();
+        boolean inTitle = false;
+        Deque<LegacySegmentFrame> blocks = new ArrayDeque<>();
+        LegacySegmentFrame looseText = new LegacySegmentFrame("#text");
+        int segmentCount = 0;
+        String preview = "";
+        String firstHeading = "";
+        boolean scripted = false;
+        try {
+            while (xml.hasNext()) {
+                int event = xml.next();
+                checkXmlEvent(xml, event, deadline);
+                if (event == XMLStreamConstants.START_ELEMENT) {
+                    if (++depth > MAX_XML_DEPTH) throw failure("EPUB_XML_DEPTH_EXCEEDED", "EPUB XHTML is nested too deeply");
+                    String name = xml.getLocalName().toLowerCase(Locale.ROOT);
+                    if (ignoredDepth > 0) {
+                        ignoredDepth++;
+                        continue;
+                    }
+                    if (IGNORED_TAGS.contains(name)) {
+                        if ("script".equals(name)) scripted = true;
+                        ignoredDepth = 1;
+                        continue;
+                    }
+                    if (!inBody && "title".equals(name)) {
+                        inTitle = true;
+                    } else if ("body".equals(name)) {
+                        inBody = true;
+                    } else if (inBody && SEGMENT_TAGS.contains(name)) {
+                        if (!blocks.isEmpty()) {
+                            LegacySegmentFrame prior = blocks.peek();
+                            if (prior.hasText()) {
+                                segmentCount++;
+                                if (preview.isBlank()) preview = prior.preview();
+                                prior.clear();
+                            }
+                        } else if (looseText.hasText()) {
+                            segmentCount++;
+                            if (preview.isBlank()) preview = looseText.preview();
+                            looseText = new LegacySegmentFrame("#text");
+                        }
+                        blocks.push(new LegacySegmentFrame(name));
+                    }
+                } else if (event == XMLStreamConstants.CHARACTERS || event == XMLStreamConstants.CDATA) {
+                    if (ignoredDepth > 0) continue;
+                    if (inTitle) appendBounded(documentTitle, xml.getText(), NAV_LABEL_LIMIT);
+                    else if (inBody) {
+                        LegacySegmentFrame active = blocks.isEmpty() ? looseText : blocks.peek();
+                        active.append(xml.getText());
+                    }
+                } else if (event == XMLStreamConstants.END_ELEMENT) {
+                    String name = xml.getLocalName().toLowerCase(Locale.ROOT);
+                    if (ignoredDepth > 0) {
+                        ignoredDepth--;
+                        depth--;
+                        continue;
+                    }
+                    if (!inBody && "title".equals(name)) inTitle = false;
+                    if (inBody && SEGMENT_TAGS.contains(name) && !blocks.isEmpty() && blocks.peek().tag().equals(name)) {
+                        LegacySegmentFrame frame = blocks.pop();
+                        if (frame.hasText()) {
+                            segmentCount++;
+                            if (preview.isBlank()) preview = frame.preview();
+                            if (firstHeading.isBlank() && name.matches("h[1-6]")) firstHeading = frame.preview();
+                        }
+                    } else if ("body".equals(name)) {
+                        if (looseText.hasText()) {
+                            segmentCount++;
+                            if (preview.isBlank()) preview = looseText.preview();
+                            looseText = new LegacySegmentFrame("#text");
+                        }
+                        inBody = false;
+                    }
+                    depth--;
+                }
+            }
+        } finally {
+            source.close();
+        }
+        while (!blocks.isEmpty()) {
+            LegacySegmentFrame frame = blocks.removeLast();
+            if (frame.hasText()) {
+                segmentCount++;
+                if (preview.isBlank()) preview = frame.preview();
+                if (firstHeading.isBlank() && frame.tag().matches("h[1-6]")) firstHeading = frame.preview();
+            }
+        }
+        if (looseText.hasText()) {
+            segmentCount++;
+            if (preview.isBlank()) preview = looseText.preview();
+        }
+        return new ChapterText(segmentCount, preview, normalize(documentTitle.toString()),
+                firstHeading, scripted, List.of());
     }
 
     private ChapterText readChapterText(
-            ZipFile archive, ZipEntry entry, long[] expandedBytes, long deadline)
+            ZipFile archive, ZipEntry entry, long[] expandedBytes, long deadline, SegmentBudget segmentBudget)
             throws IOException, XMLStreamException {
         XmlSource source = openXml(archive, entry, expandedBytes, deadline);
         XMLStreamReader xml = source.reader();
@@ -464,7 +588,7 @@ public class EpubPackageParser {
         boolean inTitle = false;
         Deque<SegmentFrame> blocks = new ArrayDeque<>();
         SegmentFrame looseText = new SegmentFrame("#text");
-        int segmentCount = 0;
+        List<SourceSegment> segments = new ArrayList<>();
         String preview = "";
         String firstHeading = "";
         boolean scripted = false;
@@ -492,13 +616,13 @@ public class EpubPackageParser {
                         if (!blocks.isEmpty()) {
                             SegmentFrame prior = blocks.peek();
                             if (prior.hasText()) {
-                                segmentCount++;
-                                if (preview.isBlank()) preview = prior.preview();
+                                SourceSegment segment = addSegment(prior, segments, segmentBudget);
+                                if (preview.isBlank()) preview = previewText(segment.text());
                                 prior.clear();
                             }
                         } else if (looseText.hasText()) {
-                            segmentCount++;
-                            if (preview.isBlank()) preview = looseText.preview();
+                            SourceSegment segment = addSegment(looseText, segments, segmentBudget);
+                            if (preview.isBlank()) preview = previewText(segment.text());
                             looseText = new SegmentFrame("#text");
                         }
                         blocks.push(new SegmentFrame(name));
@@ -521,14 +645,14 @@ public class EpubPackageParser {
                     if (inBody && SEGMENT_TAGS.contains(name) && !blocks.isEmpty() && blocks.peek().tag().equals(name)) {
                         SegmentFrame frame = blocks.pop();
                         if (frame.hasText()) {
-                            segmentCount++;
-                            if (preview.isBlank()) preview = frame.preview();
-                            if (firstHeading.isBlank() && name.matches("h[1-6]")) firstHeading = frame.preview();
+                            SourceSegment segment = addSegment(frame, segments, segmentBudget);
+                            if (preview.isBlank()) preview = previewText(segment.text());
+                            if (firstHeading.isBlank() && name.matches("h[1-6]")) firstHeading = previewText(segment.text());
                         }
                     } else if ("body".equals(name)) {
                         if (looseText.hasText()) {
-                            segmentCount++;
-                            if (preview.isBlank()) preview = looseText.preview();
+                            SourceSegment segment = addSegment(looseText, segments, segmentBudget);
+                            if (preview.isBlank()) preview = previewText(segment.text());
                             looseText = new SegmentFrame("#text");
                         }
                         inBody = false;
@@ -542,16 +666,37 @@ public class EpubPackageParser {
         while (!blocks.isEmpty()) {
             SegmentFrame frame = blocks.removeLast();
             if (frame.hasText()) {
-                segmentCount++;
-                if (preview.isBlank()) preview = frame.preview();
-                if (firstHeading.isBlank() && frame.tag().matches("h[1-6]")) firstHeading = frame.preview();
+                SourceSegment segment = addSegment(frame, segments, segmentBudget);
+                if (preview.isBlank()) preview = previewText(segment.text());
+                if (firstHeading.isBlank() && frame.tag().matches("h[1-6]")) firstHeading = previewText(segment.text());
             }
         }
         if (looseText.hasText()) {
-            segmentCount++;
-            if (preview.isBlank()) preview = looseText.preview();
+            SourceSegment segment = addSegment(looseText, segments, segmentBudget);
+            if (preview.isBlank()) preview = previewText(segment.text());
         }
-        return new ChapterText(segmentCount, preview, normalize(documentTitle.toString()), firstHeading, scripted);
+        return new ChapterText(segments.size(), preview, normalize(documentTitle.toString()),
+                firstHeading, scripted, List.copyOf(segments));
+    }
+
+    private SourceSegment addSegment(SegmentFrame frame, List<SourceSegment> segments, SegmentBudget budget)
+            throws EpubParseException {
+        String text = normalize(frame.text());
+        if (text.isEmpty()) return null;
+        int bytes = text.getBytes(StandardCharsets.UTF_8).length;
+        if (text.codePointCount(0, text.length()) > MAX_SEGMENT_CODE_POINTS || bytes > MAX_SEGMENT_UTF8_BYTES) {
+            throw failure("EPUB_SEGMENT_TOO_LARGE", "An EPUB text segment exceeds its normalized size limit");
+        }
+        budget.addSegment(bytes);
+        SourceSegment segment = new SourceSegment(segments.size(), "#text".equals(frame.tag()) ? "text" : frame.tag(), text);
+        segments.add(segment);
+        return segment;
+    }
+
+    private static String previewText(String text) {
+        int length = text.codePointCount(0, text.length());
+        return length <= PREVIEW_TEXT_LIMIT
+                ? text : text.substring(0, text.offsetByCodePoints(0, PREVIEW_TEXT_LIMIT));
     }
 
     private XmlSource openXml(ZipFile archive, ZipEntry entry, long[] expandedBytes, long deadline)
@@ -847,17 +992,31 @@ public class EpubPackageParser {
 
     public record Chapter(int index, String sourcePath, String title, boolean linear,
                           int segmentCount, String textPreview, boolean empty,
-                          String documentTitle, String firstHeading) {
+                          String documentTitle, String firstHeading, List<SourceSegment> segments) {
+        public Chapter {
+            segments = segments == null ? List.of() : List.copyOf(segments);
+        }
+
         private Chapter withTitle(String value) {
-            return new Chapter(index, sourcePath, value, linear, segmentCount, textPreview, empty, documentTitle, firstHeading);
+            return new Chapter(index, sourcePath, value, linear, segmentCount, textPreview, empty,
+                    documentTitle, firstHeading, segments);
         }
     }
+
+    public record SourceSegment(int ordinal, String kind, String text) { }
 
     public record TocEntry(String label, int depth, int chapterIndex, String fragment) { }
 
     public record Warning(String code, String summary) { }
 
-    public record Preview(Metadata metadata, List<Chapter> chapters, List<TocEntry> toc, List<Warning> warnings) { }
+    public record Preview(String parserVersion, Metadata metadata, List<Chapter> chapters,
+                          List<TocEntry> toc, List<Warning> warnings) {
+        public Preview {
+            chapters = chapters == null ? List.of() : List.copyOf(chapters);
+            toc = toc == null ? List.of() : List.copyOf(toc);
+            warnings = warnings == null ? List.of() : List.copyOf(warnings);
+        }
+    }
 
     public static final class EpubParseException extends IOException {
         private final String code;
@@ -884,7 +1043,24 @@ public class EpubPackageParser {
     private record TocReference(long order, int depth, String label, String href) { }
     private record ResolvedReference(String path, String fragment) { }
     private record ChapterText(int segmentCount, String preview, String documentTitle, String firstHeading,
-                               boolean scripted) { }
+                               boolean scripted, List<SourceSegment> segments) { }
+
+    private static final class SegmentBudget {
+        private int totalSegments;
+        private int totalBytes;
+
+        void addSegment(int bytes) throws EpubParseException {
+            if (totalSegments >= MAX_SOURCE_SEGMENTS) {
+                throw failure("EPUB_SEGMENT_LIMIT_EXCEEDED", "EPUB contains too many readable text segments");
+            }
+            if (bytes > MAX_TOTAL_SEGMENT_UTF8_BYTES - totalBytes) {
+                throw failure("EPUB_SEGMENT_BYTES_LIMIT_EXCEEDED",
+                        "EPUB normalized source segments exceed their total size limit");
+            }
+            totalSegments++;
+            totalBytes += bytes;
+        }
+    }
 
     private static final class XmlSource {
         private final XMLStreamReader reader;
@@ -934,11 +1110,54 @@ public class EpubPackageParser {
 
     private static final class SegmentFrame {
         private final String tag;
+        private final StringBuilder text = new StringBuilder(Math.min(MAX_SEGMENT_CODE_POINTS, 256));
+        private boolean hasText;
+        private boolean pendingSpace;
+        private int codePoints;
+
+        private SegmentFrame(String tag) { this.tag = tag; }
+        String tag() { return tag; }
+        boolean hasText() { return hasText; }
+        String text() { return text.toString(); }
+
+        void clear() {
+            text.setLength(0);
+            hasText = false;
+            pendingSpace = false;
+            codePoints = 0;
+        }
+
+        void append(CharSequence value) throws EpubParseException {
+            for (int offset = 0; offset < value.length();) {
+                int codePoint = Character.codePointAt(value, offset);
+                offset += Character.charCount(codePoint);
+                if (Character.isWhitespace(codePoint) || Character.isSpaceChar(codePoint)) {
+                    if (hasText) pendingSpace = true;
+                } else if (!Character.isISOControl(codePoint)) {
+                    hasText = true;
+                    int required = 1 + (pendingSpace ? 1 : 0);
+                    if (codePoints > MAX_SEGMENT_CODE_POINTS - required) {
+                        throw failure("EPUB_SEGMENT_TOO_LARGE", "An EPUB text segment exceeds its normalized size limit");
+                    }
+                    if (pendingSpace) {
+                        text.append(' ');
+                        codePoints++;
+                        pendingSpace = false;
+                    }
+                    text.appendCodePoint(codePoint);
+                    codePoints++;
+                }
+            }
+        }
+    }
+
+    private static final class LegacySegmentFrame {
+        private final String tag;
         private final StringBuilder preview = new StringBuilder(PREVIEW_TEXT_LIMIT);
         private boolean hasText;
         private boolean lastSpace;
 
-        private SegmentFrame(String tag) { this.tag = tag; }
+        private LegacySegmentFrame(String tag) { this.tag = tag; }
         String tag() { return tag; }
         boolean hasText() { return hasText; }
         String preview() { return preview.toString().trim(); }
@@ -950,8 +1169,8 @@ public class EpubPackageParser {
         }
 
         void append(CharSequence value) {
-            for (int i = 0; i < value.length(); i++) {
-                char character = value.charAt(i);
+            for (int index = 0; index < value.length(); index++) {
+                char character = value.charAt(index);
                 if (Character.isWhitespace(character) || Character.isSpaceChar(character)) {
                     if (hasText && !lastSpace && preview.length() < PREVIEW_TEXT_LIMIT) preview.append(' ');
                     lastSpace = true;

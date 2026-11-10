@@ -169,7 +169,7 @@ public class ImportPreviewService {
         }
         if (!changed && !chapters.equals(original.chapters())) changed = true;
         return PatchApplication.ready(new EpubPackageParser.Preview(
-                metadata, chapters, toc, original.warnings()), changed);
+                original.parserVersion(), metadata, chapters, toc, original.warnings()), changed);
     }
 
     private List<ChapterPreview> firstPage(UUID importId, EpubPackageParser.Preview preview, int limit) {

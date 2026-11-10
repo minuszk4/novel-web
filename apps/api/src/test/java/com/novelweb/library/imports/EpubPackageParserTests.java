@@ -55,6 +55,7 @@ class EpubPackageParserTests {
 
         EpubPackageParser.Preview preview = parser.parse(epub, "ordered.epub", "application/epub+zip");
 
+        assertEquals("epub3-v2", preview.parserVersion());
         assertEquals("A Private Novel", preview.metadata().title());
         assertEquals("vi", preview.metadata().language());
         assertEquals(List.of("A. Author", "B. Author"), preview.metadata().creators());
@@ -63,6 +64,10 @@ class EpubPackageParserTests {
         assertEquals("First chapter", preview.chapters().get(0).title());
         assertEquals(2, preview.chapters().get(0).segmentCount());
         assertEquals("Opening heading", preview.chapters().get(0).textPreview());
+        assertEquals(List.of(
+                new EpubPackageParser.SourceSegment(0, "h1", "Opening heading"),
+                new EpubPackageParser.SourceSegment(1, "p", "Private preview text.")),
+                preview.chapters().get(0).segments());
         assertTrue(preview.chapters().get(0).textPreview().length() <= 280);
         assertEquals("Nested chapter", preview.chapters().get(1).title());
         assertEquals(2, preview.toc().size());
@@ -123,6 +128,83 @@ class EpubPackageParserTests {
         assertEquals(0, preview.chapters().get(0).index());
         assertEquals(1, preview.chapters().get(1).index());
         assertTrue(preview.warnings().stream().anyMatch(warning -> warning.code().equals("EPUB_CHAPTER_EMPTY")));
+        assertTrue(preview.chapters().get(0).segments().isEmpty());
+    }
+
+    @Test
+    void normalizesSourceSegmentsToNfcAndCollapsesWhitespace() throws IOException {
+        Path epub = writeEpub("normalized-segments.epub", validEntries(null,
+                "<html xmlns=\"http://www.w3.org/1999/xhtml\"><body><p>  Cafe&#x301;\u00a0  \n text </p></body></html>",
+                null));
+
+        EpubPackageParser.Preview preview = parser.parse(epub, "normalized-segments.epub", "application/epub+zip");
+
+        assertEquals(List.of(new EpubPackageParser.SourceSegment(0, "p", "Café text")),
+                preview.chapters().get(0).segments());
+    }
+
+    @Test
+    void preservesVersionOneBehaviorForAlreadyQueuedParseJobs() throws IOException {
+        Path epub = writeEpub("legacy-version.epub", validEntries(null,
+                "<html xmlns=\"http://www.w3.org/1999/xhtml\"><body><h1>Old heading</h1><p>Old body.</p></body></html>",
+                null));
+
+        EpubPackageParser.Preview preview = parser.parse(
+                epub, "legacy-version.epub", "application/epub+zip", "epub3-v1");
+
+        assertEquals("epub3-v1", preview.parserVersion());
+        assertEquals(2, preview.chapters().get(0).segmentCount());
+        assertEquals("Old heading", preview.chapters().get(0).textPreview());
+        assertTrue(preview.chapters().get(0).segments().isEmpty());
+    }
+
+    @Test
+    void rejectsOversizedSegmentAndExcessiveSegmentCountWithoutReturningPartialPreview() throws IOException {
+        Path oversized = writeEpub("oversized-segment.epub", validEntries(null,
+                "<html xmlns=\"http://www.w3.org/1999/xhtml\"><body><p>" + variedText(4001, 1)
+                        + "</p></body></html>",
+                null));
+        StringBuilder manyParagraphs = new StringBuilder("<html xmlns=\"http://www.w3.org/1999/xhtml\"><body>");
+        for (int index = 0; index < 5001; index++) {
+            manyParagraphs.append("<p>").append(variedText(12, index)).append("</p>");
+        }
+        manyParagraphs.append("</body></html>");
+        Path excessiveCount = writeEpub("excessive-segments.epub", validEntries(null, manyParagraphs.toString(), null));
+
+        assertEquals("EPUB_SEGMENT_TOO_LARGE", assertThrows(EpubPackageParser.EpubParseException.class,
+                () -> parser.parse(oversized, "oversized-segment.epub", "application/epub+zip")).code());
+        assertEquals("EPUB_SEGMENT_LIMIT_EXCEEDED", assertThrows(EpubPackageParser.EpubParseException.class,
+                () -> parser.parse(excessiveCount, "excessive-segments.epub", "application/epub+zip")).code());
+    }
+
+    @Test
+    void rejectsSpineThatExceedsTheChapterBound() throws IOException {
+        StringBuilder manifest = new StringBuilder();
+        StringBuilder spine = new StringBuilder();
+        for (int index = 0; index < 2001; index++) {
+            manifest.append("<item id=\"chapter-").append(index).append("\" href=\"Text/")
+                    .append(index).append(".xhtml\" media-type=\"application/xhtml+xml\"/>");
+            spine.append("<itemref idref=\"chapter-").append(index).append("\"/>");
+        }
+        String packageDocument = packageXml(metadataXml(), manifest.toString(), spine.toString(), "3.0");
+        Path epub = writeEpub("excessive-chapters.epub", entries(containerXml(), packageDocument,
+                "<html xmlns=\"http://www.w3.org/1999/xhtml\"><body><p>Readable.</p></body></html>"));
+
+        assertEquals("EPUB_SPINE_LIMIT_EXCEEDED", assertThrows(EpubPackageParser.EpubParseException.class,
+                () -> parser.parse(epub, "excessive-chapters.epub", "application/epub+zip")).code());
+    }
+
+    @Test
+    void rejectsSourceSegmentsWhenAggregateNormalizedBytesExceedLimit() throws IOException {
+        StringBuilder chapter = new StringBuilder("<html xmlns=\"http://www.w3.org/1999/xhtml\"><body>");
+        for (int index = 0; index < 99; index++) {
+            chapter.append("<p>").append(variedText(4000, index)).append("</p>");
+        }
+        chapter.append("</body></html>");
+        Path epub = writeEpub("aggregate-segment-bytes.epub", validEntries(null, chapter.toString(), null));
+
+        assertEquals("EPUB_SEGMENT_BYTES_LIMIT_EXCEEDED", assertThrows(EpubPackageParser.EpubParseException.class,
+                () -> parser.parse(epub, "aggregate-segment-bytes.epub", "application/epub+zip")).code());
     }
 
     @Test
@@ -177,6 +259,16 @@ class EpubPackageParserTests {
             String nav, String firstChapter, String secondChapter, String containerOverride,
             String metadataOverride, String version) {
         return validEntries(nav, firstChapter, secondChapter, containerOverride, metadataOverride, version, null);
+    }
+
+    private static String variedText(int length, int seed) {
+        StringBuilder value = new StringBuilder(length);
+        int state = seed + 1;
+        for (int index = 0; index < length; index++) {
+            state = state * 1_103_515_245 + 12_345;
+            value.append((char) ('a' + ((state >>> 16) & 0x7fff) % 26));
+        }
+        return value.toString();
     }
 
     private static List<ArchiveEntry> validEntries(

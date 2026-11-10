@@ -21,7 +21,7 @@ import tools.jackson.databind.ObjectMapper;
 @Profile("postgres")
 public class ImportParseService {
 
-    private static final String PARSER_VERSION = "epub3-v1";
+    private static final String PARSER_VERSION = EpubPackageParser.PARSER_VERSION;
     private static final int MAX_PREVIEW_BYTES = 1_048_576;
     private static final int MAX_WARNINGS = 100;
 
@@ -107,7 +107,7 @@ public class ImportParseService {
                         "IMPORT_SOURCE_CHECKSUM_MISMATCH", "Staged upload no longer matches its accepted digest.");
             }
             EpubPackageParser.Preview parsed = epubPackageParser.parse(
-                    fileStore.targetPath(claim.importId()), claim.filename(), claim.contentType());
+                    fileStore.targetPath(claim.importId()), claim.filename(), claim.contentType(), claim.parserVersion());
             EpubPackageParser.Preview bounded = withBoundedWarnings(parsed);
             byte[] previewBytes = objectMapper.writeValueAsBytes(bounded);
             if (previewBytes.length > MAX_PREVIEW_BYTES) {
@@ -147,7 +147,8 @@ public class ImportParseService {
             warnings.set(MAX_WARNINGS - 1, new EpubPackageParser.Warning(
                     "IMPORT_WARNINGS_TRUNCATED", "Additional parser warnings were omitted from this preview."));
         }
-        return new EpubPackageParser.Preview(parsed.metadata(), parsed.chapters(), parsed.toc(), List.copyOf(warnings));
+        return new EpubPackageParser.Preview(
+                parsed.parserVersion(), parsed.metadata(), parsed.chapters(), parsed.toc(), List.copyOf(warnings));
     }
 
     private static List<ImportWarning> toApiWarnings(List<EpubPackageParser.Warning> warnings) {

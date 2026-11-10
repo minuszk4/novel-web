@@ -196,7 +196,7 @@ public class ImportParseJobRepository {
             try {
                 ParseClaim candidate = null;
                 try (PreparedStatement select = connection.prepareStatement("""
-                        SELECT p.import_id, p.attempt, j.original_filename, j.declared_content_type,
+                        SELECT p.import_id, p.attempt, p.parser_version, j.original_filename, j.declared_content_type,
                                j.actual_size_bytes, j.content_sha256
                         FROM import_parse_jobs AS p
                         JOIN import_jobs AS j ON j.id = p.import_id
@@ -209,7 +209,8 @@ public class ImportParseJobRepository {
                         """); ResultSet row = select.executeQuery()) {
                     if (row.next()) {
                         candidate = new ParseClaim(row.getObject("import_id", UUID.class),
-                                row.getInt("attempt") + 1, row.getString("original_filename"),
+                                row.getInt("attempt") + 1, row.getString("parser_version"),
+                                row.getString("original_filename"),
                                 row.getString("declared_content_type"), row.getLong("actual_size_bytes"),
                                 row.getBytes("content_sha256"));
                     }
@@ -350,7 +351,7 @@ public class ImportParseJobRepository {
     public record UploadSource(UUID importId, String status, Instant createdAt, String filename, String contentType,
                                long sizeBytes, byte[] sha256, Instant expiresAt, boolean live) { }
 
-    public record ParseClaim(UUID importId, int attempt, String filename, String contentType,
+    public record ParseClaim(UUID importId, int attempt, String parserVersion, String filename, String contentType,
                              long sizeBytes, byte[] sha256) { }
 
     public record PreviewSummary(String title, String author, int chapterCount) { }
