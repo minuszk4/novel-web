@@ -291,7 +291,7 @@ public class SessionService {
         return parseAndHashSessionToken(token) != null;
     }
 
-    private static byte[] hashSessionToken(String sessionToken) {
+    static byte[] hashSessionToken(String sessionToken) {
         byte[] secret = Base64.getUrlDecoder().decode(sessionToken);
         return hash(secret);
     }

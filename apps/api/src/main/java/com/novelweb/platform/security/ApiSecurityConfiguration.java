@@ -49,6 +49,8 @@ public class ApiSecurityConfiguration {
                         authorize.requestMatchers(HttpMethod.GET, "/api/v1/auth/csrf").permitAll();
                         authorize.requestMatchers(HttpMethod.GET, "/api/v1/auth/me").permitAll();
                         authorize.requestMatchers(HttpMethod.POST, "/api/v1/auth/logout").permitAll();
+                        authorize.requestMatchers(HttpMethod.POST,
+                                "/api/v1/auth/logout-all/confirmation", "/api/v1/auth/logout-all").permitAll();
                     }
                     authorize.anyRequest().denyAll();
                 })

@@ -385,13 +385,53 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+  /api/v1/auth/logout-all/confirmation:
+    post:
+      operationId: issueLogoutAllConfirmation
+      tags: [Auth]
+      x-implementation-status: implemented-postgres-profile
+      summary: Issue a short-lived one-use logout-all confirmation
+      description: >-
+        Call only after the user explicitly confirms the all-session sign-out warning. The 256-bit token is
+        bound to the current active user and session, expires after five minutes, is returned once with no-store
+        headers, and is stored only as a hash. Issuing another token for the same session invalidates its prior
+        unconsumed token.
+      security:
+        - appSession: []
+          csrfToken: []
+      responses:
+        '200':
+          description: One-use confirmation token
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogoutAllConfirmationResponse'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
   /api/v1/auth/logout-all:
     post:
       operationId: logoutAllSessions
       tags: [Auth]
-      x-implementation-status: planned
+      x-implementation-status: implemented-postgres-profile
       summary: Revoke all sessions for the current user
-      description: Requires recent authentication or a server-issued one-use confirmation token. Does not revoke Google browser sessions.
+      description: >-
+        Atomically consumes a five-minute confirmation issued for this exact user/session and revokes all
+        current application sessions, including the caller's. A confirmation is one-use, stored only as a hash,
+        and cannot be used by another account or session. Invalid, expired, replayed or differently-bound tokens
+        revoke no sessions. Clears the caller cookie after success and never signs out of Google.
       security:
         - appSession: []
           csrfToken: []
@@ -408,9 +448,19 @@ paths:
             Set-Cookie:
               schema:
                 type: string
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
         '401':
           $ref: '#/components/responses/Problem'
         '403':
+          $ref: '#/components/responses/Problem'
+        '503':
           $ref: '#/components/responses/Problem'
   /api/v1/libraries:
     get:
@@ -1513,9 +1563,24 @@ components:
       properties:
         confirmationToken:
           type: string
-          minLength: 16
-          maxLength: 512
-          description: Short-lived, one-use server-issued confirmation; recent re-authentication may be represented by this token.
+          minLength: 43
+          maxLength: 43
+          pattern: '^[A-Za-z0-9_-]{43}$'
+          description: Five-minute one-use server-issued token bound to the current user and session.
+    LogoutAllConfirmationResponse:
+      type: object
+      additionalProperties: false
+      required: [confirmationToken, expiresAt]
+      properties:
+        confirmationToken:
+          type: string
+          minLength: 43
+          maxLength: 43
+          pattern: '^[A-Za-z0-9_-]{43}$'
+          description: 256-bit token; keep in memory only and send only to the logout-all endpoint.
+        expiresAt:
+          type: string
+          format: date-time
     LibrarySummary:
       type: object
       additionalProperties: false

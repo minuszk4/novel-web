@@ -16,6 +16,7 @@ import java.util.Arrays;
 import java.util.Base64;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -40,7 +41,10 @@ import com.novelweb.identity.auth.UnavailableGoogleIdentityException;
 import com.novelweb.identity.auth.GoogleIdTokenVerifier;
 import com.novelweb.identity.session.SessionService;
 import com.novelweb.identity.session.SessionCsrfTokenService;
+import com.novelweb.identity.session.LogoutAllConfirmationService;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -69,6 +73,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 @SpringBootTest
 @AutoConfigureMockMvc
 @ActiveProfiles("postgres")
+@TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @EnabledIfSystemProperty(named = "postgres.integration", matches = "true")
 @org.springframework.test.context.TestPropertySource(properties = {
         "novel.auth.google.rate-limit-refill-interval=24h",
@@ -92,7 +97,8 @@ class PostgresSchemaIntegrationTests {
             "google_auth_attempts",
             "google_auth_bootstrap_rate_limits",
             "policy_acceptances",
-            "auth_events");
+            "auth_events",
+            "session_revoke_confirmations");
 
     @Autowired
     private DataSource dataSource;
@@ -113,6 +119,9 @@ class PostgresSchemaIntegrationTests {
     private SessionCsrfTokenService csrfTokenService;
 
     @Autowired
+    private LogoutAllConfirmationService logoutAllConfirmationService;
+
+    @Autowired
     private MockMvc mockMvc;
 
     @Autowired
@@ -128,7 +137,7 @@ class PostgresSchemaIntegrationTests {
                      "SELECT COUNT(*) FROM databasechangelog");
              ResultSet changesets = changesetCount.executeQuery()) {
             changesets.next();
-            assertEquals(12, changesets.getInt(1), "unexpected number of applied baseline changesets");
+            assertEquals(15, changesets.getInt(1), "unexpected number of applied baseline changesets");
         }
 
         Set<String> actualTables = new HashSet<>();
@@ -146,6 +155,26 @@ class PostgresSchemaIntegrationTests {
             }
         }
         assertEquals(EXPECTED_APPLICATION_TABLES, actualTables);
+    }
+
+    @AfterAll
+    void integrationFixturesAreRemoved() throws SQLException {
+        for (String table : List.of(
+                "users",
+                "external_identities",
+                "sessions",
+                "google_auth_attempts",
+                "google_auth_bootstrap_rate_limits",
+                "policy_acceptances",
+                "auth_events",
+                "session_revoke_confirmations")) {
+            try (Connection connection = dataSource.getConnection();
+                 PreparedStatement count = connection.prepareStatement("SELECT COUNT(*) FROM " + table);
+                 ResultSet rows = count.executeQuery()) {
+                assertTrue(rows.next());
+                assertEquals(0, rows.getInt(1), "integration fixtures remain in " + table);
+            }
+        }
     }
 
     @Test
@@ -794,6 +823,187 @@ class PostgresSchemaIntegrationTests {
     }
 
     @Test
+    void logoutAllConfirmationIsNoStoreHashedBoundAndReplacedPerSession() throws Exception {
+        MvcResult unauthenticated = mockMvc.perform(post("/api/v1/auth/logout-all/confirmation")).andReturn();
+        assertEquals(403, unauthenticated.getResponse().getStatus());
+        assertTrue(unauthenticated.getResponse().getContentAsString().contains("CSRF_FAILED"));
+
+        UUID userId = createSessionTestUser("Logout All Confirmation Reader");
+        try {
+            SessionService.IssuedSession session = sessionService.create(userId).orElseThrow();
+            String csrfToken = csrfTokenService.tokenFor(session.cookieValue());
+            MvcResult first = mockMvc.perform(post("/api/v1/auth/logout-all/confirmation")
+                            .header("X-CSRF-Token", csrfToken)
+                            .cookie(new jakarta.servlet.http.Cookie("__Host-novel_session", session.cookieValue())))
+                    .andReturn();
+
+            assertEquals(200, first.getResponse().getStatus());
+            assertTrue(first.getResponse().getHeader("Cache-Control").contains("no-store"));
+            assertEquals("no-cache", first.getResponse().getHeader("Pragma"));
+            JsonNode firstBody = objectMapper.readTree(first.getResponse().getContentAsString());
+            String firstToken = firstBody.path("confirmationToken").asText();
+            assertTrue(firstToken.matches("[A-Za-z0-9_-]{43}"));
+            Instant firstExpiry = Instant.parse(firstBody.path("expiresAt").asText());
+            assertTrue(firstExpiry.isAfter(Instant.now()));
+            assertTrue(firstExpiry.isBefore(Instant.now().plusSeconds(6 * 60)));
+            assertTrue(confirmationHashStoredForUser(firstToken, userId, session.cookieValue()));
+
+            MvcResult replacement = mockMvc.perform(post("/api/v1/auth/logout-all/confirmation")
+                            .header("X-CSRF-Token", csrfToken)
+                            .cookie(new jakarta.servlet.http.Cookie("__Host-novel_session", session.cookieValue())))
+                    .andReturn();
+            assertEquals(200, replacement.getResponse().getStatus());
+            String replacementToken = objectMapper.readTree(replacement.getResponse().getContentAsString())
+                    .path("confirmationToken").asText();
+            assertFalse(confirmationHashExists(firstToken));
+            assertTrue(confirmationHashExists(replacementToken));
+            assertEquals(1, activeSessionCount(userId));
+        } finally {
+            deleteSessionTestUser(userId);
+        }
+    }
+
+    @Test
+    void logoutAllRejectsWrongUserOrSessionThenRevokesOnlyTheBoundUsersSessions() throws Exception {
+        UUID userId = createSessionTestUser("Logout All Owner");
+        UUID otherUserId = createSessionTestUser("Other Logout All Owner");
+        try {
+            SessionService.IssuedSession current = sessionService.create(userId).orElseThrow();
+            SessionService.IssuedSession otherDevice = sessionService.create(userId).orElseThrow();
+            SessionService.IssuedSession otherUserSession = sessionService.create(otherUserId).orElseThrow();
+            String currentCsrf = csrfTokenService.tokenFor(current.cookieValue());
+            MvcResult confirmationResponse = mockMvc.perform(post("/api/v1/auth/logout-all/confirmation")
+                            .header("X-CSRF-Token", currentCsrf)
+                            .cookie(new jakarta.servlet.http.Cookie("__Host-novel_session", current.cookieValue())))
+                    .andReturn();
+            String confirmationToken = objectMapper.readTree(confirmationResponse.getResponse().getContentAsString())
+                    .path("confirmationToken").asText();
+
+            MvcResult wrongSession = mockMvc.perform(post("/api/v1/auth/logout-all")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(Map.of("confirmationToken", confirmationToken)))
+                            .header("X-CSRF-Token", csrfTokenService.tokenFor(otherDevice.cookieValue()))
+                            .cookie(new jakarta.servlet.http.Cookie("__Host-novel_session", otherDevice.cookieValue())))
+                    .andReturn();
+            assertEquals(403, wrongSession.getResponse().getStatus());
+            assertTrue(wrongSession.getResponse().getContentAsString().contains("LOGOUT_ALL_CONFIRMATION_INVALID"));
+
+            MvcResult wrongUser = mockMvc.perform(post("/api/v1/auth/logout-all")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(Map.of("confirmationToken", confirmationToken)))
+                            .header("X-CSRF-Token", csrfTokenService.tokenFor(otherUserSession.cookieValue()))
+                            .cookie(new jakarta.servlet.http.Cookie("__Host-novel_session", otherUserSession.cookieValue())))
+                    .andReturn();
+            assertEquals(403, wrongUser.getResponse().getStatus());
+            assertTrue(wrongUser.getResponse().getContentAsString().contains("LOGOUT_ALL_CONFIRMATION_INVALID"));
+            assertEquals(2, activeSessionCount(userId));
+            assertEquals(1, activeSessionCount(otherUserId));
+
+            MvcResult success = mockMvc.perform(post("/api/v1/auth/logout-all")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(Map.of("confirmationToken", confirmationToken)))
+                            .header("X-CSRF-Token", currentCsrf)
+                            .cookie(new jakarta.servlet.http.Cookie("__Host-novel_session", current.cookieValue())))
+                    .andReturn();
+            assertEquals(204, success.getResponse().getStatus());
+            assertTrue(success.getResponse().getHeader("Cache-Control").contains("no-store"));
+            assertTrue(success.getResponse().getHeader("Set-Cookie").contains("Max-Age=0"));
+            assertEquals(0, activeSessionCount(userId));
+            assertEquals(1, activeSessionCount(otherUserId));
+
+            MvcResult replay = mockMvc.perform(post("/api/v1/auth/logout-all")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(Map.of("confirmationToken", confirmationToken)))
+                            .header("X-CSRF-Token", currentCsrf)
+                            .cookie(new jakarta.servlet.http.Cookie("__Host-novel_session", current.cookieValue())))
+                    .andReturn();
+            assertEquals(401, replay.getResponse().getStatus());
+            assertEquals(1, activeSessionCount(otherUserId));
+        } finally {
+            deleteSessionTestUser(userId);
+            deleteSessionTestUser(otherUserId);
+        }
+    }
+
+    @Test
+    void expiredLogoutAllConfirmationDoesNotRevokeSessions() throws Exception {
+        UUID userId = createSessionTestUser("Expired Logout All Reader");
+        try {
+            SessionService.IssuedSession session = sessionService.create(userId).orElseThrow();
+            String csrfToken = csrfTokenService.tokenFor(session.cookieValue());
+            MvcResult confirmationResponse = mockMvc.perform(post("/api/v1/auth/logout-all/confirmation")
+                            .header("X-CSRF-Token", csrfToken)
+                            .cookie(new jakarta.servlet.http.Cookie("__Host-novel_session", session.cookieValue())))
+                    .andReturn();
+            String confirmationToken = objectMapper.readTree(confirmationResponse.getResponse().getContentAsString())
+                    .path("confirmationToken").asText();
+            try (Connection connection = dataSource.getConnection();
+                 PreparedStatement expire = connection.prepareStatement("""
+                         UPDATE session_revoke_confirmations
+                         SET created_at = clock_timestamp() - INTERVAL '2 seconds',
+                             expires_at = clock_timestamp() - INTERVAL '1 second'
+                         WHERE token_hash = ?
+                         """)) {
+                expire.setBytes(1, sessionTokenHash(confirmationToken));
+                assertEquals(1, expire.executeUpdate());
+            }
+
+            MvcResult response = mockMvc.perform(post("/api/v1/auth/logout-all")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(Map.of("confirmationToken", confirmationToken)))
+                            .header("X-CSRF-Token", csrfToken)
+                            .cookie(new jakarta.servlet.http.Cookie("__Host-novel_session", session.cookieValue())))
+                    .andReturn();
+            assertEquals(403, response.getResponse().getStatus());
+            assertTrue(response.getResponse().getContentAsString().contains("LOGOUT_ALL_CONFIRMATION_INVALID"));
+            assertNull(response.getResponse().getHeader("Set-Cookie"));
+            assertEquals(1, activeSessionCount(userId));
+        } finally {
+            deleteSessionTestUser(userId);
+        }
+    }
+
+    @Test
+    void concurrentLogoutAllRequestsConsumeConfirmationOnlyOnce() throws Exception {
+        UUID userId = createSessionTestUser("Concurrent Logout All Reader");
+        int requestCount = 8;
+        ExecutorService executor = Executors.newFixedThreadPool(requestCount);
+        CountDownLatch ready = new CountDownLatch(requestCount);
+        CountDownLatch start = new CountDownLatch(1);
+        List<Future<Boolean>> results = new ArrayList<>();
+        try {
+            SessionService.IssuedSession current = sessionService.create(userId).orElseThrow();
+            sessionService.create(userId).orElseThrow();
+            LogoutAllConfirmationService.IssuedConfirmation confirmation = logoutAllConfirmationService
+                    .issue(userId, current.cookieValue()).orElseThrow();
+            for (int index = 0; index < requestCount; index++) {
+                results.add(executor.submit(() -> {
+                    ready.countDown();
+                    if (!start.await(10, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("Concurrent logout-all test did not start");
+                    }
+                    return logoutAllConfirmationService.consumeAndRevokeAll(
+                            userId, current.cookieValue(), confirmation.token());
+                }));
+            }
+
+            assertTrue(ready.await(10, TimeUnit.SECONDS));
+            start.countDown();
+            int winners = 0;
+            for (Future<Boolean> result : results) {
+                winners += result.get(20, TimeUnit.SECONDS) ? 1 : 0;
+            }
+            assertEquals(1, winners);
+            assertEquals(0, activeSessionCount(userId));
+        } finally {
+            start.countDown();
+            executor.shutdownNow();
+            assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS));
+            deleteSessionTestUser(userId);
+        }
+    }
+
+    @Test
     void googleBootstrapHttpEndpointStopsAtTenAttemptsPerClientAddress() throws Exception {
         String clientAddress = bootstrapTestClientAddress();
         List<UUID> correlationIds = new ArrayList<>();
@@ -1312,6 +1522,42 @@ class PostgresSchemaIntegrationTests {
         }
     }
 
+    private boolean confirmationHashStoredForUser(String token, UUID userId, String sessionToken) throws Exception {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement("""
+                     SELECT token_hash, user_id, session_id_hash
+                     FROM session_revoke_confirmations
+                     WHERE token_hash = ?
+                     """)) {
+            byte[] expectedConfirmationHash = sessionTokenHash(token);
+            byte[] expectedSessionHash = sessionTokenHash(sessionToken);
+            select.setBytes(1, expectedConfirmationHash);
+            try (ResultSet row = select.executeQuery()) {
+                if (!row.next()) {
+                    return false;
+                }
+                assertEquals(userId, row.getObject("user_id", UUID.class));
+                assertTrue(MessageDigest.isEqual(expectedConfirmationHash, row.getBytes("token_hash")));
+                assertTrue(MessageDigest.isEqual(expectedSessionHash, row.getBytes("session_id_hash")));
+                assertFalse(MessageDigest.isEqual(token.getBytes(StandardCharsets.US_ASCII), row.getBytes("token_hash")),
+                        "the database must never store the raw confirmation token");
+                return true;
+            }
+        }
+    }
+
+    private boolean confirmationHashExists(String token) throws Exception {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement(
+                     "SELECT COUNT(*) FROM session_revoke_confirmations WHERE token_hash = ?")) {
+            select.setBytes(1, sessionTokenHash(token));
+            try (ResultSet row = select.executeQuery()) {
+                assertTrue(row.next());
+                return row.getInt(1) == 1;
+            }
+        }
+    }
+
     private static byte[] sessionTokenHash(String token) throws Exception {
         byte[] secret = Base64.getUrlDecoder().decode(token);
         return MessageDigest.getInstance("SHA-256").digest(secret);
@@ -1343,6 +1589,11 @@ class PostgresSchemaIntegrationTests {
 
     private void deleteSessionTestUser(UUID userId) throws SQLException {
         try (Connection connection = dataSource.getConnection()) {
+            try (PreparedStatement deleteConfirmations = connection.prepareStatement(
+                    "DELETE FROM session_revoke_confirmations WHERE user_id = ?")) {
+                deleteConfirmations.setObject(1, userId);
+                deleteConfirmations.executeUpdate();
+            }
             try (PreparedStatement deletePolicyAcceptances = connection.prepareStatement(
                     "DELETE FROM policy_acceptances WHERE user_id = ?")) {
                 deletePolicyAcceptances.setObject(1, userId);
