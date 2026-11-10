@@ -136,6 +136,8 @@ JUnit XML/text reports are written to `target/surefire-reports/`; JaCoCo HTML/XM
 
 ### PostgreSQL 17 integration tests
 
+For a safe logical backup and restore drill against a disposable database, see [PostgreSQL backup and restore](docs/postgresql-recovery.md).
+
 The default `mvnw verify` remains database-free; all 62 PostgreSQL integration tests are skipped unless `postgres.integration=true` is explicitly set. To run the complete 138-test suite on PostgreSQL 17, start a **uniquely named disposable Compose project** separate from `novel-web-local`. Process environment overrides the local `.env` port/URL; Maven system properties must be quoted in PowerShell so each reaches the wrapper as one argument:
 
 ```powershell
