@@ -1,16 +1,16 @@
 <div class="reader-app" [class.reader-sepia]="demo.readerTheme() === 'sepia'" [class.reader-dark]="demo.readerTheme() === 'dark'">
   <header class="reader-topbar">
-    <a class="reader-back" routerLink="/works/demo-story" aria-label="Quay lại trang tác phẩm">← <span>Chi tiết tác phẩm</span></a>
+    <a class="reader-back" routerLink="/works/demo-story"><span aria-hidden="true">←</span> <span>Chi tiết tác phẩm</span></a>
     <div class="reader-chapter-context"><strong>{{ chapter.title }}</strong><span>{{ chapter.publishedLabel }} · TÁC PHẨM MẪU</span></div>
-    <div class="reader-tools"><button class="reader-tool" type="button" (click)="toggleToc()" aria-label="Mở mục lục" title="Mục lục · Alt+Shift+T" [attr.aria-expanded]="tocOpen()">☷ <span>Mục lục</span></button><button class="reader-tool" type="button" (click)="toggleSettings()" aria-label="Cài đặt trình đọc" title="Cài đặt đọc" [attr.aria-expanded]="settingsOpen()">Aa</button></div>
+    <div class="reader-tools"><button class="reader-tool" type="button" (click)="toggleToc()" aria-label="Mở mục lục" title="Mục lục · Alt+Shift+T" [attr.aria-expanded]="tocOpen()"><span aria-hidden="true">☷</span> <span>Mục lục</span></button><button class="reader-tool" type="button" (click)="toggleSettings()" title="Cài đặt đọc" [attr.aria-expanded]="settingsOpen()"><span aria-hidden="true">Aa</span><span class="visually-hidden">Cài đặt trình đọc</span></button></div>
   </header>
-  <div class="reader-demo-bar"><span class="sample-tag">VĂN BẢN MẪU</span><div class="reader-mode-switch" role="tablist" aria-label="Chế độ văn bản"><button type="button" role="tab" aria-selected="true">Nguyên tác</button><button type="button" role="tab" aria-selected="false" disabled title="Chưa có bản dịch cho tác phẩm mẫu">Song ngữ</button></div><span class="reader-progress-label">Tiến độ trong demo: {{ formatPercent(demo.progressFor(chapter.id)) }}</span></div>
+  <aside class="reader-demo-bar" aria-label="Thông tin bản demo"><span class="sample-tag">VĂN BẢN MẪU</span><div class="reader-mode-switch" role="tablist" aria-label="Chế độ văn bản"><button type="button" role="tab" aria-selected="true">Nguyên tác</button><button type="button" role="tab" aria-selected="false" disabled title="Chưa có bản dịch cho tác phẩm mẫu">Song ngữ</button></div><span class="reader-progress-label">Tiến độ trong demo: {{ formatPercent(demo.progressFor(chapter.id)) }}</span></aside>
 
   <main class="reader-main">
     @if (tocOpen()) {
       <button class="reader-panel-backdrop" type="button" aria-label="Đóng mục lục" (click)="tocOpen.set(false)"></button>
       <aside class="reader-side-panel toc-panel" aria-label="Mục lục chương">
-        <div class="panel-heading"><div><p class="eyebrow">MỤC LỤC</p><h2>Chương mẫu</h2></div><button class="icon-button" type="button" aria-label="Đóng mục lục" (click)="tocOpen.set(false)">×</button></div>
+        <div class="panel-heading"><div><p class="eyebrow">MỤC LỤC</p><h2>Chương mẫu</h2></div><button class="icon-button" type="button" (click)="tocOpen.set(false)"><span aria-hidden="true">×</span><span class="visually-hidden">Đóng mục lục</span></button></div>
         @for (item of chapters; track item.id; let index = $index) {
           <button class="toc-chapter" type="button" [class.current]="index === chapterIndex()" [attr.aria-current]="index === chapterIndex() ? 'page' : null" (click)="openChapter(item.id)"><span>{{ item.publishedLabel }}</span><strong>{{ item.title }}</strong><span class="toc-current-mark" aria-hidden="true">{{ index === chapterIndex() ? '●' : '' }}</span></button>
         }
@@ -19,14 +19,14 @@
     @if (settingsOpen()) {
       <button class="reader-panel-backdrop" type="button" aria-label="Đóng cài đặt đọc" (click)="settingsOpen.set(false)"></button>
       <aside class="reader-side-panel reader-settings-panel" aria-label="Cài đặt đọc">
-        <div class="panel-heading"><div><p class="eyebrow">TÙY CHỈNH</p><h2>Cài đặt đọc</h2></div><button class="icon-button" type="button" aria-label="Đóng cài đặt" (click)="settingsOpen.set(false)">×</button></div>
-        <div class="reader-setting-row"><span>Cỡ chữ <strong>{{ demo.readerFontSize() }} px</strong></span><div class="font-buttons"><button type="button" aria-label="Giảm cỡ chữ" [disabled]="demo.readerFontSize() <= 16" (click)="changeFont(-1)">A−</button><button type="button" aria-label="Tăng cỡ chữ" [disabled]="demo.readerFontSize() >= 28" (click)="changeFont(1)">A+</button></div></div>
+        <div class="panel-heading"><div><p class="eyebrow">TÙY CHỈNH</p><h2>Cài đặt đọc</h2></div><button class="icon-button" type="button" (click)="settingsOpen.set(false)"><span aria-hidden="true">×</span><span class="visually-hidden">Đóng cài đặt</span></button></div>
+        <div class="reader-setting-row"><span>Cỡ chữ <strong>{{ demo.readerFontSize() }} px</strong></span><div class="font-buttons"><button type="button" aria-label="A−" aria-describedby="font-decrease-description" [disabled]="demo.readerFontSize() <= 16" (click)="changeFont(-1)">A−</button><span id="font-decrease-description" class="visually-hidden">Giảm cỡ chữ</span><button type="button" aria-label="A+" aria-describedby="font-increase-description" [disabled]="demo.readerFontSize() >= 28" (click)="changeFont(1)">A+</button><span id="font-increase-description" class="visually-hidden">Tăng cỡ chữ</span></div></div>
         <fieldset class="theme-picker"><legend>Màu nền</legend><div><button type="button" [class.theme-selected]="demo.readerTheme() === 'light'" (click)="demo.setReaderTheme('light')">Sáng</button><button type="button" [class.theme-selected]="demo.readerTheme() === 'sepia'" (click)="demo.setReaderTheme('sepia')">Sepia</button><button type="button" [class.theme-selected]="demo.readerTheme() === 'dark'" (click)="demo.setReaderTheme('dark')">Tối</button></div></fieldset>
         <button class="reset-reader-button" type="button" (click)="demo.resetReaderPreferences()">Đặt lại mặc định</button>
       </aside>
     }
 
-    <div class="reader-content-scroller" (scroll)="recordProgress($event)">
+    <div class="reader-content-scroller" role="region" aria-label="Nội dung chương" tabindex="0" (scroll)="recordProgress($event)">
       <article class="reader-article" [style.font-size.px]="demo.readerFontSize()" aria-labelledby="reader-title">
         <p class="reader-work-label">{{ demoWorkTitle }}</p>
         <h1 id="reader-title" tabindex="-1">{{ chapter.title }}</h1>

@@ -1,6 +1,6 @@
 <section class="page-wrap narrow-page mobile-form-page">
   <a class="back-link" routerLink="/app/home">← Về trang chủ</a>
-  <div class="stepper" aria-label="Bước 1 trên 2"><span class="stepper-current">01</span><span class="stepper-line"></span><span>THÊM VÀO THƯ VIỆN RIÊNG</span></div>
+  <div class="stepper" role="group" aria-label="Bước 1 trên 2"><span class="stepper-current">01</span><span class="stepper-line"></span><span>THÊM VÀO THƯ VIỆN RIÊNG</span></div>
   <div class="page-heading"><p class="eyebrow">NHẬP TÁC PHẨM</p><h1>Mang câu chuyện của bạn về đây</h1><p>Chọn một tệp bạn có quyền sử dụng. Trong bản demo, tệp không được đọc hay tải lên.</p></div>
 
   <div class="demo-callout" role="note"><span class="callout-icon" aria-hidden="true">i</span><p><strong>Chỉ kiểm tra giao diện.</strong> Ta sẽ xem tên và dung lượng tệp để minh họa bước nhập. Chưa có bộ phân tích EPUB hay máy chủ lưu trữ.</p></div>
@@ -18,7 +18,7 @@
   }
 
   @if (demo.selectedFile(); as file) {
-    <div class="selected-file" aria-live="polite"><span class="file-type">{{ file.extension }}</span><span class="selected-file-copy"><strong>{{ file.name }}</strong><small>{{ formatSize(file.size) }} · {{ file.type }}</small></span><span class="selected-ok" aria-label="Đã chọn">✓</span></div>
+    <div class="selected-file" aria-live="polite"><span class="file-type">{{ file.extension }}</span><span class="selected-file-copy"><strong>{{ file.name }}</strong><small>{{ formatSize(file.size) }} · {{ file.type }}</small></span><span class="selected-ok" role="img" aria-label="Đã chọn">✓</span></div>
   }
 
   <label class="rights-check"><input type="checkbox" [checked]="demo.rightsConfirmed()" [disabled]="!demo.selectedFile()" (change)="demo.confirmImportRights($any($event.target).checked)" /><span class="check-visual" aria-hidden="true"></span><span>Tôi có quyền sử dụng và yêu cầu xử lý tệp này cho <strong>thư viện riêng</strong>. Xác nhận này không cho phép xuất bản hoặc chia sẻ.</span></label>
