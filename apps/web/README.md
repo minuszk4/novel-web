@@ -33,6 +33,22 @@ npm audit --audit-level=high
 
 `test:ci` writes JUnit XML to `reports/junit.xml` and HTML/Cobertura coverage under `coverage/web/`. Coverage includes all `src/**/*.ts` files except specs, so the current line-coverage result is a low baseline for a small foundation suite, not a release threshold. CI retains the JUnit and coverage artifacts for 14 days.
 
+## Browser regression checks
+
+Install the Chromium browser used by Playwright once on a new machine:
+
+```powershell
+npx playwright install chromium
+```
+
+Run the reader browser checks from this directory:
+
+```powershell
+npm run test:e2e
+```
+
+Playwright starts the Angular dev server on `127.0.0.1:4300`. The suite covers reader keyboard shortcuts, chapter route and heading focus, modal focus containment/restoration, backdrop close, and a 360px layout check. It writes JUnit output to `reports/e2e-junit.xml` and failure traces/screenshots to `reports/e2e-results/`; CI installs Chromium with system dependencies and retains these reports for 14 days.
+
 ## Reader keyboard controls
 
 - `Alt+Shift+T` toggles the table of contents.
