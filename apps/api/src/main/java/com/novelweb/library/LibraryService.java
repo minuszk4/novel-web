@@ -34,6 +34,22 @@ public class LibraryService {
         return repository.createLibrary(ownerUserId, name);
     }
 
+    public LibraryRepository.LibraryRecord createWorkspaceLibrary(
+            UUID actorUserId, UUID workspaceId, String requestedName) {
+        Objects.requireNonNull(actorUserId, "actor user id is required");
+        Objects.requireNonNull(workspaceId, "workspace id is required");
+        String name = requiredText(requestedName, "name", 120);
+        return repository.createWorkspaceLibrary(actorUserId, workspaceId, name);
+    }
+
+    public LibraryRepository.LibraryRecord movePersonalLibraryToWorkspace(
+            UUID actorUserId, UUID libraryId, UUID workspaceId) {
+        Objects.requireNonNull(actorUserId, "actor user id is required");
+        Objects.requireNonNull(libraryId, "library id is required");
+        Objects.requireNonNull(workspaceId, "workspace id is required");
+        return repository.movePersonalLibraryToWorkspace(actorUserId, libraryId, workspaceId);
+    }
+
     public List<LibraryRepository.LibraryRecord> listLibraries(UUID ownerUserId) {
         return listLibraries(ownerUserId, null, 100).items();
     }

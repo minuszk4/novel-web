@@ -57,7 +57,7 @@ public class LibraryRepository {
                 try (PreparedStatement insert = connection.prepareStatement("""
                         INSERT INTO libraries (id, owner_user_id, name, is_default)
                         VALUES (?, ?, ?, ?)
-                        RETURNING id, owner_user_id, name, visibility, is_default, created_at
+                        RETURNING id, owner_user_id, name, visibility, is_default, created_at, workspace_id
                         """)) {
                     insert.setObject(1, libraryId);
                     insert.setObject(2, ownerUserId);
@@ -82,13 +82,129 @@ public class LibraryRepository {
         }
     }
 
+    public LibraryRecord createWorkspaceLibrary(UUID actorUserId, UUID workspaceId, String name) {
+        Objects.requireNonNull(actorUserId, "actor user id is required");
+        Objects.requireNonNull(workspaceId, "workspace id is required");
+        UUID libraryId = UUID.randomUUID();
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement insert = connection.prepareStatement("""
+                     INSERT INTO libraries (id, owner_user_id, name, is_default, workspace_id)
+                     SELECT ?, m.user_id, ?, FALSE, w.id
+                     FROM workspaces w
+                     JOIN workspace_members m ON m.workspace_id = w.id
+                     JOIN users u ON u.id = m.user_id AND u.status = 'active'
+                     WHERE w.id = ? AND m.user_id = ? AND m.status = 'active'
+                       AND m.role IN ('owner', 'admin')
+                     RETURNING id, owner_user_id, name, visibility, is_default, created_at, workspace_id
+                     """)) {
+            insert.setObject(1, libraryId);
+            insert.setString(2, name);
+            insert.setObject(3, workspaceId);
+            insert.setObject(4, actorUserId);
+            try (ResultSet row = insert.executeQuery()) {
+                if (!row.next()) throw new LibraryNotFoundException();
+                return library(row);
+            }
+        } catch (LibraryNotFoundException exception) {
+            throw exception;
+        } catch (SQLException exception) {
+            if ("23505".equals(exception.getSQLState())) throw new LibraryNameConflictException();
+            throw new IllegalStateException("Unable to create a workspace library", exception);
+        }
+    }
+
+    public LibraryRecord movePersonalLibraryToWorkspace(UUID actorUserId, UUID libraryId, UUID workspaceId) {
+        Objects.requireNonNull(actorUserId, "actor user id is required");
+        Objects.requireNonNull(libraryId, "library id is required");
+        Objects.requireNonNull(workspaceId, "workspace id is required");
+        try (Connection connection = dataSource.getConnection()) {
+            connection.setAutoCommit(false);
+            try {
+                boolean isDefault;
+                try (PreparedStatement lock = connection.prepareStatement("""
+                        SELECT is_default FROM libraries
+                        WHERE id = ? AND owner_user_id = ? AND workspace_id IS NULL
+                          AND deleted_at IS NULL AND can_access_library(id, ?, TRUE)
+                        FOR UPDATE
+                        """)) {
+                    lock.setObject(1, libraryId);
+                    lock.setObject(2, actorUserId);
+                    lock.setObject(3, actorUserId);
+                    try (ResultSet row = lock.executeQuery()) {
+                        if (!row.next()) throw new LibraryNotFoundException();
+                        isDefault = row.getBoolean("is_default");
+                    }
+                }
+                if (isDefault) throw new DefaultLibraryCannotMoveException();
+
+                lockWorkspaceLibraryScope(connection, actorUserId, workspaceId);
+                LibraryRecord moved;
+                try (PreparedStatement update = connection.prepareStatement("""
+                        UPDATE libraries SET workspace_id = ?, updated_at = clock_timestamp()
+                        WHERE id = ? AND owner_user_id = ? AND workspace_id IS NULL AND deleted_at IS NULL
+                        RETURNING id, owner_user_id, name, visibility, is_default, created_at, workspace_id
+                        """)) {
+                    update.setObject(1, workspaceId);
+                    update.setObject(2, libraryId);
+                    update.setObject(3, actorUserId);
+                    try (ResultSet row = update.executeQuery()) {
+                        if (!row.next()) throw new LibraryNotFoundException();
+                        moved = library(row);
+                    }
+                }
+                try (PreparedStatement bump = connection.prepareStatement("""
+                        UPDATE workspaces
+                        SET scope_version = scope_version + 1, updated_at = clock_timestamp()
+                        WHERE id = ?
+                        """)) {
+                    bump.setObject(1, workspaceId);
+                    if (bump.executeUpdate() != 1) throw new LibraryNotFoundException();
+                }
+                connection.commit();
+                return moved;
+            } catch (SQLException | RuntimeException exception) {
+                connection.rollback();
+                throw exception;
+            }
+        } catch (LibraryRepositoryException exception) {
+            throw exception;
+        } catch (SQLException exception) {
+            if ("23505".equals(exception.getSQLState())) throw new LibraryNameConflictException();
+            throw new IllegalStateException("Unable to move the personal library into a workspace", exception);
+        }
+    }
+
+    private static void lockWorkspaceLibraryScope(Connection connection, UUID actorUserId, UUID workspaceId)
+            throws SQLException {
+        try (PreparedStatement lock = connection.prepareStatement(
+                "SELECT id FROM workspaces WHERE id = ? FOR UPDATE")) {
+            lock.setObject(1, workspaceId);
+            try (ResultSet row = lock.executeQuery()) {
+                if (!row.next()) throw new LibraryNotFoundException();
+            }
+        }
+        try (PreparedStatement membership = connection.prepareStatement("""
+                SELECT role FROM workspace_members
+                WHERE workspace_id = ? AND user_id = ? AND status = 'active'
+                FOR UPDATE
+                """)) {
+            membership.setObject(1, workspaceId);
+            membership.setObject(2, actorUserId);
+            try (ResultSet row = membership.executeQuery()) {
+                if (!row.next() || !List.of("owner", "admin").contains(row.getString("role"))) {
+                    throw new LibraryNotFoundException();
+                }
+            }
+        }
+    }
+
     public Slice<LibraryRecord> findLibraries(
             UUID ownerUserId, int limit, LibraryCursorCodec.Position cursor) {
         Objects.requireNonNull(ownerUserId, "owner user id is required");
         StringBuilder sql = new StringBuilder("""
-                SELECT l.id, l.owner_user_id, l.name, l.visibility, l.is_default, l.created_at
+                SELECT l.id, l.owner_user_id, l.name, l.visibility, l.is_default, l.created_at, l.workspace_id
                 FROM libraries l
-                WHERE l.owner_user_id = ? AND l.deleted_at IS NULL
+                WHERE can_access_library(l.id, ?, FALSE)
                 """);
         if (cursor != null) {
             sql.append("""
@@ -130,12 +246,12 @@ public class LibraryRepository {
         Objects.requireNonNull(libraryId, "library id is required");
         try (Connection connection = dataSource.getConnection();
              PreparedStatement select = connection.prepareStatement("""
-                     SELECT id, owner_user_id, name, visibility, is_default, created_at
+                     SELECT id, owner_user_id, name, visibility, is_default, created_at, workspace_id
                      FROM libraries
-                     WHERE owner_user_id = ? AND id = ? AND deleted_at IS NULL
+                     WHERE id = ? AND can_access_library(id, ?, FALSE)
                      """)) {
-            select.setObject(1, ownerUserId);
-            select.setObject(2, libraryId);
+            select.setObject(1, libraryId);
+            select.setObject(2, ownerUserId);
             try (ResultSet row = select.executeQuery()) {
                 return row.next() ? Optional.of(library(row)) : Optional.empty();
             }
@@ -160,7 +276,7 @@ public class LibraryRepository {
                                         source_kind, visibility, status, source_hash)
                      SELECT ?, l.id, l.owner_user_id, ?, ?, ?, 'imported', 'private', 'active', ?
                      FROM libraries l
-                     WHERE l.id = ? AND l.owner_user_id = ? AND l.deleted_at IS NULL
+                     WHERE l.id = ? AND can_access_library(l.id, ?, TRUE)
                      RETURNING id, library_id, owner_user_id, title, author, source_language,
                                visibility, status, source_hash, created_at, 0 AS chapter_count
                      """)) {
@@ -188,11 +304,11 @@ public class LibraryRepository {
         Objects.requireNonNull(workId, "work id is required");
         try (Connection connection = dataSource.getConnection();
              PreparedStatement select = connection.prepareStatement(workSelect() + """
-                     WHERE w.owner_user_id = ? AND w.id = ? AND w.deleted_at IS NULL
+                     WHERE w.id = ? AND can_access_library(w.library_id, ?, FALSE) AND w.deleted_at IS NULL
                      GROUP BY w.id
                      """)) {
-            select.setObject(1, ownerUserId);
-            select.setObject(2, workId);
+            select.setObject(1, workId);
+            select.setObject(2, ownerUserId);
             try (ResultSet row = select.executeQuery()) {
                 return row.next() ? Optional.of(work(row)) : Optional.empty();
             }
@@ -208,15 +324,17 @@ public class LibraryRepository {
         try (Connection connection = dataSource.getConnection()) {
             connection.setAutoCommit(false);
             try {
+                UUID workOwnerUserId;
                 try (PreparedStatement work = connection.prepareStatement("""
-                        SELECT id FROM works
-                        WHERE id = ? AND owner_user_id = ? AND deleted_at IS NULL
+                        SELECT id, owner_user_id FROM works
+                        WHERE id = ? AND can_access_library(library_id, ?, TRUE) AND deleted_at IS NULL
                         FOR UPDATE
                         """)) {
                     work.setObject(1, workId);
                     work.setObject(2, ownerUserId);
                     try (ResultSet row = work.executeQuery()) {
                         if (!row.next()) throw new WorkNotFoundException();
+                        workOwnerUserId = row.getObject("owner_user_id", UUID.class);
                     }
                 }
 
@@ -239,13 +357,14 @@ public class LibraryRepository {
                 }
 
                 try (PreparedStatement link = connection.prepareStatement("""
-                        INSERT INTO work_tags (owner_user_id, work_id, tag_id)
-                        VALUES (?, ?, ?)
+                        INSERT INTO work_tags (owner_user_id, work_id, tag_id, assigned_by_user_id)
+                        VALUES (?, ?, ?, ?)
                         ON CONFLICT (owner_user_id, work_id, tag_id) DO NOTHING
                         """)) {
-                    link.setObject(1, ownerUserId);
+                    link.setObject(1, workOwnerUserId);
                     link.setObject(2, workId);
                     link.setObject(3, tag.id());
+                    link.setObject(4, ownerUserId);
                     link.executeUpdate();
                 }
                 connection.commit();
@@ -276,15 +395,15 @@ public class LibraryRepository {
         String normalizedStatus = status == null ? "" : status;
         String escapedQuery = escapeLike(normalizedQuery);
         StringBuilder workSql = new StringBuilder(workSelect()).append("""
-                WHERE w.owner_user_id = ? AND w.library_id = ? AND w.deleted_at IS NULL
+                WHERE w.library_id = ? AND can_access_library(w.library_id, ?, FALSE) AND w.deleted_at IS NULL
                 """);
         if (!normalizedQuery.isEmpty()) workSql.append("AND (w.title ILIKE ? OR w.author ILIKE ?) ");
         if (!normalizedStatus.isEmpty()) workSql.append("AND w.status = ? ");
         if (!normalizedTag.isEmpty()) workSql.append("""
                 AND EXISTS (
                     SELECT 1 FROM work_tags wt
-                    JOIN tags t ON t.owner_user_id = wt.owner_user_id AND t.id = wt.tag_id
-                    WHERE wt.owner_user_id = w.owner_user_id AND wt.work_id = w.id
+                    JOIN tags t ON t.owner_user_id = wt.assigned_by_user_id AND t.id = wt.tag_id
+                    WHERE wt.work_id = w.id
                       AND t.slug = ? AND t.deleted_at IS NULL)
                 """);
         if (cursor != null) workSql.append("""
@@ -294,8 +413,8 @@ public class LibraryRepository {
         try (Connection connection = dataSource.getConnection();
              PreparedStatement select = connection.prepareStatement(workSql.toString())) {
             int parameter = 1;
-            select.setObject(parameter++, ownerUserId);
             select.setObject(parameter++, libraryId);
+            select.setObject(parameter++, ownerUserId);
             if (!normalizedQuery.isEmpty()) {
                 select.setString(parameter++, "%" + escapedQuery + "%");
                 select.setString(parameter++, "%" + escapedQuery + "%");
@@ -332,7 +451,7 @@ public class LibraryRepository {
              PreparedStatement insert = connection.prepareStatement("""
                      INSERT INTO volumes (id, work_id, ordinal, title)
                      SELECT ?, w.id, ?, ? FROM works w
-                     WHERE w.id = ? AND w.owner_user_id = ? AND w.deleted_at IS NULL
+                     WHERE w.id = ? AND can_access_library(w.library_id, ?, TRUE) AND w.deleted_at IS NULL
                      RETURNING id, work_id, ordinal, title, created_at
                      """)) {
             insert.setObject(1, volumeId);
@@ -361,7 +480,7 @@ public class LibraryRepository {
              PreparedStatement insert = connection.prepareStatement("""
                      INSERT INTO chapters (id, work_id, volume_id, ordinal, title, source_language)
                      SELECT ?, w.id, CAST(? AS UUID), ?, ?, ? FROM works w
-                     WHERE w.id = ? AND w.owner_user_id = ? AND w.deleted_at IS NULL
+                     WHERE w.id = ? AND can_access_library(w.library_id, ?, TRUE) AND w.deleted_at IS NULL
                        AND (CAST(? AS UUID) IS NULL OR EXISTS (
                            SELECT 1 FROM volumes v WHERE v.id = CAST(? AS UUID) AND v.work_id = w.id))
                      RETURNING id, work_id, volume_id, ordinal, title, source_language,
@@ -405,7 +524,7 @@ public class LibraryRepository {
                 try (PreparedStatement lock = connection.prepareStatement("""
                         SELECT c.work_id FROM chapters c
                         JOIN works w ON w.id = c.work_id
-                        WHERE c.id = ? AND w.owner_user_id = ? AND w.deleted_at IS NULL
+                        WHERE c.id = ? AND can_access_library(w.library_id, ?, TRUE) AND w.deleted_at IS NULL
                           AND c.deleted_at IS NULL
                         FOR UPDATE OF c
                         """)) {
@@ -497,7 +616,8 @@ public class LibraryRepository {
                      SELECT c.id, c.work_id, c.volume_id, c.ordinal, c.title, c.source_language,
                             c.source_revision_id, c.status, c.created_at
                      FROM chapters c JOIN works w ON w.id = c.work_id
-                     WHERE c.id = ? AND w.owner_user_id = ? AND c.deleted_at IS NULL AND w.deleted_at IS NULL
+                     WHERE c.id = ? AND can_access_library(w.library_id, ?, FALSE)
+                       AND c.deleted_at IS NULL AND w.deleted_at IS NULL
                      """)) {
             select.setObject(1, chapterId);
             select.setObject(2, ownerUserId);
@@ -526,7 +646,7 @@ public class LibraryRepository {
                                          media_type, byte_size, original_name, status)
                      SELECT ?, l.owner_user_id, l.id, ?, ?, ?, ?, ?, 'staged'
                      FROM libraries l
-                     WHERE l.id = ? AND l.owner_user_id = ? AND l.deleted_at IS NULL
+                     WHERE l.id = ? AND can_access_library(l.id, ?, TRUE)
                      RETURNING id, owner_user_id, library_id, storage_key, content_hash,
                                media_type, byte_size, original_name, status, created_at
                      """)) {
@@ -567,7 +687,8 @@ public class LibraryRepository {
                 row.getString("name"),
                 row.getString("visibility"),
                 row.getBoolean("is_default"),
-                instant(row, "created_at"));
+                instant(row, "created_at"),
+                row.getObject("workspace_id", UUID.class));
     }
 
     private static WorkRecord work(ResultSet row) throws SQLException {
@@ -624,7 +745,8 @@ public class LibraryRepository {
     }
 
     public record LibraryRecord(
-            UUID id, UUID ownerUserId, String name, String visibility, boolean isDefault, Instant createdAt) {
+            UUID id, UUID ownerUserId, String name, String visibility, boolean isDefault,
+            Instant createdAt, UUID workspaceId) {
     }
 
     public record WorkRecord(
@@ -712,31 +834,37 @@ public class LibraryRepository {
     public record TagRecord(UUID id, UUID ownerUserId, String slug, String name, Instant createdAt) {
     }
 
-    public static class LibraryOwnerNotFoundException extends RuntimeException {
+    public static class LibraryRepositoryException extends RuntimeException {
     }
 
-    public static class LibraryNameConflictException extends RuntimeException {
+    public static class LibraryOwnerNotFoundException extends LibraryRepositoryException {
     }
 
-    public static class LibraryNotFoundException extends RuntimeException {
+    public static class LibraryNameConflictException extends LibraryRepositoryException {
     }
 
-    public static class DuplicateImportedWorkException extends RuntimeException {
+    public static class LibraryNotFoundException extends LibraryRepositoryException {
     }
 
-    public static class WorkNotFoundException extends RuntimeException {
+    public static class DefaultLibraryCannotMoveException extends LibraryRepositoryException {
     }
 
-    public static class ChapterNotFoundException extends RuntimeException {
+    public static class DuplicateImportedWorkException extends LibraryRepositoryException {
     }
 
-    public static class OrderConflictException extends RuntimeException {
+    public static class WorkNotFoundException extends LibraryRepositoryException {
     }
 
-    public static class DuplicateRevisionException extends RuntimeException {
+    public static class ChapterNotFoundException extends LibraryRepositoryException {
     }
 
-    public static class DuplicateAssetException extends RuntimeException {
+    public static class OrderConflictException extends LibraryRepositoryException {
+    }
+
+    public static class DuplicateRevisionException extends LibraryRepositoryException {
+    }
+
+    public static class DuplicateAssetException extends LibraryRepositoryException {
     }
 
     public record Slice<T>(List<T> items, boolean hasMore, LibraryCursorCodec.Position nextPosition) {

@@ -178,7 +178,7 @@ class PostgresSchemaIntegrationTests {
                      "SELECT COUNT(*) FROM databasechangelog");
              ResultSet changesets = changesetCount.executeQuery()) {
             changesets.next();
-            assertEquals(39, changesets.getInt(1), "unexpected number of applied changesets");
+            assertEquals(40, changesets.getInt(1), "unexpected number of applied changesets");
         }
 
         Set<String> actualTables = new HashSet<>();
@@ -445,6 +445,133 @@ class PostgresSchemaIntegrationTests {
                     () -> workspaceService.transferOwnership(ownerId, createdWorkspaceId, readerId));
         } finally {
             if (workspaceId != null) deleteWorkspaceTestData(workspaceId);
+            deleteSessionTestUser(ownerId);
+            deleteSessionTestUser(adminId);
+            deleteSessionTestUser(editorId);
+            deleteSessionTestUser(readerId);
+            deleteSessionTestUser(outsiderId);
+        }
+    }
+
+    @Test
+    void workspaceRolesScopeLibraryAndContentReadsWritesAndSearch() throws Exception {
+        UUID ownerId = createSessionTestUser("Workspace Library Owner");
+        UUID adminId = createSessionTestUser("Workspace Library Admin");
+        UUID editorId = createSessionTestUser("Workspace Library Editor");
+        UUID readerId = createSessionTestUser("Workspace Library Reader");
+        UUID outsiderId = createSessionTestUser("Other Workspace Owner");
+        UUID workspaceId = null;
+        UUID otherWorkspaceId = null;
+        try {
+            WorkspaceRepository.WorkspaceRecord workspace =
+                    workspaceService.createWorkspace(ownerId, "Shared Shelf Team");
+            UUID createdWorkspaceId = workspace.id();
+            workspaceId = createdWorkspaceId;
+            workspaceService.addMember(ownerId, workspaceId, adminId, WorkspaceRepository.Role.ADMIN);
+            workspaceService.addMember(ownerId, workspaceId, editorId, WorkspaceRepository.Role.EDITOR);
+            workspaceService.addMember(ownerId, workspaceId, readerId, WorkspaceRepository.Role.READER);
+
+            LibraryRepository.LibraryRecord defaultLibrary = libraryService.createLibrary(ownerId, "My Personal Shelf");
+            LibraryRepository.LibraryRecord movableLibrary = libraryService.createLibrary(ownerId, "Research Shelf");
+            LibraryRepository.LibraryRecord workspaceLibrary =
+                    libraryService.createWorkspaceLibrary(ownerId, createdWorkspaceId, "Collaborative Shelf");
+            LibraryRepository.LibraryRecord adminLibrary =
+                    libraryService.createWorkspaceLibrary(adminId, createdWorkspaceId, "Admin Shelf");
+            assertEquals(createdWorkspaceId, workspaceLibrary.workspaceId());
+            assertEquals(createdWorkspaceId, adminLibrary.workspaceId());
+            assertThrows(LibraryRepository.DefaultLibraryCannotMoveException.class,
+                    () -> libraryService.movePersonalLibraryToWorkspace(
+                            ownerId, defaultLibrary.id(), createdWorkspaceId));
+            LibraryRepository.LibraryRecord movedLibrary = libraryService.movePersonalLibraryToWorkspace(
+                    ownerId, movableLibrary.id(), createdWorkspaceId);
+            assertEquals(createdWorkspaceId, movedLibrary.workspaceId());
+
+            LibraryRepository.WorkRecord ownerWork = libraryService.createPrivateImportedWork(
+                    ownerId, workspaceLibrary.id(), "Shared Story", "Author A", "vi", sha256("shared-owner-work"));
+            LibraryRepository.WorkRecord editorWork = libraryService.createPrivateImportedWork(
+                    editorId, workspaceLibrary.id(), "Editor Story", "Author B", "vi", sha256("shared-editor-work"));
+            assertEquals(ownerId, editorWork.ownerUserId(), "shared work keeps library creator as data owner");
+            libraryService.addTagToWork(editorId, ownerWork.id(), "Shared Tag");
+
+            List<UUID> editorLibraryIds = libraryService.listLibraries(editorId).stream()
+                    .map(LibraryRepository.LibraryRecord::id).toList();
+            assertTrue(editorLibraryIds.contains(workspaceLibrary.id()));
+            assertTrue(editorLibraryIds.contains(movedLibrary.id()));
+            assertFalse(editorLibraryIds.contains(defaultLibrary.id()));
+            assertTrue(libraryService.findOwnedWork(readerId, ownerWork.id()).isPresent());
+            LibraryService.Page<LibraryRepository.WorkRecord> tagSearch = libraryService.listWorks(
+                    readerId, workspaceLibrary.id(), "Shared", "shared-tag", "active", null, 10);
+            assertEquals(List.of(ownerWork.id()), tagSearch.items().stream()
+                    .map(LibraryRepository.WorkRecord::id).toList());
+
+            LibraryRepository.VolumeRecord volume = libraryService.createVolume(
+                    editorId, ownerWork.id(), 1, "Shared Volume");
+            LibraryRepository.ChapterRecord chapter = libraryService.createChapter(
+                    editorId, ownerWork.id(), volume.id(), 1, "Shared Chapter", "vi");
+            LibraryRepository.RevisionRecord revision = libraryService.appendChapterRevision(
+                    editorId, chapter.id(), "plain_text", "Shared chapter content.",
+                    List.of(new LibraryService.NewSegment(1, "paragraph", "Shared chapter content.", "p1")));
+            assertEquals(1, revision.revisionNo());
+            assertTrue(libraryService.findOwnedChapter(readerId, chapter.id()).isPresent());
+            LibraryRepository.AssetRecord asset = libraryService.registerAsset(
+                    editorId, workspaceLibrary.id(), "workspace/" + UUID.randomUUID(),
+                    sha256("workspace-cover"), "image/webp", 4096, "shared-cover.webp");
+            assertEquals(ownerId, asset.ownerUserId());
+
+            assertThrows(LibraryRepository.LibraryNotFoundException.class,
+                    () -> libraryService.createWorkspaceLibrary(
+                            editorId, createdWorkspaceId, "Editor Created Shelf"));
+            assertThrows(LibraryRepository.LibraryNotFoundException.class,
+                    () -> libraryService.createPrivateImportedWork(
+                            readerId, workspaceLibrary.id(), "Reader Write", "Author", "vi",
+                            sha256("reader-write")));
+            assertThrows(LibraryRepository.WorkNotFoundException.class,
+                    () -> libraryService.addTagToWork(readerId, ownerWork.id(), "forbidden"));
+            assertThrows(LibraryRepository.WorkNotFoundException.class,
+                    () -> libraryService.createVolume(readerId, ownerWork.id(), 2, "Reader Volume"));
+            assertThrows(LibraryRepository.WorkNotFoundException.class,
+                    () -> libraryService.createChapter(
+                            readerId, ownerWork.id(), null, 2, "Reader Chapter", "vi"));
+            assertThrows(LibraryRepository.ChapterNotFoundException.class,
+                    () -> libraryService.appendChapterRevision(
+                            readerId, chapter.id(), "plain_text", "Unauthorized edit", List.of()));
+            assertThrows(LibraryRepository.LibraryNotFoundException.class,
+                    () -> libraryService.registerAsset(readerId, workspaceLibrary.id(),
+                            "workspace/reader-forbidden", sha256("reader-asset"),
+                            "image/webp", 100, "reader.webp"));
+
+            WorkspaceRepository.WorkspaceRecord otherWorkspace =
+                    workspaceService.createWorkspace(outsiderId, "Separate Team");
+            UUID createdOtherWorkspaceId = otherWorkspace.id();
+            otherWorkspaceId = createdOtherWorkspaceId;
+            LibraryRepository.LibraryRecord otherLibrary =
+                    libraryService.createWorkspaceLibrary(outsiderId, createdOtherWorkspaceId, "Separate Shelf");
+            LibraryRepository.WorkRecord otherWork = libraryService.createPrivateImportedWork(
+                    outsiderId, otherLibrary.id(), "Separate Story", "Author", "vi",
+                    sha256("separate-work"));
+            assertTrue(libraryService.findOwnedWork(outsiderId, ownerWork.id()).isEmpty());
+            assertTrue(libraryService.findOwnedWork(readerId, otherWork.id()).isEmpty());
+            assertThrows(LibraryRepository.LibraryNotFoundException.class,
+                    () -> libraryService.listWorks(
+                            outsiderId, workspaceLibrary.id(), "", null, null, null, 10));
+            assertThrows(LibraryRepository.LibraryNotFoundException.class,
+                    () -> libraryService.movePersonalLibraryToWorkspace(
+                            outsiderId, defaultLibrary.id(), createdOtherWorkspaceId));
+
+            WorkspaceRepository.MemberRecord revoked = workspaceService.revokeMember(
+                    ownerId, workspaceId, readerId);
+            assertEquals(WorkspaceRepository.MemberStatus.REVOKED, revoked.status());
+            assertTrue(libraryService.findOwnedWork(readerId, ownerWork.id()).isEmpty());
+            assertFalse(libraryService.listLibraries(readerId).stream()
+                    .anyMatch(library -> library.id().equals(workspaceLibrary.id())));
+        } finally {
+            deleteLibraryTestData(ownerId);
+            deleteLibraryTestData(adminId);
+            deleteLibraryTestData(editorId);
+            deleteLibraryTestData(readerId);
+            deleteLibraryTestData(outsiderId);
+            if (workspaceId != null) deleteWorkspaceTestData(workspaceId);
+            if (otherWorkspaceId != null) deleteWorkspaceTestData(otherWorkspaceId);
             deleteSessionTestUser(ownerId);
             deleteSessionTestUser(adminId);
             deleteSessionTestUser(editorId);
@@ -2013,8 +2140,9 @@ class PostgresSchemaIntegrationTests {
     private void deleteLibraryTestData(UUID ownerId) throws SQLException {
         try (Connection connection = dataSource.getConnection()) {
             try (PreparedStatement deleteWorkTags = connection.prepareStatement(
-                    "DELETE FROM work_tags WHERE owner_user_id = ?")) {
+                    "DELETE FROM work_tags WHERE owner_user_id = ? OR assigned_by_user_id = ?")) {
                 deleteWorkTags.setObject(1, ownerId);
+                deleteWorkTags.setObject(2, ownerId);
                 deleteWorkTags.executeUpdate();
             }
             try (PreparedStatement deleteSegments = connection.prepareStatement("""
