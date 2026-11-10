@@ -85,7 +85,7 @@ export class ReaderPageComponent {
   onKeydown(event: KeyboardEvent): void {
     const target = event.target as HTMLElement | null;
     if (target?.closest('input, textarea, select, [contenteditable="true"]')) return;
-    if (event.altKey || event.ctrlKey || event.metaKey) return;
+    if (event.ctrlKey || event.metaKey) return;
 
     if (event.key === 'Escape' && (this.tocOpen() || this.settingsOpen())) {
       this.tocOpen.set(false);

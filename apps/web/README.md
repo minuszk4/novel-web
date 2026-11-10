@@ -33,6 +33,14 @@ npm audit --audit-level=high
 
 `test:ci` writes JUnit XML to `reports/junit.xml` and HTML/Cobertura coverage under `coverage/web/`. Coverage includes all `src/**/*.ts` files except specs, so the current line-coverage result is a low baseline for a small foundation suite, not a release threshold. CI retains the JUnit and coverage artifacts for 14 days.
 
+## Reader keyboard controls
+
+- `Alt+Shift+T` toggles the table of contents.
+- `Alt+Shift+J` opens the next chapter; `Alt+Shift+K` opens the previous chapter.
+- `Escape` closes the open table of contents or reader settings panel.
+
+The shortcuts do not run while focus is in a text-entry control and are ignored when Control or Meta is also held. The visible Reader controls remain available as alternatives. These interactions are demo-only and do not persist across reloads.
+
 ## Routes in this slice
 
 - `/` — product introduction.
