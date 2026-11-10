@@ -13,7 +13,9 @@ import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.util.Base64;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
+import java.util.regex.Pattern;
 
 import javax.sql.DataSource;
 
@@ -27,6 +29,7 @@ public class GoogleAuthAttemptService {
 
     private static final int NONCE_BYTES = 32;
     private static final Duration MAXIMUM_ATTEMPT_TTL = Duration.ofMinutes(15);
+    private static final Pattern NONCE_PATTERN = Pattern.compile("[A-Za-z0-9_-]{43}");
 
     private final DataSource dataSource;
     private final Duration attemptTtl;
@@ -77,6 +80,56 @@ public class GoogleAuthAttemptService {
         return new CreatedAttempt(nonce, safeReturnTo, expiresAt, correlationId);
     }
 
+    public Optional<ConsumedAttempt> consumeOnce(String nonce) {
+        if (!isGeneratedNonce(nonce)) {
+            return Optional.empty();
+        }
+
+        try (Connection connection = dataSource.getConnection()) {
+            connection.setAutoCommit(false);
+            try {
+                Optional<ConsumedAttempt> consumedAttempt;
+                try (PreparedStatement consume = connection.prepareStatement("""
+                        UPDATE google_auth_attempts
+                        SET consumed_at = clock_timestamp()
+                        WHERE nonce_hash = ?
+                          AND consumed_at IS NULL
+                          AND expires_at > clock_timestamp()
+                        RETURNING safe_return_path, correlation_id
+                        """)) {
+                    consume.setBytes(1, sha256(nonce));
+                    try (ResultSet consumed = consume.executeQuery()) {
+                        consumedAttempt = consumed.next()
+                                ? Optional.of(new ConsumedAttempt(
+                                        consumed.getString("safe_return_path"),
+                                        consumed.getObject("correlation_id", UUID.class)))
+                                : Optional.empty();
+                    }
+                }
+                connection.commit();
+                return consumedAttempt;
+            } catch (SQLException | RuntimeException exception) {
+                connection.rollback();
+                throw exception;
+            }
+        } catch (SQLException exception) {
+            throw new IllegalStateException("Unable to consume a Google sign-in attempt", exception);
+        }
+    }
+
+    private static boolean isGeneratedNonce(String nonce) {
+        if (nonce == null || !NONCE_PATTERN.matcher(nonce).matches()) {
+            return false;
+        }
+        try {
+            byte[] decoded = Base64.getUrlDecoder().decode(nonce);
+            return decoded.length == NONCE_BYTES
+                    && Base64.getUrlEncoder().withoutPadding().encodeToString(decoded).equals(nonce);
+        } catch (IllegalArgumentException exception) {
+            return false;
+        }
+    }
+
     private static byte[] sha256(String value) {
         try {
             return MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8));
@@ -86,5 +139,8 @@ public class GoogleAuthAttemptService {
     }
 
     public record CreatedAttempt(String nonce, String returnTo, Instant expiresAt, UUID correlationId) {
+    }
+
+    public record ConsumedAttempt(String returnTo, UUID correlationId) {
     }
 }

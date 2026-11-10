@@ -1,27 +1,35 @@
 package com.novelweb.platform.postgres;
 
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.test.context.ActiveProfiles;
-
-import com.novelweb.identity.auth.GoogleAuthAttemptService;
-
-import javax.sql.DataSource;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Savepoint;
 import java.sql.Timestamp;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+
+import javax.sql.DataSource;
+
+import com.novelweb.identity.auth.GoogleAuthAttemptService;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.context.ActiveProfiles;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -169,6 +177,88 @@ class PostgresSchemaIntegrationTests {
             for (String nonce : nonces) {
                 deleteAuthAttempt(sha256(nonce));
             }
+        }
+    }
+
+    @Test
+    void googleAuthAttemptIsConsumedAtMostOnce() throws Exception {
+        GoogleAuthAttemptService.CreatedAttempt attempt = googleAuthAttemptService.create(
+                "/app/library", UUID.randomUUID());
+        byte[] nonceHash = sha256(attempt.nonce());
+        try {
+            Optional<GoogleAuthAttemptService.ConsumedAttempt> consumed =
+                    googleAuthAttemptService.consumeOnce(attempt.nonce());
+
+            assertTrue(consumed.isPresent());
+            assertEquals("/app/library", consumed.orElseThrow().returnTo());
+            assertEquals(attempt.correlationId(), consumed.orElseThrow().correlationId());
+            assertTrue(googleAuthAttemptService.consumeOnce(attempt.nonce()).isEmpty(),
+                    "a replay must not consume the same attempt twice");
+            assertTrue(googleAuthAttemptService.consumeOnce("not-a-valid-nonce").isEmpty());
+        } finally {
+            deleteAuthAttempt(nonceHash);
+        }
+    }
+
+    @Test
+    void expiredGoogleAuthAttemptCannotBeConsumed() throws Exception {
+        GoogleAuthAttemptService.CreatedAttempt attempt = googleAuthAttemptService.create(
+                "/app/home", UUID.randomUUID());
+        byte[] nonceHash = sha256(attempt.nonce());
+        try {
+            try (Connection connection = dataSource.getConnection();
+                 PreparedStatement expire = connection.prepareStatement("""
+                         UPDATE google_auth_attempts
+                         SET expires_at = CURRENT_TIMESTAMP - INTERVAL '1 millisecond'
+                         WHERE nonce_hash = ?
+                         """)) {
+                expire.setBytes(1, nonceHash);
+                assertEquals(1, expire.executeUpdate());
+            }
+
+            assertTrue(googleAuthAttemptService.consumeOnce(attempt.nonce()).isEmpty(),
+                    "an expired attempt must not return its stored path");
+        } finally {
+            deleteAuthAttempt(nonceHash);
+        }
+    }
+
+    @Test
+    void concurrentGoogleAuthAttemptConsumersHaveOnlyOneWinner() throws Exception {
+        GoogleAuthAttemptService.CreatedAttempt attempt = googleAuthAttemptService.create(
+                "/app/reader", UUID.randomUUID());
+        byte[] nonceHash = sha256(attempt.nonce());
+        int consumers = 5;
+        ExecutorService executor = Executors.newFixedThreadPool(consumers);
+        CountDownLatch ready = new CountDownLatch(consumers);
+        CountDownLatch start = new CountDownLatch(1);
+        List<Future<Optional<GoogleAuthAttemptService.ConsumedAttempt>>> results = new ArrayList<>();
+
+        try {
+            for (int index = 0; index < consumers; index++) {
+                results.add(executor.submit(() -> {
+                    ready.countDown();
+                    if (!start.await(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("consumer start signal timed out");
+                    }
+                    return googleAuthAttemptService.consumeOnce(attempt.nonce());
+                }));
+            }
+
+            assertTrue(ready.await(5, TimeUnit.SECONDS), "all consumers should reach the start barrier");
+            start.countDown();
+            long winners = 0;
+            for (Future<Optional<GoogleAuthAttemptService.ConsumedAttempt>> result : results) {
+                if (result.get(10, TimeUnit.SECONDS).isPresent()) {
+                    winners++;
+                }
+            }
+            assertEquals(1, winners, "the database compare-and-set should admit one concurrent consumer");
+        } finally {
+            start.countDown();
+            executor.shutdownNow();
+            assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
+            deleteAuthAttempt(nonceHash);
         }
     }
 
