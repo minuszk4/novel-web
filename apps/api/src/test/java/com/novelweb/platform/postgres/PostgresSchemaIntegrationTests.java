@@ -76,6 +76,8 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
         "novel.auth.google.web-client-id=novel-web-integration-test.apps.googleusercontent.com",
         "novel.auth.google.credential-callback-uri=https://api.example.test/api/v1/auth/google/credential",
         "novel.security.csrf.hmac-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "novel.policy.terms-version=terms-current-1",
+        "novel.policy.privacy-notice-version=privacy-current-1",
         "novel.web.cors.allowed-origins=https://app.example.test"
 })
 class PostgresSchemaIntegrationTests {
@@ -642,6 +644,156 @@ class PostgresSchemaIntegrationTests {
     }
 
     @Test
+    void currentUserRequiresSessionAndReturnsOnlyTheSessionOwnersCurrentProfile() throws Exception {
+        MvcResult unauthenticated = mockMvc.perform(get("/api/v1/auth/me")).andReturn();
+        assertEquals(401, unauthenticated.getResponse().getStatus());
+        assertTrue(unauthenticated.getResponse().getContentAsString().contains("UNAUTHENTICATED"));
+
+        UUID userId = createSessionTestUser("Current User Reader");
+        try {
+            addSessionTestGoogleIdentity(userId);
+            addPolicyAcceptance(userId, "TERMS", "terms-current-1", "TERMS_ACCEPTED");
+            addPolicyAcceptance(userId, "PRIVACY_NOTICE", "privacy-current-1", "PRIVACY_NOTICE_ACKNOWLEDGED");
+            SessionService.IssuedSession session = sessionService.create(userId).orElseThrow();
+
+            MvcResult authenticated = mockMvc.perform(get("/api/v1/auth/me")
+                            .queryParam("userId", UUID.randomUUID().toString())
+                            .cookie(new jakarta.servlet.http.Cookie("__Host-novel_session", session.cookieValue())))
+                    .andReturn();
+
+            assertEquals(200, authenticated.getResponse().getStatus());
+            assertTrue(authenticated.getResponse().getHeader("Cache-Control").contains("no-store"));
+            assertEquals("no-cache", authenticated.getResponse().getHeader("Pragma"));
+            assertNull(authenticated.getResponse().getHeader("Set-Cookie"));
+            JsonNode body = objectMapper.readTree(authenticated.getResponse().getContentAsString());
+            assertEquals(userId.toString(), body.path("user").path("id").asText());
+            assertEquals("Current User Reader", body.path("user").path("displayName").asText());
+            assertEquals("active", body.path("user").path("status").asText());
+            assertEquals("session-" + userId + "@example.test", body.path("user").path("contactEmail").asText());
+            assertTrue(body.path("user").path("avatarUrl").isNull());
+            assertEquals(List.of("google"), objectMapper.convertValue(
+                    body.path("identityProviders"), objectMapper.getTypeFactory()
+                            .constructCollectionType(List.class, String.class)));
+            assertEquals("terms-current-1", body.path("policy").path("termsAcceptedVersion").asText());
+            assertEquals("privacy-current-1", body.path("policy")
+                    .path("privacyNoticeAcknowledgedVersion").asText());
+            assertTrue(body.path("policy").path("requiredAcceptanceComplete").asBoolean());
+            assertEquals("personal", body.path("roles").get(0).path("scope").asText());
+            assertEquals(0, body.path("roles").get(0).path("permissions").size());
+            assertFalse(body.path("features").path("privateLibraryEnabled").asBoolean());
+            assertFalse(body.path("features").path("importEnabled").asBoolean());
+            assertFalse(body.path("features").path("readerEnabled").asBoolean());
+            assertFalse(body.path("features").path("cultivationEnabled").asBoolean());
+            assertFalse(body.path("features").path("commerceSandboxEnabled").asBoolean());
+            assertFalse(authenticated.getResponse().getContentAsString().contains(session.cookieValue()));
+        } finally {
+            deleteSessionTestUser(userId);
+        }
+    }
+
+    @Test
+    void currentUserMarksOldPolicyVersionsIncomplete() throws Exception {
+        UUID userId = createSessionTestUser("Old Policy Reader");
+        try {
+            addPolicyAcceptance(userId, "TERMS", "terms-old", "TERMS_ACCEPTED");
+            addPolicyAcceptance(userId, "PRIVACY_NOTICE", "privacy-old", "PRIVACY_NOTICE_ACKNOWLEDGED");
+            SessionService.IssuedSession session = sessionService.create(userId).orElseThrow();
+
+            MvcResult response = mockMvc.perform(get("/api/v1/auth/me")
+                            .cookie(new jakarta.servlet.http.Cookie("__Host-novel_session", session.cookieValue())))
+                    .andReturn();
+
+            assertEquals(200, response.getResponse().getStatus());
+            JsonNode policy = objectMapper.readTree(response.getResponse().getContentAsString()).path("policy");
+            assertEquals("terms-old", policy.path("termsAcceptedVersion").asText());
+            assertEquals("privacy-old", policy.path("privacyNoticeAcknowledgedVersion").asText());
+            assertFalse(policy.path("requiredAcceptanceComplete").asBoolean());
+        } finally {
+            deleteSessionTestUser(userId);
+        }
+    }
+
+    @Test
+    void currentUserRejectsAUserWhoseAccountWasSuspendedAfterSessionIssue() throws Exception {
+        UUID userId = createSessionTestUser("Suspended Reader");
+        try {
+            SessionService.IssuedSession session = sessionService.create(userId).orElseThrow();
+            try (Connection connection = dataSource.getConnection();
+                 PreparedStatement suspend = connection.prepareStatement(
+                         "UPDATE users SET status = 'suspended' WHERE id = ?")) {
+                suspend.setObject(1, userId);
+                assertEquals(1, suspend.executeUpdate());
+            }
+
+            MvcResult response = mockMvc.perform(get("/api/v1/auth/me")
+                            .cookie(new jakarta.servlet.http.Cookie("__Host-novel_session", session.cookieValue())))
+                    .andReturn();
+            assertEquals(401, response.getResponse().getStatus());
+            assertTrue(response.getResponse().getContentAsString().contains("UNAUTHENTICATED"));
+        } finally {
+            deleteSessionTestUser(userId);
+        }
+    }
+
+    @Test
+    void logoutRevokesTheSessionClearsTheCookieAndCanBeRepeated() throws Exception {
+        UUID userId = createSessionTestUser("Logout Reader");
+        try {
+            SessionService.IssuedSession session = sessionService.create(userId).orElseThrow();
+            String csrfToken = csrfTokenService.tokenFor(session.cookieValue());
+
+            MvcResult first = mockMvc.perform(post("/api/v1/auth/logout")
+                            .header("X-CSRF-Token", csrfToken)
+                            .cookie(new jakarta.servlet.http.Cookie("__Host-novel_session", session.cookieValue())))
+                    .andReturn();
+            assertEquals(204, first.getResponse().getStatus());
+            assertTrue(first.getResponse().getHeader("Cache-Control").contains("no-store"));
+            assertTrue(first.getResponse().getHeader("Set-Cookie").contains("__Host-novel_session="));
+            assertTrue(first.getResponse().getHeader("Set-Cookie").contains("Max-Age=0"));
+            assertTrue(first.getResponse().getHeader("Set-Cookie").contains("Secure"));
+            assertTrue(first.getResponse().getHeader("Set-Cookie").contains("HttpOnly"));
+            assertTrue(first.getResponse().getHeader("Set-Cookie").contains("SameSite=Lax"));
+            assertFalse(first.getResponse().getHeader("Set-Cookie").contains("Domain="));
+            assertTrue(sessionService.validateAndTouch(session.cookieValue()).isEmpty());
+
+            MvcResult repeated = mockMvc.perform(post("/api/v1/auth/logout")
+                            .header("X-CSRF-Token", csrfToken)
+                            .cookie(new jakarta.servlet.http.Cookie("__Host-novel_session", session.cookieValue())))
+                    .andReturn();
+            assertEquals(204, repeated.getResponse().getStatus());
+            assertTrue(repeated.getResponse().getHeader("Set-Cookie").contains("Max-Age=0"));
+        } finally {
+            deleteSessionTestUser(userId);
+        }
+    }
+
+    @Test
+    void logoutWithoutASessionIsIdempotentAndStillClearsCookie() throws Exception {
+        MvcResult response = mockMvc.perform(post("/api/v1/auth/logout")).andReturn();
+        assertEquals(204, response.getResponse().getStatus());
+        assertTrue(response.getResponse().getHeader("Set-Cookie").contains("Max-Age=0"));
+    }
+
+    @Test
+    void logoutRejectsInvalidCsrfWithoutRevokingTheCurrentSession() throws Exception {
+        UUID userId = createSessionTestUser("Logout CSRF Reader");
+        try {
+            SessionService.IssuedSession session = sessionService.create(userId).orElseThrow();
+            MvcResult response = mockMvc.perform(post("/api/v1/auth/logout")
+                            .header("X-CSRF-Token", "invalid-token")
+                            .cookie(new jakarta.servlet.http.Cookie("__Host-novel_session", session.cookieValue())))
+                    .andReturn();
+
+            assertEquals(403, response.getResponse().getStatus());
+            assertTrue(response.getResponse().getContentAsString().contains("CSRF_FAILED"));
+            assertNull(response.getResponse().getHeader("Set-Cookie"));
+            assertTrue(sessionService.validateAndTouch(session.cookieValue()).isPresent());
+        } finally {
+            deleteSessionTestUser(userId);
+        }
+    }
+
+    @Test
     void googleBootstrapHttpEndpointStopsAtTenAttemptsPerClientAddress() throws Exception {
         String clientAddress = bootstrapTestClientAddress();
         List<UUID> correlationIds = new ArrayList<>();
@@ -1110,6 +1262,36 @@ class PostgresSchemaIntegrationTests {
         return userId;
     }
 
+    private void addSessionTestGoogleIdentity(UUID userId) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement insert = connection.prepareStatement("""
+                     INSERT INTO external_identities (
+                         id, user_id, provider, issuer, subject, provider_email, provider_email_verified)
+                     VALUES (?, ?, 'google', 'https://accounts.google.com', ?, ?, TRUE)
+                     """)) {
+            insert.setObject(1, UUID.randomUUID());
+            insert.setObject(2, userId);
+            insert.setString(3, "current-user-" + userId);
+            insert.setString(4, "session-" + userId + "@example.test");
+            assertEquals(1, insert.executeUpdate());
+        }
+    }
+
+    private void addPolicyAcceptance(UUID userId, String type, String version, String decision) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement insert = connection.prepareStatement("""
+                     INSERT INTO policy_acceptances (id, user_id, policy_type, version, decision, source)
+                     VALUES (?, ?, ?, ?, ?, 'web')
+                     """)) {
+            insert.setObject(1, UUID.randomUUID());
+            insert.setObject(2, userId);
+            insert.setString(3, type);
+            insert.setString(4, version);
+            insert.setString(5, decision);
+            assertEquals(1, insert.executeUpdate());
+        }
+    }
+
     private boolean sessionHashMatches(String token, UUID userId) throws Exception {
         try (Connection connection = dataSource.getConnection();
              PreparedStatement select = connection.prepareStatement(
@@ -1161,6 +1343,16 @@ class PostgresSchemaIntegrationTests {
 
     private void deleteSessionTestUser(UUID userId) throws SQLException {
         try (Connection connection = dataSource.getConnection()) {
+            try (PreparedStatement deletePolicyAcceptances = connection.prepareStatement(
+                    "DELETE FROM policy_acceptances WHERE user_id = ?")) {
+                deletePolicyAcceptances.setObject(1, userId);
+                deletePolicyAcceptances.executeUpdate();
+            }
+            try (PreparedStatement deleteIdentities = connection.prepareStatement(
+                    "DELETE FROM external_identities WHERE user_id = ?")) {
+                deleteIdentities.setObject(1, userId);
+                deleteIdentities.executeUpdate();
+            }
             try (PreparedStatement deleteSessions = connection.prepareStatement(
                     "DELETE FROM sessions WHERE user_id = ?")) {
                 deleteSessions.setObject(1, userId);

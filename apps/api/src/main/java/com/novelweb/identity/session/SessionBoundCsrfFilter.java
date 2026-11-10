@@ -20,6 +20,7 @@ import jakarta.servlet.http.HttpServletResponse;
 public class SessionBoundCsrfFilter extends OncePerRequestFilter {
 
     private static final String GOOGLE_CREDENTIAL_CALLBACK = "/api/v1/auth/google/credential";
+    private static final String LOGOUT = "/api/v1/auth/logout";
     private static final Set<String> SAFE_METHODS = Set.of("GET", "HEAD", "OPTIONS", "TRACE");
 
     private final SessionCsrfTokenService csrfTokenService;
@@ -41,6 +42,10 @@ public class SessionBoundCsrfFilter extends OncePerRequestFilter {
         }
 
         String sessionToken = sessionCookie(request);
+        if (LOGOUT.equals(request.getRequestURI()) && !SessionService.isCanonicalSessionToken(sessionToken)) {
+            filterChain.doFilter(request, response);
+            return;
+        }
         String csrfToken = request.getHeader(SessionCsrfTokenService.TOKEN_HEADER_NAME);
         if (!csrfTokenService.matches(sessionToken, csrfToken)) {
             problemWriter.write(request, response, HttpServletResponse.SC_FORBIDDEN, "Forbidden", "CSRF_FAILED",

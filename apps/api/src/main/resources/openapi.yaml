@@ -216,19 +216,36 @@ paths:
     get:
       operationId: getCurrentUser
       tags: [Auth]
-      x-implementation-status: planned
+      x-implementation-status: implemented-postgres-profile
       summary: Get the current application user and access state
-      description: Returns only first-party profile, consent, role and feature-availability data; never returns Google subject, credential, session secret or provider claims.
+      description: >-
+        Returns only the authenticated principal's first-party profile, linked provider names, latest recorded
+        policy versions, base personal scope and server feature flags. requiredAcceptanceComplete is true only
+        when both configured active policy versions match the latest recorded decisions; it stays false when
+        either active version is not configured. Product permissions and features remain disabled until their
+        backend routes are implemented. The response is no-store and never returns Google subject, credential,
+        session secret or raw provider claims.
       security:
         - appSession: []
       responses:
         '200':
           description: Current application user
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/CurrentUserResponse'
         '401':
+          $ref: '#/components/responses/Problem'
+        '503':
           $ref: '#/components/responses/Problem'
   /api/v1/auth/policies/current:
     get:
@@ -287,9 +304,13 @@ paths:
     post:
       operationId: logoutCurrentSession
       tags: [Auth]
-      x-implementation-status: planned
+      x-implementation-status: implemented-postgres-profile
       summary: Revoke the current application session
-      description: Revokes the current session; repeated revocation has no further effect. Requires the application session and CSRF token; does not sign the user out of Google.
+      description: >-
+        Revokes the current application session and always clears the host-only cookie. Repeated requests are
+        idempotent. If a canonical session cookie is present, a matching X-CSRF-Token is required. A request
+        with no usable session cookie may only clear the cookie without CSRF because it has no authenticated
+        session to mutate. This does not sign the user out of Google.
       security:
         - appSession: []
           csrfToken: []
@@ -301,7 +322,17 @@ paths:
               description: Expired session cookie with the same Path and host-only scope.
               schema:
                 type: string
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
         '403':
+          $ref: '#/components/responses/Problem'
+        '503':
           $ref: '#/components/responses/Problem'
   /api/v1/auth/sessions:
     get:
@@ -1333,7 +1364,7 @@ components:
         displayName:
           type: string
           minLength: 1
-          maxLength: 120
+          maxLength: 200
         contactEmail:
           type: [string, 'null']
           format: email

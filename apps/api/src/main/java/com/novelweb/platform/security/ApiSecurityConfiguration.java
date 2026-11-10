@@ -3,9 +3,9 @@ package com.novelweb.platform.security;
 import java.time.Duration;
 import java.util.List;
 
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.core.env.Environment;
 import org.springframework.core.env.Profiles;
 import org.springframework.http.HttpMethod;
@@ -47,6 +47,8 @@ public class ApiSecurityConfiguration {
                         authorize.requestMatchers(HttpMethod.GET, "/api/v1/auth/google/bootstrap").permitAll();
                         authorize.requestMatchers(HttpMethod.POST, "/api/v1/auth/google/credential").permitAll();
                         authorize.requestMatchers(HttpMethod.GET, "/api/v1/auth/csrf").permitAll();
+                        authorize.requestMatchers(HttpMethod.GET, "/api/v1/auth/me").permitAll();
+                        authorize.requestMatchers(HttpMethod.POST, "/api/v1/auth/logout").permitAll();
                     }
                     authorize.anyRequest().denyAll();
                 })
