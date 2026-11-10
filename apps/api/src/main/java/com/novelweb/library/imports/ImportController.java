@@ -136,6 +136,10 @@ public class ImportController {
                         "IMPORT_FILE_SIZE_MISMATCH",
                         "The uploaded file size does not match the size declared when the target was created.",
                         correlationId);
+                case FILE_CONTENT_INVALID -> problem(HttpStatus.UNPROCESSABLE_CONTENT,
+                        "IMPORT_CONTENT_INVALID",
+                        "The uploaded bytes do not match the selected format or exceed safe archive limits.",
+                        correlationId);
                 case STORAGE_NOT_CONFIGURED -> problem(HttpStatus.SERVICE_UNAVAILABLE,
                         "IMPORT_STORAGE_NOT_CONFIGURED", "Private import storage is unavailable.", correlationId);
                 default -> problem(HttpStatus.INTERNAL_SERVER_ERROR, "IMPORT_UPLOAD_FAILED",

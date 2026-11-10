@@ -44,6 +44,12 @@ class ImportCreationServiceTests {
         assertEquals(Outcome.FILE_METADATA_INVALID,
                 ImportCreationService.validate(command("story.epub", "text/plain", 12L, true, "v1"), MAX_BYTES)
                         .outcome());
+        assertEquals(Outcome.FILE_METADATA_INVALID,
+                ImportCreationService.validate(command("story.html", "text/plain", 12L, true, "v1"), MAX_BYTES)
+                        .outcome());
+        assertEquals(Outcome.FILE_METADATA_INVALID,
+                ImportCreationService.validate(command("story.txt", "text/html", 12L, true, "v1"), MAX_BYTES)
+                        .outcome());
     }
 
     @Test

@@ -30,21 +30,28 @@ import org.springframework.stereotype.Service;
 public class ImportCreationService {
 
     private static final SecureRandom RANDOM = new SecureRandom();
-    private static final Set<String> TEXT_TYPES = Set.of(
-            "text/plain", "text/markdown", "text/x-markdown", "text/html", "application/xhtml+xml",
-            "application/octet-stream");
+    private static final Set<String> PLAIN_TYPES = Set.of("text/plain", "application/octet-stream");
+    private static final Set<String> MARKDOWN_TYPES = Set.of(
+            "text/plain", "text/markdown", "text/x-markdown", "application/octet-stream");
+    private static final Set<String> HTML_TYPES = Set.of(
+            "text/html", "application/xhtml+xml", "application/octet-stream");
     private static final Set<String> EPUB_TYPES = Set.of(
             "application/epub+zip", "application/zip", "application/octet-stream");
 
     private final DataSource dataSource;
     private final ImportStagingProperties properties;
     private final ImportStagingFileStore fileStore;
+    private final ImportContentValidator contentValidator;
 
     public ImportCreationService(
-            DataSource dataSource, ImportStagingProperties properties, ImportStagingFileStore fileStore) {
+            DataSource dataSource,
+            ImportStagingProperties properties,
+            ImportStagingFileStore fileStore,
+            ImportContentValidator contentValidator) {
         this.dataSource = dataSource;
         this.properties = properties;
         this.fileStore = fileStore;
+        this.contentValidator = contentValidator;
     }
 
     public CreateResult create(UUID userId, CreateCommand command) {
@@ -180,6 +187,7 @@ public class ImportCreationService {
                 }
 
                 stored = fileStore.store(jobId, input, job.declaredSizeBytes());
+                contentValidator.validate(stored.path(), job.originalFilename(), job.declaredContentType());
                 try (PreparedStatement update = connection.prepareStatement("""
                         UPDATE import_jobs
                         SET status = 'uploaded', upload_token_sha256 = NULL, upload_token_expires_at = NULL,
@@ -201,6 +209,10 @@ public class ImportCreationService {
                 rollback(connection, exception);
                 deleteStored(jobId, exception);
                 return UploadResult.failure(Outcome.FILE_SIZE_MISMATCH);
+            } catch (ImportContentValidator.InvalidContentException exception) {
+                rollback(connection, exception);
+                deleteStored(jobId, exception);
+                return UploadResult.failure(Outcome.FILE_CONTENT_INVALID);
             } catch (IOException exception) {
                 rollback(connection, exception);
                 if (stored != null) deleteStored(jobId, exception);
@@ -248,9 +260,9 @@ public class ImportCreationService {
 
     private static boolean supportedType(String extension, String contentType) {
         if (extension.equals("epub")) return contentType == null || EPUB_TYPES.contains(contentType);
-        if (Set.of("txt", "html", "htm", "md", "markdown").contains(extension)) {
-            return contentType == null || TEXT_TYPES.contains(contentType);
-        }
+        if (Set.of("html", "htm").contains(extension)) return contentType == null || HTML_TYPES.contains(contentType);
+        if (extension.equals("txt")) return contentType == null || PLAIN_TYPES.contains(contentType);
+        if (Set.of("md", "markdown").contains(extension)) return contentType == null || MARKDOWN_TYPES.contains(contentType);
         return false;
     }
 
@@ -482,6 +494,7 @@ public class ImportCreationService {
             throws SQLException {
         try (PreparedStatement select = connection.prepareStatement("""
                 SELECT upload_token_sha256, upload_token_expires_at, declared_size_bytes,
+                       original_filename, declared_content_type,
                        (upload_token_expires_at > clock_timestamp()) AS token_live
                 FROM import_jobs
                 WHERE id = ? AND user_id = ? AND status = 'upload_pending'
@@ -493,7 +506,8 @@ public class ImportCreationService {
                 if (!row.next()) return Optional.empty();
                 return Optional.of(new UploadJob(row.getBytes("upload_token_sha256"),
                         row.getObject("upload_token_expires_at", OffsetDateTime.class).toInstant(),
-                        row.getLong("declared_size_bytes"), row.getBoolean("token_live")));
+                        row.getLong("declared_size_bytes"), row.getString("original_filename"),
+                        row.getString("declared_content_type"), row.getBoolean("token_live")));
             }
         }
     }
@@ -621,11 +635,18 @@ public class ImportCreationService {
         UPLOAD_TARGET_NOT_FOUND,
         UPLOAD_TARGET_EXPIRED,
         FILE_TOO_LARGE,
-        FILE_SIZE_MISMATCH
+        FILE_SIZE_MISMATCH,
+        FILE_CONTENT_INVALID
     }
 
     private enum PolicyState { COMPLETE, REQUIRED, NOT_CONFIGURED }
     private record Receipt(String statementVersion, Instant consumedAt) { }
-    private record UploadJob(byte[] tokenHash, Instant tokenExpiresAt, long declaredSizeBytes, boolean live) { }
+    private record UploadJob(
+            byte[] tokenHash,
+            Instant tokenExpiresAt,
+            long declaredSizeBytes,
+            String originalFilename,
+            String declaredContentType,
+            boolean live) { }
 
 }

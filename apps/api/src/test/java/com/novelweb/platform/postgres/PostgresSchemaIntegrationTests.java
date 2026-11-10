@@ -612,6 +612,24 @@ class PostgresSchemaIntegrationTests {
             assertEquals(404, revokedToken.getResponse().getStatus());
             assertFalse(Files.exists(importStagingFileStore.targetPath(importId)));
 
+            byte[] invalidUtf8 = new byte[content.length];
+            Arrays.fill(invalidUtf8, (byte) 'x');
+            invalidUtf8[0] = (byte) 0xc3;
+            invalidUtf8[1] = 0x28;
+            MvcResult invalidContent = mockMvc.perform(put("/api/v1/imports/{id}/content", importId)
+                            .cookie(actorCookie)
+                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                            .header("X-Import-Upload-Token", rotatedToken)
+                            .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                            .content(invalidUtf8))
+                    .andReturn();
+            assertEquals(422, invalidContent.getResponse().getStatus());
+            assertTrue(invalidContent.getResponse().getContentAsString().contains("IMPORT_CONTENT_INVALID"));
+            assertEquals("upload_pending", importJobStatus(importId));
+            assertTrue(Arrays.equals(sha256(rotatedToken.getBytes(StandardCharsets.US_ASCII)),
+                    importJobTokenHash(importId)));
+            assertFalse(Files.exists(importStagingFileStore.targetPath(importId)));
+
             MvcResult uploaded = mockMvc.perform(put("/api/v1/imports/{id}/content", importId)
                             .cookie(actorCookie)
                             .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)

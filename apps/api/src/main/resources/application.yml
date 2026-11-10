@@ -36,3 +36,9 @@ novel:
       max-upload-bytes: ${NOVEL_IMPORT_MAX_UPLOAD_BYTES:52428800}
       upload-target-ttl: ${NOVEL_IMPORT_TARGET_TTL:15m}
       job-ttl: ${NOVEL_IMPORT_JOB_TTL:24h}
+      max-archive-entries: ${NOVEL_IMPORT_MAX_ARCHIVE_ENTRIES:1000}
+      max-archive-entry-bytes: ${NOVEL_IMPORT_MAX_ARCHIVE_ENTRY_BYTES:52428800}
+      max-archive-expanded-bytes: ${NOVEL_IMPORT_MAX_ARCHIVE_EXPANDED_BYTES:104857600}
+      max-archive-compression-ratio: ${NOVEL_IMPORT_MAX_ARCHIVE_COMPRESSION_RATIO:100.0}
+      max-archive-depth: ${NOVEL_IMPORT_MAX_ARCHIVE_DEPTH:32}
+      validation-timeout: ${NOVEL_IMPORT_VALIDATION_TIMEOUT:15s}

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 3.0.0
+  version: 3.0.1
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -1115,8 +1115,11 @@ paths:
         target includes a random one-time token; only its SHA-256 is persisted. Retrying the same receipt and metadata
         returns the same pending job with a rotated target token. A changed request cannot reuse the receipt. Browser
         filename, MIME type and declared size remain untrusted; bytes are checked against the declared length when
-        uploaded and require format/signature and archive safety checks before parsing. Local filesystem staging is
-        intended for the single-node development profile; production object-storage deployment remains a gate.
+        uploaded. UTF-8 text/HTML content is checked against its extension; EPUB must have the required first stored
+        mimetype entry and container document. ZIP entry count, path traversal/depth, per-entry and total expanded
+        bytes, compression ratio and validation time are bounded before the job is marked uploaded. This is a safe
+        envelope check, not full EPUB/package parsing. Local filesystem staging is intended for the single-node
+        development profile; production object-storage deployment remains a gate.
       security:
         - appSession: []
           csrfToken: []
@@ -1241,7 +1244,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Problem'
         '422':
-          description: Actual byte count does not match the declared file size.
+          description: The byte count mismatches the declaration, text encoding/type does not match, or EPUB fails archive safety checks. The file is deleted and the one-time target remains available for a corrected retry.
           content:
             application/problem+json:
               schema:
