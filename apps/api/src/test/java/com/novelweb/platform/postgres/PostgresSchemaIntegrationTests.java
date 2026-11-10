@@ -46,6 +46,8 @@ import com.novelweb.identity.session.LogoutAllConfirmationService;
 import com.novelweb.library.LibraryCursorCodec;
 import com.novelweb.library.LibraryRepository;
 import com.novelweb.library.LibraryService;
+import com.novelweb.library.WorkspaceRepository;
+import com.novelweb.library.WorkspaceService;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
@@ -111,7 +113,9 @@ class PostgresSchemaIntegrationTests {
             "segments",
             "assets",
             "tags",
-            "work_tags");
+            "work_tags",
+            "workspaces",
+            "workspace_members");
 
     @Autowired
     private DataSource dataSource;
@@ -136,6 +140,9 @@ class PostgresSchemaIntegrationTests {
 
     @Autowired
     private LibraryService libraryService;
+
+    @Autowired
+    private WorkspaceService workspaceService;
 
     @Autowired
     private MockMvc mockMvc;
@@ -171,7 +178,7 @@ class PostgresSchemaIntegrationTests {
                      "SELECT COUNT(*) FROM databasechangelog");
              ResultSet changesets = changesetCount.executeQuery()) {
             changesets.next();
-            assertEquals(33, changesets.getInt(1), "unexpected number of applied changesets");
+            assertEquals(39, changesets.getInt(1), "unexpected number of applied changesets");
         }
 
         Set<String> actualTables = new HashSet<>();
@@ -359,6 +366,94 @@ class PostgresSchemaIntegrationTests {
     }
 
     @Test
+    void workspaceLifecycleKeepsOneOwnerAndVersionsMembershipChanges() throws Exception {
+        UUID ownerId = createSessionTestUser("Workspace Owner");
+        UUID adminId = createSessionTestUser("Workspace Admin");
+        UUID editorId = createSessionTestUser("Workspace Editor");
+        UUID readerId = createSessionTestUser("Workspace Reader");
+        UUID outsiderId = createSessionTestUser("Workspace Outsider");
+        UUID workspaceId = null;
+        try {
+            WorkspaceRepository.WorkspaceRecord workspace =
+                    workspaceService.createWorkspace(ownerId, "  Shared Reading Room  ");
+            UUID createdWorkspaceId = workspace.id();
+            workspaceId = createdWorkspaceId;
+            assertEquals("Shared Reading Room", workspace.name());
+            assertEquals(1, workspace.scopeVersion());
+            assertEquals(WorkspaceRepository.Role.OWNER,
+                    workspaceService.listMembers(ownerId, workspaceId).getFirst().role());
+            SQLException missingActiveOwner = assertThrows(SQLException.class, () -> {
+                try (Connection connection = dataSource.getConnection()) {
+                    connection.setAutoCommit(false);
+                    try (PreparedStatement deleteOwner = connection.prepareStatement("""
+                            DELETE FROM workspace_members
+                            WHERE workspace_id = ? AND user_id = ? AND role = 'owner'
+                            """)) {
+                        deleteOwner.setObject(1, createdWorkspaceId);
+                        deleteOwner.setObject(2, ownerId);
+                        assertEquals(1, deleteOwner.executeUpdate());
+                    }
+                    connection.commit();
+                }
+            });
+            assertEquals("23514", missingActiveOwner.getSQLState());
+
+            WorkspaceRepository.MemberRecord admin = workspaceService.addMember(
+                    ownerId, workspaceId, adminId, WorkspaceRepository.Role.ADMIN);
+            assertEquals(WorkspaceRepository.MemberStatus.ACTIVE, admin.status());
+            workspaceService.addMember(ownerId, workspaceId, editorId, WorkspaceRepository.Role.EDITOR);
+            workspaceService.addMember(ownerId, workspaceId, readerId, WorkspaceRepository.Role.READER);
+            assertEquals(4, workspaceService.findWorkspace(ownerId, workspaceId).orElseThrow().scopeVersion());
+
+            assertThrows(WorkspaceRepository.WorkspaceAccessDeniedException.class,
+                    () -> workspaceService.addMember(outsiderId, createdWorkspaceId, outsiderId,
+                            WorkspaceRepository.Role.READER));
+            assertThrows(WorkspaceRepository.WorkspaceAccessDeniedException.class,
+                    () -> workspaceService.addMember(readerId, createdWorkspaceId, outsiderId,
+                            WorkspaceRepository.Role.READER));
+            assertThrows(WorkspaceRepository.OwnershipTransferRequiredException.class,
+                    () -> workspaceService.addMember(ownerId, createdWorkspaceId, outsiderId,
+                            WorkspaceRepository.Role.OWNER));
+            assertThrows(WorkspaceRepository.WorkspaceAccessDeniedException.class,
+                    () -> workspaceService.transferOwnership(adminId, createdWorkspaceId, editorId));
+            assertThrows(WorkspaceRepository.WorkspaceMemberConflictException.class,
+                    () -> workspaceService.addMember(ownerId, createdWorkspaceId, adminId,
+                            WorkspaceRepository.Role.EDITOR));
+
+            WorkspaceRepository.MemberRecord changed = workspaceService.changeMemberRole(
+                    adminId, workspaceId, readerId, WorkspaceRepository.Role.EDITOR);
+            assertEquals(WorkspaceRepository.Role.EDITOR, changed.role());
+            assertEquals(5, workspaceService.findWorkspace(ownerId, workspaceId).orElseThrow().scopeVersion());
+
+            WorkspaceRepository.WorkspaceRecord transferred =
+                    workspaceService.transferOwnership(ownerId, workspaceId, adminId);
+            assertEquals(6, transferred.scopeVersion());
+            assertEquals(WorkspaceRepository.Role.ADMIN, workspaceService.listMembers(ownerId, workspaceId)
+                    .stream().filter(member -> member.userId().equals(ownerId)).findFirst().orElseThrow().role());
+            assertEquals(WorkspaceRepository.Role.OWNER, workspaceService.listMembers(adminId, workspaceId)
+                    .stream().filter(member -> member.userId().equals(adminId)).findFirst().orElseThrow().role());
+            assertThrows(WorkspaceRepository.WorkspaceOwnerCannotBeRevokedException.class,
+                    () -> workspaceService.revokeMember(adminId, createdWorkspaceId, adminId));
+
+            WorkspaceRepository.MemberRecord revoked = workspaceService.revokeMember(
+                    adminId, workspaceId, editorId);
+            assertEquals(WorkspaceRepository.MemberStatus.REVOKED, revoked.status());
+            assertTrue(revoked.revokedAt() != null);
+            assertEquals(7, workspaceService.findWorkspace(adminId, workspaceId).orElseThrow().scopeVersion());
+            assertTrue(workspaceService.findWorkspace(editorId, workspaceId).isEmpty());
+            assertThrows(WorkspaceRepository.WorkspaceAccessDeniedException.class,
+                    () -> workspaceService.transferOwnership(ownerId, createdWorkspaceId, readerId));
+        } finally {
+            if (workspaceId != null) deleteWorkspaceTestData(workspaceId);
+            deleteSessionTestUser(ownerId);
+            deleteSessionTestUser(adminId);
+            deleteSessionTestUser(editorId);
+            deleteSessionTestUser(readerId);
+            deleteSessionTestUser(outsiderId);
+        }
+    }
+
+    @Test
     void currentPolicyRouteReturnsTheLatestEffectiveVersionAndSameOriginDocuments() throws Exception {
         MvcResult current = mockMvc.perform(get("/api/v1/auth/policies/current")).andReturn();
         assertEquals(200, current.getResponse().getStatus());
@@ -517,6 +612,8 @@ class PostgresSchemaIntegrationTests {
                 "policy_acceptances",
                 "auth_events",
                 "session_revoke_confirmations",
+                "workspace_members",
+                "workspaces",
                 "libraries",
                 "works",
                 "volumes",
@@ -1975,6 +2072,15 @@ class PostgresSchemaIntegrationTests {
                 deleteLibraries.setObject(1, ownerId);
                 deleteLibraries.executeUpdate();
             }
+        }
+    }
+
+    private void deleteWorkspaceTestData(UUID workspaceId) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement deleteWorkspace = connection.prepareStatement(
+                     "DELETE FROM workspaces WHERE id = ?")) {
+            deleteWorkspace.setObject(1, workspaceId);
+            deleteWorkspace.executeUpdate();
         }
     }
 
