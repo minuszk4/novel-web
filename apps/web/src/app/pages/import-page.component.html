@@ -16,13 +16,17 @@
 
   @if (accountMode()) {
     @if (accountImport.state() === 'loading') {
-      <p class="import-inline-status" role="status" aria-live="polite">{{ accountImport.stageMessage() }}</p>
+      <p class="import-inline-status" role="status" aria-live="polite">
+        {{ accountImport.stageMessage() }}
+      </p>
     }
     @if (accountImport.errorMessage(); as message) {
       <div class="import-inline-error" role="alert">
         <p>{{ message }}</p>
         @if (accountImport.retryable()) {
-          <button class="button button-outline" type="button" (click)="retryPrerequisites()">Tải lại hướng dẫn và thư viện</button>
+          <button class="button button-outline" type="button" (click)="retryPrerequisites()">
+            Tải lại hướng dẫn và thư viện
+          </button>
         }
       </div>
     }
@@ -41,7 +45,9 @@
     #workFileInput
     class="visually-hidden"
     type="file"
-    [attr.accept]="accountMode() ? '.epub,application/epub+zip' : '.epub,.txt,.html,.htm,.md,.markdown'"
+    [attr.accept]="
+      accountMode() ? '.epub,application/epub+zip' : '.epub,.txt,.html,.htm,.md,.markdown'
+    "
     [attr.aria-label]="selectedFile() ? 'Chọn tệp khác' : 'Chọn tệp từ thiết bị'"
     [attr.aria-describedby]="
       errorMessage ? 'file-error' : selectedFile() ? 'selected-file-status' : 'file-help'
@@ -91,7 +97,9 @@
           (change)="accountImport.setLibrary($any($event.target).value)"
         >
           @for (library of accountImport.libraries(); track library.id) {
-            <option [value]="library.id">{{ library.name }}{{ library.isDefault ? ' · Mặc định' : '' }}</option>
+            <option [value]="library.id">
+              {{ library.name }}{{ library.isDefault ? ' · Mặc định' : '' }}
+            </option>
           }
         </select>
       </div>
@@ -100,24 +108,34 @@
     @if (accountImport.rightsStatement(); as statement) {
       <section class="rights-statement" aria-labelledby="rights-statement-heading">
         <div class="rights-statement-heading">
-          <h2 id="rights-statement-heading">Hướng dẫn quyền nhập · phiên bản {{ statement.version }}</h2>
-          <time [attr.datetime]="statement.effectiveAt">Có hiệu lực {{ statement.effectiveAt | date:'dd/MM/yyyy' }}</time>
+          <h2 id="rights-statement-heading">
+            Hướng dẫn quyền nhập · phiên bản {{ statement.version }}
+          </h2>
+          <time [attr.datetime]="statement.effectiveAt"
+            >Có hiệu lực {{ statement.effectiveAt | date: 'dd/MM/yyyy' }}</time
+          >
         </div>
         <p class="rights-statement-copy">{{ statement.displayText }}</p>
-        <p class="rights-scope-note">Xác nhận này chỉ áp dụng cho xử lý trong thư viện riêng; không cấp quyền xuất bản, chia sẻ hoặc bán.</p>
+        <p class="rights-scope-note">
+          Xác nhận này chỉ áp dụng cho xử lý trong thư viện riêng; không cấp quyền xuất bản, chia sẻ
+          hoặc bán.
+        </p>
       </section>
     } @else if (accountImport.state() !== 'loading') {
       <div class="demo-callout" role="note">
         <span class="callout-icon" aria-hidden="true">i</span>
-        <p>Chưa thể hiển thị hướng dẫn quyền đã được duyệt. Novel giữ nguyên tệp trên thiết bị và chưa tải nội dung lên.</p>
+        <p>
+          Chưa thể hiển thị hướng dẫn quyền đã được duyệt. Novel giữ nguyên tệp trên thiết bị và
+          chưa tải nội dung lên.
+        </p>
       </div>
     }
   } @else {
     <div class="private-default">
       <span aria-hidden="true">◉</span>
       <p>
-        <strong>Riêng tư là mặc định</strong><br />Tác phẩm chỉ thuộc thư viện của bạn trong sản phẩm
-        thật.
+        <strong>Riêng tư là mặc định</strong><br />Tác phẩm chỉ thuộc thư viện của bạn trong sản
+        phẩm thật.
       </p>
       <span class="private-tag">PRIVATE</span>
     </div>
@@ -129,9 +147,11 @@
         type="checkbox"
         [checked]="rightsConfirmed()"
         [disabled]="accountMode() && (!accountImport.rightsStatement() || accountImport.isBusy())"
-        (change)="accountMode()
-          ? accountImport.setRightsConfirmed($any($event.target).checked)
-          : demo.confirmImportRights($any($event.target).checked)"
+        (change)="
+          accountMode()
+            ? accountImport.setRightsConfirmed($any($event.target).checked)
+            : demo.confirmImportRights($any($event.target).checked)
+        "
       /><span class="check-visual" aria-hidden="true"></span
       ><span
         >Tôi có quyền sử dụng và yêu cầu xử lý tệp <strong>{{ file.name }}</strong> cho
@@ -140,7 +160,10 @@
     >
   } @else {
     <label class="rights-check"
-      ><input type="checkbox" [checked]="false" disabled /><span class="check-visual" aria-hidden="true"></span
+      ><input type="checkbox" [checked]="false" disabled /><span
+        class="check-visual"
+        aria-hidden="true"
+      ></span
       ><span
         >Tôi có quyền sử dụng và yêu cầu xử lý tệp này cho <strong>thư viện riêng</strong>. Xác nhận
         này không cho phép xuất bản hoặc chia sẻ.</span
@@ -149,7 +172,9 @@
   }
 
   @if (accountMode() && accountImport.isBusy()) {
-    <p class="import-inline-status" role="status" aria-live="polite">{{ accountImport.stageMessage() }}</p>
+    <p class="import-inline-status" role="status" aria-live="polite">
+      {{ accountImport.stageMessage() }}
+    </p>
   }
 
   <div class="form-actions mobile-form-actions">
@@ -158,7 +183,9 @@
     } @else if (!rightsConfirmed()) {
       <small class="mobile-action-hint">Đọc hướng dẫn quyền và xác nhận ở trên để tiếp tục.</small>
     } @else if (accountMode() && !accountImport.rightsStatement()) {
-      <small class="mobile-action-hint">Chưa thể bắt đầu khi máy chủ chưa có hướng dẫn quyền đã duyệt.</small>
+      <small class="mobile-action-hint"
+        >Chưa thể bắt đầu khi máy chủ chưa có hướng dẫn quyền đã duyệt.</small
+      >
     }
     <button
       class="button button-primary button-full"
@@ -169,7 +196,9 @@
       @if (accountMode()) {
         @if (accountImport.isBusy()) {
           {{ accountImport.stageMessage() }}
-        } @else if (accountImport.state() === 'error' && accountImport.retryable() && accountImport.canStart()) {
+        } @else if (
+          accountImport.state() === 'error' && accountImport.retryable() && accountImport.canStart()
+        ) {
           Thử lại bước nhập
         } @else {
           Tải lên và phân tích

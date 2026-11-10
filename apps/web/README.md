@@ -26,10 +26,13 @@ Run the frontend checks from this directory:
 
 ```powershell
 npm ci
+npm run format:check
 npm run test:ci
 npm run build
 npm audit --audit-level=high
 ```
+
+Before committing frontend changes, run `npm run format` to apply the repository Prettier style. CI runs `format:check` so formatting drift fails the frontend job.
 
 `test:ci` writes JUnit XML to `reports/junit.xml` and HTML/Cobertura coverage under `coverage/web/`. Coverage includes all `src/**/*.ts` files except specs, so the current line-coverage result is a low baseline for a small foundation suite, not a release threshold. CI retains the JUnit and coverage artifacts for 14 days.
 

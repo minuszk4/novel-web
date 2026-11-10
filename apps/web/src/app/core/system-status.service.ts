@@ -19,7 +19,8 @@ export class SystemStatusService {
   refresh(): void {
     this.request?.unsubscribe();
     this.connection.set('checking');
-    this.request = this.http.get<unknown>('/api/v1/system/status')
+    this.request = this.http
+      .get<unknown>('/api/v1/system/status')
       .pipe(timeout(3_000))
       .subscribe({
         next: (payload) => {
@@ -45,12 +46,14 @@ function isApiSystemStatus(value: unknown): value is ApiSystemStatus {
   const status = value as Partial<ApiSystemStatus>;
   const integrations = status.integrations;
   const features = status.features;
-  return typeof status.apiVersion === 'string'
-    && typeof status.environment === 'string'
-    && typeof integrations?.googleOidcEnabled === 'boolean'
-    && typeof integrations.momoTestEnabled === 'boolean'
-    && typeof integrations.momoEnvironment === 'string'
-    && typeof features?.importProcessingEnabled === 'boolean'
-    && typeof features.cultivationEnabled === 'boolean'
-    && typeof features.commerceSandboxEnabled === 'boolean';
+  return (
+    typeof status.apiVersion === 'string' &&
+    typeof status.environment === 'string' &&
+    typeof integrations?.googleOidcEnabled === 'boolean' &&
+    typeof integrations.momoTestEnabled === 'boolean' &&
+    typeof integrations.momoEnvironment === 'string' &&
+    typeof features?.importProcessingEnabled === 'boolean' &&
+    typeof features.cultivationEnabled === 'boolean' &&
+    typeof features.commerceSandboxEnabled === 'boolean'
+  );
 }

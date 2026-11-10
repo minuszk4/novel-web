@@ -1,5 +1,11 @@
 import { Injectable, signal } from '@angular/core';
-import { ImportFileMetadata, LibraryCollection, LibraryReadingStatus, PrivateWork, RankRule } from './models';
+import {
+  ImportFileMetadata,
+  LibraryCollection,
+  LibraryReadingStatus,
+  PrivateWork,
+  RankRule,
+} from './models';
 
 const LIBRARY_STORAGE_KEY = 'novel.demo.library.v1';
 const readingStatuses = new Set<LibraryReadingStatus>([
@@ -117,9 +123,14 @@ export class DemoStateService {
 
   createLibraryCollection(requestedName: string): boolean {
     const name = requestedName.trim();
-    if (!name || name.length > 40 || this.libraryCollections().length >= 12
-        || this.libraryCollections().some((collection) => collection.name.toLocaleLowerCase('vi')
-          === name.toLocaleLowerCase('vi'))) {
+    if (
+      !name ||
+      name.length > 40 ||
+      this.libraryCollections().length >= 12 ||
+      this.libraryCollections().some(
+        (collection) => collection.name.toLocaleLowerCase('vi') === name.toLocaleLowerCase('vi'),
+      )
+    ) {
       return false;
     }
     const id = `demo-collection-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -130,13 +141,17 @@ export class DemoStateService {
 
   deleteLibraryCollection(collectionId: string): void {
     if (!this.libraryCollections().some((collection) => collection.id === collectionId)) return;
-    this.libraryCollections.update((collections) => collections.filter((collection) => collection.id !== collectionId));
-    this.collectionIdsByWork.update((assignments) => Object.fromEntries(
-      Object.entries(assignments).map(([workId, collectionIds]) => [
-        workId,
-        collectionIds.filter((id) => id !== collectionId),
-      ]),
-    ));
+    this.libraryCollections.update((collections) =>
+      collections.filter((collection) => collection.id !== collectionId),
+    );
+    this.collectionIdsByWork.update((assignments) =>
+      Object.fromEntries(
+        Object.entries(assignments).map(([workId, collectionIds]) => [
+          workId,
+          collectionIds.filter((id) => id !== collectionId),
+        ]),
+      ),
+    );
     this.persistLibraryState();
   }
 
@@ -161,22 +176,28 @@ export class DemoStateService {
       if (stored === null) return;
       const parsed: unknown = JSON.parse(stored);
       if (!isPersistedLibraryState(parsed)) {
-        this.libraryStorageMessage.set('Dữ liệu demo cục bộ không hợp lệ; trạng thái thư viện chỉ còn trong phiên này.');
+        this.libraryStorageMessage.set(
+          'Dữ liệu demo cục bộ không hợp lệ; trạng thái thư viện chỉ còn trong phiên này.',
+        );
         return;
       }
       const collectionIds = new Set(parsed.collections.map((collection) => collection.id));
       this.importedWork.set(parsed.importedWork);
       this.readingStatusByWork.set(parsed.readingStatusByWork);
       this.libraryCollections.set(parsed.collections);
-      this.collectionIdsByWork.set(Object.fromEntries(
-        Object.entries(parsed.collectionIdsByWork).map(([workId, ids]) => [
-          workId,
-          [...new Set(ids.filter((id) => collectionIds.has(id)))],
-        ]),
-      ));
+      this.collectionIdsByWork.set(
+        Object.fromEntries(
+          Object.entries(parsed.collectionIdsByWork).map(([workId, ids]) => [
+            workId,
+            [...new Set(ids.filter((id) => collectionIds.has(id)))],
+          ]),
+        ),
+      );
     } catch {
       this.libraryStorageAvailable.set(false);
-      this.libraryStorageMessage.set('Trình duyệt không cho phép đọc dữ liệu demo đã lưu. Thay đổi sẽ chỉ còn trong phiên này.');
+      this.libraryStorageMessage.set(
+        'Trình duyệt không cho phép đọc dữ liệu demo đã lưu. Thay đổi sẽ chỉ còn trong phiên này.',
+      );
     }
   }
 
@@ -194,7 +215,9 @@ export class DemoStateService {
       this.libraryStorageMessage.set(null);
     } catch {
       this.libraryStorageAvailable.set(false);
-      this.libraryStorageMessage.set('Không lưu được vào trình duyệt. Thay đổi sẽ mất khi đóng hoặc tải lại trang.');
+      this.libraryStorageMessage.set(
+        'Không lưu được vào trình duyệt. Thay đổi sẽ mất khi đóng hoặc tải lại trang.',
+      );
     }
   }
 
@@ -242,32 +265,42 @@ function isPersistedLibraryState(value: unknown): value is PersistedLibraryState
   const statuses = value['readingStatusByWork'];
   const collections = value['collections'];
   const assignments = value['collectionIdsByWork'];
-  return (importedWork === null || isPrivateWork(importedWork))
-    && isRecord(statuses)
-    && Object.values(statuses).every((status) => typeof status === 'string' && readingStatuses.has(status as LibraryReadingStatus))
-    && Array.isArray(collections)
-    && collections.length <= 12
-    && collections.every(isLibraryCollection)
-    && isRecord(assignments)
-    && Object.values(assignments).every((ids) => Array.isArray(ids) && ids.every((id) => typeof id === 'string'));
+  return (
+    (importedWork === null || isPrivateWork(importedWork)) &&
+    isRecord(statuses) &&
+    Object.values(statuses).every(
+      (status) => typeof status === 'string' && readingStatuses.has(status as LibraryReadingStatus),
+    ) &&
+    Array.isArray(collections) &&
+    collections.length <= 12 &&
+    collections.every(isLibraryCollection) &&
+    isRecord(assignments) &&
+    Object.values(assignments).every(
+      (ids) => Array.isArray(ids) && ids.every((id) => typeof id === 'string'),
+    )
+  );
 }
 
 function isPrivateWork(value: unknown): value is PrivateWork {
   if (!isRecord(value)) return false;
-  return typeof value['id'] === 'string'
-    && typeof value['title'] === 'string'
-    && typeof value['author'] === 'string'
-    && typeof value['sourceName'] === 'string'
-    && typeof value['importedAt'] === 'string'
-    && value['visibility'] === 'private';
+  return (
+    typeof value['id'] === 'string' &&
+    typeof value['title'] === 'string' &&
+    typeof value['author'] === 'string' &&
+    typeof value['sourceName'] === 'string' &&
+    typeof value['importedAt'] === 'string' &&
+    value['visibility'] === 'private'
+  );
 }
 
 function isLibraryCollection(value: unknown): value is LibraryCollection {
-  return isRecord(value)
-    && typeof value['id'] === 'string'
-    && typeof value['name'] === 'string'
-    && value['name'].trim().length > 0
-    && value['name'].length <= 40;
+  return (
+    isRecord(value) &&
+    typeof value['id'] === 'string' &&
+    typeof value['name'] === 'string' &&
+    value['name'].trim().length > 0 &&
+    value['name'].length <= 40
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

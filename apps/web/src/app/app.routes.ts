@@ -26,18 +26,26 @@ export const routes: Routes = [
       { path: 'setup', component: SetupPageComponent, title: 'Thiết lập tài khoản — Novel' },
       {
         path: 'import',
-        loadComponent: () => import('./pages/import-page.component').then((page) => page.ImportPageComponent),
+        loadComponent: () =>
+          import('./pages/import-page.component').then((page) => page.ImportPageComponent),
         title: 'Nhập truyện — Novel',
       },
       {
         path: 'import/review',
-        loadComponent: () => import('./pages/import-review-page.component').then((page) => page.ImportReviewPageComponent),
+        loadComponent: () =>
+          import('./pages/import-review-page.component').then(
+            (page) => page.ImportReviewPageComponent,
+          ),
         title: 'Xem lại truyện — Novel',
       },
       { path: 'home', component: HomePageComponent, title: 'Trang chủ — Novel' },
       { path: 'library', component: LibraryPageComponent, title: 'Thư viện — Novel' },
       { path: 'search', component: SearchPageComponent, title: 'Tìm trong thư viện — Novel' },
-      { path: 'cultivation', component: CultivationPageComponent, title: 'Hành trình tu luyện — Novel' },
+      {
+        path: 'cultivation',
+        component: CultivationPageComponent,
+        title: 'Hành trình tu luyện — Novel',
+      },
       { path: 'settings', component: SettingsPageComponent, title: 'Cài đặt — Novel' },
     ],
   },

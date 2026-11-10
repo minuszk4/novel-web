@@ -1,4 +1,10 @@
-import { HttpClient, HttpErrorResponse, HttpHeaders, HttpParams, HttpResponse } from '@angular/common/http';
+import {
+  HttpClient,
+  HttpErrorResponse,
+  HttpHeaders,
+  HttpParams,
+  HttpResponse,
+} from '@angular/common/http';
 import { Injectable, inject } from '@angular/core';
 import { firstValueFrom, timeout } from 'rxjs';
 
@@ -10,7 +16,7 @@ export const libraryReadingStatuses = [
   'dropped',
 ] as const;
 
-export type AccountReadingStatus = typeof libraryReadingStatuses[number];
+export type AccountReadingStatus = (typeof libraryReadingStatuses)[number];
 
 export interface AccountLibraryCollection {
   id: string;
@@ -88,7 +94,10 @@ const requestTimeoutMs = 5_000;
 export class LibraryApiService {
   private readonly http = inject(HttpClient);
 
-  async listLibraries(cursor?: string, limit = 100): Promise<AccountListPage<AccountLibrarySummary>> {
+  async listLibraries(
+    cursor?: string,
+    limit = 100,
+  ): Promise<AccountListPage<AccountLibrarySummary>> {
     validatePageRequest(cursor, limit);
     try {
       let params = new HttpParams().set('limit', limit);
@@ -102,12 +111,19 @@ export class LibraryApiService {
     }
   }
 
-  async listWorks(libraryId: string, filters: AccountWorkFilters = {}): Promise<AccountListPage<AccountWorkSummary>> {
-    if (!isUuid(libraryId)) throw new LibraryApiError('INVALID_LIBRARY_ID', 400, 'INVALID_LIBRARY_ID');
+  async listWorks(
+    libraryId: string,
+    filters: AccountWorkFilters = {},
+  ): Promise<AccountListPage<AccountWorkSummary>> {
+    if (!isUuid(libraryId))
+      throw new LibraryApiError('INVALID_LIBRARY_ID', 400, 'INVALID_LIBRARY_ID');
     const { cursor, limit = 25, q, tag, status } = filters;
     validatePageRequest(cursor, limit);
-    if ((q && [...q].length > 160) || (tag && [...tag].length > 80)
-        || (status !== undefined && status !== 'active' && status !== 'archived')) {
+    if (
+      (q && [...q].length > 160) ||
+      (tag && [...tag].length > 80) ||
+      (status !== undefined && status !== 'active' && status !== 'archived')
+    ) {
       throw new LibraryApiError('INVALID_LIBRARY_QUERY', 400, 'INVALID_LIBRARY_QUERY');
     }
 
@@ -133,7 +149,8 @@ export class LibraryApiService {
       );
       if (!Array.isArray(response) || response.length > 12) throw invalidResponse();
       const collections = response.map(parseCollection);
-      if (new Set(collections.map(({ id }) => id)).size !== collections.length) throw invalidResponse();
+      if (new Set(collections.map(({ id }) => id)).size !== collections.length)
+        throw invalidResponse();
       return collections;
     } catch (error) {
       throw toLibraryApiError(error);
@@ -142,12 +159,15 @@ export class LibraryApiService {
 
   async createCollection(requestedName: string): Promise<AccountLibraryCollection> {
     const name = requestedName.trim();
-    if (!name || [...name].length > 40) throw new LibraryApiError('INVALID_COLLECTION_NAME', 400, 'INVALID_COLLECTION_NAME');
+    if (!name || [...name].length > 40)
+      throw new LibraryApiError('INVALID_COLLECTION_NAME', 400, 'INVALID_COLLECTION_NAME');
 
     try {
       const headers = await this.csrfHeaders();
       const response: unknown = await firstValueFrom(
-        this.http.post<unknown>(collectionsUrl, { name }, { headers }).pipe(timeout(requestTimeoutMs)),
+        this.http
+          .post<unknown>(collectionsUrl, { name }, { headers })
+          .pipe(timeout(requestTimeoutMs)),
       );
       return parseCollection(response);
     } catch (error) {
@@ -156,12 +176,15 @@ export class LibraryApiService {
   }
 
   async deleteCollection(collectionId: string): Promise<void> {
-    if (!isUuid(collectionId)) throw new LibraryApiError('INVALID_COLLECTION_ID', 400, 'INVALID_COLLECTION_ID');
+    if (!isUuid(collectionId))
+      throw new LibraryApiError('INVALID_COLLECTION_ID', 400, 'INVALID_COLLECTION_ID');
 
     try {
       const headers = await this.csrfHeaders();
       await firstValueFrom(
-        this.http.delete<void>(`${collectionsUrl}/${collectionId}`, { headers }).pipe(timeout(requestTimeoutMs)),
+        this.http
+          .delete<void>(`${collectionsUrl}/${collectionId}`, { headers })
+          .pipe(timeout(requestTimeoutMs)),
       );
     } catch (error) {
       throw toLibraryApiError(error);
@@ -173,7 +196,9 @@ export class LibraryApiService {
 
     try {
       const response = await firstValueFrom(
-        this.http.get<unknown>(this.workStateUrl(workId), { observe: 'response' }).pipe(timeout(requestTimeoutMs)),
+        this.http
+          .get<unknown>(this.workStateUrl(workId), { observe: 'response' })
+          .pipe(timeout(requestTimeoutMs)),
       );
       return parseWorkStateResponse(response, workId);
     } catch (error) {
@@ -181,7 +206,11 @@ export class LibraryApiService {
     }
   }
 
-  async replaceWorkState(workId: string, currentEtag: string, changes: WorkStateChanges): Promise<AccountWorkState> {
+  async replaceWorkState(
+    workId: string,
+    currentEtag: string,
+    changes: WorkStateChanges,
+  ): Promise<AccountWorkState> {
     if (!isUuid(workId) || !isEtag(currentEtag)) {
       throw new LibraryApiError('INVALID_WORK_STATE_VERSION', 400, 'INVALID_WORK_STATE_VERSION');
     }
@@ -190,10 +219,16 @@ export class LibraryApiService {
       const csrf = await this.csrfHeaders();
       const headers = csrf.set('If-Match', currentEtag);
       const response = await firstValueFrom(
-        this.http.put<unknown>(this.workStateUrl(workId), {
-          readingStatus: changes.readingStatus,
-          collectionIds: [...new Set(changes.collectionIds)],
-        }, { headers, observe: 'response' }).pipe(timeout(requestTimeoutMs)),
+        this.http
+          .put<unknown>(
+            this.workStateUrl(workId),
+            {
+              readingStatus: changes.readingStatus,
+              collectionIds: [...new Set(changes.collectionIds)],
+            },
+            { headers, observe: 'response' },
+          )
+          .pipe(timeout(requestTimeoutMs)),
       );
       return parseWorkStateResponse(response, workId);
     } catch (error) {
@@ -217,16 +252,18 @@ export class LibraryApiService {
 }
 
 function parseCollection(value: unknown): AccountLibraryCollection {
-  if (!isRecord(value)
-      || typeof value['id'] !== 'string'
-      || !isUuid(value['id'])
-      || typeof value['name'] !== 'string'
-      || !value['name'].trim()
-      || [...value['name']].length > 40
-      || !Number.isInteger(value['workCount'])
-      || (value['workCount'] as number) < 0
-      || !isTimestamp(value['createdAt'])
-      || !isTimestamp(value['updatedAt'])) {
+  if (
+    !isRecord(value) ||
+    typeof value['id'] !== 'string' ||
+    !isUuid(value['id']) ||
+    typeof value['name'] !== 'string' ||
+    !value['name'].trim() ||
+    [...value['name']].length > 40 ||
+    !Number.isInteger(value['workCount']) ||
+    (value['workCount'] as number) < 0 ||
+    !isTimestamp(value['createdAt']) ||
+    !isTimestamp(value['updatedAt'])
+  ) {
     throw invalidResponse();
   }
 
@@ -239,29 +276,40 @@ function parseCollection(value: unknown): AccountLibraryCollection {
   };
 }
 
-function parseListPage<T>(value: unknown, limit: number, parseItem: (value: unknown) => T): AccountListPage<T> {
-  if (!isRecord(value)
-      || !Array.isArray(value['items'])
-      || value['items'].length > limit
-      || (value['nextCursor'] !== null
-        && (typeof value['nextCursor'] !== 'string' || !value['nextCursor'] || value['nextCursor'].length > 2048))) {
+function parseListPage<T>(
+  value: unknown,
+  limit: number,
+  parseItem: (value: unknown) => T,
+): AccountListPage<T> {
+  if (
+    !isRecord(value) ||
+    !Array.isArray(value['items']) ||
+    value['items'].length > limit ||
+    (value['nextCursor'] !== null &&
+      (typeof value['nextCursor'] !== 'string' ||
+        !value['nextCursor'] ||
+        value['nextCursor'].length > 2048))
+  ) {
     throw invalidResponse();
   }
   const items = value['items'].map(parseItem);
-  if (new Set(items.map((item) => (item as { id: string }).id)).size !== items.length) throw invalidResponse();
+  if (new Set(items.map((item) => (item as { id: string }).id)).size !== items.length)
+    throw invalidResponse();
   return { items, nextCursor: value['nextCursor'] as string | null };
 }
 
 function parseLibrarySummary(value: unknown): AccountLibrarySummary {
-  if (!isRecord(value)
-      || typeof value['id'] !== 'string'
-      || !isUuid(value['id'])
-      || typeof value['name'] !== 'string'
-      || !value['name'].trim()
-      || [...value['name']].length > 120
-      || value['visibility'] !== 'private'
-      || typeof value['isDefault'] !== 'boolean'
-      || !isTimestamp(value['createdAt'])) {
+  if (
+    !isRecord(value) ||
+    typeof value['id'] !== 'string' ||
+    !isUuid(value['id']) ||
+    typeof value['name'] !== 'string' ||
+    !value['name'].trim() ||
+    [...value['name']].length > 120 ||
+    value['visibility'] !== 'private' ||
+    typeof value['isDefault'] !== 'boolean' ||
+    !isTimestamp(value['createdAt'])
+  ) {
     throw invalidResponse();
   }
   return {
@@ -274,22 +322,24 @@ function parseLibrarySummary(value: unknown): AccountLibrarySummary {
 }
 
 function parseWorkSummary(value: unknown, expectedLibraryId: string): AccountWorkSummary {
-  if (!isRecord(value)
-      || typeof value['id'] !== 'string'
-      || !isUuid(value['id'])
-      || value['libraryId'] !== expectedLibraryId
-      || typeof value['title'] !== 'string'
-      || !value['title'].trim()
-      || [...value['title']].length > 300
-      || typeof value['author'] !== 'string'
-      || [...value['author']].length > 200
-      || typeof value['language'] !== 'string'
-      || [...value['language']].length < 2
-      || [...value['language']].length > 35
-      || value['visibility'] !== 'private'
-      || !Number.isInteger(value['chapterCount'])
-      || (value['chapterCount'] as number) < 0
-      || !isTimestamp(value['createdAt'])) {
+  if (
+    !isRecord(value) ||
+    typeof value['id'] !== 'string' ||
+    !isUuid(value['id']) ||
+    value['libraryId'] !== expectedLibraryId ||
+    typeof value['title'] !== 'string' ||
+    !value['title'].trim() ||
+    [...value['title']].length > 300 ||
+    typeof value['author'] !== 'string' ||
+    [...value['author']].length > 200 ||
+    typeof value['language'] !== 'string' ||
+    [...value['language']].length < 2 ||
+    [...value['language']].length > 35 ||
+    value['visibility'] !== 'private' ||
+    !Number.isInteger(value['chapterCount']) ||
+    (value['chapterCount'] as number) < 0 ||
+    !isTimestamp(value['createdAt'])
+  ) {
     throw invalidResponse();
   }
   return {
@@ -305,35 +355,45 @@ function parseWorkSummary(value: unknown, expectedLibraryId: string): AccountWor
 }
 
 function validatePageRequest(cursor: string | undefined, limit: number): void {
-  if (!Number.isInteger(limit) || limit < 1 || limit > 100 || (cursor !== undefined && (!cursor || cursor.length > 2048))) {
+  if (
+    !Number.isInteger(limit) ||
+    limit < 1 ||
+    limit > 100 ||
+    (cursor !== undefined && (!cursor || cursor.length > 2048))
+  ) {
     throw new LibraryApiError('INVALID_LIBRARY_QUERY', 400, 'INVALID_LIBRARY_QUERY');
   }
 }
 
-function parseWorkStateResponse(response: HttpResponse<unknown>, expectedWorkId: string): AccountWorkState {
+function parseWorkStateResponse(
+  response: HttpResponse<unknown>,
+  expectedWorkId: string,
+): AccountWorkState {
   const state = parseWorkState(response.body, response.headers.get('ETag'));
   if (state.workId !== expectedWorkId) throw invalidResponse();
   return state;
 }
 
 function parseWorkState(value: unknown, etag: string | null): AccountWorkState {
-  if (!isRecord(value)
-      || typeof value['workId'] !== 'string'
-      || !isUuid(value['workId'])
-      || typeof value['readingStatus'] !== 'string'
-      || !isReadingStatus(value['readingStatus'])
-      || !Array.isArray(value['collectionIds'])
-      || value['collectionIds'].length > 12
-      || !value['collectionIds'].every((id) => typeof id === 'string' && isUuid(id))
-      || new Set(value['collectionIds']).size !== value['collectionIds'].length
-      || !Number.isSafeInteger(value['version'])
-      || (value['version'] as number) < 0
-      || (value['updatedAt'] !== null && !isTimestamp(value['updatedAt']))
-      || ((value['version'] as number) === 0 && value['updatedAt'] !== null)
-      || ((value['version'] as number) > 0 && value['updatedAt'] === null)
-      || !etag
-      || !isEtag(etag)
-      || Number(etag.slice(2, -1)) !== value['version']) {
+  if (
+    !isRecord(value) ||
+    typeof value['workId'] !== 'string' ||
+    !isUuid(value['workId']) ||
+    typeof value['readingStatus'] !== 'string' ||
+    !isReadingStatus(value['readingStatus']) ||
+    !Array.isArray(value['collectionIds']) ||
+    value['collectionIds'].length > 12 ||
+    !value['collectionIds'].every((id) => typeof id === 'string' && isUuid(id)) ||
+    new Set(value['collectionIds']).size !== value['collectionIds'].length ||
+    !Number.isSafeInteger(value['version']) ||
+    (value['version'] as number) < 0 ||
+    (value['updatedAt'] !== null && !isTimestamp(value['updatedAt'])) ||
+    ((value['version'] as number) === 0 && value['updatedAt'] !== null) ||
+    ((value['version'] as number) > 0 && value['updatedAt'] === null) ||
+    !etag ||
+    !isEtag(etag) ||
+    Number(etag.slice(2, -1)) !== value['version']
+  ) {
     throw invalidResponse();
   }
 
@@ -355,9 +415,10 @@ function toLibraryApiError(error: unknown): LibraryApiError {
 
   const body = isRecord(error.error) ? error.error : null;
   const code = body && typeof body['code'] === 'string' ? body['code'] : null;
-  const latestState = error.status === 409 && body && isRecord(body['latest'])
-    ? tryParseWorkState(body['latest'], error.headers.get('ETag'))
-    : null;
+  const latestState =
+    error.status === 409 && body && isRecord(body['latest'])
+      ? tryParseWorkState(body['latest'], error.headers.get('ETag'))
+      : null;
   return new LibraryApiError(error.message, error.status, code, latestState);
 }
 

@@ -1,7 +1,11 @@
 import { Component, computed, inject, signal } from '@angular/core';
 import { DecimalPipe } from '@angular/common';
 import { Router, RouterLink } from '@angular/router';
-import { AccountImportService, ImportChapterPreview, ImportPreview } from '../core/account-import.service';
+import {
+  AccountImportService,
+  ImportChapterPreview,
+  ImportPreview,
+} from '../core/account-import.service';
 import { DemoStateService } from '../core/demo-state.service';
 import { PolicyOnboardingService } from '../core/policy-onboarding.service';
 
@@ -21,7 +25,9 @@ export class ImportReviewPageComponent {
   protected readonly language = signal('');
   protected readonly chapters = signal<ImportChapterPreview[]>([]);
   protected readonly chapterPage = signal(0);
-  protected readonly chapterPageCount = computed(() => Math.max(1, Math.ceil(this.chapters().length / this.chapterPageSize)));
+  protected readonly chapterPageCount = computed(() =>
+    Math.max(1, Math.ceil(this.chapters().length / this.chapterPageSize)),
+  );
   protected readonly visibleChapters = computed(() => {
     const start = this.chapterPage() * this.chapterPageSize;
     return this.chapters().slice(start, start + this.chapterPageSize);
@@ -30,27 +36,38 @@ export class ImportReviewPageComponent {
   protected readonly hasUnsavedChanges = computed(() => {
     const preview = this.accountImport.preview();
     if (!preview) return false;
-    return this.title() !== preview.title
-      || this.author() !== preview.author
-      || this.language() !== preview.language
-      || this.chapters().some((chapter, index) => chapter.id !== preview.chapters[index]?.id);
+    return (
+      this.title() !== preview.title ||
+      this.author() !== preview.author ||
+      this.language() !== preview.language ||
+      this.chapters().some((chapter, index) => chapter.id !== preview.chapters[index]?.id)
+    );
   });
-  protected readonly metadataValid = computed(() => this.title().trim().length > 0
-    && [...this.title().trim()].length <= 300
-    && [...this.author()].length <= 200
-    && this.language().trim().length >= 2
-    && this.language().trim().length <= 35);
-  protected readonly canSave = computed(() => this.accountMode()
-    && this.hasUnsavedChanges()
-    && this.metadataValid()
-    && !this.accountImport.isBusy()
-    && !this.hasConflict());
-  protected readonly canCommit = computed(() => this.accountMode()
-    && !!this.accountImport.preview()
-    && !this.hasUnsavedChanges()
-    && !this.hasConflict()
-    && !this.accountImport.isBusy()
-    && this.accountImport.state() !== 'committed');
+  protected readonly metadataValid = computed(
+    () =>
+      this.title().trim().length > 0 &&
+      [...this.title().trim()].length <= 300 &&
+      [...this.author()].length <= 200 &&
+      this.language().trim().length >= 2 &&
+      this.language().trim().length <= 35,
+  );
+  protected readonly canSave = computed(
+    () =>
+      this.accountMode() &&
+      this.hasUnsavedChanges() &&
+      this.metadataValid() &&
+      !this.accountImport.isBusy() &&
+      !this.hasConflict(),
+  );
+  protected readonly canCommit = computed(
+    () =>
+      this.accountMode() &&
+      !!this.accountImport.preview() &&
+      !this.hasUnsavedChanges() &&
+      !this.hasConflict() &&
+      !this.accountImport.isBusy() &&
+      this.accountImport.state() !== 'committed',
+  );
   private readonly router = inject(Router);
 
   constructor() {
@@ -101,7 +118,10 @@ export class ImportReviewPageComponent {
     const currentVersion = this.accountImport.preview()?.version;
     const currentEtag = this.accountImport.previewEtag();
     const saved = await this.accountImport.savePreview(
-      this.title().trim(), this.author().trim(), this.language().trim(), this.chapters(),
+      this.title().trim(),
+      this.author().trim(),
+      this.language().trim(),
+      this.chapters(),
     );
     if (saved) {
       const preview = this.accountImport.preview();
@@ -109,8 +129,10 @@ export class ImportReviewPageComponent {
       this.hasConflict.set(false);
       return;
     }
-    if (this.accountImport.preview()?.version !== currentVersion
-        || this.accountImport.previewEtag() !== currentEtag) {
+    if (
+      this.accountImport.preview()?.version !== currentVersion ||
+      this.accountImport.previewEtag() !== currentEtag
+    ) {
       this.hasConflict.set(true);
     }
   }
@@ -147,6 +169,8 @@ export class ImportReviewPageComponent {
     this.author.set(preview.author);
     this.language.set(preview.language);
     this.chapters.set([...preview.chapters]);
-    this.chapterPage.update((page) => Math.min(page, Math.max(0, Math.ceil(preview.chapters.length / this.chapterPageSize) - 1)));
+    this.chapterPage.update((page) =>
+      Math.min(page, Math.max(0, Math.ceil(preview.chapters.length / this.chapterPageSize) - 1)),
+    );
   }
 }

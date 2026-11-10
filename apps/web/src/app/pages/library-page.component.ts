@@ -66,20 +66,24 @@ export class LibraryPageComponent {
     if (this.isAccountMode()) return this.accountCollections();
     return this.demo.libraryCollections().map((collection) => ({
       ...collection,
-      workCount: this.demo.importedWork() && this.demo.isWorkInCollection(this.demo.importedWork()!.id, collection.id) ? 1 : 0,
+      workCount:
+        this.demo.importedWork() &&
+        this.demo.isWorkInCollection(this.demo.importedWork()!.id, collection.id)
+          ? 1
+          : 0,
     }));
   });
   protected readonly visibleWorks = computed<LibraryWorkView[]>(() => {
     const accountMode = this.isAccountMode();
     const works: LibraryWorkView[] = accountMode
       ? this.accountWorks().map((work) => ({
-        id: work.id,
-        title: work.title,
-        author: work.author,
-        details: `${work.language} · ${work.chapterCount} chương`,
-        addedAt: work.createdAt,
-        isAccountWork: true,
-      }))
+          id: work.id,
+          title: work.title,
+          author: work.author,
+          details: `${work.language} · ${work.chapterCount} chương`,
+          addedAt: work.createdAt,
+          isAccountWork: true,
+        }))
       : this.demo.importedWork()
         ? [demoWorkView(this.demo.importedWork()!)]
         : [];
@@ -111,10 +115,14 @@ export class LibraryPageComponent {
   }
 
   countFor(filter: LibraryFilter): number {
-    if (filter === 'all') return this.isAccountMode() ? this.accountWorks().length : Number(!!this.demo.importedWork());
+    if (filter === 'all')
+      return this.isAccountMode() ? this.accountWorks().length : Number(!!this.demo.importedWork());
     return this.isAccountMode()
       ? this.accountWorks().filter((work) => this.readingStatusFor(work.id) === filter).length
-      : Number(!!this.demo.importedWork() && this.readingStatusFor(this.demo.importedWork()!.id) === filter);
+      : Number(
+          !!this.demo.importedWork() &&
+            this.readingStatusFor(this.demo.importedWork()!.id) === filter,
+        );
   }
 
   statusLabel(status: LibraryReadingStatus): string {
@@ -141,7 +149,11 @@ export class LibraryPageComponent {
 
   canToggleCollection(workId: string): boolean {
     if (!this.isAccountMode()) return !!this.demo.importedWork();
-    return this.isAccountWork(workId) && this.workStatePhase(workId) === 'ready' && !this.isSavingWorkState(workId);
+    return (
+      this.isAccountWork(workId) &&
+      this.workStatePhase(workId) === 'ready' &&
+      !this.isSavingWorkState(workId)
+    );
   }
 
   workStatePhase(workId: string): SyncPhase {
@@ -154,7 +166,9 @@ export class LibraryPageComponent {
 
   isSavingWorkState(workId?: string): boolean {
     const phases = this.workStateSync();
-    return workId ? phases[workId] === 'saving' : Object.values(phases).some((phase) => phase === 'saving');
+    return workId
+      ? phases[workId] === 'saving'
+      : Object.values(phases).some((phase) => phase === 'saving');
   }
 
   setReadingStatus(event: Event, workId: string): void {
@@ -166,7 +180,11 @@ export class LibraryPageComponent {
       return;
     }
     const state = this.workStates()[workId];
-    if (state) void this.saveWorkState(workId, { readingStatus: status, collectionIds: state.collectionIds });
+    if (state)
+      void this.saveWorkState(workId, {
+        readingStatus: status,
+        collectionIds: state.collectionIds,
+      });
   }
 
   updateCollectionName(event: Event): void {
@@ -203,14 +221,24 @@ export class LibraryPageComponent {
         this.collectionSync.set('ready');
         if (isApiError(error) && error.status === 409) {
           await this.loadAccountCollections();
-          this.collectionError.set(error.code === 'LIBRARY_COLLECTION_LIMIT'
-            ? 'Bạn đã có đủ 12 bộ sưu tập.'
-            : 'Tên này đã được dùng. Danh sách đã được tải lại.');
+          this.collectionError.set(
+            error.code === 'LIBRARY_COLLECTION_LIMIT'
+              ? 'Bạn đã có đủ 12 bộ sưu tập.'
+              : 'Tên này đã được dùng. Danh sách đã được tải lại.',
+          );
         } else if (isUncertainMutation(error)) {
           await this.loadAccountCollections();
-          const saved = this.accountCollections().some((item) => item.name.toLocaleLowerCase('vi') === name.toLocaleLowerCase('vi'));
+          const saved = this.accountCollections().some(
+            (item) => item.name.toLocaleLowerCase('vi') === name.toLocaleLowerCase('vi'),
+          );
           if (saved) this.collectionName.set('');
-          else this.collectionError.set(collectionErrorMessage(error, 'Không xác nhận được thay đổi. Tải lại danh sách trước khi thử lại.'));
+          else
+            this.collectionError.set(
+              collectionErrorMessage(
+                error,
+                'Không xác nhận được thay đổi. Tải lại danh sách trước khi thử lại.',
+              ),
+            );
         } else {
           this.collectionError.set(collectionErrorMessage(error, 'Không tạo được bộ sưu tập.'));
         }
@@ -234,7 +262,9 @@ export class LibraryPageComponent {
     this.pendingDeleteCollectionId.set(null);
   }
 
-  async confirmDeleteCollection(collection: Pick<AccountLibraryCollection, 'id' | 'name'>): Promise<void> {
+  async confirmDeleteCollection(
+    collection: Pick<AccountLibraryCollection, 'id' | 'name'>,
+  ): Promise<void> {
     if (this.pendingDeleteCollectionId() !== collection.id) return;
     this.collectionError.set(null);
     if (this.isAccountMode()) {
@@ -248,10 +278,13 @@ export class LibraryPageComponent {
           await this.loadAccountCollections();
           deleted = !this.accountCollections().some((item) => item.id === collection.id);
         }
-        if (!deleted) this.collectionError.set(collectionErrorMessage(error, 'Không xóa được bộ sưu tập.'));
+        if (!deleted)
+          this.collectionError.set(collectionErrorMessage(error, 'Không xóa được bộ sưu tập.'));
       }
       if (deleted) {
-        this.accountCollections.update((items) => items.filter((item) => item.id !== collection.id));
+        this.accountCollections.update((items) =>
+          items.filter((item) => item.id !== collection.id),
+        );
         this.collectionSync.set('ready');
         this.collectionSyncError.set(null);
         await this.reloadCurrentWorkState();
@@ -274,7 +307,10 @@ export class LibraryPageComponent {
     const collectionIds = new Set(state.collectionIds);
     if (collectionIds.has(collectionId)) collectionIds.delete(collectionId);
     else collectionIds.add(collectionId);
-    void this.saveWorkState(workId, { readingStatus: state.readingStatus, collectionIds: [...collectionIds] });
+    void this.saveWorkState(workId, {
+      readingStatus: state.readingStatus,
+      collectionIds: [...collectionIds],
+    });
   }
 
   async retryCollections(): Promise<void> {
@@ -307,7 +343,8 @@ export class LibraryPageComponent {
       this.nextWorkCursor.set(page.nextCursor);
       void this.loadWorkStates(newWorks);
     } catch (error) {
-      if (this.selectedLibraryId() === libraryId) this.loadMoreError.set(catalogErrorMessage(error));
+      if (this.selectedLibraryId() === libraryId)
+        this.loadMoreError.set(catalogErrorMessage(error));
     } finally {
       this.isLoadingMoreWorks.set(false);
     }
@@ -376,7 +413,9 @@ export class LibraryPageComponent {
   private async loadWorkStates(works: AccountWorkSummary[]): Promise<void> {
     const uniqueWorks = [...new Map(works.map((work) => [work.id, work])).values()];
     for (let index = 0; index < uniqueWorks.length; index += 4) {
-      await Promise.all(uniqueWorks.slice(index, index + 4).map((work) => this.loadWorkState(work.id)));
+      await Promise.all(
+        uniqueWorks.slice(index, index + 4).map((work) => this.loadWorkState(work.id)),
+      );
     }
   }
 
@@ -410,7 +449,10 @@ export class LibraryPageComponent {
     await this.loadWorkStates(this.accountWorks());
   }
 
-  private async saveWorkState(workId: string, changes: { readingStatus: LibraryReadingStatus; collectionIds: string[] }): Promise<void> {
+  private async saveWorkState(
+    workId: string,
+    changes: { readingStatus: LibraryReadingStatus; collectionIds: string[] },
+  ): Promise<void> {
     const current = this.workStates()[workId];
     if (!current || this.workStatePhase(workId) !== 'ready') return;
     this.setWorkStatePhase(workId, 'saving', null);
@@ -421,12 +463,20 @@ export class LibraryPageComponent {
     } catch (error) {
       if (error instanceof LibraryApiError && error.status === 409 && error.latestState) {
         this.workStates.update((items) => ({ ...items, [workId]: error.latestState! }));
-        this.setWorkStatePhase(workId, 'ready', 'Trạng thái đã đổi trên thiết bị khác. Đã tải phiên bản mới; hãy kiểm tra lại lựa chọn.');
+        this.setWorkStatePhase(
+          workId,
+          'ready',
+          'Trạng thái đã đổi trên thiết bị khác. Đã tải phiên bản mới; hãy kiểm tra lại lựa chọn.',
+        );
       } else if (error instanceof LibraryApiError && (error.status === 0 || error.status >= 500)) {
         try {
           const latest = await this.api.getWorkState(workId);
           this.workStates.update((items) => ({ ...items, [workId]: latest }));
-          this.setWorkStatePhase(workId, 'ready', 'Chưa xác nhận được thao tác. Đã tải trạng thái mới nhất; hãy kiểm tra trước khi thử lại.');
+          this.setWorkStatePhase(
+            workId,
+            'ready',
+            'Chưa xác nhận được thao tác. Đã tải trạng thái mới nhất; hãy kiểm tra trước khi thử lại.',
+          );
         } catch (reloadError) {
           this.setWorkStatePhase(workId, 'error', workErrorMessage(reloadError));
         }
@@ -449,7 +499,11 @@ export class LibraryPageComponent {
   }
 
   isAccountWork(workId: string): boolean {
-    return this.isAccountMode() && isUuid(workId) && this.accountWorks().some((work) => work.id === workId);
+    return (
+      this.isAccountMode() &&
+      isUuid(workId) &&
+      this.accountWorks().some((work) => work.id === workId)
+    );
   }
 }
 
@@ -474,34 +528,46 @@ function isUncertainMutation(error: unknown): boolean {
 
 function collectionErrorMessage(error: unknown, fallback: string): string {
   if (!(error instanceof LibraryApiError)) return fallback;
-  if (error.status === 401 || error.code === 'UNAUTHENTICATED') return 'Phiên đăng nhập hết hạn. Đăng nhập lại rồi thử tải bộ sưu tập.';
-  if (error.code === 'POLICY_ACCEPTANCE_REQUIRED') return 'Hãy xác nhận chính sách hiện hành trước khi sửa thư viện tài khoản.';
-  if (error.code === 'POLICY_NOT_CONFIGURED') return 'Chính sách tài khoản chưa được cấu hình; chưa thể đồng bộ bộ sưu tập.';
+  if (error.status === 401 || error.code === 'UNAUTHENTICATED')
+    return 'Phiên đăng nhập hết hạn. Đăng nhập lại rồi thử tải bộ sưu tập.';
+  if (error.code === 'POLICY_ACCEPTANCE_REQUIRED')
+    return 'Hãy xác nhận chính sách hiện hành trước khi sửa thư viện tài khoản.';
+  if (error.code === 'POLICY_NOT_CONFIGURED')
+    return 'Chính sách tài khoản chưa được cấu hình; chưa thể đồng bộ bộ sưu tập.';
   if (error.status === 0) return 'Không kết nối được máy chủ. Kiểm tra mạng rồi thử tải lại.';
   if (error.status >= 500) return 'Máy chủ chưa tải được dữ liệu. Thử lại sau ít phút.';
-  if (error.code === 'INVALID_API_RESPONSE') return 'Máy chủ trả về dữ liệu không hợp lệ. Tải lại để kiểm tra.';
+  if (error.code === 'INVALID_API_RESPONSE')
+    return 'Máy chủ trả về dữ liệu không hợp lệ. Tải lại để kiểm tra.';
   return fallback;
 }
 
 function catalogErrorMessage(error: unknown): string {
   if (!(error instanceof LibraryApiError)) return 'Không tải được thư viện tài khoản. Hãy thử lại.';
   if (error.status === 404) return 'Thư viện không còn khả dụng hoặc bạn không còn quyền truy cập.';
-  if (error.status === 401 || error.code === 'UNAUTHENTICATED') return 'Phiên đăng nhập hết hạn. Đăng nhập lại rồi thử tải thư viện.';
-  if (error.code === 'POLICY_ACCEPTANCE_REQUIRED') return 'Hãy xác nhận chính sách hiện hành trước khi xem thư viện tài khoản.';
-  if (error.code === 'POLICY_NOT_CONFIGURED') return 'Chính sách tài khoản chưa được cấu hình; chưa thể tải thư viện.';
+  if (error.status === 401 || error.code === 'UNAUTHENTICATED')
+    return 'Phiên đăng nhập hết hạn. Đăng nhập lại rồi thử tải thư viện.';
+  if (error.code === 'POLICY_ACCEPTANCE_REQUIRED')
+    return 'Hãy xác nhận chính sách hiện hành trước khi xem thư viện tài khoản.';
+  if (error.code === 'POLICY_NOT_CONFIGURED')
+    return 'Chính sách tài khoản chưa được cấu hình; chưa thể tải thư viện.';
   if (error.status === 0) return 'Không kết nối được máy chủ. Kiểm tra mạng rồi thử tải lại.';
   if (error.status >= 500) return 'Máy chủ chưa tải được thư viện. Thử lại sau ít phút.';
-  if (error.code === 'INVALID_API_RESPONSE') return 'Máy chủ trả về dữ liệu thư viện không hợp lệ. Tải lại để kiểm tra.';
+  if (error.code === 'INVALID_API_RESPONSE')
+    return 'Máy chủ trả về dữ liệu thư viện không hợp lệ. Tải lại để kiểm tra.';
   return 'Không tải được thư viện tài khoản. Hãy thử lại.';
 }
 
 function workErrorMessage(error: unknown): string {
   if (!(error instanceof LibraryApiError)) return 'Không tải được trạng thái đọc. Hãy thử lại.';
-  if (error.status === 404) return 'Tác phẩm không còn trong thư viện tài khoản hoặc bạn không còn quyền truy cập.';
-  if (error.status === 401 || error.code === 'UNAUTHENTICATED') return 'Phiên đăng nhập hết hạn. Đăng nhập lại để đồng bộ trạng thái đọc.';
-  if (error.code === 'POLICY_ACCEPTANCE_REQUIRED') return 'Hãy xác nhận chính sách hiện hành trước khi sửa trạng thái đọc.';
+  if (error.status === 404)
+    return 'Tác phẩm không còn trong thư viện tài khoản hoặc bạn không còn quyền truy cập.';
+  if (error.status === 401 || error.code === 'UNAUTHENTICATED')
+    return 'Phiên đăng nhập hết hạn. Đăng nhập lại để đồng bộ trạng thái đọc.';
+  if (error.code === 'POLICY_ACCEPTANCE_REQUIRED')
+    return 'Hãy xác nhận chính sách hiện hành trước khi sửa trạng thái đọc.';
   if (error.status === 0) return 'Không kết nối được máy chủ. Trạng thái chưa được xác nhận.';
-  if (error.status >= 500) return 'Máy chủ chưa lưu được trạng thái đọc. Thử tải lại trước khi sửa tiếp.';
+  if (error.status >= 500)
+    return 'Máy chủ chưa lưu được trạng thái đọc. Thử tải lại trước khi sửa tiếp.';
   return 'Không đồng bộ được trạng thái đọc. Hãy tải lại để thử lại.';
 }
 

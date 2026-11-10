@@ -8,7 +8,10 @@
     <div class="page-heading">
       <p class="eyebrow">XEM LẠI</p>
       <h1>Kiểm tra metadata và mục lục</h1>
-      <p>Chỉ metadata và tiêu đề chương được hiển thị ở đây. Nội dung chương chưa được gửi lên trang preview.</p>
+      <p>
+        Chỉ metadata và tiêu đề chương được hiển thị ở đây. Nội dung chương chưa được gửi lên trang
+        preview.
+      </p>
     </div>
 
     @if (accountImport.fileMetadata(); as file) {
@@ -28,12 +31,19 @@
       }
       @if (hasConflict()) {
         <div class="import-conflict" role="alert">
-          <p>Bản xem trước đã thay đổi trên máy chủ. Tải bản mới trước khi tiếp tục để tránh ghi đè nội dung khác.</p>
-          <button class="button button-outline" type="button" (click)="reloadLatestPreview()">Tải bản mới</button>
+          <p>
+            Bản xem trước đã thay đổi trên máy chủ. Tải bản mới trước khi tiếp tục để tránh ghi đè
+            nội dung khác.
+          </p>
+          <button class="button button-outline" type="button" (click)="reloadLatestPreview()">
+            Tải bản mới
+          </button>
         </div>
       }
       @if (accountImport.isBusy()) {
-        <p class="import-inline-status" role="status" aria-live="polite">{{ accountImport.stageMessage() }}</p>
+        <p class="import-inline-status" role="status" aria-live="polite">
+          {{ accountImport.stageMessage() }}
+        </p>
       }
 
       <div class="field-stack account-import-fields">
@@ -78,19 +88,37 @@
         <div class="import-chapter-heading">
           <div>
             <h2 id="import-chapters-heading">Mục lục</h2>
-          <p>{{ preview.chapterCount }} chương · dùng nút lên/xuống để sửa thứ tự</p>
+            <p>{{ preview.chapterCount }} chương · dùng nút lên/xuống để sửa thứ tự</p>
           </div>
           <span class="private-tag">CHỈ TIÊU ĐỀ</span>
         </div>
         @if (chapters().length) {
           @if (chapterPageCount() > 1) {
             <div class="chapter-pagination" aria-label="Trang mục lục">
-              <button class="button button-outline" type="button" [disabled]="chapterPage() === 0 || accountImport.isBusy()" (click)="setChapterPage(chapterPage() - 1)">Trang trước</button>
+              <button
+                class="button button-outline"
+                type="button"
+                [disabled]="chapterPage() === 0 || accountImport.isBusy()"
+                (click)="setChapterPage(chapterPage() - 1)"
+              >
+                Trang trước
+              </button>
               <span>Trang {{ chapterPage() + 1 }} / {{ chapterPageCount() }}</span>
-              <button class="button button-outline" type="button" [disabled]="chapterPage() + 1 >= chapterPageCount() || accountImport.isBusy()" (click)="setChapterPage(chapterPage() + 1)">Trang sau</button>
+              <button
+                class="button button-outline"
+                type="button"
+                [disabled]="chapterPage() + 1 >= chapterPageCount() || accountImport.isBusy()"
+                (click)="setChapterPage(chapterPage() + 1)"
+              >
+                Trang sau
+              </button>
             </div>
           }
-          <ol class="import-chapter-list" [attr.start]="chapterPage() * chapterPageSize + 1" aria-label="Thứ tự chương sẽ lưu">
+          <ol
+            class="import-chapter-list"
+            [attr.start]="chapterPage() * chapterPageSize + 1"
+            aria-label="Thứ tự chương sẽ lưu"
+          >
             @for (chapter of visibleChapters(); track chapter.id; let index = $index) {
               @let absoluteIndex = chapterPage() * chapterPageSize + index;
               <li>
@@ -100,17 +128,29 @@
                   <button
                     class="chapter-move"
                     type="button"
-                    [disabled]="absoluteIndex === 0 || accountImport.isBusy() || accountImport.state() === 'committed'"
+                    [disabled]="
+                      absoluteIndex === 0 ||
+                      accountImport.isBusy() ||
+                      accountImport.state() === 'committed'
+                    "
                     [attr.aria-label]="'Chuyển chương ' + (absoluteIndex + 1) + ' lên'"
                     (click)="moveChapter(absoluteIndex, -1)"
-                  >↑</button>
+                  >
+                    ↑
+                  </button>
                   <button
                     class="chapter-move"
                     type="button"
-                    [disabled]="absoluteIndex === chapters().length - 1 || accountImport.isBusy() || accountImport.state() === 'committed'"
+                    [disabled]="
+                      absoluteIndex === chapters().length - 1 ||
+                      accountImport.isBusy() ||
+                      accountImport.state() === 'committed'
+                    "
                     [attr.aria-label]="'Chuyển chương ' + (absoluteIndex + 1) + ' xuống'"
                     (click)="moveChapter(absoluteIndex, 1)"
-                  >↓</button>
+                  >
+                    ↓
+                  </button>
                 </span>
               </li>
             }
@@ -131,8 +171,13 @@
 
       <div class="review-checklist">
         <h2>Trước khi lưu</h2>
-        <p><span aria-hidden="true">✓</span> Tác phẩm sẽ ở chế độ riêng tư trong thư viện đã chọn</p>
-        <p><span aria-hidden="true">✓</span> Metadata và thứ tự chương được lưu cùng phiên bản nội dung đầu tiên</p>
+        <p>
+          <span aria-hidden="true">✓</span> Tác phẩm sẽ ở chế độ riêng tư trong thư viện đã chọn
+        </p>
+        <p>
+          <span aria-hidden="true">✓</span> Metadata và thứ tự chương được lưu cùng phiên bản nội
+          dung đầu tiên
+        </p>
         <p><span aria-hidden="true">—</span> Lưu không đồng nghĩa với xuất bản hoặc chia sẻ</p>
       </div>
 
@@ -140,7 +185,10 @@
         @if (accountImport.committedWork(); as work) {
           <div class="import-success" role="status" aria-live="polite">
             <span aria-hidden="true">✓</span>
-            <div><strong>Đã thêm riêng tư vào thư viện</strong><p>{{ work.title }} · {{ work.chapterCount }} chương</p></div>
+            <div>
+              <strong>Đã thêm riêng tư vào thư viện</strong>
+              <p>{{ work.title }} · {{ work.chapterCount }} chương</p>
+            </div>
             <a class="button button-primary" routerLink="/app/library">Mở thư viện</a>
           </div>
         }
@@ -151,16 +199,34 @@
           @if (hasUnsavedChanges()) {
             <small class="mobile-action-hint">Lưu các thay đổi trước khi thêm tác phẩm.</small>
           }
-          <button class="button button-outline button-full" type="button" [disabled]="!canSave()" (click)="saveChanges()">
+          <button
+            class="button button-outline button-full"
+            type="button"
+            [disabled]="!canSave()"
+            (click)="saveChanges()"
+          >
             Lưu thay đổi
           </button>
-          <button class="button button-primary button-full" type="button" [disabled]="!canCommit()" (click)="commitPrivateImport()">
+          <button
+            class="button button-primary button-full"
+            type="button"
+            [disabled]="!canCommit()"
+            (click)="commitPrivateImport()"
+          >
             Thêm vào thư viện riêng <span aria-hidden="true">→</span>
           </button>
-          <button class="text-link" type="button" [disabled]="accountImport.isBusy()" (click)="startDifferentImport()">
+          <button
+            class="text-link"
+            type="button"
+            [disabled]="accountImport.isBusy()"
+            (click)="startDifferentImport()"
+          >
             Chọn tệp khác
           </button>
-          <small class="import-abandon-note">Chọn tệp khác sẽ bỏ lượt nhập chưa lưu. Tệp staging riêng tư được hệ thống tự dọn khi hết hạn.</small>
+          <small class="import-abandon-note"
+            >Chọn tệp khác sẽ bỏ lượt nhập chưa lưu. Tệp staging riêng tư được hệ thống tự dọn khi
+            hết hạn.</small
+          >
         </div>
       }
     }
@@ -227,7 +293,12 @@
       @if (!title().trim()) {
         <small class="mobile-action-hint">Nhập tên tác phẩm để tiếp tục.</small>
       }
-      <button class="button button-primary button-full" type="button" [disabled]="!title().trim()" (click)="finishImport()">
+      <button
+        class="button button-primary button-full"
+        type="button"
+        [disabled]="!title().trim()"
+        (click)="finishImport()"
+      >
         Thêm vào thư viện demo <span aria-hidden="true">→</span>
       </button>
       <a class="text-link" routerLink="/app/import">Chọn tệp khác</a>

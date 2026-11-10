@@ -16,7 +16,9 @@ export class AppShellComponent {
     return account?.displayName?.trim() || account?.contactEmail || 'Độc giả demo';
   });
   protected readonly accountContext = computed(() =>
-    this.policy.accountIdentity() ? 'Tài khoản server' : 'Chưa đăng nhập');
-  protected readonly accountInitial = computed(() =>
-    Array.from(this.accountLabel().trim())[0]?.toLocaleUpperCase('vi-VN') || 'D');
+    this.policy.accountIdentity() ? 'Tài khoản server' : 'Chưa đăng nhập',
+  );
+  protected readonly accountInitial = computed(
+    () => Array.from(this.accountLabel().trim())[0]?.toLocaleUpperCase('vi-VN') || 'D',
+  );
 }

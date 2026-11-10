@@ -2,12 +2,43 @@
   <a class="back-link" routerLink="/app/home">← Về không gian đọc</a>
   <div class="work-detail-hero">
     <div class="detail-cover" aria-hidden="true"><span>✧</span><small>MỘT TÁC PHẨM MẪU</small></div>
-    <div class="work-detail-copy"><p class="eyebrow">TRÌNH ĐỌC THỬ · KHÔNG PHẢI CATALOG</p><h1>{{ work.title }}</h1><p class="detail-author">{{ work.author }}</p><div class="detail-tags">@for (tag of work.tags; track tag) { <span>{{ tag }}</span> }</div><p class="work-description">{{ work.description }}</p><div class="detail-privacy-note"><span aria-hidden="true">i</span><p>Đây là văn bản ngắn do Novel viết để trải nghiệm Reader. Tác phẩm không đến từ tệp bạn nhập và không được xuất bản.</p></div><a class="button button-primary" routerLink="/read/demo-story/chapter-1">Đọc chương đầu <span aria-hidden="true">→</span></a></div>
+    <div class="work-detail-copy">
+      <p class="eyebrow">TRÌNH ĐỌC THỬ · KHÔNG PHẢI CATALOG</p>
+      <h1>{{ work.title }}</h1>
+      <p class="detail-author">{{ work.author }}</p>
+      <div class="detail-tags">
+        @for (tag of work.tags; track tag) {
+          <span>{{ tag }}</span>
+        }
+      </div>
+      <p class="work-description">{{ work.description }}</p>
+      <div class="detail-privacy-note">
+        <span aria-hidden="true">i</span>
+        <p>
+          Đây là văn bản ngắn do Novel viết để trải nghiệm Reader. Tác phẩm không đến từ tệp bạn
+          nhập và không được xuất bản.
+        </p>
+      </div>
+      <a class="button button-primary" routerLink="/read/demo-story/chapter-1"
+        >Đọc chương đầu <span aria-hidden="true">→</span></a
+      >
+    </div>
   </div>
 
-  <section class="detail-toc" aria-labelledby="detail-toc-title"><div class="section-heading"><div><p class="eyebrow">MỤC LỤC</p><h2 id="detail-toc-title">{{ chapters.length }} chương mẫu</h2></div><span class="sample-tag">VĂN BẢN DEMO</span></div>
+  <section class="detail-toc" aria-labelledby="detail-toc-title">
+    <div class="section-heading">
+      <div>
+        <p class="eyebrow">MỤC LỤC</p>
+        <h2 id="detail-toc-title">{{ chapters.length }} chương mẫu</h2>
+      </div>
+      <span class="sample-tag">VĂN BẢN DEMO</span>
+    </div>
     @for (chapter of chapters; track chapter.id; let index = $index) {
-      <a class="detail-chapter-row" [routerLink]="['/read/demo-story', chapter.id]"><span class="chapter-ordinal">{{ chapter.publishedLabel }}</span><span class="chapter-name">{{ chapter.title }}</span><span class="chapter-read-label">Đọc thử →</span></a>
+      <a class="detail-chapter-row" [routerLink]="['/read/demo-story', chapter.id]"
+        ><span class="chapter-ordinal">{{ chapter.publishedLabel }}</span
+        ><span class="chapter-name">{{ chapter.title }}</span
+        ><span class="chapter-read-label">Đọc thử →</span></a
+      >
     }
   </section>
 </main>

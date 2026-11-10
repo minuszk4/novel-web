@@ -1,54 +1,190 @@
 <section class="page-wrap narrow-page mobile-form-page">
   <a class="back-link" routerLink="/sign-in">← Quay lại</a>
-  <div class="stepper" role="group" aria-label="Bước 1 trên 2"><span class="stepper-current">01</span><span class="stepper-line"></span><span>THIẾT LẬP TÀI KHOẢN</span></div>
-  <div class="page-heading"><p class="eyebrow">TRƯỚC KHI BẮT ĐẦU</p><h1 id="onboarding-title">Một vài điều cần biết</h1><p>Đọc chính sách hiện hành trước khi lưu nội dung hoặc sử dụng các tính năng gắn với tài khoản.</p></div>
+  <div class="stepper" role="group" aria-label="Bước 1 trên 2">
+    <span class="stepper-current">01</span><span class="stepper-line"></span
+    ><span>THIẾT LẬP TÀI KHOẢN</span>
+  </div>
+  <div class="page-heading">
+    <p class="eyebrow">TRƯỚC KHI BẮT ĐẦU</p>
+    <h1 id="onboarding-title">Một vài điều cần biết</h1>
+    <p>
+      Đọc chính sách hiện hành trước khi lưu nội dung hoặc sử dụng các tính năng gắn với tài khoản.
+    </p>
+  </div>
 
   @if (policy.status() === 'loading' || policy.status() === 'idle') {
-    <div class="policy-state" role="status" aria-live="polite"><span class="policy-state-mark" aria-hidden="true">◌</span><div><strong>Đang kiểm tra phiên và chính sách</strong><p>Novel đang xác minh tài khoản, phiên bản tài liệu và trạng thái chấp thuận.</p></div></div>
+    <div class="policy-state" role="status" aria-live="polite">
+      <span class="policy-state-mark" aria-hidden="true">◌</span>
+      <div>
+        <strong>Đang kiểm tra phiên và chính sách</strong>
+        <p>Novel đang xác minh tài khoản, phiên bản tài liệu và trạng thái chấp thuận.</p>
+      </div>
+    </div>
   }
 
   @if (policy.status() === 'demo') {
-    <div class="prototype-notice" role="note"><strong>Đang ở chế độ mô phỏng.</strong> {{ policy.demoNotice() }} Các lựa chọn bên dưới không phải chấp thuận pháp lý và không mở quyền trên máy chủ.</div>
-    <div class="consent-list">
-      <label class="consent-row"><input type="checkbox" [checked]="termsChecked()" (change)="setTermsChecked($any($event.target).checked)" /><span class="check-visual" aria-hidden="true"></span><span class="consent-copy"><strong>Tôi đồng ý với Điều khoản sử dụng mẫu</strong><small>DEMO · Không có hiệu lực pháp lý</small><span class="consent-detail">Bạn có quyền quản lý thư viện riêng. Việc nhập riêng tư không cấp quyền xuất bản, chia sẻ hay bán nội dung.</span></span><span class="version-tag">DEMO v0.1</span></label>
-      <label class="consent-row"><input type="checkbox" [checked]="privacyChecked()" (change)="setPrivacyChecked($any($event.target).checked)" /><span class="check-visual" aria-hidden="true"></span><span class="consent-copy"><strong>Tôi xác nhận đã đọc Thông báo quyền riêng tư mẫu</strong><small>DEMO · Nội dung chính thức chưa được cấu hình</small><span class="consent-detail">Bản demo không tải tệp lên máy chủ, không bật phân tích và không tạo hồ sơ tu luyện cá nhân.</span></span><span class="version-tag">DEMO v0.1</span></label>
+    <div class="prototype-notice" role="note">
+      <strong>Đang ở chế độ mô phỏng.</strong> {{ policy.demoNotice() }} Các lựa chọn bên dưới không
+      phải chấp thuận pháp lý và không mở quyền trên máy chủ.
     </div>
-    <div class="optional-consent"><span class="optional-mark" aria-hidden="true">○</span><p><strong>Phân tích sử dụng đang tắt.</strong><br />Đây là lựa chọn riêng, không cần thiết để dùng các tính năng đọc.</p><span class="off-tag">TẮT</span></div>
+    <div class="consent-list">
+      <label class="consent-row"
+        ><input
+          type="checkbox"
+          [checked]="termsChecked()"
+          (change)="setTermsChecked($any($event.target).checked)"
+        /><span class="check-visual" aria-hidden="true"></span
+        ><span class="consent-copy"
+          ><strong>Tôi đồng ý với Điều khoản sử dụng mẫu</strong
+          ><small>DEMO · Không có hiệu lực pháp lý</small
+          ><span class="consent-detail"
+            >Bạn có quyền quản lý thư viện riêng. Việc nhập riêng tư không cấp quyền xuất bản, chia
+            sẻ hay bán nội dung.</span
+          ></span
+        ><span class="version-tag">DEMO v0.1</span></label
+      >
+      <label class="consent-row"
+        ><input
+          type="checkbox"
+          [checked]="privacyChecked()"
+          (change)="setPrivacyChecked($any($event.target).checked)"
+        /><span class="check-visual" aria-hidden="true"></span
+        ><span class="consent-copy"
+          ><strong>Tôi xác nhận đã đọc Thông báo quyền riêng tư mẫu</strong
+          ><small>DEMO · Nội dung chính thức chưa được cấu hình</small
+          ><span class="consent-detail"
+            >Bản demo không tải tệp lên máy chủ, không bật phân tích và không tạo hồ sơ tu luyện cá
+            nhân.</span
+          ></span
+        ><span class="version-tag">DEMO v0.1</span></label
+      >
+    </div>
+    <div class="optional-consent">
+      <span class="optional-mark" aria-hidden="true">○</span>
+      <p>
+        <strong>Phân tích sử dụng đang tắt.</strong><br />Đây là lựa chọn riêng, không cần thiết để
+        dùng các tính năng đọc.
+      </p>
+      <span class="off-tag">TẮT</span>
+    </div>
   }
 
-  @if (policy.status() === 'pending' || policy.status() === 'stale' || policy.status() === 'accepted') {
+  @if (
+    policy.status() === 'pending' || policy.status() === 'stale' || policy.status() === 'accepted'
+  ) {
     @if (policy.status() === 'stale') {
-      <div class="policy-state policy-state-warning" role="status" aria-live="polite"><span class="policy-state-mark" aria-hidden="true">!</span><div><strong>Chính sách đã đổi phiên bản</strong><p>Bạn cần đọc và xác nhận lại cả hai tài liệu hiện hành trước khi tiếp tục. Chấp thuận cũ vẫn được lưu theo phiên bản cũ.</p></div></div>
+      <div class="policy-state policy-state-warning" role="status" aria-live="polite">
+        <span class="policy-state-mark" aria-hidden="true">!</span>
+        <div>
+          <strong>Chính sách đã đổi phiên bản</strong>
+          <p>
+            Bạn cần đọc và xác nhận lại cả hai tài liệu hiện hành trước khi tiếp tục. Chấp thuận cũ
+            vẫn được lưu theo phiên bản cũ.
+          </p>
+        </div>
+      </div>
     }
     @if (policy.status() === 'accepted') {
-      <div class="policy-state policy-state-success" role="status"><span class="policy-state-mark" aria-hidden="true">✓</span><div><strong>Đã xác nhận phiên bản hiện hành</strong><p>Điều khoản {{ policy.currentPolicies()?.terms?.version }} · Thông báo quyền riêng tư {{ policy.currentPolicies()?.privacyNotice?.version }}. Máy chủ đã ghi nhận thời điểm chấp thuận.</p></div></div>
+      <div class="policy-state policy-state-success" role="status">
+        <span class="policy-state-mark" aria-hidden="true">✓</span>
+        <div>
+          <strong>Đã xác nhận phiên bản hiện hành</strong>
+          <p>
+            Điều khoản {{ policy.currentPolicies()?.terms?.version }} · Thông báo quyền riêng tư
+            {{ policy.currentPolicies()?.privacyNotice?.version }}. Máy chủ đã ghi nhận thời điểm
+            chấp thuận.
+          </p>
+        </div>
+      </div>
     }
     <div class="policy-documents" aria-labelledby="policy-documents-title">
       <h2 id="policy-documents-title">Chính sách hiện hành</h2>
       <details class="policy-document">
-        <summary><span><strong>Điều khoản sử dụng</strong><small>Phiên bản {{ policy.currentPolicies()?.terms?.version }} · Hiệu lực {{ policy.currentPolicies()?.terms?.effectiveAt }}</small></span></summary>
+        <summary>
+          <span
+            ><strong>Điều khoản sử dụng</strong
+            ><small
+              >Phiên bản {{ policy.currentPolicies()?.terms?.version }} · Hiệu lực
+              {{ policy.currentPolicies()?.terms?.effectiveAt }}</small
+            ></span
+          >
+        </summary>
         <pre>{{ policy.termsDocument() }}</pre>
       </details>
       <details class="policy-document">
-        <summary><span><strong>Thông báo quyền riêng tư</strong><small>Phiên bản {{ policy.currentPolicies()?.privacyNotice?.version }} · Hiệu lực {{ policy.currentPolicies()?.privacyNotice?.effectiveAt }}</small></span></summary>
+        <summary>
+          <span
+            ><strong>Thông báo quyền riêng tư</strong
+            ><small
+              >Phiên bản {{ policy.currentPolicies()?.privacyNotice?.version }} · Hiệu lực
+              {{ policy.currentPolicies()?.privacyNotice?.effectiveAt }}</small
+            ></span
+          >
+        </summary>
         <pre>{{ policy.privacyDocument() }}</pre>
       </details>
     </div>
     @if (policy.status() === 'pending' || policy.status() === 'stale') {
       <div class="consent-list server-consent-list">
-        <label class="consent-row"><input type="checkbox" [checked]="termsChecked()" (change)="setTermsChecked($any($event.target).checked)" /><span class="check-visual" aria-hidden="true"></span><span class="consent-copy"><strong>Tôi đồng ý với Điều khoản sử dụng hiện hành</strong><small>Phiên bản {{ policy.currentPolicies()?.terms?.version }}</small><span class="consent-detail">Quyết định này sẽ được gắn với phiên bản tài liệu và thời điểm do máy chủ ghi nhận.</span></span><span class="version-tag">{{ policy.currentPolicies()?.terms?.version }}</span></label>
-        <label class="consent-row"><input type="checkbox" [checked]="privacyChecked()" (change)="setPrivacyChecked($any($event.target).checked)" /><span class="check-visual" aria-hidden="true"></span><span class="consent-copy"><strong>Tôi xác nhận đã đọc Thông báo quyền riêng tư hiện hành</strong><small>Phiên bản {{ policy.currentPolicies()?.privacyNotice?.version }}</small><span class="consent-detail">Đây là xác nhận đã đọc, tách biệt với lựa chọn đồng ý Điều khoản.</span></span><span class="version-tag">{{ policy.currentPolicies()?.privacyNotice?.version }}</span></label>
+        <label class="consent-row"
+          ><input
+            type="checkbox"
+            [checked]="termsChecked()"
+            (change)="setTermsChecked($any($event.target).checked)"
+          /><span class="check-visual" aria-hidden="true"></span
+          ><span class="consent-copy"
+            ><strong>Tôi đồng ý với Điều khoản sử dụng hiện hành</strong
+            ><small>Phiên bản {{ policy.currentPolicies()?.terms?.version }}</small
+            ><span class="consent-detail"
+              >Quyết định này sẽ được gắn với phiên bản tài liệu và thời điểm do máy chủ ghi
+              nhận.</span
+            ></span
+          ><span class="version-tag">{{ policy.currentPolicies()?.terms?.version }}</span></label
+        >
+        <label class="consent-row"
+          ><input
+            type="checkbox"
+            [checked]="privacyChecked()"
+            (change)="setPrivacyChecked($any($event.target).checked)"
+          /><span class="check-visual" aria-hidden="true"></span
+          ><span class="consent-copy"
+            ><strong>Tôi xác nhận đã đọc Thông báo quyền riêng tư hiện hành</strong
+            ><small>Phiên bản {{ policy.currentPolicies()?.privacyNotice?.version }}</small
+            ><span class="consent-detail"
+              >Đây là xác nhận đã đọc, tách biệt với lựa chọn đồng ý Điều khoản.</span
+            ></span
+          ><span class="version-tag">{{
+            policy.currentPolicies()?.privacyNotice?.version
+          }}</span></label
+        >
       </div>
     }
   }
 
   @if (policy.status() === 'unconfigured') {
-    <div class="policy-state policy-state-error" role="alert"><span class="policy-state-mark" aria-hidden="true">!</span><div><strong>Chưa thể thiết lập tài khoản</strong><p>Terms và Thông báo quyền riêng tư được duyệt chưa có trên máy chủ. Tài khoản server và mọi thao tác được bảo vệ vẫn bị khóa cho đến khi cấu hình xong.</p></div></div>
-    <button class="button button-outline" type="button" (click)="retry()">Thử tải lại chính sách</button>
+    <div class="policy-state policy-state-error" role="alert">
+      <span class="policy-state-mark" aria-hidden="true">!</span>
+      <div>
+        <strong>Chưa thể thiết lập tài khoản</strong>
+        <p>
+          Terms và Thông báo quyền riêng tư được duyệt chưa có trên máy chủ. Tài khoản server và mọi
+          thao tác được bảo vệ vẫn bị khóa cho đến khi cấu hình xong.
+        </p>
+      </div>
+    </div>
+    <button class="button button-outline" type="button" (click)="retry()">
+      Thử tải lại chính sách
+    </button>
   }
 
   @if (policy.status() === 'error') {
-    <div class="policy-state policy-state-error" role="alert"><span class="policy-state-mark" aria-hidden="true">!</span><div><strong>Không thể xác minh trạng thái</strong><p>{{ policy.errorMessage() }}</p></div></div>
+    <div class="policy-state policy-state-error" role="alert">
+      <span class="policy-state-mark" aria-hidden="true">!</span>
+      <div>
+        <strong>Không thể xác minh trạng thái</strong>
+        <p>{{ policy.errorMessage() }}</p>
+      </div>
+    </div>
     <button class="button button-outline" type="button" (click)="retry()">Thử kết nối lại</button>
   }
   @if (policy.errorMessage() && policy.status() !== 'error' && policy.status() !== 'unconfigured') {
@@ -56,9 +192,36 @@
   }
 
   <div class="form-actions mobile-form-actions">
-    @if (!canContinue && (policy.status() === 'demo' || policy.status() === 'pending' || policy.status() === 'stale')) { <small class="mobile-action-hint">Đọc tài liệu và chọn đủ hai mục bắt buộc để tiếp tục.</small> }
-    <button class="button button-primary button-full" type="button" [disabled]="!canContinue || submitting()" (click)="continue()"><span>{{ submitting() ? 'Đang ghi nhận chấp thuận…' : isServerDecisionPending ? 'Xác nhận và vào không gian đọc' : 'Vào không gian đọc' }}</span><span aria-hidden="true">→</span></button>
+    @if (
+      !canContinue &&
+      (policy.status() === 'demo' || policy.status() === 'pending' || policy.status() === 'stale')
+    ) {
+      <small class="mobile-action-hint"
+        >Đọc tài liệu và chọn đủ hai mục bắt buộc để tiếp tục.</small
+      >
+    }
+    <button
+      class="button button-primary button-full"
+      type="button"
+      [disabled]="!canContinue || submitting()"
+      (click)="continue()"
+    >
+      <span>{{
+        submitting()
+          ? 'Đang ghi nhận chấp thuận…'
+          : isServerDecisionPending
+            ? 'Xác nhận và vào không gian đọc'
+            : 'Vào không gian đọc'
+      }}</span
+      ><span aria-hidden="true">→</span>
+    </button>
     <a class="text-link" routerLink="/sign-in">Để sau — quay lại đăng nhập</a>
   </div>
-  <p class="form-footnote">@if (policy.status() === 'demo') { Chấp thuận demo chỉ giữ trong bộ nhớ phiên và không thay thế lựa chọn được máy chủ ghi nhận. } @else { Mỗi phiên bản Terms và Privacy được lưu riêng; khi phiên bản đổi, bạn cần xác nhận lại. }</p>
+  <p class="form-footnote">
+    @if (policy.status() === 'demo') {
+      Chấp thuận demo chỉ giữ trong bộ nhớ phiên và không thay thế lựa chọn được máy chủ ghi nhận.
+    } @else {
+      Mỗi phiên bản Terms và Privacy được lưu riêng; khi phiên bản đổi, bạn cần xác nhận lại.
+    }
+  </p>
 </section>

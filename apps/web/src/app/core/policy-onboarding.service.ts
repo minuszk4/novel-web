@@ -3,14 +3,7 @@ import { Injectable, inject, signal } from '@angular/core';
 import { firstValueFrom, timeout } from 'rxjs';
 
 export type PolicyOnboardingStatus =
-  | 'idle'
-  | 'loading'
-  | 'demo'
-  | 'pending'
-  | 'stale'
-  | 'accepted'
-  | 'unconfigured'
-  | 'error';
+  'idle' | 'loading' | 'demo' | 'pending' | 'stale' | 'accepted' | 'unconfigured' | 'error';
 
 export interface PolicyDocumentMetadata {
   version: string;
@@ -111,12 +104,16 @@ export class PolicyOnboardingService {
       if (isProblem(error, 'POLICY_VERSION_STALE')) {
         await this.load(true);
         if (this.status() === 'pending') this.status.set('stale');
-        this.errorMessage.set('Có phiên bản chính sách mới. Hãy đọc lại và xác nhận phiên bản hiện hành.');
+        this.errorMessage.set(
+          'Có phiên bản chính sách mới. Hãy đọc lại và xác nhận phiên bản hiện hành.',
+        );
         return;
       }
       if (isProblem(error, 'POLICY_NOT_CONFIGURED')) {
         this.status.set('unconfigured');
-        this.errorMessage.set('Chính sách hiện hành chưa được cấu hình. Bạn chưa thể tiếp tục bằng tài khoản server.');
+        this.errorMessage.set(
+          'Chính sách hiện hành chưa được cấu hình. Bạn chưa thể tiếp tục bằng tài khoản server.',
+        );
         return;
       }
       if (isProblem(error, 'UNAUTHENTICATED') || statusOf(error) === 401) {
@@ -125,7 +122,9 @@ export class PolicyOnboardingService {
         return;
       }
       this.status.set('error');
-      this.errorMessage.set('Chưa ghi nhận được lựa chọn. Kiểm tra kết nối rồi thử lại; không có chấp thuận nào được giả định.');
+      this.errorMessage.set(
+        'Chưa ghi nhận được lựa chọn. Kiểm tra kết nối rồi thử lại; không có chấp thuận nào được giả định.',
+      );
     }
   }
 
@@ -167,9 +166,13 @@ export class PolicyOnboardingService {
     } catch (error) {
       if (isProblem(error, 'POLICY_NOT_CONFIGURED')) {
         this.status.set('unconfigured');
-        this.errorMessage.set('Terms và Thông báo quyền riêng tư đã duyệt chưa được cấu hình. Tài khoản server vẫn bị khóa.');
+        this.errorMessage.set(
+          'Terms và Thông báo quyền riêng tư đã duyệt chưa được cấu hình. Tài khoản server vẫn bị khóa.',
+        );
       } else {
-        this.fail('Không tải được chính sách hiện hành. Hãy thử lại; các chức năng tài khoản vẫn bị khóa.');
+        this.fail(
+          'Không tải được chính sách hiện hành. Hãy thử lại; các chức năng tài khoản vẫn bị khóa.',
+        );
       }
       return;
     }
@@ -184,14 +187,17 @@ export class PolicyOnboardingService {
       this.privacyDocument.set(privacyNotice);
     } catch {
       this.currentPolicies.set(policies);
-      this.fail('Không tải đủ nội dung chính sách. Không thể xác nhận khi chưa đọc được cả hai tài liệu.');
+      this.fail(
+        'Không tải đủ nội dung chính sách. Không thể xác nhận khi chưa đọc được cả hai tài liệu.',
+      );
       return;
     }
 
-    const hasPreviousDecision = !!account.policy.termsAcceptedVersion
-      || !!account.policy.privacyNoticeAcknowledgedVersion;
-    const matchesCurrentVersions = account.policy.termsAcceptedVersion === policies.terms.version
-      && account.policy.privacyNoticeAcknowledgedVersion === policies.privacyNotice.version;
+    const hasPreviousDecision =
+      !!account.policy.termsAcceptedVersion || !!account.policy.privacyNoticeAcknowledgedVersion;
+    const matchesCurrentVersions =
+      account.policy.termsAcceptedVersion === policies.terms.version &&
+      account.policy.privacyNoticeAcknowledgedVersion === policies.privacyNotice.version;
 
     if (account.policy.requiredAcceptanceComplete && matchesCurrentVersions) {
       this.status.set('accepted');
@@ -209,9 +215,13 @@ export class PolicyOnboardingService {
     this.accountIdentity.set(null);
     this.status.set('demo');
     if (httpStatus === 401) {
-      this.demoNotice.set('Chưa có phiên đăng nhập server. Lựa chọn dưới đây chỉ dùng trong demo và sẽ mất khi tải lại trang.');
+      this.demoNotice.set(
+        'Chưa có phiên đăng nhập server. Lựa chọn dưới đây chỉ dùng trong demo và sẽ mất khi tải lại trang.',
+      );
     } else {
-      this.demoNotice.set('API local chưa phản hồi hoặc chưa bật session. Chỉ có chức năng demo cục bộ; lựa chọn không được gửi lên máy chủ.');
+      this.demoNotice.set(
+        'API local chưa phản hồi hoặc chưa bật session. Chỉ có chức năng demo cục bộ; lựa chọn không được gửi lên máy chủ.',
+      );
     }
   }
 
@@ -226,20 +236,25 @@ function statusOf(error: unknown): number {
 }
 
 function isProblem(error: unknown, code: string): boolean {
-  return error instanceof HttpErrorResponse
-    && typeof error.error === 'object'
-    && error.error !== null
-    && (error.error as ApiProblem).code === code;
+  return (
+    error instanceof HttpErrorResponse &&
+    typeof error.error === 'object' &&
+    error.error !== null &&
+    (error.error as ApiProblem).code === code
+  );
 }
 
 function isCurrentUser(value: unknown): value is CurrentUserResponse {
   if (typeof value !== 'object' || value === null) return false;
   const candidate = value as Partial<CurrentUserResponse>;
-  return typeof candidate.user?.id === 'string'
-    && typeof candidate.policy?.requiredAcceptanceComplete === 'boolean'
-    && (candidate.policy.termsAcceptedVersion === null || typeof candidate.policy.termsAcceptedVersion === 'string')
-    && (candidate.policy.privacyNoticeAcknowledgedVersion === null
-      || typeof candidate.policy.privacyNoticeAcknowledgedVersion === 'string');
+  return (
+    typeof candidate.user?.id === 'string' &&
+    typeof candidate.policy?.requiredAcceptanceComplete === 'boolean' &&
+    (candidate.policy.termsAcceptedVersion === null ||
+      typeof candidate.policy.termsAcceptedVersion === 'string') &&
+    (candidate.policy.privacyNoticeAcknowledgedVersion === null ||
+      typeof candidate.policy.privacyNoticeAcknowledgedVersion === 'string')
+  );
 }
 
 function isCurrentPolicies(value: unknown): value is CurrentPolicies {
@@ -251,9 +266,11 @@ function isCurrentPolicies(value: unknown): value is CurrentPolicies {
 function isPolicyMetadata(value: unknown): value is PolicyDocumentMetadata {
   if (typeof value !== 'object' || value === null) return false;
   const candidate = value as Partial<PolicyDocumentMetadata>;
-  return typeof candidate.version === 'string'
-    && typeof candidate.effectiveAt === 'string'
-    && typeof candidate.documentUrl === 'string';
+  return (
+    typeof candidate.version === 'string' &&
+    typeof candidate.effectiveAt === 'string' &&
+    typeof candidate.documentUrl === 'string'
+  );
 }
 
 function isAcceptanceForCurrentVersions(
@@ -262,17 +279,22 @@ function isAcceptanceForCurrentVersions(
 ): value is PolicyAcceptanceResponse {
   if (typeof value !== 'object' || value === null) return false;
   const acceptance = value as Partial<PolicyAcceptanceResponse>;
-  return acceptance.termsAcceptedVersion === current.terms.version
-    && acceptance.privacyNoticeAcknowledgedVersion === current.privacyNotice.version
-    && typeof acceptance.termsAcceptedAt === 'string'
-    && Number.isFinite(Date.parse(acceptance.termsAcceptedAt))
-    && typeof acceptance.privacyNoticeAcknowledgedAt === 'string'
-    && Number.isFinite(Date.parse(acceptance.privacyNoticeAcknowledgedAt));
+  return (
+    acceptance.termsAcceptedVersion === current.terms.version &&
+    acceptance.privacyNoticeAcknowledgedVersion === current.privacyNotice.version &&
+    typeof acceptance.termsAcceptedAt === 'string' &&
+    Number.isFinite(Date.parse(acceptance.termsAcceptedAt)) &&
+    typeof acceptance.privacyNoticeAcknowledgedAt === 'string' &&
+    Number.isFinite(Date.parse(acceptance.privacyNoticeAcknowledgedAt))
+  );
 }
 
 function safePolicyDocumentPath(url: string): string {
   const parsed = new URL(url, window.location.origin);
-  if (parsed.origin !== window.location.origin || !parsed.pathname.startsWith('/api/v1/auth/policies/')) {
+  if (
+    parsed.origin !== window.location.origin ||
+    !parsed.pathname.startsWith('/api/v1/auth/policies/')
+  ) {
     throw new Error('Policy document URL must stay on the same origin.');
   }
   return `${parsed.pathname}${parsed.search}`;

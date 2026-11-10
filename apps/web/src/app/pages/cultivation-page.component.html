@@ -1,41 +1,174 @@
 <section class="page-wrap cultivation-page">
-  <div class="page-heading cultivation-heading"><div><p class="eyebrow">TIẾN TRÌNH ĐỌC CÁ NHÂN</p><h1>Hành trình tu luyện</h1><p>Một cách nhẹ nhàng để nhìn lại thời gian bạn dành cho những câu chuyện.</p></div><span class="private-tag">RIÊNG TƯ · KHÔNG BXH</span></div>
+  <div class="page-heading cultivation-heading">
+    <div>
+      <p class="eyebrow">TIẾN TRÌNH ĐỌC CÁ NHÂN</p>
+      <h1>Hành trình tu luyện</h1>
+      <p>Một cách nhẹ nhàng để nhìn lại thời gian bạn dành cho những câu chuyện.</p>
+    </div>
+    <span class="private-tag">RIÊNG TƯ · KHÔNG BXH</span>
+  </div>
 
-  <div class="cultivation-demo-notice" role="note"><span aria-hidden="true">i</span><p><strong>Số liệu mẫu để minh họa giao diện.</strong> Chưa có Reader hoặc backend để ghi nhận XP cá nhân. Trong bản thật, máy chủ tính XP từ phiên đọc hợp lệ.</p></div>
+  <div class="cultivation-demo-notice" role="note">
+    <span aria-hidden="true">i</span>
+    <p>
+      <strong>Số liệu mẫu để minh họa giao diện.</strong> Chưa có Reader hoặc backend để ghi nhận XP
+      cá nhân. Trong bản thật, máy chủ tính XP từ phiên đọc hợp lệ.
+    </p>
+  </div>
 
   <section class="cultivation-control-card" aria-labelledby="cultivation-control-title">
     <div class="cultivation-control-icon" aria-hidden="true">✧</div>
-    <div class="cultivation-control-copy"><p class="eyebrow">TÙY CHỌN CỦA BẠN</p><h2 id="cultivation-control-title">{{ demo.cultivationEnabled() ? 'Hành trình đang bật trong demo' : 'Bật hành trình khi bạn sẵn sàng' }}</h2><p>{{ demo.cultivationEnabled() ? (demo.cultivationPaused() ? 'Đang tạm dừng. Dữ liệu đã đạt trong sản phẩm thật sẽ được giữ nguyên.' : 'Đang bật. Phiên demo không tự cộng XP và chưa lưu trạng thái lên máy chủ.') : 'Tính năng này mặc định tắt. Không có streak, áp lực hay quyền lợi trả phí gắn với cấp bậc.' }}</p></div>
+    <div class="cultivation-control-copy">
+      <p class="eyebrow">TÙY CHỌN CỦA BẠN</p>
+      <h2 id="cultivation-control-title">
+        {{
+          demo.cultivationEnabled()
+            ? 'Hành trình đang bật trong demo'
+            : 'Bật hành trình khi bạn sẵn sàng'
+        }}
+      </h2>
+      <p>
+        {{
+          demo.cultivationEnabled()
+            ? demo.cultivationPaused()
+              ? 'Đang tạm dừng. Dữ liệu đã đạt trong sản phẩm thật sẽ được giữ nguyên.'
+              : 'Đang bật. Phiên demo không tự cộng XP và chưa lưu trạng thái lên máy chủ.'
+            : 'Tính năng này mặc định tắt. Không có streak, áp lực hay quyền lợi trả phí gắn với cấp bậc.'
+        }}
+      </p>
+    </div>
     @if (!demo.cultivationEnabled()) {
-      <button class="button button-primary" type="button" (click)="demo.toggleCultivation()">Bật trong bản demo</button>
+      <button class="button button-primary" type="button" (click)="demo.toggleCultivation()">
+        Bật trong bản demo
+      </button>
     } @else {
-      <button class="button button-outline" type="button" (click)="demo.toggleCultivationPause()">{{ demo.cultivationPaused() ? 'Tiếp tục' : 'Tạm dừng tích lũy' }}</button>
+      <button class="button button-outline" type="button" (click)="demo.toggleCultivationPause()">
+        {{ demo.cultivationPaused() ? 'Tiếp tục' : 'Tạm dừng tích lũy' }}
+      </button>
     }
   </section>
 
   <section class="sample-progression" aria-labelledby="sample-progression-title">
-    <div class="section-heading"><div><p class="eyebrow">VÍ DỤ GIAO DIỆN</p><h2 id="sample-progression-title">Cách một mốc tiến triển</h2></div><span class="sample-tag">MINH HỌA · KHÔNG PHẢI XP CỦA BẠN</span></div>
+    <div class="section-heading">
+      <div>
+        <p class="eyebrow">VÍ DỤ GIAO DIỆN</p>
+        <h2 id="sample-progression-title">Cách một mốc tiến triển</h2>
+      </div>
+      <span class="sample-tag">MINH HỌA · KHÔNG PHẢI XP CỦA BẠN</span>
+    </div>
     <article class="rank-progress-card">
       <div class="rank-medallion" aria-hidden="true"><span>✧</span></div>
-      <div class="rank-progress-main"><div class="rank-label-row"><span class="rank-label">CẤP BẬC MẪU</span><span class="rank-xp"><strong>{{ formatXp(exampleXp) }}</strong> XP</span></div><h3>{{ sampleRank }}</h3><p>Tiến tới <strong>{{ sampleNextRank }}</strong></p><div class="progress-track" role="progressbar" [attr.aria-valuenow]="sampleProgress" aria-valuemin="0" aria-valuemax="100" [attr.aria-label]="'Ví dụ tiến độ tới ' + sampleNextRank"><span [style.width.%]="sampleProgress"></span></div><div class="progress-foot"><span>{{ formatXp(exampleXp) }} XP tích lũy trong ví dụ</span><strong>Còn {{ formatXp(sampleNextThreshold - exampleXp) }} XP</strong></div></div>
-      <div class="rank-next-box"><small>CẤP TIẾP THEO</small><strong>{{ sampleNextRank }}</strong><span>{{ formatXp(sampleNextThreshold) }} XP</span></div>
+      <div class="rank-progress-main">
+        <div class="rank-label-row">
+          <span class="rank-label">CẤP BẬC MẪU</span
+          ><span class="rank-xp"
+            ><strong>{{ formatXp(exampleXp) }}</strong> XP</span
+          >
+        </div>
+        <h3>{{ sampleRank }}</h3>
+        <p>
+          Tiến tới <strong>{{ sampleNextRank }}</strong>
+        </p>
+        <div
+          class="progress-track"
+          role="progressbar"
+          [attr.aria-valuenow]="sampleProgress"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          [attr.aria-label]="'Ví dụ tiến độ tới ' + sampleNextRank"
+        >
+          <span [style.width.%]="sampleProgress"></span>
+        </div>
+        <div class="progress-foot">
+          <span>{{ formatXp(exampleXp) }} XP tích lũy trong ví dụ</span
+          ><strong>Còn {{ formatXp(sampleNextThreshold - exampleXp) }} XP</strong>
+        </div>
+      </div>
+      <div class="rank-next-box">
+        <small>CẤP TIẾP THEO</small><strong>{{ sampleNextRank }}</strong
+        ><span>{{ formatXp(sampleNextThreshold) }} XP</span>
+      </div>
     </article>
-    <div class="sample-daily"><div><span class="daily-icon" aria-hidden="true">◷</span><p><strong>Ví dụ hoạt động trong ngày</strong><small>34 / {{ dailyCap }} XP · giới hạn UTC</small></p></div><div class="daily-progress"><span></span></div><span class="sample-tag">MINH HỌA</span></div>
+    <div class="sample-daily">
+      <div>
+        <span class="daily-icon" aria-hidden="true">◷</span>
+        <p>
+          <strong>Ví dụ hoạt động trong ngày</strong
+          ><small>34 / {{ dailyCap }} XP · giới hạn UTC</small>
+        </p>
+      </div>
+      <div class="daily-progress"><span></span></div>
+      <span class="sample-tag">MINH HỌA</span>
+    </div>
   </section>
 
-  <section class="rank-ladder-section" aria-labelledby="ladder-title"><div class="section-heading"><div><p class="eyebrow">CÁC CẢNH GIỚI</p><h2 id="ladder-title">Từ nhập môn đến Độ Kiếp</h2></div><p class="section-aside">Mốc khởi điểm đề xuất · cấu hình thật sẽ do máy chủ quản lý</p></div>
+  <section class="rank-ladder-section" aria-labelledby="ladder-title">
+    <div class="section-heading">
+      <div>
+        <p class="eyebrow">CÁC CẢNH GIỚI</p>
+        <h2 id="ladder-title">Từ nhập môn đến Độ Kiếp</h2>
+      </div>
+      <p class="section-aside">Mốc khởi điểm đề xuất · cấu hình thật sẽ do máy chủ quản lý</p>
+    </div>
     <div class="rank-ladder">
       @for (rank of demo.cultivationRanks; track rank.key; let index = $index) {
-        <article class="rank-ladder-row" [class.example-rank]="index === sampleRankIndex"><span class="rank-node" aria-hidden="true">{{ index === sampleRankIndex ? '✧' : index + 1 }}</span><div class="rank-ladder-copy"><span class="rank-group">{{ rank.group }}</span><strong>{{ rank.name }}</strong></div><span class="rank-threshold">{{ formatXp(rank.threshold) }} XP</span>@if (index === sampleRankIndex) { <span class="sample-current-tag">MỐC TRONG VÍ DỤ</span> }
+        <article class="rank-ladder-row" [class.example-rank]="index === sampleRankIndex">
+          <span class="rank-node" aria-hidden="true">{{
+            index === sampleRankIndex ? '✧' : index + 1
+          }}</span>
+          <div class="rank-ladder-copy">
+            <span class="rank-group">{{ rank.group }}</span
+            ><strong>{{ rank.name }}</strong>
+          </div>
+          <span class="rank-threshold">{{ formatXp(rank.threshold) }} XP</span>
+          @if (index === sampleRankIndex) {
+            <span class="sample-current-tag">MỐC TRONG VÍ DỤ</span>
+          }
         </article>
       }
     </div>
   </section>
 
   <div class="cultivation-details-grid">
-    <section class="detail-card"><div class="detail-icon" aria-hidden="true">◷</div><p class="eyebrow">CÁCH TÍNH</p><h2>Thời gian đọc mới tạo XP</h2><ul><li>1 XP cho mỗi phút đọc hợp lệ trong Reader.</li><li>Tối đa 120 XP mỗi ngày UTC.</li><li>Nạp credit hay mở khóa không cộng điểm.</li></ul></section>
-    <section class="detail-card"><div class="detail-icon" aria-hidden="true">◉</div><p class="eyebrow">QUYỀN RIÊNG TƯ</p><h2>Không theo dõi bạn đọc gì</h2><ul><li>Hoạt động chỉ hiển thị theo ngày.</li><li>Không đưa tên truyện/chương vào bảng hoạt động.</li><li>Tắt tính năng vẫn giữ cấp và lịch sử đã đạt.</li></ul></section>
+    <section class="detail-card">
+      <div class="detail-icon" aria-hidden="true">◷</div>
+      <p class="eyebrow">CÁCH TÍNH</p>
+      <h2>Thời gian đọc mới tạo XP</h2>
+      <ul>
+        <li>1 XP cho mỗi phút đọc hợp lệ trong Reader.</li>
+        <li>Tối đa 120 XP mỗi ngày UTC.</li>
+        <li>Nạp credit hay mở khóa không cộng điểm.</li>
+      </ul>
+    </section>
+    <section class="detail-card">
+      <div class="detail-icon" aria-hidden="true">◉</div>
+      <p class="eyebrow">QUYỀN RIÊNG TƯ</p>
+      <h2>Không theo dõi bạn đọc gì</h2>
+      <ul>
+        <li>Hoạt động chỉ hiển thị theo ngày.</li>
+        <li>Không đưa tên truyện/chương vào bảng hoạt động.</li>
+        <li>Tắt tính năng vẫn giữ cấp và lịch sử đã đạt.</li>
+      </ul>
+    </section>
   </div>
 
-  <section class="activity-section"><div class="section-heading"><div><p class="eyebrow">LỊCH SỬ CÁ NHÂN</p><h2>Hoạt động theo ngày</h2></div><span class="sample-tag">CHƯA CÓ DỮ LIỆU DEMO</span></div><div class="activity-empty"><span aria-hidden="true">◷</span><div><strong>Chưa có hoạt động nào được ghi nhận</strong><p>Demo chưa có Reader và không tự tạo XP giả. Khi dùng sản phẩm thật, mục này chỉ hiển thị tổng hợp theo ngày.</p></div></div></section>
+  <section class="activity-section">
+    <div class="section-heading">
+      <div>
+        <p class="eyebrow">LỊCH SỬ CÁ NHÂN</p>
+        <h2>Hoạt động theo ngày</h2>
+      </div>
+      <span class="sample-tag">CHƯA CÓ DỮ LIỆU DEMO</span>
+    </div>
+    <div class="activity-empty">
+      <span aria-hidden="true">◷</span>
+      <div>
+        <strong>Chưa có hoạt động nào được ghi nhận</strong>
+        <p>
+          Demo chưa có Reader và không tự tạo XP giả. Khi dùng sản phẩm thật, mục này chỉ hiển thị
+          tổng hợp theo ngày.
+        </p>
+      </div>
+    </div>
+  </section>
 </section>

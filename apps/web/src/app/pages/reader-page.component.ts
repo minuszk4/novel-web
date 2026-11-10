@@ -1,4 +1,12 @@
-import { Component, DestroyRef, ElementRef, HostListener, inject, signal, ViewChild } from '@angular/core';
+import {
+  Component,
+  DestroyRef,
+  ElementRef,
+  HostListener,
+  inject,
+  signal,
+  ViewChild,
+} from '@angular/core';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { DemoStateService } from '../core/demo-state.service';
@@ -24,7 +32,9 @@ export class ReaderPageComponent {
     if (panel) this.focusPanel(panel.nativeElement);
   }
 
-  @ViewChild('settingsPanel') private set settingsPanel(panel: ElementRef<HTMLElement> | undefined) {
+  @ViewChild('settingsPanel') private set settingsPanel(
+    panel: ElementRef<HTMLElement> | undefined,
+  ) {
     if (panel) this.focusPanel(panel.nativeElement);
   }
 
@@ -38,7 +48,9 @@ export class ReaderPageComponent {
       this.panelReturnFocus = null;
       if (typeof window !== 'undefined') {
         requestAnimationFrame(() => {
-          document.querySelector<HTMLElement>('.reader-content-scroller')?.scrollTo({ top: 0, behavior: 'auto' });
+          document
+            .querySelector<HTMLElement>('.reader-content-scroller')
+            ?.scrollTo({ top: 0, behavior: 'auto' });
           document.getElementById('reader-title')?.focus({ preventScroll: true });
         });
       }

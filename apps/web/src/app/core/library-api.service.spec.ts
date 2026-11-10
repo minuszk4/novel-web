@@ -70,10 +70,13 @@ describe('LibraryApiService', () => {
 
   it('loads and validates actor-scoped library pages', async () => {
     const result = service.listLibraries('opaque cursor', 20);
-    const request = http.expectOne((candidate) => candidate.method === 'GET'
-      && candidate.url === '/api/v1/libraries'
-      && candidate.params.get('cursor') === 'opaque cursor'
-      && candidate.params.get('limit') === '20');
+    const request = http.expectOne(
+      (candidate) =>
+        candidate.method === 'GET' &&
+        candidate.url === '/api/v1/libraries' &&
+        candidate.params.get('cursor') === 'opaque cursor' &&
+        candidate.params.get('limit') === '20',
+    );
     request.flush({ items: [library], nextCursor: 'next-page' });
 
     await expect(result).resolves.toEqual({ items: [library], nextCursor: 'next-page' });
@@ -87,41 +90,57 @@ describe('LibraryApiService', () => {
       cursor: 'page-2',
       limit: 10,
     });
-    const request = http.expectOne((candidate) => candidate.method === 'GET'
-      && candidate.url === '/api/v1/works'
-      && candidate.params.get('libraryId') === libraryId
-      && candidate.params.get('q') === 'gió núi'
-      && candidate.params.get('tag') === 'fantasy'
-      && candidate.params.get('status') === 'active'
-      && candidate.params.get('cursor') === 'page-2'
-      && candidate.params.get('limit') === '10');
+    const request = http.expectOne(
+      (candidate) =>
+        candidate.method === 'GET' &&
+        candidate.url === '/api/v1/works' &&
+        candidate.params.get('libraryId') === libraryId &&
+        candidate.params.get('q') === 'gió núi' &&
+        candidate.params.get('tag') === 'fantasy' &&
+        candidate.params.get('status') === 'active' &&
+        candidate.params.get('cursor') === 'page-2' &&
+        candidate.params.get('limit') === '10',
+    );
     request.flush({ items: [work], nextCursor: null });
 
     await expect(result).resolves.toEqual({ items: [work], nextCursor: null });
   });
 
   it('rejects invalid list cursors, cross-library rows and malformed pages', async () => {
-    await expect(service.listLibraries('', 25)).rejects.toMatchObject({ code: 'INVALID_LIBRARY_QUERY' });
-    await expect(service.listWorks('not-a-uuid')).rejects.toMatchObject({ code: 'INVALID_LIBRARY_ID' });
+    await expect(service.listLibraries('', 25)).rejects.toMatchObject({
+      code: 'INVALID_LIBRARY_QUERY',
+    });
+    await expect(service.listWorks('not-a-uuid')).rejects.toMatchObject({
+      code: 'INVALID_LIBRARY_ID',
+    });
 
     const invalidWork = service.listWorks(libraryId);
-    http.expectOne((candidate) => candidate.url === '/api/v1/works').flush({
-      items: [{ ...work, libraryId: '44444444-4444-4444-8444-444444444444' }],
-      nextCursor: null,
-    });
+    http
+      .expectOne((candidate) => candidate.url === '/api/v1/works')
+      .flush({
+        items: [{ ...work, libraryId: '44444444-4444-4444-8444-444444444444' }],
+        nextCursor: null,
+      });
     await expect(invalidWork).rejects.toMatchObject({ code: 'INVALID_API_RESPONSE', status: 502 });
 
     const duplicateLibraries = service.listLibraries();
-    http.expectOne((candidate) => candidate.url === '/api/v1/libraries').flush({
-      items: [library, library],
-      nextCursor: null,
+    http
+      .expectOne((candidate) => candidate.url === '/api/v1/libraries')
+      .flush({
+        items: [library, library],
+        nextCursor: null,
+      });
+    await expect(duplicateLibraries).rejects.toMatchObject({
+      code: 'INVALID_API_RESPONSE',
+      status: 502,
     });
-    await expect(duplicateLibraries).rejects.toMatchObject({ code: 'INVALID_API_RESPONSE', status: 502 });
   });
 
   it('sends session CSRF before creating and deleting a collection', async () => {
     const creating = service.createCollection(collection.name);
-    http.expectOne({ method: 'GET', url: '/api/v1/auth/csrf' }).flush({ token: 'session-bound-token' });
+    http
+      .expectOne({ method: 'GET', url: '/api/v1/auth/csrf' })
+      .flush({ token: 'session-bound-token' });
     await Promise.resolve();
     await Promise.resolve();
     const createRequest = http.expectOne({ method: 'POST', url: '/api/v1/me/library/collections' });
@@ -134,7 +153,10 @@ describe('LibraryApiService', () => {
     http.expectOne({ method: 'GET', url: '/api/v1/auth/csrf' }).flush({ token: 'rotated-token' });
     await Promise.resolve();
     await Promise.resolve();
-    const deleteRequest = http.expectOne({ method: 'DELETE', url: `/api/v1/me/library/collections/${collectionId}` });
+    const deleteRequest = http.expectOne({
+      method: 'DELETE',
+      url: `/api/v1/me/library/collections/${collectionId}`,
+    });
     expect(deleteRequest.request.headers.get('X-CSRF-Token')).toBe('rotated-token');
     deleteRequest.flush(null, { status: 204, statusText: 'No Content' });
     await expect(deleting).resolves.toBeUndefined();
@@ -145,16 +167,27 @@ describe('LibraryApiService', () => {
       readingStatus: 'reading',
       collectionIds: [collectionId],
     });
-    http.expectOne({ method: 'GET', url: '/api/v1/auth/csrf' }).flush({ token: 'session-bound-token' });
+    http
+      .expectOne({ method: 'GET', url: '/api/v1/auth/csrf' })
+      .flush({ token: 'session-bound-token' });
     await Promise.resolve();
     await Promise.resolve();
-    const request = http.expectOne({ method: 'PUT', url: `/api/v1/me/works/${workId}/library-state` });
+    const request = http.expectOne({
+      method: 'PUT',
+      url: `/api/v1/me/works/${workId}/library-state`,
+    });
     expect(request.request.headers.get('If-Match')).toBe('"v2"');
     expect(request.request.headers.get('X-CSRF-Token')).toBe('session-bound-token');
-    expect(request.request.body).toEqual({ readingStatus: 'reading', collectionIds: [collectionId] });
-    request.flush({ ...workState, readingStatus: 'reading', collectionIds: [collectionId], version: 3 }, {
-      headers: new HttpHeaders({ ETag: '"v3"' }),
+    expect(request.request.body).toEqual({
+      readingStatus: 'reading',
+      collectionIds: [collectionId],
     });
+    request.flush(
+      { ...workState, readingStatus: 'reading', collectionIds: [collectionId], version: 3 },
+      {
+        headers: new HttpHeaders({ ETag: '"v3"' }),
+      },
+    );
 
     await expect(updating).resolves.toMatchObject({
       readingStatus: 'reading',
@@ -167,9 +200,11 @@ describe('LibraryApiService', () => {
   it('accepts a read-only default state with a null updatedAt and version zero', async () => {
     const defaultState = { ...workState, version: 0, updatedAt: null, etag: '"v0"' };
     const result = service.getWorkState(workId);
-    http.expectOne({ method: 'GET', url: `/api/v1/me/works/${workId}/library-state` }).flush(defaultState, {
-      headers: new HttpHeaders({ ETag: '"v0"' }),
-    });
+    http
+      .expectOne({ method: 'GET', url: `/api/v1/me/works/${workId}/library-state` })
+      .flush(defaultState, {
+        headers: new HttpHeaders({ ETag: '"v0"' }),
+      });
 
     await expect(result).resolves.toMatchObject({ version: 0, updatedAt: null, etag: '"v0"' });
   });
@@ -180,17 +215,22 @@ describe('LibraryApiService', () => {
       readingStatus: 'reading',
       collectionIds: [],
     });
-    http.expectOne({ method: 'GET', url: '/api/v1/auth/csrf' }).flush({ token: 'session-bound-token' });
+    http
+      .expectOne({ method: 'GET', url: '/api/v1/auth/csrf' })
+      .flush({ token: 'session-bound-token' });
     await Promise.resolve();
     await Promise.resolve();
-    http.expectOne({ method: 'PUT', url: `/api/v1/me/works/${workId}/library-state` }).flush({
-      code: 'LIBRARY_STATE_VERSION_STALE',
-      latest,
-    }, {
-      status: 409,
-      statusText: 'Conflict',
-      headers: new HttpHeaders({ ETag: '"v3"' }),
-    });
+    http.expectOne({ method: 'PUT', url: `/api/v1/me/works/${workId}/library-state` }).flush(
+      {
+        code: 'LIBRARY_STATE_VERSION_STALE',
+        latest,
+      },
+      {
+        status: 409,
+        statusText: 'Conflict',
+        headers: new HttpHeaders({ ETag: '"v3"' }),
+      },
+    );
 
     await expect(updating).rejects.toBeInstanceOf(LibraryApiError);
     await expect(updating).rejects.toMatchObject({
@@ -202,13 +242,17 @@ describe('LibraryApiService', () => {
 
   it('rejects malformed collections and ETag/body version mismatches', async () => {
     const malformedCollections = service.listCollections();
-    http.expectOne({ method: 'GET', url: '/api/v1/me/library/collections' }).flush([{ ...collection, id: 'not-a-uuid' }]);
+    http
+      .expectOne({ method: 'GET', url: '/api/v1/me/library/collections' })
+      .flush([{ ...collection, id: 'not-a-uuid' }]);
     await expect(malformedCollections).rejects.toMatchObject({ code: 'INVALID_API_RESPONSE' });
 
     const malformedState = service.getWorkState(workId);
-    http.expectOne({ method: 'GET', url: `/api/v1/me/works/${workId}/library-state` }).flush(workState, {
-      headers: new HttpHeaders({ ETag: '"v1"' }),
-    });
+    http
+      .expectOne({ method: 'GET', url: `/api/v1/me/works/${workId}/library-state` })
+      .flush(workState, {
+        headers: new HttpHeaders({ ETag: '"v1"' }),
+      });
     await expect(malformedState).rejects.toMatchObject({ code: 'INVALID_API_RESPONSE' });
   });
 });

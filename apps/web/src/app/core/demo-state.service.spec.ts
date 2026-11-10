@@ -20,13 +20,16 @@ afterEach(() => {
 
 describe('DemoStateService library persistence', () => {
   it('restores imported metadata, reading status, and collection assignment', () => {
-    localStorage.setItem(storageKey, JSON.stringify({
-      version: 1,
-      importedWork: work,
-      readingStatusByWork: { [work.id]: 'reading' },
-      collections: [{ id: 'collection-weekend', name: 'Đọc cuối tuần' }],
-      collectionIdsByWork: { [work.id]: ['collection-weekend'] },
-    }));
+    localStorage.setItem(
+      storageKey,
+      JSON.stringify({
+        version: 1,
+        importedWork: work,
+        readingStatusByWork: { [work.id]: 'reading' },
+        collections: [{ id: 'collection-weekend', name: 'Đọc cuối tuần' }],
+        collectionIdsByWork: { [work.id]: ['collection-weekend'] },
+      }),
+    );
 
     const service = new DemoStateService();
 

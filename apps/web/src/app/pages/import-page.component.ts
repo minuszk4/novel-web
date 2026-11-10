@@ -18,16 +18,18 @@ export class ImportPageComponent {
   protected readonly accountImport = inject(AccountImportService);
   protected readonly policy = inject(PolicyOnboardingService);
   protected readonly accountMode = computed(() => this.policy.accountIdentity() !== null);
-  protected readonly selectedFile = computed(() => this.accountMode()
-    ? this.accountImport.fileMetadata()
-    : this.demo.selectedFile());
-  protected readonly rightsConfirmed = computed(() => this.accountMode()
-    ? this.accountImport.rightsConfirmed()
-    : this.demo.rightsConfirmed());
-  protected readonly continueDisabled = computed(() => this.accountMode()
-    ? !this.accountImport.canStart()
-      || this.accountImport.state() === 'error' && !this.accountImport.retryable()
-    : !this.demo.canReviewImport);
+  protected readonly selectedFile = computed(() =>
+    this.accountMode() ? this.accountImport.fileMetadata() : this.demo.selectedFile(),
+  );
+  protected readonly rightsConfirmed = computed(() =>
+    this.accountMode() ? this.accountImport.rightsConfirmed() : this.demo.rightsConfirmed(),
+  );
+  protected readonly continueDisabled = computed(() =>
+    this.accountMode()
+      ? !this.accountImport.canStart() ||
+        (this.accountImport.state() === 'error' && !this.accountImport.retryable())
+      : !this.demo.canReviewImport,
+  );
   protected errorMessage = '';
   private readonly router = inject(Router);
 

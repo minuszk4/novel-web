@@ -24,9 +24,11 @@ export class SetupPageComponent {
   get canContinue(): boolean {
     const status = this.policy.status();
     if (status === 'accepted') return true;
-    return (status === 'demo' || status === 'pending' || status === 'stale')
-      && this.termsChecked()
-      && this.privacyChecked();
+    return (
+      (status === 'demo' || status === 'pending' || status === 'stale') &&
+      this.termsChecked() &&
+      this.privacyChecked()
+    );
   }
 
   get isServerDecisionPending(): boolean {
@@ -54,8 +56,11 @@ export class SetupPageComponent {
         await this.policy.acceptCurrentPolicies();
         if (this.policy.status() !== 'accepted') {
           const current = this.policy.currentPolicies();
-          if (current && (current.terms.version !== previousTermsVersion
-            || current.privacyNotice.version !== previousPrivacyVersion)) {
+          if (
+            current &&
+            (current.terms.version !== previousTermsVersion ||
+              current.privacyNotice.version !== previousPrivacyVersion)
+          ) {
             this.termsChecked.set(false);
             this.privacyChecked.set(false);
           }

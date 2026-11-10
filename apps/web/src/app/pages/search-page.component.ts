@@ -23,6 +23,8 @@ export class SearchPageComponent {
   get hasMatch(): boolean {
     const work = this.demo.importedWork();
     if (!work) return false;
-    return !this.query() || `${work.title} ${work.author}`.toLocaleLowerCase('vi').includes(this.query());
+    return (
+      !this.query() || `${work.title} ${work.author}`.toLocaleLowerCase('vi').includes(this.query())
+    );
   }
 }
