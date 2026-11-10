@@ -44,3 +44,10 @@ novel:
       validation-timeout: ${NOVEL_IMPORT_VALIDATION_TIMEOUT:15s}
       cleanup-delay: ${NOVEL_IMPORT_CLEANUP_DELAY:1m}
       cleanup-batch-size: ${NOVEL_IMPORT_CLEANUP_BATCH_SIZE:100}
+      max-active-jobs-per-user: ${NOVEL_IMPORT_MAX_ACTIVE_JOBS_PER_USER:5}
+      max-active-declared-bytes-per-user: ${NOVEL_IMPORT_MAX_ACTIVE_DECLARED_BYTES_PER_USER:104857600}
+      create-rate-limit-capacity: ${NOVEL_IMPORT_CREATE_RATE_LIMIT_CAPACITY:10}
+      create-rate-limit-refill-interval: ${NOVEL_IMPORT_CREATE_RATE_LIMIT_REFILL_INTERVAL:6s}
+      upload-rate-limit-capacity: ${NOVEL_IMPORT_UPLOAD_RATE_LIMIT_CAPACITY:5}
+      upload-rate-limit-refill-interval: ${NOVEL_IMPORT_UPLOAD_RATE_LIMIT_REFILL_INTERVAL:10s}
+      rate-limit-retention: ${NOVEL_IMPORT_RATE_LIMIT_RETENTION:24h}

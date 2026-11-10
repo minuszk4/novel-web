@@ -99,6 +99,12 @@ public class ImportController {
                 case STORAGE_NOT_CONFIGURED -> problem(HttpStatus.SERVICE_UNAVAILABLE,
                         "IMPORT_STORAGE_NOT_CONFIGURED",
                         "Private import storage is unavailable; no upload target was created.", correlationId);
+                case QUOTA_EXCEEDED -> problem(HttpStatus.TOO_MANY_REQUESTS, "IMPORT_STAGING_QUOTA_EXCEEDED",
+                        "Current staging jobs or files use this account's import quota. Wait for expiry and cleanup, then retry.",
+                        correlationId);
+                case RATE_LIMITED -> problem(HttpStatus.TOO_MANY_REQUESTS, "IMPORT_CREATE_RATE_LIMITED",
+                        "Too many import requests were submitted. Wait before trying again.", correlationId,
+                        result.retryAfterSeconds());
                 default -> problem(HttpStatus.INTERNAL_SERVER_ERROR, "IMPORT_CREATE_FAILED",
                         "The import could not be created.", correlationId);
             };
@@ -142,6 +148,9 @@ public class ImportController {
                         correlationId);
                 case STORAGE_NOT_CONFIGURED -> problem(HttpStatus.SERVICE_UNAVAILABLE,
                         "IMPORT_STORAGE_NOT_CONFIGURED", "Private import storage is unavailable.", correlationId);
+                case RATE_LIMITED -> problem(HttpStatus.TOO_MANY_REQUESTS, "IMPORT_UPLOAD_RATE_LIMITED",
+                        "Too many import uploads were submitted. Wait before trying again.", correlationId,
+                        result.retryAfterSeconds());
                 default -> problem(HttpStatus.INTERNAL_SERVER_ERROR, "IMPORT_UPLOAD_FAILED",
                         "The upload could not be stored.", correlationId);
             };
@@ -171,11 +180,18 @@ public class ImportController {
 
     private static ResponseEntity<ProblemDetail> problem(
             HttpStatus status, String code, String detail, UUID correlationId) {
+        return problem(status, code, detail, correlationId, 0);
+    }
+
+    private static ResponseEntity<ProblemDetail> problem(
+            HttpStatus status, String code, String detail, UUID correlationId, int retryAfterSeconds) {
         ProblemDetail problem = ProblemDetail.forStatusAndDetail(status, detail);
         problem.setTitle(status.getReasonPhrase());
         problem.setProperty("code", code);
         problem.setProperty("correlationId", correlationId.toString());
-        return noStore(status).body(problem);
+        ResponseEntity.BodyBuilder response = noStore(status);
+        if (retryAfterSeconds > 0) response.header(HttpHeaders.RETRY_AFTER, Integer.toString(retryAfterSeconds));
+        return response.body(problem);
     }
 
     private static SessionService.SessionPrincipal principal(Authentication authentication) {

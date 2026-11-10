@@ -59,6 +59,7 @@ import com.novelweb.library.LibraryUserStateService;
 import com.novelweb.library.WorkspaceRepository;
 import com.novelweb.library.WorkspaceService;
 import com.novelweb.library.imports.ImportStagingCleanupService;
+import com.novelweb.library.imports.ImportStagingRateLimiter;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
@@ -107,6 +108,13 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
         "novel.imports.staging.job-ttl=1h",
         "novel.imports.staging.cleanup-delay=1h",
         "novel.imports.staging.cleanup-batch-size=100",
+        "novel.imports.staging.max-active-jobs-per-user=2",
+        "novel.imports.staging.max-active-declared-bytes-per-user=1024",
+        "novel.imports.staging.create-rate-limit-capacity=20",
+        "novel.imports.staging.create-rate-limit-refill-interval=1h",
+        "novel.imports.staging.upload-rate-limit-capacity=20",
+        "novel.imports.staging.upload-rate-limit-refill-interval=1h",
+        "novel.imports.staging.rate-limit-retention=24h",
         "novel.web.cors.allowed-origins=https://app.example.test"
 })
 class PostgresSchemaIntegrationTests {
@@ -140,7 +148,8 @@ class PostgresSchemaIntegrationTests {
             "library_collection_works",
             "import_rights_statements",
             "import_rights_acceptances",
-            "import_jobs");
+            "import_jobs",
+            "import_actor_rate_limits");
 
     @Autowired
     private DataSource dataSource;
@@ -179,6 +188,9 @@ class PostgresSchemaIntegrationTests {
     private ImportStagingCleanupService importStagingCleanupService;
 
     @Autowired
+    private ImportStagingRateLimiter importStagingRateLimiter;
+
+    @Autowired
     private MockMvc mockMvc;
 
     @Autowired
@@ -212,7 +224,7 @@ class PostgresSchemaIntegrationTests {
                      "SELECT COUNT(*) FROM databasechangelog");
              ResultSet changesets = changesetCount.executeQuery()) {
             changesets.next();
-            assertEquals(59, changesets.getInt(1), "unexpected number of applied changesets");
+            assertEquals(60, changesets.getInt(1), "unexpected number of applied changesets");
         }
 
         Set<String> actualTables = new HashSet<>();
@@ -769,6 +781,232 @@ class PostgresSchemaIntegrationTests {
             deleteLibrary(library.id());
             deleteImportRightsTestStatement(version);
             deleteSessionTestUser(actorId);
+            deleteSessionTestUser(approverId);
+        }
+    }
+
+    @Test
+    void importQuotaSerializesConcurrentCreatesAndPreservesRejectedReceipts() throws Exception {
+        UUID actorId = createSessionTestUser("Concurrent Import Quota Owner");
+        UUID approverId = createSessionTestUser("Concurrent Import Quota Approver");
+        var library = libraryService.createLibrary(actorId, "Concurrent quota shelf");
+        String version = "private-import-quota-concurrency-v1";
+        String statementText = "Synthetic test-only concurrent import quota statement.";
+        List<UUID> receiptIds = List.of(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID());
+        try {
+            insertImportRightsStatement(version, statementText, approverId, "APPROVED", -1);
+            addCurrentPolicyAcceptances(actorId);
+            for (UUID receiptId : receiptIds) {
+                insertImportRightsAcceptance(actorId, receiptId, version, statementText);
+            }
+
+            SessionService.IssuedSession actorSession = sessionService.create(actorId).orElseThrow();
+            jakarta.servlet.http.Cookie actorCookie = new jakarta.servlet.http.Cookie(
+                    "__Host-novel_session", actorSession.cookieValue());
+            String actorCsrf = csrfTokenService.tokenFor(actorSession.cookieValue());
+            CountDownLatch ready = new CountDownLatch(receiptIds.size());
+            CountDownLatch start = new CountDownLatch(1);
+            ExecutorService executor = Executors.newFixedThreadPool(receiptIds.size());
+            try {
+                List<Future<Integer>> requests = new ArrayList<>();
+                for (UUID receiptId : receiptIds) {
+                    requests.add(executor.submit(() -> {
+                        ready.countDown();
+                        if (!start.await(10, TimeUnit.SECONDS)) throw new IllegalStateException("start latch timed out");
+                        return mockMvc.perform(post("/api/v1/imports")
+                                        .cookie(actorCookie)
+                                        .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                                        .contentType(MediaType.APPLICATION_JSON)
+                                        .content(importCreateJson(library.id(), receiptId, version,
+                                                "quota-concurrent.txt", "text/plain", 100, true)))
+                                .andReturn().getResponse().getStatus();
+                    }));
+                }
+                assertTrue(ready.await(10, TimeUnit.SECONDS), "concurrent import requests did not become ready");
+                start.countDown();
+                List<Integer> statuses = new ArrayList<>();
+                for (Future<Integer> request : requests) statuses.add(request.get(30, TimeUnit.SECONDS));
+                assertEquals(2, statuses.stream().filter(status -> status == 201).count());
+                assertEquals(1, statuses.stream().filter(status -> status == 429).count());
+            } finally {
+                executor.shutdownNow();
+            }
+
+            assertEquals(2, importJobCount(actorId), "concurrent creates must not overshoot the active-job cap");
+            assertEquals(2, receiptIds.stream().filter(receiptId -> {
+                try {
+                    return importRightsAcceptanceConsumedAt(receiptId).isPresent();
+                } catch (SQLException exception) {
+                    throw new IllegalStateException(exception);
+                }
+            }).count());
+            assertEquals(1, receiptIds.stream().filter(receiptId -> {
+                try {
+                    return importRightsAcceptanceConsumedAt(receiptId).isEmpty();
+                } catch (SQLException exception) {
+                    throw new IllegalStateException(exception);
+                }
+            }).count(), "quota-rejected rights receipt must remain available");
+        } finally {
+            deleteImportJobs(actorId);
+            deleteImportRightsTestAcceptances(actorId);
+            deleteLibrary(library.id());
+            deleteSessionTestUser(actorId);
+            deleteImportRightsTestStatement(version);
+            deleteSessionTestUser(approverId);
+        }
+    }
+
+    @Test
+    void importByteQuotaIncludesExpiredFilesUntilCleanupThenAllowsRetry() throws Exception {
+        UUID actorId = createSessionTestUser("Import Byte Quota Owner");
+        UUID approverId = createSessionTestUser("Import Byte Quota Approver");
+        var library = libraryService.createLibrary(actorId, "Byte quota shelf");
+        String version = "private-import-quota-bytes-v1";
+        String statementText = "Synthetic test-only import byte quota statement.";
+        UUID expiredJobId = UUID.randomUUID();
+        UUID expiredReceiptId = UUID.randomUUID();
+        UUID retryReceiptId = UUID.randomUUID();
+        byte[] expiredContent = new byte[1024];
+        try {
+            insertImportRightsStatement(version, statementText, approverId, "APPROVED", -1);
+            addCurrentPolicyAcceptances(actorId);
+            insertImportJobFixture(expiredJobId, actorId, library.id(), expiredReceiptId,
+                    version, "uploaded", expiredContent, 1);
+            insertImportRightsAcceptance(actorId, retryReceiptId, version, statementText);
+            importStagingFileStore.store(expiredJobId, new ByteArrayInputStream(expiredContent), expiredContent.length);
+
+            SessionService.IssuedSession actorSession = sessionService.create(actorId).orElseThrow();
+            jakarta.servlet.http.Cookie actorCookie = new jakarta.servlet.http.Cookie(
+                    "__Host-novel_session", actorSession.cookieValue());
+            String actorCsrf = csrfTokenService.tokenFor(actorSession.cookieValue());
+            String requestBody = importCreateJson(library.id(), retryReceiptId, version,
+                    "after-cleanup.txt", "text/plain", 1, true);
+
+            MvcResult quotaRejected = mockMvc.perform(post("/api/v1/imports")
+                            .cookie(actorCookie)
+                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(requestBody))
+                    .andReturn();
+            assertEquals(429, quotaRejected.getResponse().getStatus());
+            assertTrue(quotaRejected.getResponse().getContentAsString().contains("IMPORT_STAGING_QUOTA_EXCEEDED"));
+            assertTrue(importRightsAcceptanceConsumedAt(retryReceiptId).isEmpty());
+            assertTrue(Files.exists(importStagingFileStore.targetPath(expiredJobId)));
+
+            assertEquals(1, importStagingCleanupService.cleanupExpiredStaging());
+            assertFalse(Files.exists(importStagingFileStore.targetPath(expiredJobId)));
+            MvcResult retry = mockMvc.perform(post("/api/v1/imports")
+                            .cookie(actorCookie)
+                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(requestBody))
+                    .andReturn();
+            assertEquals(201, retry.getResponse().getStatus());
+            assertTrue(importRightsAcceptanceConsumedAt(retryReceiptId).isPresent());
+        } finally {
+            deleteImportJobs(actorId);
+            deleteImportRightsTestAcceptances(actorId);
+            deleteLibrary(library.id());
+            deleteSessionTestUser(actorId);
+            deleteImportRightsTestStatement(version);
+            deleteSessionTestUser(approverId);
+        }
+    }
+
+    @Test
+    void importCreateAndUploadRateLimitsRejectBeforeReceiptConsumptionOrFileWrites() throws Exception {
+        UUID actorId = createSessionTestUser("Import Rate Limit Owner");
+        UUID approverId = createSessionTestUser("Import Rate Limit Approver");
+        var library = libraryService.createLibrary(actorId, "Rate limit shelf");
+        String version = "private-import-rate-limit-v1";
+        String statementText = "Synthetic test-only import rate-limit statement.";
+        UUID initialReceiptId = UUID.randomUUID();
+        UUID blockedReceiptId = UUID.randomUUID();
+        UUID createdJobId = null;
+        try {
+            insertImportRightsStatement(version, statementText, approverId, "APPROVED", -1);
+            addCurrentPolicyAcceptances(actorId);
+            insertImportRightsAcceptance(actorId, initialReceiptId, version, statementText);
+            insertImportRightsAcceptance(actorId, blockedReceiptId, version, statementText);
+
+            SessionService.IssuedSession actorSession = sessionService.create(actorId).orElseThrow();
+            jakarta.servlet.http.Cookie actorCookie = new jakarta.servlet.http.Cookie(
+                    "__Host-novel_session", actorSession.cookieValue());
+            String actorCsrf = csrfTokenService.tokenFor(actorSession.cookieValue());
+            MvcResult created = mockMvc.perform(post("/api/v1/imports")
+                            .cookie(actorCookie)
+                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(importCreateJson(library.id(), initialReceiptId, version,
+                                    "rate-limited.txt", "text/plain", 8, true)))
+                    .andReturn();
+            assertEquals(201, created.getResponse().getStatus());
+            JsonNode createdBody = objectMapper.readTree(created.getResponse().getContentAsString());
+            createdJobId = UUID.fromString(createdBody.path("job").path("id").asText());
+            String uploadToken = createdBody.path("uploadTarget").path("headers")
+                    .path("X-Import-Upload-Token").asText();
+
+            for (int index = 1; index < 20; index++) {
+                assertTrue(importStagingRateLimiter.tryAcquire(actorId, ImportStagingRateLimiter.Action.CREATE).allowed());
+            }
+            MvcResult createLimited = mockMvc.perform(post("/api/v1/imports")
+                            .cookie(actorCookie)
+                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(importCreateJson(library.id(), blockedReceiptId, version,
+                                    "blocked.txt", "text/plain", 8, true)))
+                    .andReturn();
+            assertEquals(429, createLimited.getResponse().getStatus());
+            assertTrue(createLimited.getResponse().getContentAsString().contains("IMPORT_CREATE_RATE_LIMITED"));
+            assertTrue(Integer.parseInt(createLimited.getResponse().getHeader("Retry-After")) > 0);
+            assertTrue(importRightsAcceptanceConsumedAt(blockedReceiptId).isEmpty());
+            assertEquals(1, importJobCount(actorId));
+
+            for (int index = 0; index < 20; index++) {
+                assertTrue(importStagingRateLimiter.tryAcquire(actorId, ImportStagingRateLimiter.Action.UPLOAD).allowed());
+            }
+            byte[] uploadBytes = "blocked".getBytes(StandardCharsets.UTF_8);
+            MvcResult uploadLimited = mockMvc.perform(put("/api/v1/imports/{id}/content", createdJobId)
+                            .cookie(actorCookie)
+                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                            .header("X-Import-Upload-Token", uploadToken)
+                            .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                            .content(uploadBytes))
+                    .andReturn();
+            assertEquals(429, uploadLimited.getResponse().getStatus());
+            assertTrue(uploadLimited.getResponse().getContentAsString().contains("IMPORT_UPLOAD_RATE_LIMITED"));
+            assertTrue(Integer.parseInt(uploadLimited.getResponse().getHeader("Retry-After")) > 0);
+            assertEquals("upload_pending", importJobStatus(createdJobId));
+            assertTrue(Arrays.equals(sha256(uploadToken.getBytes(StandardCharsets.US_ASCII)),
+                    importJobTokenHash(createdJobId)));
+            assertFalse(Files.exists(importStagingFileStore.targetPath(createdJobId)));
+
+            try (Connection connection = dataSource.getConnection();
+                 PreparedStatement ageBuckets = connection.prepareStatement("""
+                         UPDATE import_actor_rate_limits
+                         SET last_seen_at = clock_timestamp() - INTERVAL '25 hours'
+                         WHERE user_id = ?
+                         """)) {
+                ageBuckets.setObject(1, actorId);
+                assertEquals(2, ageBuckets.executeUpdate());
+            }
+            assertEquals(2, importStagingRateLimiter.purgeInactiveBuckets());
+            try (Connection connection = dataSource.getConnection();
+                 PreparedStatement count = connection.prepareStatement(
+                         "SELECT COUNT(*) FROM import_actor_rate_limits WHERE user_id = ?")) {
+                count.setObject(1, actorId);
+                try (ResultSet row = count.executeQuery()) {
+                    assertTrue(row.next());
+                    assertEquals(0, row.getInt(1), "inactive actor buckets must be purged");
+                }
+            }
+        } finally {
+            deleteImportJobs(actorId);
+            deleteImportRightsTestAcceptances(actorId);
+            deleteLibrary(library.id());
+            deleteSessionTestUser(actorId);
+            deleteImportRightsTestStatement(version);
             deleteSessionTestUser(approverId);
         }
     }
@@ -1775,6 +2013,7 @@ class PostgresSchemaIntegrationTests {
                 "sessions",
                 "google_auth_attempts",
                 "google_auth_bootstrap_rate_limits",
+                "import_actor_rate_limits",
                 "policy_acceptances",
                 "import_jobs",
                 "import_rights_acceptances",

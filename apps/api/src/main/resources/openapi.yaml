@@ -1,12 +1,13 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 3.0.1
+  version: 3.1.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
     implemented only in the configured PostgreSQL profile. The import-rights statement read and acceptance routes
     are also implemented in that profile; private job creation and local staging upload are now implemented too.
+    Import staging applies actor-scoped active-job/declared-byte quotas and persistent create/upload token buckets.
     Parser, preview, commit and remaining Library and Reader operations tagged planned describe the G2 target.
 servers:
   - url: http://127.0.0.1:8080
@@ -1111,6 +1112,9 @@ paths:
         The server derives the actor from the active session, requires current Terms and Privacy acceptance, confirms
         the current approved rights version, locks and consumes an actor-bound one-time receipt, checks library write
         access and validates supported filename/MIME hints and the configured size limit in one PostgreSQL transaction.
+        A PostgreSQL user-row lock serializes active-job and declared-byte quota checks; rejected quota requests do not
+        consume the rights receipt. Existing matching receipt retries remain idempotent and rotate the upload token.
+        Per-actor create requests use a persistent token bucket. Rate-limited responses include Retry-After.
         It creates a private staging job and returns a short-lived same-origin upload target only after commit. The
         target includes a random one-time token; only its SHA-256 is persisted. Retrying the same receipt and metadata
         returns the same pending job with a rotated target token. A changed request cannot reuse the receipt. Browser
@@ -1165,6 +1169,17 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+        '429':
+          description: The actor has reached an active-job/declared-byte quota or create rate limit. A quota rejection leaves the rights receipt unconsumed; a rate-limited response includes Retry-After.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+                minimum: 1
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
         '503':
           description: Approved rights/policy content or local staging storage is unavailable; no new job/target is created.
           content:
@@ -1181,7 +1196,10 @@ paths:
         Requires the creating account's session, session-bound CSRF token and one-time upload token returned by
         POST /api/v1/imports. The token is actor/job-bound, expires, and is consumed on success. The server streams
         to a server-generated path, enforces the declared and configured byte limit, calculates SHA-256 and never
-        uses the client filename or storage key as a path. Bytes remain private staging content. This local profile
+        reads or writes the request body after the actor's persistent upload token bucket rejects the request, and
+        never uses the client filename or storage key as a path. The staging cleanup worker removes terminal and
+        expired upload bytes still awaiting cleanup before their declared-byte reservation is freed. Bytes remain
+        private staging content. This local profile
         does not yet parse or accept the file as safe content; signature, EPUB/archive and parser validation must
         pass before a later parse route can be enabled.
       security:
@@ -1245,6 +1263,17 @@ paths:
                 $ref: '#/components/schemas/Problem'
         '422':
           description: The byte count mismatches the declaration, text encoding/type does not match, or EPUB fails archive safety checks. The file is deleted and the one-time target remains available for a corrected retry.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '429':
+          description: The actor's upload request token bucket is empty. No bytes are read, the target remains valid and Retry-After indicates the next token time.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+                minimum: 1
           content:
             application/problem+json:
               schema:

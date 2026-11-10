@@ -42,20 +42,26 @@ public class ImportCreationService {
     private final ImportStagingProperties properties;
     private final ImportStagingFileStore fileStore;
     private final ImportContentValidator contentValidator;
+    private final ImportStagingRateLimiter rateLimiter;
 
     public ImportCreationService(
             DataSource dataSource,
             ImportStagingProperties properties,
             ImportStagingFileStore fileStore,
-            ImportContentValidator contentValidator) {
+            ImportContentValidator contentValidator,
+            ImportStagingRateLimiter rateLimiter) {
         this.dataSource = dataSource;
         this.properties = properties;
         this.fileStore = fileStore;
         this.contentValidator = contentValidator;
+        this.rateLimiter = rateLimiter;
     }
 
     public CreateResult create(UUID userId, CreateCommand command) {
         Objects.requireNonNull(userId, "user id is required");
+        ImportStagingRateLimiter.Decision rateLimit = rateLimiter.tryAcquire(
+                userId, ImportStagingRateLimiter.Action.CREATE);
+        if (!rateLimit.allowed()) return CreateResult.rateLimited(rateLimit.retryAfterSeconds());
         Validation validation = validate(command, properties.maxUploadBytes());
         if (validation.outcome() != Outcome.CREATED) return CreateResult.failure(validation.outcome());
         NormalizedCommand normalized = validation.normalized();
@@ -127,6 +133,11 @@ public class ImportCreationService {
                     return CreateResult.failure(Outcome.STORAGE_NOT_CONFIGURED);
                 }
 
+                if (!hasQuotaForNewJob(connection, userId, normalized.sizeBytes())) {
+                    connection.commit();
+                    return CreateResult.failure(Outcome.QUOTA_EXCEEDED);
+                }
+
                 UUID jobId = UUID.randomUUID();
                 String token = newUploadToken();
                 byte[] tokenHash = sha256(token.getBytes(StandardCharsets.US_ASCII));
@@ -162,6 +173,9 @@ public class ImportCreationService {
     }
 
     public UploadResult upload(UUID userId, UUID jobId, String token, java.io.InputStream input) {
+        ImportStagingRateLimiter.Decision rateLimit = rateLimiter.tryAcquire(
+                userId, ImportStagingRateLimiter.Action.UPLOAD);
+        if (!rateLimit.allowed()) return UploadResult.rateLimited(rateLimit.retryAfterSeconds());
         if (token == null || token.length() < 40 || token.length() > 128) {
             return UploadResult.failure(Outcome.UPLOAD_TARGET_NOT_FOUND);
         }
@@ -426,6 +440,42 @@ public class ImportCreationService {
         }
     }
 
+    private boolean hasQuotaForNewJob(Connection connection, UUID userId, long incomingBytes) throws SQLException {
+        try (PreparedStatement lockUser = connection.prepareStatement("SELECT id FROM users WHERE id = ? FOR UPDATE")) {
+            lockUser.setObject(1, userId);
+            try (ResultSet row = lockUser.executeQuery()) {
+                if (!row.next()) throw new SQLException("Import actor disappeared while reserving staging quota");
+            }
+        }
+
+        try (PreparedStatement usage = connection.prepareStatement("""
+                WITH database_time AS (SELECT clock_timestamp() AS now)
+                SELECT
+                    COUNT(*) FILTER (
+                        WHERE jobs.status IN ('upload_pending', 'uploaded') AND jobs.expires_at > database_time.now
+                    ) AS active_jobs,
+                    COALESCE(SUM(jobs.declared_size_bytes) FILTER (
+                        WHERE (jobs.status IN ('upload_pending', 'uploaded') AND jobs.expires_at > database_time.now)
+                           OR (jobs.status IN ('upload_pending', 'uploaded', 'failed', 'cancelled', 'expired')
+                               AND jobs.staging_file_deleted_at IS NULL)
+                    ), 0) AS reserved_bytes
+                FROM import_jobs AS jobs
+                CROSS JOIN database_time
+                WHERE jobs.user_id = ?
+                """)) {
+            usage.setObject(1, userId);
+            try (ResultSet row = usage.executeQuery()) {
+                if (!row.next()) throw new SQLException("Import staging quota query returned no row");
+                long activeJobs = row.getLong("active_jobs");
+                java.math.BigDecimal reservedBytes = row.getBigDecimal("reserved_bytes");
+                java.math.BigDecimal requestedBytes = reservedBytes.add(java.math.BigDecimal.valueOf(incomingBytes));
+                return activeJobs < properties.maxActiveJobsPerUser()
+                        && requestedBytes.compareTo(
+                                java.math.BigDecimal.valueOf(properties.maxActiveDeclaredBytesPerUser())) <= 0;
+            }
+        }
+    }
+
     private static Optional<Job> findJobByReceipt(Connection connection, UUID userId, UUID receiptId)
             throws SQLException {
         try (PreparedStatement select = connection.prepareStatement("""
@@ -600,29 +650,40 @@ public class ImportCreationService {
                       NormalizedCommand command, boolean live) {
     }
 
-    public record CreateResult(Outcome outcome, Job job, String uploadToken, Instant targetExpiresAt) {
+    public record CreateResult(
+            Outcome outcome, Job job, String uploadToken, Instant targetExpiresAt, int retryAfterSeconds) {
         static CreateResult created(Job job, String token, Instant tokenExpiresAt) {
-            return new CreateResult(Outcome.CREATED, job, token, tokenExpiresAt);
+            return new CreateResult(Outcome.CREATED, job, token, tokenExpiresAt, 0);
         }
 
         static CreateResult failure(Outcome outcome) {
-            return new CreateResult(outcome, null, null, null);
+            return new CreateResult(outcome, null, null, null, 0);
+        }
+
+        static CreateResult rateLimited(int retryAfterSeconds) {
+            return new CreateResult(Outcome.RATE_LIMITED, null, null, null, retryAfterSeconds);
         }
     }
 
-    public record UploadResult(Outcome outcome, long sizeBytes, String sha256) {
+    public record UploadResult(Outcome outcome, long sizeBytes, String sha256, int retryAfterSeconds) {
         static UploadResult uploaded(long sizeBytes, String sha256) {
-            return new UploadResult(Outcome.UPLOADED, sizeBytes, sha256);
+            return new UploadResult(Outcome.UPLOADED, sizeBytes, sha256, 0);
         }
 
         static UploadResult failure(Outcome outcome) {
-            return new UploadResult(outcome, 0, null);
+            return new UploadResult(outcome, 0, null, 0);
+        }
+
+        static UploadResult rateLimited(int retryAfterSeconds) {
+            return new UploadResult(Outcome.RATE_LIMITED, 0, null, retryAfterSeconds);
         }
     }
 
     public enum Outcome {
         CREATED,
         UPLOADED,
+        RATE_LIMITED,
+        QUOTA_EXCEEDED,
         POLICY_REQUIRED,
         POLICY_NOT_CONFIGURED,
         RIGHTS_NOT_CONFIGURED,

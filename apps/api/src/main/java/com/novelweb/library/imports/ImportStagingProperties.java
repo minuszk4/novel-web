@@ -18,7 +18,14 @@ public record ImportStagingProperties(
         int maxArchiveDepth,
         Duration validationTimeout,
         int cleanupBatchSize,
-        Duration cleanupDelay) {
+        Duration cleanupDelay,
+        int maxActiveJobsPerUser,
+        long maxActiveDeclaredBytesPerUser,
+        int createRateLimitCapacity,
+        Duration createRateLimitRefillInterval,
+        int uploadRateLimitCapacity,
+        Duration uploadRateLimitRefillInterval,
+        Duration rateLimitRetention) {
 
     public ImportStagingProperties {
         if (root == null) throw new IllegalArgumentException("Import staging root is required");
@@ -48,6 +55,32 @@ public record ImportStagingProperties(
         if (cleanupDelay == null || cleanupDelay.isNegative() || cleanupDelay.isZero()
                 || cleanupDelay.compareTo(Duration.ofDays(1)) > 0) {
             throw new IllegalArgumentException("Import staging cleanup delay must be positive and at most one day");
+        }
+        if (maxActiveJobsPerUser < 1 || maxActiveJobsPerUser > 100) {
+            throw new IllegalArgumentException("Import active-job limit must be between 1 and 100");
+        }
+        if (maxActiveDeclaredBytesPerUser < maxUploadBytes) {
+            throw new IllegalArgumentException("Per-user import byte limit must be at least the maximum upload size");
+        }
+        if (createRateLimitCapacity < 1 || createRateLimitCapacity > 100) {
+            throw new IllegalArgumentException("Import create rate-limit capacity must be between 1 and 100");
+        }
+        validateRateLimitInterval(createRateLimitRefillInterval, "create");
+        if (uploadRateLimitCapacity < 1 || uploadRateLimitCapacity > 100) {
+            throw new IllegalArgumentException("Import upload rate-limit capacity must be between 1 and 100");
+        }
+        validateRateLimitInterval(uploadRateLimitRefillInterval, "upload");
+        if (rateLimitRetention == null || rateLimitRetention.isNegative() || rateLimitRetention.isZero()
+                || rateLimitRetention.compareTo(Duration.ofDays(30)) > 0) {
+            throw new IllegalArgumentException("Import rate-limit retention must be positive and at most 30 days");
+        }
+    }
+
+    private static void validateRateLimitInterval(Duration interval, String operation) {
+        if (interval == null || interval.isNegative() || interval.isZero()
+                || interval.compareTo(Duration.ofDays(1)) > 0) {
+            throw new IllegalArgumentException(
+                    "Import " + operation + " rate-limit refill interval must be positive and at most one day");
         }
     }
 }

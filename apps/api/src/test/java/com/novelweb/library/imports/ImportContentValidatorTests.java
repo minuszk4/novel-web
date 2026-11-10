@@ -182,7 +182,14 @@ class ImportContentValidatorTests {
                 depth,
                 timeout,
                 100,
-                Duration.ofMinutes(1));
+                Duration.ofMinutes(1),
+                5,
+                10_485_760,
+                10,
+                Duration.ofSeconds(6),
+                5,
+                Duration.ofSeconds(10),
+                Duration.ofHours(24));
         return new ImportContentValidator(properties);
     }
 
