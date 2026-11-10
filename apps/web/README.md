@@ -34,7 +34,7 @@ npm audit --audit-level=high
 
 Before committing frontend changes, run `npm run format` to apply the repository Prettier style. CI runs `format:check` so formatting drift fails the frontend job.
 
-`test:ci` writes JUnit XML to `reports/junit.xml` and HTML/Cobertura coverage under `coverage/web/`. Coverage includes all `src/**/*.ts` files except specs. The Angular test target enforces a baseline floor of 15% statements, 18% branches, 20% functions and 15% lines; current coverage is 17.53%, 21.54%, 23.14% and 17.29%, respectively. These floors prevent regression while the test suite grows; they are not a release-readiness target. CI retains the JUnit and coverage artifacts for 14 days.
+`test:ci` writes JUnit XML to `reports/junit.xml` and HTML/Cobertura coverage under `coverage/web/`. Coverage includes all `src/**/*.ts` files except specs. The Angular test target enforces a baseline floor of 15% statements, 18% branches, 20% functions and 15% lines; the current 27-test suite measures 19.15%, 23.04%, 26.46% and 18.63%, respectively. These floors prevent regression while the test suite grows; they are not a release-readiness target. CI retains the JUnit and coverage artifacts for 14 days.
 
 ## Browser regression checks
 
