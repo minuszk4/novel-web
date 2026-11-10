@@ -53,6 +53,12 @@ public class ApiSecurityConfiguration {
                     .requestMatchers(HttpMethod.GET, "/api/v1/libraries", "/api/v1/works")
                     .permitAll();
                 authorize
+                    .requestMatchers(
+                        HttpMethod.GET,
+                        "/api/v1/works/*/reader-manifest",
+                        "/api/v1/chapters/*/content")
+                    .permitAll();
+                authorize
                     .requestMatchers(HttpMethod.GET, "/api/v1/auth/google/bootstrap")
                     .permitAll();
                 authorize

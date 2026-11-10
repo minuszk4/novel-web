@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 4.2.0
+  version: 4.2.1
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -9,7 +9,8 @@ info:
     are also implemented in that profile; private job creation and local staging upload are now implemented too.
     Import staging applies actor-scoped active-job/declared-byte quotas and persistent create/upload token buckets.
     EPUB 3 parse queue/status, bounded private-preview persistence/edit and atomic private import commit are
-    implemented. Remaining Library and Reader operations tagged planned describe the G2 target.
+    implemented. Source-only Reader manifest and chapter-content routes are implemented in the PostgreSQL profile;
+    progress, bookmarks, preferences and history operations tagged planned describe the remaining G2 target.
 servers:
   - url: http://127.0.0.1:8080
 tags:
@@ -915,11 +916,12 @@ paths:
     get:
       operationId: getReaderManifest
       tags: [Reader]
-      x-implementation-status: planned
-      summary: Get an owned work's table of contents and reader access state
+      x-implementation-status: implemented-postgres-profile
+      summary: Get an accessible work's table of contents and reader access state
       description: >-
-        Authorizes the work before building the manifest. It contains chapter metadata and access state only;
-        it never includes chapter body, translated text or signed asset URLs for inaccessible content.
+        Requires an authenticated actor with current Terms/Privacy acceptance and personal-library or workspace read
+        access. It contains work/chapter metadata and access state only; chapter body, translations and inaccessible
+        asset URLs are never included. The manifest does not evaluate paid chapter entitlements or preview ranges.
       security:
         - appSession: []
       parameters:
@@ -959,11 +961,13 @@ paths:
     get:
       operationId: getReadableChapterContent
       tags: [Reader]
-      x-implementation-status: planned
+      x-implementation-status: implemented-postgres-profile
       summary: Get source-only content for an authorized chapter
       description: >-
-        Rechecks ownership/access on every request and returns sanitized semantic source segments only in G2.
-        Locked or otherwise inaccessible body text is never included in the response or an asset URL.
+        Requires an authenticated actor with current Terms/Privacy acceptance and rechecks current personal-library
+        or workspace access on every page. Returns bounded normalized source segments only for readable revisions;
+        draft, missing or inaccessible chapter body is never returned. Paid entitlements and preview ranges are not
+        implemented by this operation.
       security:
         - appSession: []
       parameters:

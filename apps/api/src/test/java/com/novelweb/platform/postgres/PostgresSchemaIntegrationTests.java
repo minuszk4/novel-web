@@ -2594,6 +2594,206 @@ class PostgresSchemaIntegrationTests {
   }
 
   @Test
+  void sourceOnlyReaderRechecksOwnerPaginatesAndNeverPutsBodyInManifest() throws Exception {
+    UUID ownerId = createSessionTestUser("Reader API Owner");
+    UUID outsiderId = createSessionTestUser("Reader API Outsider");
+    UUID pendingPolicyId = createSessionTestUser("Reader API Pending Policy");
+    try {
+      LibraryRepository.LibraryRecord library =
+          libraryService.createLibrary(ownerId, "Reader Shelf");
+      LibraryRepository.WorkRecord work =
+          libraryService.createPrivateImportedWork(
+              ownerId,
+              library.id(),
+              "Private Reader Story",
+              "Synthetic Author",
+              "vi",
+              sha256("reader-api-work"));
+      LibraryRepository.VolumeRecord volume =
+          libraryService.createVolume(ownerId, work.id(), 1, "Volume 1");
+      LibraryRepository.ChapterRecord firstChapter =
+          libraryService.createChapter(ownerId, work.id(), volume.id(), 1, "Chapter 1", "vi");
+      LibraryRepository.ChapterRecord secondChapter =
+          libraryService.createChapter(ownerId, work.id(), volume.id(), 2, "Chapter 2", "vi");
+      LibraryRepository.ChapterRecord draftChapter =
+          libraryService.createChapter(ownerId, work.id(), volume.id(), 3, "Chapter 3", "vi");
+      LibraryRepository.RevisionRecord firstRevision =
+          libraryService.appendChapterRevision(
+              ownerId,
+              firstChapter.id(),
+              "epub_xhtml",
+              "Opening line.\n\nSecond paragraph.\n\nClosing line.",
+              List.of(
+                  new LibraryService.NewSegment(1, "heading", "Opening line.", "c1-s1"),
+                  new LibraryService.NewSegment(2, "paragraph", "Second paragraph.", "c1-s2"),
+                  new LibraryService.NewSegment(3, "quote", "Closing line.", "c1-s3")));
+      libraryService.appendChapterRevision(
+          ownerId,
+          secondChapter.id(),
+          "epub_xhtml",
+          "Second chapter body.",
+          List.of(new LibraryService.NewSegment(1, "paragraph", "Second chapter body.", "c2-s1")));
+      addCurrentPolicyAcceptances(ownerId);
+      addCurrentPolicyAcceptances(outsiderId);
+
+      SessionService.IssuedSession ownerSession = sessionService.create(ownerId).orElseThrow();
+      jakarta.servlet.http.Cookie ownerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", ownerSession.cookieValue());
+      SessionService.IssuedSession outsiderSession =
+          sessionService.create(outsiderId).orElseThrow();
+      jakarta.servlet.http.Cookie outsiderCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", outsiderSession.cookieValue());
+      SessionService.IssuedSession pendingPolicySession =
+          sessionService.create(pendingPolicyId).orElseThrow();
+      jakarta.servlet.http.Cookie pendingPolicyCookie =
+          new jakarta.servlet.http.Cookie(
+              "__Host-novel_session", pendingPolicySession.cookieValue());
+
+      MvcResult unauthenticated =
+          mockMvc.perform(get("/api/v1/works/{workId}/reader-manifest", work.id())).andReturn();
+      assertEquals(401, unauthenticated.getResponse().getStatus());
+
+      MvcResult blockedByPolicy =
+          mockMvc
+              .perform(
+                  get("/api/v1/works/{workId}/reader-manifest", work.id())
+                      .cookie(pendingPolicyCookie))
+              .andReturn();
+      assertEquals(403, blockedByPolicy.getResponse().getStatus());
+      assertTrue(
+          blockedByPolicy
+              .getResponse()
+              .getContentAsString()
+              .contains("POLICY_ACCEPTANCE_REQUIRED"));
+
+      MvcResult firstManifestPage =
+          mockMvc
+              .perform(
+                  get("/api/v1/works/{workId}/reader-manifest", work.id())
+                      .param("limit", "1")
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(200, firstManifestPage.getResponse().getStatus());
+      assertTrue(firstManifestPage.getResponse().getHeader("Cache-Control").contains("no-store"));
+      JsonNode firstManifest =
+          objectMapper.readTree(firstManifestPage.getResponse().getContentAsString());
+      assertEquals("Private Reader Story", firstManifest.path("work").path("title").asText());
+      assertEquals(3, firstManifest.path("work").path("chapterCount").asInt());
+      assertEquals(1, firstManifest.path("chapters").get(0).path("ordinal").asInt());
+      assertEquals("readable", firstManifest.path("chapters").get(0).path("accessState").asText());
+      assertTrue(firstManifest.hasNonNull("nextCursor"));
+      assertFalse(
+          firstManifestPage.getResponse().getContentAsString().contains("Second paragraph."));
+
+      String manifestCursor = firstManifest.path("nextCursor").asText();
+      MvcResult secondManifestPage =
+          mockMvc
+              .perform(
+                  get("/api/v1/works/{workId}/reader-manifest", work.id())
+                      .param("limit", "1")
+                      .param("cursor", manifestCursor)
+                      .cookie(ownerCookie))
+              .andReturn();
+      JsonNode secondManifest =
+          objectMapper.readTree(secondManifestPage.getResponse().getContentAsString());
+      assertEquals(200, secondManifestPage.getResponse().getStatus());
+      assertEquals(2, secondManifest.path("chapters").get(0).path("ordinal").asInt());
+      assertEquals("readable", secondManifest.path("chapters").get(0).path("accessState").asText());
+      assertTrue(secondManifest.hasNonNull("nextCursor"));
+
+      MvcResult lastManifestPage =
+          mockMvc
+              .perform(
+                  get("/api/v1/works/{workId}/reader-manifest", work.id())
+                      .param("limit", "1")
+                      .param("cursor", secondManifest.path("nextCursor").asText())
+                      .cookie(ownerCookie))
+              .andReturn();
+      JsonNode lastManifest =
+          objectMapper.readTree(lastManifestPage.getResponse().getContentAsString());
+      assertEquals(200, lastManifestPage.getResponse().getStatus());
+      assertEquals(
+          draftChapter.id().toString(), lastManifest.path("chapters").get(0).path("id").asText());
+      assertEquals(
+          "unavailable", lastManifest.path("chapters").get(0).path("accessState").asText());
+      assertTrue(lastManifest.path("nextCursor").isNull());
+
+      MvcResult firstContentPage =
+          mockMvc
+              .perform(
+                  get("/api/v1/chapters/{chapterId}/content", firstChapter.id())
+                      .param("limit", "2")
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(200, firstContentPage.getResponse().getStatus());
+      assertTrue(firstContentPage.getResponse().getHeader("Cache-Control").contains("no-store"));
+      JsonNode content = objectMapper.readTree(firstContentPage.getResponse().getContentAsString());
+      assertEquals(firstRevision.id().toString(), content.path("sourceRevisionId").asText());
+      assertEquals("heading", content.path("segments").get(0).path("type").asText());
+      assertEquals("Opening line.", content.path("segments").get(0).path("sourceText").asText());
+      assertEquals(2, content.path("segments").size());
+      assertTrue(content.hasNonNull("nextSegmentCursor"));
+
+      MvcResult lastContentPage =
+          mockMvc
+              .perform(
+                  get("/api/v1/chapters/{chapterId}/content", firstChapter.id())
+                      .param("limit", "2")
+                      .param("revision", firstRevision.id().toString())
+                      .param("cursor", content.path("nextSegmentCursor").asText())
+                      .cookie(ownerCookie))
+              .andReturn();
+      JsonNode finalContent =
+          objectMapper.readTree(lastContentPage.getResponse().getContentAsString());
+      assertEquals(200, lastContentPage.getResponse().getStatus());
+      assertEquals(1, finalContent.path("segments").size());
+      assertEquals(
+          "Closing line.", finalContent.path("segments").get(0).path("sourceText").asText());
+      assertTrue(finalContent.path("nextSegmentCursor").isNull());
+
+      MvcResult mismatchedCursor =
+          mockMvc
+              .perform(
+                  get("/api/v1/chapters/{chapterId}/content", secondChapter.id())
+                      .param("cursor", content.path("nextSegmentCursor").asText())
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(400, mismatchedCursor.getResponse().getStatus());
+      assertTrue(
+          mismatchedCursor.getResponse().getContentAsString().contains("INVALID_READER_CURSOR"));
+
+      MvcResult outsiderManifest =
+          mockMvc
+              .perform(
+                  get("/api/v1/works/{workId}/reader-manifest", work.id()).cookie(outsiderCookie))
+              .andReturn();
+      assertEquals(404, outsiderManifest.getResponse().getStatus());
+      MvcResult outsiderContent =
+          mockMvc
+              .perform(
+                  get("/api/v1/chapters/{chapterId}/content", firstChapter.id())
+                      .cookie(outsiderCookie))
+              .andReturn();
+      assertEquals(404, outsiderContent.getResponse().getStatus());
+      assertFalse(outsiderContent.getResponse().getContentAsString().contains("Second paragraph."));
+
+      MvcResult draftContent =
+          mockMvc
+              .perform(
+                  get("/api/v1/chapters/{chapterId}/content", draftChapter.id())
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(404, draftContent.getResponse().getStatus());
+      assertFalse(draftContent.getResponse().getContentAsString().contains("chapter body"));
+    } finally {
+      deleteLibraryTestData(ownerId);
+      deleteSessionTestUser(ownerId);
+      deleteSessionTestUser(outsiderId);
+      deleteSessionTestUser(pendingPolicyId);
+    }
+  }
+
+  @Test
   void privateLibraryCursorsAreStableOwnerAndFilterBoundAndSearchTagsAndStatus() throws Exception {
     UUID ownerId = createSessionTestUser("Cursor Library Owner");
     UUID otherOwnerId = createSessionTestUser("Other Cursor Owner");
