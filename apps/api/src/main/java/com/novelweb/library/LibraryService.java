@@ -1,11 +1,13 @@
 package com.novelweb.library;
 
 import java.nio.charset.StandardCharsets;
+import java.text.Normalizer;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -19,9 +21,11 @@ import org.springframework.stereotype.Service;
 public class LibraryService {
 
     private final LibraryRepository repository;
+    private final LibraryCursorCodec cursorCodec;
 
-    public LibraryService(LibraryRepository repository) {
+    public LibraryService(LibraryRepository repository, LibraryCursorCodec cursorCodec) {
         this.repository = repository;
+        this.cursorCodec = cursorCodec;
     }
 
     public LibraryRepository.LibraryRecord createLibrary(UUID ownerUserId, String requestedName) {
@@ -31,8 +35,19 @@ public class LibraryService {
     }
 
     public List<LibraryRepository.LibraryRecord> listLibraries(UUID ownerUserId) {
+        return listLibraries(ownerUserId, null, 100).items();
+    }
+
+    public Page<LibraryRepository.LibraryRecord> listLibraries(
+            UUID ownerUserId, String cursor, int requestedLimit) {
         Objects.requireNonNull(ownerUserId, "owner user id is required");
-        return repository.findLibraries(ownerUserId);
+        validateLimit(requestedLimit);
+        cursorCodec.requireConfigured();
+        LibraryCursorCodec.CursorContext context = LibraryCursorCodec.libraryContext(ownerUserId);
+        LibraryCursorCodec.Position position = decodeCursor(cursor, context);
+        LibraryRepository.Slice<LibraryRepository.LibraryRecord> slice =
+                repository.findLibraries(ownerUserId, requestedLimit, position);
+        return page(slice, context);
     }
 
     public LibraryRepository.WorkRecord createPrivateImportedWork(
@@ -62,19 +77,72 @@ public class LibraryService {
 
     public List<LibraryRepository.WorkRecord> listWorks(
             UUID ownerUserId, UUID libraryId, String query, int requestedLimit) {
+        return listWorks(ownerUserId, libraryId, query, null, null, null, requestedLimit).items();
+    }
+
+    public Page<LibraryRepository.WorkRecord> listWorks(
+            UUID ownerUserId,
+            UUID libraryId,
+            String requestedQuery,
+            String requestedTag,
+            String requestedStatus,
+            String cursor,
+            int requestedLimit) {
         Objects.requireNonNull(ownerUserId, "owner user id is required");
         Objects.requireNonNull(libraryId, "library id is required");
         if (repository.findLibrary(ownerUserId, libraryId).isEmpty()) {
             throw new LibraryRepository.LibraryNotFoundException();
         }
-        String normalizedQuery = query == null ? "" : query.trim();
+        String normalizedQuery = requestedQuery == null ? "" : requestedQuery.trim();
         if (normalizedQuery.length() > 160) {
             throw new IllegalArgumentException("query must be at most 160 characters");
         }
-        if (requestedLimit < 1 || requestedLimit > 100) {
-            throw new IllegalArgumentException("limit must be between 1 and 100");
+        String tag = requestedTag == null || requestedTag.isBlank() ? "" : tagSlug(requestedTag);
+        String status = requestedStatus == null || requestedStatus.isBlank()
+                ? "" : requestedStatus.trim().toLowerCase(Locale.ROOT);
+        if (!status.isEmpty() && !Set.of("active", "archived").contains(status)) {
+            throw new IllegalArgumentException("status must be active or archived");
         }
-        return repository.findWorks(ownerUserId, libraryId, normalizedQuery, requestedLimit);
+        validateLimit(requestedLimit);
+        cursorCodec.requireConfigured();
+        LibraryCursorCodec.CursorContext context =
+                LibraryCursorCodec.workContext(ownerUserId, libraryId, normalizedQuery, tag, status);
+        LibraryCursorCodec.Position position = decodeCursor(cursor, context);
+        LibraryRepository.Slice<LibraryRepository.WorkRecord> slice = repository.findWorks(
+                ownerUserId, libraryId, normalizedQuery, tag, status, requestedLimit, position);
+        return page(slice, context);
+    }
+
+    public LibraryRepository.TagRecord addTagToWork(UUID ownerUserId, UUID workId, String requestedName) {
+        Objects.requireNonNull(ownerUserId, "owner user id is required");
+        Objects.requireNonNull(workId, "work id is required");
+        String name = Normalizer.normalize(requiredText(requestedName, "tag", 80), Normalizer.Form.NFC);
+        String slug = tagSlug(name);
+        return repository.addTagToWork(ownerUserId, workId, slug, name);
+    }
+
+    private LibraryCursorCodec.Position decodeCursor(
+            String cursor, LibraryCursorCodec.CursorContext context) {
+        return cursor == null ? null : cursorCodec.decode(cursor, context);
+    }
+
+    private <T> Page<T> page(
+            LibraryRepository.Slice<T> slice, LibraryCursorCodec.CursorContext context) {
+        String nextCursor = slice.hasMore() ? cursorCodec.encode(context, slice.nextPosition()) : null;
+        return new Page<>(slice.items(), nextCursor);
+    }
+
+    private static void validateLimit(int limit) {
+        if (limit < 1 || limit > 100) throw new IllegalArgumentException("limit must be between 1 and 100");
+    }
+
+    private static String tagSlug(String value) {
+        String normalized = Normalizer.normalize(requiredText(value, "tag", 80), Normalizer.Form.NFC)
+                .trim().toLowerCase(Locale.ROOT).replaceAll("[\\s-]+", "-");
+        if (normalized.length() > 80 || !normalized.matches("[\\p{L}\\p{N}]+(?:-[\\p{L}\\p{N}]+)*")) {
+            throw new IllegalArgumentException("tag must contain letters or digits separated by spaces or hyphens");
+        }
+        return normalized;
     }
 
     public LibraryRepository.VolumeRecord createVolume(
@@ -218,5 +286,11 @@ public class LibraryService {
     }
 
     public record NewSegment(int ordinal, String type, String sourceText, String stableAnchor) {
+    }
+
+    public record Page<T>(List<T> items, String nextCursor) {
+        public Page {
+            items = List.copyOf(items);
+        }
     }
 }

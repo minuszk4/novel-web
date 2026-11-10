@@ -43,6 +43,7 @@ import org.junit.jupiter.api.BeforeAll;
 import com.novelweb.identity.session.SessionService;
 import com.novelweb.identity.session.SessionCsrfTokenService;
 import com.novelweb.identity.session.LogoutAllConfirmationService;
+import com.novelweb.library.LibraryCursorCodec;
 import com.novelweb.library.LibraryRepository;
 import com.novelweb.library.LibraryService;
 import org.junit.jupiter.api.AfterAll;
@@ -84,6 +85,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
         "novel.auth.google.web-client-id=novel-web-integration-test.apps.googleusercontent.com",
         "novel.auth.google.credential-callback-uri=https://api.example.test/api/v1/auth/google/credential",
         "novel.security.csrf.hmac-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "novel.library.cursor.hmac-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
         "novel.web.cors.allowed-origins=https://app.example.test"
 })
 class PostgresSchemaIntegrationTests {
@@ -107,7 +109,9 @@ class PostgresSchemaIntegrationTests {
             "chapters",
             "chapter_revisions",
             "segments",
-            "assets");
+            "assets",
+            "tags",
+            "work_tags");
 
     @Autowired
     private DataSource dataSource;
@@ -167,7 +171,7 @@ class PostgresSchemaIntegrationTests {
                      "SELECT COUNT(*) FROM databasechangelog");
              ResultSet changesets = changesetCount.executeQuery()) {
             changesets.next();
-            assertEquals(29, changesets.getInt(1), "unexpected number of applied baseline changesets");
+            assertEquals(33, changesets.getInt(1), "unexpected number of applied changesets");
         }
 
         Set<String> actualTables = new HashSet<>();
@@ -275,6 +279,77 @@ class PostgresSchemaIntegrationTests {
                     otherOwnerId, otherLibrary.id(), "private/" + UUID.randomUUID(), sha256("cover-image"),
                     "image/webp", 2048, "cover.webp");
             assertNotEquals(asset.ownerUserId(), sameAssetForOtherOwner.ownerUserId());
+        } finally {
+            deleteLibraryTestData(ownerId);
+            deleteLibraryTestData(otherOwnerId);
+            deleteSessionTestUser(ownerId);
+            deleteSessionTestUser(otherOwnerId);
+        }
+    }
+
+    @Test
+    void privateLibraryCursorsAreStableOwnerAndFilterBoundAndSearchTagsAndStatus() throws Exception {
+        UUID ownerId = createSessionTestUser("Cursor Library Owner");
+        UUID otherOwnerId = createSessionTestUser("Other Cursor Owner");
+        try {
+            LibraryRepository.LibraryRecord library = libraryService.createLibrary(ownerId, "Cursor Shelf");
+            LibraryRepository.LibraryRecord secondLibrary = libraryService.createLibrary(ownerId, "Second Shelf");
+            LibraryRepository.LibraryRecord otherLibrary = libraryService.createLibrary(otherOwnerId, "Other Shelf");
+            LibraryRepository.WorkRecord dragonRiver = libraryService.createPrivateImportedWork(
+                    ownerId, library.id(), "Dragon River", "Writer A", "zh", sha256("cursor-work-a"));
+            LibraryRepository.WorkRecord dragonGate = libraryService.createPrivateImportedWork(
+                    ownerId, library.id(), "Dragon Gate", "Writer B", "zh", sha256("cursor-work-b"));
+            LibraryRepository.WorkRecord moonCity = libraryService.createPrivateImportedWork(
+                    ownerId, library.id(), "Moon City", "Dragon Pen", "zh", sha256("cursor-work-c"));
+            setWorkCreatedAt(dragonRiver.id(), Instant.parse("2026-01-04T00:00:00Z"));
+            setWorkCreatedAt(dragonGate.id(), Instant.parse("2026-01-03T00:00:00Z"));
+            setWorkCreatedAt(moonCity.id(), Instant.parse("2026-01-02T00:00:00Z"));
+            setWorkStatus(dragonGate.id(), "archived");
+
+            libraryService.addTagToWork(ownerId, dragonRiver.id(), "Tiên Hiệp");
+            libraryService.addTagToWork(ownerId, dragonGate.id(), "TIÊN-hiệp");
+            libraryService.addTagToWork(ownerId, moonCity.id(), "tiên-hiệp");
+            assertThrows(LibraryRepository.WorkNotFoundException.class,
+                    () -> libraryService.addTagToWork(otherOwnerId, dragonRiver.id(), "tiên-hiệp"));
+
+            LibraryService.Page<LibraryRepository.LibraryRecord> firstLibraryPage =
+                    libraryService.listLibraries(ownerId, null, 1);
+            assertEquals(1, firstLibraryPage.items().size());
+            assertTrue(firstLibraryPage.items().getFirst().isDefault());
+            assertEquals(1, libraryService.listLibraries(ownerId, firstLibraryPage.nextCursor(), 1).items().size());
+            assertThrows(LibraryCursorCodec.InvalidCursorException.class,
+                    () -> libraryService.listLibraries(otherOwnerId, firstLibraryPage.nextCursor(), 1));
+
+            LibraryService.Page<LibraryRepository.WorkRecord> firstWorkPage = libraryService.listWorks(
+                    ownerId, library.id(), "dragon", "tiên hiệp", "active", null, 1);
+            assertEquals(1, firstWorkPage.items().size());
+            assertTrue(firstWorkPage.nextCursor() != null && !firstWorkPage.nextCursor().isBlank());
+            assertThrows(LibraryCursorCodec.InvalidCursorException.class,
+                    () -> libraryService.listWorks(
+                            ownerId, library.id(), "moon", "tiên-hiệp", "active", firstWorkPage.nextCursor(), 1));
+            assertThrows(LibraryCursorCodec.InvalidCursorException.class,
+                    () -> libraryService.listWorks(
+                            ownerId, secondLibrary.id(), "dragon", "tiên-hiệp", "active",
+                            firstWorkPage.nextCursor(), 1));
+
+            LibraryRepository.WorkRecord insertedAfterFirstPage = libraryService.createPrivateImportedWork(
+                    ownerId, library.id(), "Dragon Update", "Writer C", "zh", sha256("cursor-work-d"));
+            libraryService.addTagToWork(ownerId, insertedAfterFirstPage.id(), "tiên-hiệp");
+            setWorkCreatedAt(insertedAfterFirstPage.id(), Instant.parse("2026-01-05T00:00:00Z"));
+
+            LibraryService.Page<LibraryRepository.WorkRecord> secondWorkPage = libraryService.listWorks(
+                    ownerId, library.id(), "dragon", "tiên-hiệp", "active", firstWorkPage.nextCursor(), 1);
+            assertEquals(1, secondWorkPage.items().size());
+            assertNotEquals(firstWorkPage.items().getFirst().id(), secondWorkPage.items().getFirst().id());
+            assertNotEquals(insertedAfterFirstPage.id(), secondWorkPage.items().getFirst().id());
+            assertNull(secondWorkPage.nextCursor());
+
+            LibraryService.Page<LibraryRepository.WorkRecord> archived = libraryService.listWorks(
+                    ownerId, library.id(), "dragon", "tiên-hiệp", "archived", null, 10);
+            assertEquals(List.of(dragonGate.id()), archived.items().stream().map(LibraryRepository.WorkRecord::id).toList());
+            assertThrows(LibraryRepository.LibraryNotFoundException.class,
+                    () -> libraryService.listWorks(
+                            ownerId, otherLibrary.id(), "dragon", "tiên-hiệp", "active", null, 10));
         } finally {
             deleteLibraryTestData(ownerId);
             deleteLibraryTestData(otherOwnerId);
@@ -448,7 +523,9 @@ class PostgresSchemaIntegrationTests {
                 "chapters",
                 "chapter_revisions",
                 "segments",
-                "assets")) {
+                "assets",
+                "tags",
+                "work_tags")) {
             try (Connection connection = dataSource.getConnection();
                  PreparedStatement count = connection.prepareStatement("SELECT COUNT(*) FROM " + table);
                  ResultSet rows = count.executeQuery()) {
@@ -1816,8 +1893,33 @@ class PostgresSchemaIntegrationTests {
         }
     }
 
+    private void setWorkCreatedAt(UUID workId, Instant createdAt) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement update = connection.prepareStatement(
+                     "UPDATE works SET created_at = ? WHERE id = ?")) {
+            update.setTimestamp(1, Timestamp.from(createdAt));
+            update.setObject(2, workId);
+            assertEquals(1, update.executeUpdate());
+        }
+    }
+
+    private void setWorkStatus(UUID workId, String status) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement update = connection.prepareStatement(
+                     "UPDATE works SET status = ? WHERE id = ?")) {
+            update.setString(1, status);
+            update.setObject(2, workId);
+            assertEquals(1, update.executeUpdate());
+        }
+    }
+
     private void deleteLibraryTestData(UUID ownerId) throws SQLException {
         try (Connection connection = dataSource.getConnection()) {
+            try (PreparedStatement deleteWorkTags = connection.prepareStatement(
+                    "DELETE FROM work_tags WHERE owner_user_id = ?")) {
+                deleteWorkTags.setObject(1, ownerId);
+                deleteWorkTags.executeUpdate();
+            }
             try (PreparedStatement deleteSegments = connection.prepareStatement("""
                     DELETE FROM segments s USING chapter_revisions r, chapters c, works w
                     WHERE s.chapter_revision_id = r.id AND r.chapter_id = c.id
@@ -1858,6 +1960,10 @@ class PostgresSchemaIntegrationTests {
                     "DELETE FROM assets WHERE owner_user_id = ?")) {
                 deleteAssets.setObject(1, ownerId);
                 deleteAssets.executeUpdate();
+            }
+            try (PreparedStatement deleteTags = connection.prepareStatement("DELETE FROM tags WHERE owner_user_id = ?")) {
+                deleteTags.setObject(1, ownerId);
+                deleteTags.executeUpdate();
             }
             try (PreparedStatement deleteWorks = connection.prepareStatement(
                     "DELETE FROM works WHERE owner_user_id = ?")) {

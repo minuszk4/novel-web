@@ -29,6 +29,9 @@ novel:
       touch-interval: ${NOVEL_SESSION_TOUCH_INTERVAL:5m}
     logout-all:
       confirmation-ttl: ${NOVEL_LOGOUT_ALL_CONFIRMATION_TTL:5m}
+  library:
+    cursor:
+      hmac-key: ${NOVEL_LIBRARY_CURSOR_HMAC_KEY:}
   security:
     csrf:
       hmac-key: ${NOVEL_CSRF_HMAC_KEY:}

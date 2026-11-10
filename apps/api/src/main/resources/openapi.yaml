@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 1.1.0
+  version: 1.2.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session and policy-document/acceptance routes are implemented only in the configured
@@ -527,7 +527,10 @@ paths:
       tags: [Library]
       x-implementation-status: planned
       summary: List libraries owned by the current user
-      description: Never accepts an owner or user ID from the browser; each returned library is scoped to the authenticated principal.
+      description: >-
+        Never accepts an owner or user ID from the browser; each returned library is scoped to the authenticated
+        principal. Cursors are HMAC-signed; pages use the stable order isDefault descending, createdAt descending,
+        then id descending.
       security:
         - appSession: []
       parameters:
@@ -558,13 +561,21 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+        '400':
+          description: Cursor is malformed, tampered or bound to a different owner/sort.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
   /api/v1/works:
     get:
       operationId: listPrivateWorks
       tags: [Library]
       x-implementation-status: planned
       summary: List works in an owned library
-      description: Cursor is bound to the library and sort/filter fingerprint. Owner identity is derived from the session.
+      description: >-
+        Cursor is HMAC-signed and bound to the authenticated owner, library, stable sort order and all active filters.
+        Pages sort by createdAt descending then id descending. Owner identity is derived from the session.
       security:
         - appSession: []
       parameters:
@@ -576,7 +587,7 @@ paths:
             format: uuid
         - name: q
           in: query
-          description: Optional title/author search; source chapter text is not searched by this endpoint.
+          description: Case-insensitive substring search in title and author; source chapter text is not searched.
           schema:
             type: string
             maxLength: 160
@@ -592,6 +603,18 @@ paths:
             minimum: 1
             maximum: 100
             default: 25
+        - name: tag
+          in: query
+          description: Optional exact match on the owner's normalized tag slug.
+          schema:
+            type: string
+            maxLength: 80
+        - name: status
+          in: query
+          description: Optional work lifecycle filter.
+          schema:
+            type: string
+            enum: [active, archived]
       responses:
         '200':
           description: Private works visible to the current user in the selected library
@@ -605,6 +628,12 @@ paths:
           $ref: '#/components/responses/Problem'
         '404':
           $ref: '#/components/responses/Problem'
+        '400':
+          description: Cursor is malformed, tampered or bound to a different owner/filter/sort.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
   /api/v1/works/{workId}:
     get:
       operationId: getOwnedWork
@@ -1681,7 +1710,7 @@ components:
         nextCursor:
           type: [string, 'null']
           maxLength: 2048
-          description: Opaque cursor bound to the current user and sort; null when no next page exists.
+          description: Opaque HMAC-signed cursor bound to the current user and stable sort; null when no next page exists.
     WorkSummary:
       type: object
       additionalProperties: false
@@ -1728,7 +1757,7 @@ components:
         nextCursor:
           type: [string, 'null']
           maxLength: 2048
-          description: Opaque cursor bound to library, sort and query filter.
+          description: Opaque HMAC-signed cursor bound to owner, library, q, tag, status and stable sort; null when no next page exists.
     ReaderManifest:
       type: object
       additionalProperties: false

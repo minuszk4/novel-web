@@ -82,21 +82,43 @@ public class LibraryRepository {
         }
     }
 
-    public List<LibraryRecord> findLibraries(UUID ownerUserId) {
+    public Slice<LibraryRecord> findLibraries(
+            UUID ownerUserId, int limit, LibraryCursorCodec.Position cursor) {
         Objects.requireNonNull(ownerUserId, "owner user id is required");
+        StringBuilder sql = new StringBuilder("""
+                SELECT l.id, l.owner_user_id, l.name, l.visibility, l.is_default, l.created_at
+                FROM libraries l
+                WHERE l.owner_user_id = ? AND l.deleted_at IS NULL
+                """);
+        if (cursor != null) {
+            sql.append("""
+                    AND (l.is_default, l.created_at, l.id) <
+                        (CAST(? AS BOOLEAN), CAST(? AS TIMESTAMPTZ), CAST(? AS UUID))
+                    """);
+        }
+        sql.append("ORDER BY l.is_default DESC, l.created_at DESC, l.id DESC LIMIT ?");
         try (Connection connection = dataSource.getConnection();
-             PreparedStatement select = connection.prepareStatement("""
-                     SELECT id, owner_user_id, name, visibility, is_default, created_at
-                     FROM libraries
-                     WHERE owner_user_id = ? AND deleted_at IS NULL
-                     ORDER BY is_default DESC, created_at DESC, id DESC
-                     LIMIT 100
-                     """)) {
+             PreparedStatement select = connection.prepareStatement(sql.toString())) {
             select.setObject(1, ownerUserId);
+            int parameter = 2;
+            if (cursor != null) {
+                select.setObject(parameter++, cursor.rank() == 1);
+                select.setObject(parameter++, OffsetDateTime.ofInstant(cursor.createdAt(), java.time.ZoneOffset.UTC));
+                select.setObject(parameter++, cursor.itemId());
+            }
+            select.setInt(parameter, limit + 1);
             try (ResultSet rows = select.executeQuery()) {
                 List<LibraryRecord> result = new ArrayList<>();
                 while (rows.next()) result.add(library(rows));
-                return List.copyOf(result);
+                boolean hasMore = result.size() > limit;
+                if (hasMore) result.remove(result.size() - 1);
+                LibraryCursorCodec.Position nextPosition = null;
+                if (hasMore && !result.isEmpty()) {
+                    LibraryRecord last = result.get(result.size() - 1);
+                    nextPosition = new LibraryCursorCodec.Position(
+                            last.isDefault() ? 1 : 0, last.createdAt(), last.id());
+                }
+                return new Slice<>(result, hasMore, nextPosition);
             }
         } catch (SQLException exception) {
             throw new IllegalStateException("Unable to load the user's libraries", exception);
@@ -179,29 +201,123 @@ public class LibraryRepository {
         }
     }
 
-    public List<WorkRecord> findWorks(UUID ownerUserId, UUID libraryId, String query, int limit) {
+    public TagRecord addTagToWork(UUID ownerUserId, UUID workId, String slug, String name) {
+        Objects.requireNonNull(ownerUserId, "owner user id is required");
+        Objects.requireNonNull(workId, "work id is required");
+        UUID tagId = UUID.randomUUID();
+        try (Connection connection = dataSource.getConnection()) {
+            connection.setAutoCommit(false);
+            try {
+                try (PreparedStatement work = connection.prepareStatement("""
+                        SELECT id FROM works
+                        WHERE id = ? AND owner_user_id = ? AND deleted_at IS NULL
+                        FOR UPDATE
+                        """)) {
+                    work.setObject(1, workId);
+                    work.setObject(2, ownerUserId);
+                    try (ResultSet row = work.executeQuery()) {
+                        if (!row.next()) throw new WorkNotFoundException();
+                    }
+                }
+
+                TagRecord tag;
+                try (PreparedStatement insertTag = connection.prepareStatement("""
+                        INSERT INTO tags (id, owner_user_id, slug, name)
+                        VALUES (?, ?, ?, ?)
+                        ON CONFLICT (owner_user_id, slug) WHERE deleted_at IS NULL
+                        DO UPDATE SET name = EXCLUDED.name, updated_at = clock_timestamp()
+                        RETURNING id, owner_user_id, slug, name, created_at
+                        """)) {
+                    insertTag.setObject(1, tagId);
+                    insertTag.setObject(2, ownerUserId);
+                    insertTag.setString(3, slug);
+                    insertTag.setString(4, name);
+                    try (ResultSet row = insertTag.executeQuery()) {
+                        row.next();
+                        tag = tag(row);
+                    }
+                }
+
+                try (PreparedStatement link = connection.prepareStatement("""
+                        INSERT INTO work_tags (owner_user_id, work_id, tag_id)
+                        VALUES (?, ?, ?)
+                        ON CONFLICT (owner_user_id, work_id, tag_id) DO NOTHING
+                        """)) {
+                    link.setObject(1, ownerUserId);
+                    link.setObject(2, workId);
+                    link.setObject(3, tag.id());
+                    link.executeUpdate();
+                }
+                connection.commit();
+                return tag;
+            } catch (SQLException | RuntimeException exception) {
+                connection.rollback();
+                throw exception;
+            }
+        } catch (WorkNotFoundException exception) {
+            throw exception;
+        } catch (SQLException exception) {
+            throw new IllegalStateException("Unable to assign a tag to the owned work", exception);
+        }
+    }
+
+    public Slice<WorkRecord> findWorks(
+            UUID ownerUserId,
+            UUID libraryId,
+            String query,
+            String tag,
+            String status,
+            int limit,
+            LibraryCursorCodec.Position cursor) {
         Objects.requireNonNull(ownerUserId, "owner user id is required");
         Objects.requireNonNull(libraryId, "library id is required");
-        String workSql = workSelect() + """
+        String normalizedQuery = query == null ? "" : query.trim();
+        String normalizedTag = tag == null ? "" : tag;
+        String normalizedStatus = status == null ? "" : status;
+        String escapedQuery = escapeLike(normalizedQuery);
+        StringBuilder workSql = new StringBuilder(workSelect()).append("""
                 WHERE w.owner_user_id = ? AND w.library_id = ? AND w.deleted_at IS NULL
-                  AND (? = '' OR w.title ILIKE ? OR w.author ILIKE ?)
-                GROUP BY w.id
-                ORDER BY w.created_at DESC, w.id DESC
-                LIMIT ?
-                """;
-        String escapedQuery = escapeLike(query == null ? "" : query.trim());
+                """);
+        if (!normalizedQuery.isEmpty()) workSql.append("AND (w.title ILIKE ? OR w.author ILIKE ?) ");
+        if (!normalizedStatus.isEmpty()) workSql.append("AND w.status = ? ");
+        if (!normalizedTag.isEmpty()) workSql.append("""
+                AND EXISTS (
+                    SELECT 1 FROM work_tags wt
+                    JOIN tags t ON t.owner_user_id = wt.owner_user_id AND t.id = wt.tag_id
+                    WHERE wt.owner_user_id = w.owner_user_id AND wt.work_id = w.id
+                      AND t.slug = ? AND t.deleted_at IS NULL)
+                """);
+        if (cursor != null) workSql.append("""
+                AND (w.created_at, w.id) < (CAST(? AS TIMESTAMPTZ), CAST(? AS UUID))
+                """);
+        workSql.append("GROUP BY w.id ORDER BY w.created_at DESC, w.id DESC LIMIT ?");
         try (Connection connection = dataSource.getConnection();
-             PreparedStatement select = connection.prepareStatement(workSql)) {
-            select.setObject(1, ownerUserId);
-            select.setObject(2, libraryId);
-            select.setString(3, escapedQuery);
-            select.setString(4, "%" + escapedQuery + "%");
-            select.setString(5, "%" + escapedQuery + "%");
-            select.setInt(6, Math.clamp(limit, 1, 100));
+             PreparedStatement select = connection.prepareStatement(workSql.toString())) {
+            int parameter = 1;
+            select.setObject(parameter++, ownerUserId);
+            select.setObject(parameter++, libraryId);
+            if (!normalizedQuery.isEmpty()) {
+                select.setString(parameter++, "%" + escapedQuery + "%");
+                select.setString(parameter++, "%" + escapedQuery + "%");
+            }
+            if (!normalizedStatus.isEmpty()) select.setString(parameter++, normalizedStatus);
+            if (!normalizedTag.isEmpty()) select.setString(parameter++, normalizedTag);
+            if (cursor != null) {
+                select.setObject(parameter++, OffsetDateTime.ofInstant(cursor.createdAt(), java.time.ZoneOffset.UTC));
+                select.setObject(parameter++, cursor.itemId());
+            }
+            select.setInt(parameter, limit + 1);
             try (ResultSet rows = select.executeQuery()) {
                 List<WorkRecord> result = new ArrayList<>();
                 while (rows.next()) result.add(work(rows));
-                return List.copyOf(result);
+                boolean hasMore = result.size() > limit;
+                if (hasMore) result.remove(result.size() - 1);
+                LibraryCursorCodec.Position nextPosition = null;
+                if (hasMore && !result.isEmpty()) {
+                    WorkRecord last = result.get(result.size() - 1);
+                    nextPosition = new LibraryCursorCodec.Position(0, last.createdAt(), last.id());
+                }
+                return new Slice<>(result, hasMore, nextPosition);
             }
         } catch (SQLException exception) {
             throw new IllegalStateException("Unable to load works from the user's library", exception);
@@ -494,6 +610,11 @@ public class LibraryRepository {
                 row.getString("status"), instant(row, "created_at"));
     }
 
+    private static TagRecord tag(ResultSet row) throws SQLException {
+        return new TagRecord(row.getObject("id", UUID.class), row.getObject("owner_user_id", UUID.class),
+                row.getString("slug"), row.getString("name"), instant(row, "created_at"));
+    }
+
     private static Instant instant(ResultSet row, String column) throws SQLException {
         return row.getObject(column, OffsetDateTime.class).toInstant();
     }
@@ -588,6 +709,9 @@ public class LibraryRepository {
         }
     }
 
+    public record TagRecord(UUID id, UUID ownerUserId, String slug, String name, Instant createdAt) {
+    }
+
     public static class LibraryOwnerNotFoundException extends RuntimeException {
     }
 
@@ -613,5 +737,11 @@ public class LibraryRepository {
     }
 
     public static class DuplicateAssetException extends RuntimeException {
+    }
+
+    public record Slice<T>(List<T> items, boolean hasMore, LibraryCursorCodec.Position nextPosition) {
+        public Slice {
+            items = List.copyOf(items);
+        }
     }
 }
