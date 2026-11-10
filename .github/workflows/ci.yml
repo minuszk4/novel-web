@@ -31,7 +31,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: frontend-test-coverage
+          name: frontend-test-results-and-coverage
           path: |
             apps/web/reports/junit.xml
             apps/web/reports/e2e-junit.xml
