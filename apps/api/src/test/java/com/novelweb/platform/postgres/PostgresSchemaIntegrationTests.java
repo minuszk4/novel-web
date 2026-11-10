@@ -43,6 +43,8 @@ import org.junit.jupiter.api.BeforeAll;
 import com.novelweb.identity.session.SessionService;
 import com.novelweb.identity.session.SessionCsrfTokenService;
 import com.novelweb.identity.session.LogoutAllConfirmationService;
+import com.novelweb.library.LibraryRepository;
+import com.novelweb.library.LibraryService;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
@@ -98,7 +100,14 @@ class PostgresSchemaIntegrationTests {
             "policy_acceptances",
             "policy_documents",
             "auth_events",
-            "session_revoke_confirmations");
+            "session_revoke_confirmations",
+            "libraries",
+            "works",
+            "volumes",
+            "chapters",
+            "chapter_revisions",
+            "segments",
+            "assets");
 
     @Autowired
     private DataSource dataSource;
@@ -120,6 +129,9 @@ class PostgresSchemaIntegrationTests {
 
     @Autowired
     private LogoutAllConfirmationService logoutAllConfirmationService;
+
+    @Autowired
+    private LibraryService libraryService;
 
     @Autowired
     private MockMvc mockMvc;
@@ -155,7 +167,7 @@ class PostgresSchemaIntegrationTests {
                      "SELECT COUNT(*) FROM databasechangelog");
              ResultSet changesets = changesetCount.executeQuery()) {
             changesets.next();
-            assertEquals(18, changesets.getInt(1), "unexpected number of applied baseline changesets");
+            assertEquals(29, changesets.getInt(1), "unexpected number of applied baseline changesets");
         }
 
         Set<String> actualTables = new HashSet<>();
@@ -173,6 +185,102 @@ class PostgresSchemaIntegrationTests {
             }
         }
         assertEquals(EXPECTED_APPLICATION_TABLES, actualTables);
+    }
+
+    @Test
+    void privateLibraryCoreScopesOwnersDefaultsPrivateAndRejectsDuplicateHashesAndOrder() throws Exception {
+        UUID ownerId = createSessionTestUser("Library Owner");
+        UUID otherOwnerId = createSessionTestUser("Other Library Owner");
+        try {
+            LibraryRepository.LibraryRecord defaultLibrary = libraryService.createLibrary(ownerId, "My Library");
+            LibraryRepository.LibraryRecord secondLibrary = libraryService.createLibrary(ownerId, "Research Shelf");
+            LibraryRepository.LibraryRecord otherLibrary = libraryService.createLibrary(otherOwnerId, "My Library");
+
+            assertTrue(defaultLibrary.isDefault());
+            assertFalse(secondLibrary.isDefault());
+            assertTrue(otherLibrary.isDefault());
+            assertEquals("private", defaultLibrary.visibility());
+
+            byte[] digest = sha256("same-import-content");
+            LibraryRepository.WorkRecord work = libraryService.createPrivateImportedWork(
+                    ownerId, defaultLibrary.id(), "A Private Novel", "Author", "vi", digest);
+            assertEquals("private", work.visibility());
+            assertEquals("active", work.status());
+            assertEquals(0, work.chapterCount());
+            assertEquals(1, libraryService.listWorks(ownerId, defaultLibrary.id(), "", 25).size());
+            assertTrue(libraryService.findOwnedWork(otherOwnerId, work.id()).isEmpty());
+            assertThrows(LibraryRepository.LibraryNotFoundException.class,
+                    () -> libraryService.listWorks(otherOwnerId, defaultLibrary.id(), "", 25));
+            assertThrows(LibraryRepository.DuplicateImportedWorkException.class,
+                    () -> libraryService.createPrivateImportedWork(
+                            ownerId, secondLibrary.id(), "Duplicate Copy", "Author", "vi", digest));
+
+            LibraryRepository.WorkRecord sameContentForOtherOwner = libraryService.createPrivateImportedWork(
+                    otherOwnerId, otherLibrary.id(), "Own Copy", "Author", "vi", digest);
+            assertEquals("private", sameContentForOtherOwner.visibility());
+
+            LibraryRepository.VolumeRecord volume = libraryService.createVolume(ownerId, work.id(), 1, "Volume 1");
+            SQLException duplicateVolumeOrder = assertThrows(SQLException.class,
+                    () -> insertTestVolume(UUID.randomUUID(), work.id(), 1, "Duplicate volume"));
+            assertEquals("23505", duplicateVolumeOrder.getSQLState());
+
+            LibraryRepository.ChapterRecord chapter = libraryService.createChapter(
+                    ownerId, work.id(), volume.id(), 1, "Chapter 1", "zh-Hans");
+            assertEquals("draft", chapter.status());
+            assertTrue(libraryService.findOwnedChapter(otherOwnerId, chapter.id()).isEmpty());
+            assertThrows(LibraryRepository.WorkNotFoundException.class,
+                    () -> libraryService.createChapter(otherOwnerId, work.id(), volume.id(), 2, "Foreign", "zh"));
+            SQLException duplicateChapterOrder = assertThrows(SQLException.class,
+                    () -> insertTestChapter(UUID.randomUUID(), work.id(), volume.id(), 1, "Duplicate chapter"));
+            assertEquals("23505", duplicateChapterOrder.getSQLState());
+
+            assertThrows(IllegalArgumentException.class,
+                    () -> libraryService.appendChapterRevision(
+                            ownerId,
+                            chapter.id(),
+                            "plain_text",
+                            "Duplicate anchors must fail before persistence.",
+                            List.of(
+                                    new LibraryService.NewSegment(1, "paragraph", "First", "same-anchor"),
+                                    new LibraryService.NewSegment(2, "paragraph", "Second", "same-anchor"))));
+            assertEquals(0, revisionCount(chapter.id()));
+
+            LibraryRepository.RevisionRecord revision = libraryService.appendChapterRevision(
+                    ownerId,
+                    chapter.id(),
+                    "plain_text",
+                    "First paragraph.\nSecond paragraph.",
+                    List.of(
+                            new LibraryService.NewSegment(1, "paragraph", "First paragraph.", "p1"),
+                            new LibraryService.NewSegment(2, "paragraph", "Second paragraph.", "p2")));
+            assertEquals(1, revision.revisionNo());
+            LibraryRepository.ChapterRecord readyChapter = libraryService.findOwnedChapter(ownerId, chapter.id())
+                    .orElseThrow();
+            assertEquals("ready", readyChapter.status());
+            assertEquals(revision.id(), readyChapter.sourceRevisionId());
+            assertEquals(2, segmentCount(revision.id()));
+            assertThrows(LibraryRepository.DuplicateRevisionException.class,
+                    () -> libraryService.appendChapterRevision(
+                            ownerId, chapter.id(), "plain_text", "First paragraph.\nSecond paragraph.", List.of()));
+
+            LibraryRepository.AssetRecord asset = libraryService.registerAsset(
+                    ownerId, defaultLibrary.id(), "private/" + UUID.randomUUID(), sha256("cover-image"),
+                    "image/webp", 2048, "cover.webp");
+            assertEquals("staged", asset.status());
+            assertThrows(LibraryRepository.DuplicateAssetException.class,
+                    () -> libraryService.registerAsset(
+                            ownerId, secondLibrary.id(), "private/" + UUID.randomUUID(), sha256("cover-image"),
+                            "image/webp", 2048, "duplicate-cover.webp"));
+            LibraryRepository.AssetRecord sameAssetForOtherOwner = libraryService.registerAsset(
+                    otherOwnerId, otherLibrary.id(), "private/" + UUID.randomUUID(), sha256("cover-image"),
+                    "image/webp", 2048, "cover.webp");
+            assertNotEquals(asset.ownerUserId(), sameAssetForOtherOwner.ownerUserId());
+        } finally {
+            deleteLibraryTestData(ownerId);
+            deleteLibraryTestData(otherOwnerId);
+            deleteSessionTestUser(ownerId);
+            deleteSessionTestUser(otherOwnerId);
+        }
     }
 
     @Test
@@ -333,7 +441,14 @@ class PostgresSchemaIntegrationTests {
                 "google_auth_bootstrap_rate_limits",
                 "policy_acceptances",
                 "auth_events",
-                "session_revoke_confirmations")) {
+                "session_revoke_confirmations",
+                "libraries",
+                "works",
+                "volumes",
+                "chapters",
+                "chapter_revisions",
+                "segments",
+                "assets")) {
             try (Connection connection = dataSource.getConnection();
                  PreparedStatement count = connection.prepareStatement("SELECT COUNT(*) FROM " + table);
                  ResultSet rows = count.executeQuery()) {
@@ -1646,6 +1761,115 @@ class PostgresSchemaIntegrationTests {
             assertEquals(1, insert.executeUpdate());
         }
         return userId;
+    }
+
+    private void insertTestVolume(UUID volumeId, UUID workId, int ordinal, String title) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement insert = connection.prepareStatement("""
+                     INSERT INTO volumes (id, work_id, ordinal, title) VALUES (?, ?, ?, ?)
+                     """)) {
+            insert.setObject(1, volumeId);
+            insert.setObject(2, workId);
+            insert.setInt(3, ordinal);
+            insert.setString(4, title);
+            insert.executeUpdate();
+        }
+    }
+
+    private void insertTestChapter(UUID chapterId, UUID workId, UUID volumeId, int ordinal, String title)
+            throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement insert = connection.prepareStatement("""
+                     INSERT INTO chapters (id, work_id, volume_id, ordinal, title, source_language)
+                     VALUES (?, ?, ?, ?, ?, 'und')
+                     """)) {
+            insert.setObject(1, chapterId);
+            insert.setObject(2, workId);
+            insert.setObject(3, volumeId);
+            insert.setInt(4, ordinal);
+            insert.setString(5, title);
+            insert.executeUpdate();
+        }
+    }
+
+    private int segmentCount(UUID revisionId) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement(
+                     "SELECT COUNT(*) FROM segments WHERE chapter_revision_id = ?")) {
+            select.setObject(1, revisionId);
+            try (ResultSet row = select.executeQuery()) {
+                row.next();
+                return row.getInt(1);
+            }
+        }
+    }
+
+    private int revisionCount(UUID chapterId) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement(
+                     "SELECT COUNT(*) FROM chapter_revisions WHERE chapter_id = ?")) {
+            select.setObject(1, chapterId);
+            try (ResultSet row = select.executeQuery()) {
+                row.next();
+                return row.getInt(1);
+            }
+        }
+    }
+
+    private void deleteLibraryTestData(UUID ownerId) throws SQLException {
+        try (Connection connection = dataSource.getConnection()) {
+            try (PreparedStatement deleteSegments = connection.prepareStatement("""
+                    DELETE FROM segments s USING chapter_revisions r, chapters c, works w
+                    WHERE s.chapter_revision_id = r.id AND r.chapter_id = c.id
+                      AND c.work_id = w.id AND w.owner_user_id = ?
+                    """)) {
+                deleteSegments.setObject(1, ownerId);
+                deleteSegments.executeUpdate();
+            }
+            try (PreparedStatement clearCurrentRevision = connection.prepareStatement("""
+                    UPDATE chapters c SET source_revision_id = NULL FROM works w
+                    WHERE c.work_id = w.id AND w.owner_user_id = ?
+                    """)) {
+                clearCurrentRevision.setObject(1, ownerId);
+                clearCurrentRevision.executeUpdate();
+            }
+            try (PreparedStatement deleteRevisions = connection.prepareStatement("""
+                    DELETE FROM chapter_revisions r USING chapters c, works w
+                    WHERE r.chapter_id = c.id AND c.work_id = w.id AND w.owner_user_id = ?
+                    """)) {
+                deleteRevisions.setObject(1, ownerId);
+                deleteRevisions.executeUpdate();
+            }
+            try (PreparedStatement deleteChapters = connection.prepareStatement("""
+                    DELETE FROM chapters c USING works w
+                    WHERE c.work_id = w.id AND w.owner_user_id = ?
+                    """)) {
+                deleteChapters.setObject(1, ownerId);
+                deleteChapters.executeUpdate();
+            }
+            try (PreparedStatement deleteVolumes = connection.prepareStatement("""
+                    DELETE FROM volumes v USING works w
+                    WHERE v.work_id = w.id AND w.owner_user_id = ?
+                    """)) {
+                deleteVolumes.setObject(1, ownerId);
+                deleteVolumes.executeUpdate();
+            }
+            try (PreparedStatement deleteAssets = connection.prepareStatement(
+                    "DELETE FROM assets WHERE owner_user_id = ?")) {
+                deleteAssets.setObject(1, ownerId);
+                deleteAssets.executeUpdate();
+            }
+            try (PreparedStatement deleteWorks = connection.prepareStatement(
+                    "DELETE FROM works WHERE owner_user_id = ?")) {
+                deleteWorks.setObject(1, ownerId);
+                deleteWorks.executeUpdate();
+            }
+            try (PreparedStatement deleteLibraries = connection.prepareStatement(
+                    "DELETE FROM libraries WHERE owner_user_id = ?")) {
+                deleteLibraries.setObject(1, ownerId);
+                deleteLibraries.executeUpdate();
+            }
+        }
     }
 
     private void addSessionTestGoogleIdentity(UUID userId) throws SQLException {
