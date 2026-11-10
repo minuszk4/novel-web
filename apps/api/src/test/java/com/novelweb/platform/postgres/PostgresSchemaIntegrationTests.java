@@ -26,6 +26,11 @@ import javax.sql.DataSource;
 
 import com.novelweb.identity.auth.GoogleAuthBootstrapRateLimiter;
 import com.novelweb.identity.auth.GoogleAuthAttemptService;
+import com.novelweb.identity.auth.GoogleAccountLinkRequiredException;
+import com.novelweb.identity.auth.GoogleIdentityService;
+import com.novelweb.identity.auth.GoogleIdentityTestFixtures;
+import com.novelweb.identity.auth.UnavailableGoogleIdentityException;
+import com.novelweb.identity.auth.GoogleIdTokenVerifier;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -61,6 +66,9 @@ class PostgresSchemaIntegrationTests {
 
     @Autowired
     private GoogleAuthBootstrapRateLimiter googleAuthBootstrapRateLimiter;
+
+    @Autowired
+    private GoogleIdentityService googleIdentityService;
 
     @Test
     void liquibaseAppliesTheBaselineAndCreatesExpectedTables() throws SQLException {
@@ -363,6 +371,183 @@ class PostgresSchemaIntegrationTests {
         }
     }
 
+    @Test
+    void firstGoogleSignInCreatesUserAndCanonicalProviderIdentityAtomically() throws Exception {
+        String subject = "first-" + UUID.randomUUID();
+        String email = subject + "@example.test";
+        GoogleIdTokenVerifier.VerifiedGoogleIdentity identity = verifiedIdentity(subject, email, "First Reader");
+        GoogleIdentityService.IdentityAccount account = null;
+
+        try {
+            account = googleIdentityService.findOrCreate(identity);
+
+            assertTrue(account.created());
+            assertEquals("active", account.status());
+            assertEquals("First Reader", account.displayName());
+            assertEquals(email, account.contactEmail());
+            assertEquals(1, identityCount(subject));
+            assertEquals(1, userCount(account.userId()));
+            assertEquals("https://accounts.google.com", identityIssuer(subject));
+        } finally {
+            if (account != null) {
+                deleteMappedIdentity(account.userId(), subject);
+            }
+        }
+    }
+
+    @Test
+    void returningGoogleIdentityUpdatesVerifiedEmailWithoutCreatingAnotherUser() throws Exception {
+        String subject = "returning-" + UUID.randomUUID();
+        String firstEmail = subject + "@old.example.test";
+        String updatedEmail = subject + "@new.example.test";
+        GoogleIdentityService.IdentityAccount first = null;
+
+        try {
+            first = googleIdentityService.findOrCreate(verifiedIdentity(subject, firstEmail, "Old Name"));
+            GoogleIdentityService.IdentityAccount returned = googleIdentityService.findOrCreate(
+                    verifiedIdentity(subject, updatedEmail, "Updated Name"));
+
+            assertFalse(returned.created());
+            assertEquals(first.userId(), returned.userId());
+            assertEquals(updatedEmail, returned.contactEmail());
+            assertEquals("Updated Name", returned.displayName());
+            assertEquals(1, identityCount(subject));
+            assertEquals(1, userCount(first.userId()));
+            assertEquals(updatedEmail, storedProviderEmail(subject));
+            assertEquals(updatedEmail, storedUserEmail(first.userId()));
+            assertTrue(providerIdentityLastSeen(subject));
+        } finally {
+            if (first != null) {
+                deleteMappedIdentity(first.userId(), subject);
+            }
+        }
+    }
+
+    @Test
+    void verifiedEmailCollisionRequiresAccountLinkWithoutCreatingOrLinking() throws Exception {
+        String subject = "collision-" + UUID.randomUUID();
+        String existingEmail = subject + "@example.test";
+        try (Connection connection = dataSource.getConnection()) {
+            insertUser(connection, "Existing Reader", existingEmail, "active", false);
+        }
+
+        try {
+            GoogleAccountLinkRequiredException failure = assertThrows(GoogleAccountLinkRequiredException.class,
+                    () -> googleIdentityService.findOrCreate(verifiedIdentity(subject, existingEmail, "New Reader")));
+
+            assertEquals(GoogleAccountLinkRequiredException.CODE, failure.code());
+            assertFalse(failure.getMessage().contains(existingEmail));
+            assertEquals(0, identityCount(subject));
+            assertEquals(1, userCountByEmail(existingEmail));
+        } finally {
+            deleteUserByEmail(existingEmail);
+        }
+    }
+
+    @Test
+    void returningIdentityEmailCollisionRollsBackBothProfileAndProviderClaimUpdates() throws Exception {
+        String subject = "return-collision-" + UUID.randomUUID();
+        String originalEmail = subject + "@original.example.test";
+        String collidingEmail = subject + "@claimed.example.test";
+        GoogleIdentityService.IdentityAccount account = googleIdentityService.findOrCreate(
+                verifiedIdentity(subject, originalEmail, "Original Name"));
+        try (Connection connection = dataSource.getConnection()) {
+            insertUser(connection, "Other Reader", collidingEmail, "active", false);
+        }
+
+        try {
+            GoogleAccountLinkRequiredException failure = assertThrows(GoogleAccountLinkRequiredException.class,
+                    () -> googleIdentityService.findOrCreate(
+                            verifiedIdentity(subject, collidingEmail, "Changed Name")));
+
+            assertEquals(GoogleAccountLinkRequiredException.CODE, failure.code());
+            assertEquals(originalEmail, storedUserEmail(account.userId()));
+            assertEquals("Original Name", storedUserDisplayName(account.userId()));
+            assertEquals(originalEmail, storedProviderEmail(subject));
+            assertEquals(1, identityCount(subject));
+            assertEquals(1, userCountByEmail(collidingEmail));
+        } finally {
+            deleteMappedIdentity(account.userId(), subject);
+            deleteUserByEmail(collidingEmail);
+        }
+    }
+
+    @Test
+    void concurrentFirstSignInsForOneSubjectResolveToOneInternalUser() throws Exception {
+        String subject = "concurrent-" + UUID.randomUUID();
+        String email = subject + "@example.test";
+        GoogleIdTokenVerifier.VerifiedGoogleIdentity identity = verifiedIdentity(subject, email, "Concurrent Reader");
+        int consumers = 8;
+        ExecutorService executor = Executors.newFixedThreadPool(consumers);
+        CountDownLatch ready = new CountDownLatch(consumers);
+        CountDownLatch start = new CountDownLatch(1);
+        List<Future<GoogleIdentityService.IdentityAccount>> results = new ArrayList<>();
+
+        try {
+            for (int index = 0; index < consumers; index++) {
+                results.add(executor.submit(() -> {
+                    ready.countDown();
+                    if (!start.await(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("identity consumers did not receive the start signal");
+                    }
+                    return googleIdentityService.findOrCreate(identity);
+                }));
+            }
+
+            assertTrue(ready.await(5, TimeUnit.SECONDS));
+            start.countDown();
+            UUID userId = null;
+            int createdCount = 0;
+            for (Future<GoogleIdentityService.IdentityAccount> result : results) {
+                GoogleIdentityService.IdentityAccount account = result.get(15, TimeUnit.SECONDS);
+                userId = account.userId();
+                if (account.created()) {
+                    createdCount++;
+                }
+            }
+            assertEquals(1, createdCount);
+            assertEquals(1, identityCount(subject));
+            assertEquals(1, userCount(userId));
+        } finally {
+            start.countDown();
+            executor.shutdownNow();
+            assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
+            deleteMappedIdentityBySubject(subject);
+        }
+    }
+
+    @Test
+    void suspendedGoogleAccountCannotBeReactivatedBySignIn() throws Exception {
+        String subject = "suspended-" + UUID.randomUUID();
+        String email = subject + "@example.test";
+        UUID userId = UUID.randomUUID();
+        try (Connection connection = dataSource.getConnection()) {
+            insertUser(connection, "Suspended Reader", email, "suspended", false);
+            try (PreparedStatement find = connection.prepareStatement("SELECT id FROM users WHERE contact_email = ?")) {
+                find.setString(1, email);
+                try (ResultSet row = find.executeQuery()) {
+                    assertTrue(row.next());
+                    userId = row.getObject(1, UUID.class);
+                }
+            }
+            insertGoogleIdentity(connection, userId, subject, email);
+        }
+
+        try {
+            assertThrows(UnavailableGoogleIdentityException.class,
+                    () -> googleIdentityService.findOrCreate(verifiedIdentity(subject, email, "Changed Name")));
+            assertEquals("suspended", storedUserStatus(userId));
+            assertEquals("Suspended Reader", storedUserDisplayName(userId));
+        } finally {
+            deleteMappedIdentity(userId, subject);
+        }
+    }
+
+    private static GoogleIdTokenVerifier.VerifiedGoogleIdentity verifiedIdentity(
+            String subject, String email, String name) {
+        return GoogleIdentityTestFixtures.verifiedIdentity(subject, email, name);
+    }
+
     private static byte[] sha256(String value) throws NoSuchAlgorithmException {
         return MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8));
     }
@@ -394,6 +579,171 @@ class PostgresSchemaIntegrationTests {
                 result.next();
                 return result.getInt(1);
             }
+        }
+    }
+
+    private int identityCount(String subject) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement(
+                     "SELECT COUNT(*) FROM external_identities WHERE issuer = 'https://accounts.google.com' AND subject = ?")) {
+            select.setString(1, subject);
+            try (ResultSet row = select.executeQuery()) {
+                row.next();
+                return row.getInt(1);
+            }
+        }
+    }
+
+    private int userCount(UUID userId) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement("SELECT COUNT(*) FROM users WHERE id = ?")) {
+            select.setObject(1, userId);
+            try (ResultSet row = select.executeQuery()) {
+                row.next();
+                return row.getInt(1);
+            }
+        }
+    }
+
+    private int userCountByEmail(String email) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement("SELECT COUNT(*) FROM users WHERE contact_email = ?")) {
+            select.setString(1, email);
+            try (ResultSet row = select.executeQuery()) {
+                row.next();
+                return row.getInt(1);
+            }
+        }
+    }
+
+    private String identityIssuer(String subject) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement(
+                     "SELECT issuer FROM external_identities WHERE subject = ?")) {
+            select.setString(1, subject);
+            try (ResultSet row = select.executeQuery()) {
+                assertTrue(row.next());
+                return row.getString(1);
+            }
+        }
+    }
+
+    private String storedProviderEmail(String subject) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement(
+                     "SELECT provider_email FROM external_identities WHERE subject = ?")) {
+            select.setString(1, subject);
+            try (ResultSet row = select.executeQuery()) {
+                assertTrue(row.next());
+                return row.getString(1);
+            }
+        }
+    }
+
+    private boolean providerIdentityLastSeen(String subject) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement(
+                     "SELECT last_seen_at IS NOT NULL FROM external_identities WHERE subject = ?")) {
+            select.setString(1, subject);
+            try (ResultSet row = select.executeQuery()) {
+                assertTrue(row.next());
+                return row.getBoolean(1);
+            }
+        }
+    }
+
+    private String storedUserEmail(UUID userId) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement("SELECT contact_email FROM users WHERE id = ?")) {
+            select.setObject(1, userId);
+            try (ResultSet row = select.executeQuery()) {
+                assertTrue(row.next());
+                return row.getString(1);
+            }
+        }
+    }
+
+    private String storedUserStatus(UUID userId) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement("SELECT status FROM users WHERE id = ?")) {
+            select.setObject(1, userId);
+            try (ResultSet row = select.executeQuery()) {
+                assertTrue(row.next());
+                return row.getString(1);
+            }
+        }
+    }
+
+    private String storedUserDisplayName(UUID userId) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement("SELECT display_name FROM users WHERE id = ?")) {
+            select.setObject(1, userId);
+            try (ResultSet row = select.executeQuery()) {
+                assertTrue(row.next());
+                return row.getString(1);
+            }
+        }
+    }
+
+    private void deleteMappedIdentity(UUID userId, String subject) throws SQLException {
+        try (Connection connection = dataSource.getConnection()) {
+            try (PreparedStatement deleteIdentity = connection.prepareStatement(
+                    "DELETE FROM external_identities WHERE user_id = ? AND subject = ?")) {
+                deleteIdentity.setObject(1, userId);
+                deleteIdentity.setString(2, subject);
+                deleteIdentity.executeUpdate();
+            }
+            try (PreparedStatement deleteUser = connection.prepareStatement("DELETE FROM users WHERE id = ?")) {
+                deleteUser.setObject(1, userId);
+                deleteUser.executeUpdate();
+            }
+        }
+    }
+
+    private void deleteMappedIdentityBySubject(String subject) throws SQLException {
+        try (Connection connection = dataSource.getConnection()) {
+            UUID userId = null;
+            try (PreparedStatement deleteIdentity = connection.prepareStatement("""
+                    DELETE FROM external_identities
+                    WHERE issuer = 'https://accounts.google.com' AND subject = ?
+                    RETURNING user_id
+                    """)) {
+                deleteIdentity.setString(1, subject);
+                try (ResultSet row = deleteIdentity.executeQuery()) {
+                    if (row.next()) {
+                        userId = row.getObject(1, UUID.class);
+                    }
+                }
+            }
+            if (userId != null) {
+                try (PreparedStatement deleteUser = connection.prepareStatement("DELETE FROM users WHERE id = ?")) {
+                    deleteUser.setObject(1, userId);
+                    deleteUser.executeUpdate();
+                }
+            }
+        }
+    }
+
+    private void deleteUserByEmail(String email) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement delete = connection.prepareStatement("DELETE FROM users WHERE contact_email = ?")) {
+            delete.setString(1, email);
+            delete.executeUpdate();
+        }
+    }
+
+    private static void insertGoogleIdentity(
+            Connection connection, UUID userId, String subject, String email) throws SQLException {
+        try (PreparedStatement insert = connection.prepareStatement("""
+                INSERT INTO external_identities (
+                    id, user_id, provider, issuer, subject, provider_email, provider_email_verified, last_seen_at)
+                VALUES (?, ?, 'google', 'https://accounts.google.com', ?, ?, TRUE, clock_timestamp())
+                """)) {
+            insert.setObject(1, UUID.randomUUID());
+            insert.setObject(2, userId);
+            insert.setString(3, subject);
+            insert.setString(4, email);
+            insert.executeUpdate();
         }
     }
 

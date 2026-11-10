@@ -31,7 +31,7 @@ class GoogleCredentialVerificationServiceTests {
     @Test
     void validatesCsrfBeforeCredentialAndConsumesOnlyTheVerifiedNonce() {
         GoogleIdTokenVerifier.VerifiedGoogleIdentity identity = new GoogleIdTokenVerifier.VerifiedGoogleIdentity(
-                "subject-1", "reader@example.com", "Reader", "nonce-1");
+                "https://accounts.google.com", "subject-1", "reader@example.com", "Reader", "nonce-1");
         UUID correlationId = UUID.randomUUID();
         when(idTokenVerifier.verify("signed-token")).thenReturn(identity);
         when(authAttemptService.consumeOnce("nonce-1"))
@@ -58,7 +58,8 @@ class GoogleCredentialVerificationServiceTests {
     @Test
     void rejectsReplayedOrExpiredAttemptAfterTokenValidation() {
         when(idTokenVerifier.verify("signed-token")).thenReturn(
-                new GoogleIdTokenVerifier.VerifiedGoogleIdentity("subject-1", "reader@example.com", null, "nonce-1"));
+                new GoogleIdTokenVerifier.VerifiedGoogleIdentity(
+                        "https://accounts.google.com", "subject-1", "reader@example.com", null, "nonce-1"));
         when(authAttemptService.consumeOnce("nonce-1")).thenReturn(Optional.empty());
 
         assertThrows(InvalidGoogleCredentialException.class,

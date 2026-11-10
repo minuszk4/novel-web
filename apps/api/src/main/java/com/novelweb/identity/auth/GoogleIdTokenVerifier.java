@@ -55,7 +55,7 @@ public class GoogleIdTokenVerifier {
         }
 
         Map<String, Object> claims = jwt.getClaims();
-        validateIssuer(claims.get("iss"));
+        String canonicalIssuer = canonicalIssuer(claims.get("iss"));
         validateAudience(jwt.getAudience(), claims.get("azp"));
 
         Instant now = clock.instant();
@@ -77,7 +77,7 @@ public class GoogleIdTokenVerifier {
             throw new InvalidGoogleCredentialException();
         }
 
-        return new VerifiedGoogleIdentity(subject, email, displayName, nonce);
+        return new VerifiedGoogleIdentity(canonicalIssuer, subject, email, displayName, nonce);
     }
 
     private void validateAudience(List<String> audiences, Object authorizedParty) {
@@ -91,11 +91,12 @@ public class GoogleIdTokenVerifier {
         }
     }
 
-    private static void validateIssuer(Object issuer) {
-        if (!"accounts.google.com".equals(issuer)
-                && !"https://accounts.google.com".equals(issuer)) {
-            throw new InvalidGoogleCredentialException();
+    private static String canonicalIssuer(Object issuer) {
+        if ("accounts.google.com".equals(issuer)
+                || "https://accounts.google.com".equals(issuer)) {
+            return "https://accounts.google.com";
         }
+        throw new InvalidGoogleCredentialException();
     }
 
     private static String boundedString(Object claim, int maxLength) {
@@ -113,6 +114,40 @@ public class GoogleIdTokenVerifier {
         return value;
     }
 
-    public record VerifiedGoogleIdentity(String subject, String email, String displayName, String nonce) {
+    public static final class VerifiedGoogleIdentity {
+
+        private final String issuer;
+        private final String subject;
+        private final String email;
+        private final String displayName;
+        private final String nonce;
+
+        VerifiedGoogleIdentity(String issuer, String subject, String email, String displayName, String nonce) {
+            this.issuer = issuer;
+            this.subject = subject;
+            this.email = email;
+            this.displayName = displayName;
+            this.nonce = nonce;
+        }
+
+        public String issuer() {
+            return issuer;
+        }
+
+        public String subject() {
+            return subject;
+        }
+
+        public String email() {
+            return email;
+        }
+
+        public String displayName() {
+            return displayName;
+        }
+
+        public String nonce() {
+            return nonce;
+        }
     }
 }

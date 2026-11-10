@@ -55,6 +55,7 @@ class GoogleIdTokenVerifierTests {
     void acceptsGoogleSignedClaimsAndReturnsOnlyNeededIdentityFields() throws Exception {
         GoogleIdTokenVerifier.VerifiedGoogleIdentity identity = verifier.verify(signedToken(validClaims(), signingKey));
 
+        assertEquals("https://accounts.google.com", identity.issuer());
         assertEquals("google-subject-123", identity.subject());
         assertEquals("reader@example.com", identity.email());
         assertEquals("Novel Reader", identity.displayName());
@@ -66,7 +67,9 @@ class GoogleIdTokenVerifierTests {
         Map<String, Object> claims = validClaims();
         claims.put("iss", "accounts.google.com");
 
-        assertEquals("google-subject-123", verifier.verify(signedToken(claims, signingKey)).subject());
+        GoogleIdTokenVerifier.VerifiedGoogleIdentity identity = verifier.verify(signedToken(claims, signingKey));
+        assertEquals("https://accounts.google.com", identity.issuer());
+        assertEquals("google-subject-123", identity.subject());
     }
 
     @Test
