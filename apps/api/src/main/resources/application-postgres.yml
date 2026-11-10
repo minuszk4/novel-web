@@ -14,3 +14,9 @@ spring:
   liquibase:
     enabled: true
     change-log: classpath:db/changelog/db.changelog-master.yaml
+
+novel:
+  auth:
+    google:
+      rate-limit-hmac-key: ${GOOGLE_AUTH_RATE_LIMIT_HMAC_KEY:}
+      rate-limit-refill-interval: ${GOOGLE_AUTH_RATE_LIMIT_REFILL_INTERVAL:6s}

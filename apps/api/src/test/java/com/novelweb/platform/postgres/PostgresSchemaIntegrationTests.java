@@ -24,6 +24,7 @@ import java.util.concurrent.TimeUnit;
 
 import javax.sql.DataSource;
 
+import com.novelweb.identity.auth.GoogleAuthBootstrapRateLimiter;
 import com.novelweb.identity.auth.GoogleAuthAttemptService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
@@ -39,6 +40,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @SpringBootTest
 @ActiveProfiles("postgres")
 @EnabledIfSystemProperty(named = "postgres.integration", matches = "true")
+@org.springframework.test.context.TestPropertySource(properties =
+        "novel.auth.google.rate-limit-refill-interval=24h")
 class PostgresSchemaIntegrationTests {
 
     private static final Set<String> EXPECTED_APPLICATION_TABLES = Set.of(
@@ -46,6 +49,7 @@ class PostgresSchemaIntegrationTests {
             "external_identities",
             "sessions",
             "google_auth_attempts",
+            "google_auth_bootstrap_rate_limits",
             "policy_acceptances",
             "auth_events");
 
@@ -55,6 +59,9 @@ class PostgresSchemaIntegrationTests {
     @Autowired
     private GoogleAuthAttemptService googleAuthAttemptService;
 
+    @Autowired
+    private GoogleAuthBootstrapRateLimiter googleAuthBootstrapRateLimiter;
+
     @Test
     void liquibaseAppliesTheBaselineAndCreatesExpectedTables() throws SQLException {
         try (Connection connection = dataSource.getConnection();
@@ -62,7 +69,7 @@ class PostgresSchemaIntegrationTests {
                      "SELECT COUNT(*) FROM databasechangelog");
              ResultSet changesets = changesetCount.executeQuery()) {
             changesets.next();
-            assertEquals(11, changesets.getInt(1), "unexpected number of applied baseline changesets");
+            assertEquals(12, changesets.getInt(1), "unexpected number of applied baseline changesets");
         }
 
         Set<String> actualTables = new HashSet<>();
@@ -262,6 +269,100 @@ class PostgresSchemaIntegrationTests {
         }
     }
 
+    @Test
+    void googleAuthBootstrapRateLimiterAllowsTenRequestsThenRefillsOneToken() throws Exception {
+        byte[] rateLimitKeyHash = sha256(UUID.randomUUID().toString());
+        try {
+            for (int request = 0; request < 10; request++) {
+                assertTrue(googleAuthBootstrapRateLimiter.tryAcquire(rateLimitKeyHash),
+                        "the initial bucket should allow ten bootstrap requests");
+            }
+            assertFalse(googleAuthBootstrapRateLimiter.tryAcquire(rateLimitKeyHash),
+                    "the eleventh request should be throttled");
+
+            try (Connection connection = dataSource.getConnection();
+                 PreparedStatement refill = connection.prepareStatement("""
+                         UPDATE google_auth_bootstrap_rate_limits
+                         SET available_tokens = 0,
+                             refilled_at = clock_timestamp() - INTERVAL '24 hours'
+                         WHERE rate_limit_key_hash = ?
+                         """)) {
+                refill.setBytes(1, rateLimitKeyHash);
+                assertEquals(1, refill.executeUpdate());
+            }
+
+            assertTrue(googleAuthBootstrapRateLimiter.tryAcquire(rateLimitKeyHash),
+                    "a full configured refill interval should restore one request");
+            assertFalse(googleAuthBootstrapRateLimiter.tryAcquire(rateLimitKeyHash),
+                    "the refilled token should be consumed once");
+        } finally {
+            deleteRateLimitBucket(rateLimitKeyHash);
+        }
+    }
+
+    @Test
+    void concurrentGoogleAuthBootstrapRequestsCannotExceedBucketCapacity() throws Exception {
+        byte[] rateLimitKeyHash = sha256(UUID.randomUUID().toString());
+        int requests = 20;
+        ExecutorService executor = Executors.newFixedThreadPool(requests);
+        CountDownLatch ready = new CountDownLatch(requests);
+        CountDownLatch start = new CountDownLatch(1);
+        List<Future<Boolean>> results = new ArrayList<>();
+
+        try {
+            for (int index = 0; index < requests; index++) {
+                results.add(executor.submit(() -> {
+                    ready.countDown();
+                    if (!start.await(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("rate-limit consumer start signal timed out");
+                    }
+                    return googleAuthBootstrapRateLimiter.tryAcquire(rateLimitKeyHash);
+                }));
+            }
+
+            assertTrue(ready.await(5, TimeUnit.SECONDS), "all rate-limit requests should reach the start barrier");
+            start.countDown();
+            int winners = 0;
+            for (Future<Boolean> result : results) {
+                if (result.get(15, TimeUnit.SECONDS)) {
+                    winners++;
+                }
+            }
+            assertEquals(10, winners, "the locked PostgreSQL token bucket should admit exactly its capacity");
+        } finally {
+            start.countDown();
+            executor.shutdownNow();
+            assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
+            deleteRateLimitBucket(rateLimitKeyHash);
+        }
+    }
+
+    @Test
+    void inactiveGoogleAuthRateLimitBucketsCanBePurged() throws Exception {
+        byte[] staleKeyHash = sha256(UUID.randomUUID().toString());
+        byte[] activeKeyHash = sha256(UUID.randomUUID().toString());
+        try {
+            try (Connection connection = dataSource.getConnection();
+                 PreparedStatement insert = connection.prepareStatement("""
+                         INSERT INTO google_auth_bootstrap_rate_limits (
+                             rate_limit_key_hash, available_tokens, refilled_at, last_seen_at)
+                         VALUES (?, 0, clock_timestamp(), clock_timestamp() - INTERVAL '25 hours'),
+                                (?, 4, clock_timestamp(), clock_timestamp())
+                         """)) {
+                insert.setBytes(1, staleKeyHash);
+                insert.setBytes(2, activeKeyHash);
+                assertEquals(2, insert.executeUpdate());
+            }
+
+            assertEquals(1, googleAuthBootstrapRateLimiter.purgeInactiveBuckets());
+            assertEquals(0, rateLimitBucketCount(staleKeyHash));
+            assertEquals(1, rateLimitBucketCount(activeKeyHash));
+        } finally {
+            deleteRateLimitBucket(staleKeyHash);
+            deleteRateLimitBucket(activeKeyHash);
+        }
+    }
+
     private static byte[] sha256(String value) throws NoSuchAlgorithmException {
         return MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8));
     }
@@ -272,6 +373,27 @@ class PostgresSchemaIntegrationTests {
                      "DELETE FROM google_auth_attempts WHERE nonce_hash = ?")) {
             delete.setBytes(1, nonceHash);
             delete.executeUpdate();
+        }
+    }
+
+    private void deleteRateLimitBucket(byte[] keyHash) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement delete = connection.prepareStatement(
+                     "DELETE FROM google_auth_bootstrap_rate_limits WHERE rate_limit_key_hash = ?")) {
+            delete.setBytes(1, keyHash);
+            delete.executeUpdate();
+        }
+    }
+
+    private int rateLimitBucketCount(byte[] keyHash) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement(
+                     "SELECT COUNT(*) FROM google_auth_bootstrap_rate_limits WHERE rate_limit_key_hash = ?")) {
+            select.setBytes(1, keyHash);
+            try (ResultSet result = select.executeQuery()) {
+                result.next();
+                return result.getInt(1);
+            }
         }
     }
 
