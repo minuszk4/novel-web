@@ -1,74 +1,236 @@
 <section class="page-wrap narrow-page mobile-form-page">
-  <a class="back-link" routerLink="/app/import">← Quay lại chọn tệp</a>
-  <div class="stepper" role="group" aria-label="Bước 2 trên 2">
-    <span class="stepper-current">02</span><span class="stepper-line"></span
-    ><span>XEM TRƯỚC METADATA</span>
-  </div>
-  <div class="page-heading">
-    <p class="eyebrow">XEM LẠI</p>
-    <h1>Kiểm tra thông tin</h1>
-    <p>Trong sản phẩm thật, Novel sẽ đọc metadata và mục lục để bạn kiểm tra trước khi lưu.</p>
-  </div>
+  @if (accountMode()) {
+    <a class="back-link" routerLink="/app/import">← Về bước nhập tệp</a>
+    <div class="stepper" role="group" aria-label="Bước 2 trên 2">
+      <span class="stepper-current">02</span><span class="stepper-line"></span
+      ><span>XEM TRƯỚC VÀ LƯU RIÊNG TƯ</span>
+    </div>
+    <div class="page-heading">
+      <p class="eyebrow">XEM LẠI</p>
+      <h1>Kiểm tra metadata và mục lục</h1>
+      <p>Chỉ metadata và tiêu đề chương được hiển thị ở đây. Nội dung chương chưa được gửi lên trang preview.</p>
+    </div>
 
-  <div class="demo-callout" role="note">
-    <span class="callout-icon" aria-hidden="true">i</span>
-    <p>
-      <strong>Chưa phân tích nội dung.</strong> Tên tác phẩm được gợi ý từ tên tệp. Các trường bên
-      dưới chỉ lưu tạm trong bản demo.
-    </p>
-  </div>
-
-  @if (demo.selectedFile(); as file) {
-    <div class="review-source">
-      <span class="file-type large-file-type">{{ file.extension }}</span>
-      <div>
-        <small>TỆP ĐÃ CHỌN</small><strong>{{ file.name }}</strong
-        ><span>{{ file.size | number }} byte · {{ file.type }}</span>
+    @if (accountImport.fileMetadata(); as file) {
+      <div class="review-source">
+        <span class="file-type large-file-type">EPUB</span>
+        <div>
+          <small>TỆP ĐÃ PHÂN TÍCH</small><strong>{{ file.name }}</strong
+          ><span>{{ file.size | number }} byte · Lưu riêng tư</span>
+        </div>
+        <span class="private-tag">RIÊNG TƯ</span>
       </div>
-      <span class="private-tag">RIÊNG TƯ</span>
+    }
+
+    @if (accountImport.preview(); as preview) {
+      @if (accountImport.errorMessage(); as error) {
+        <p class="import-inline-error" role="alert">{{ error }}</p>
+      }
+      @if (hasConflict()) {
+        <div class="import-conflict" role="alert">
+          <p>Bản xem trước đã thay đổi trên máy chủ. Tải bản mới trước khi tiếp tục để tránh ghi đè nội dung khác.</p>
+          <button class="button button-outline" type="button" (click)="reloadLatestPreview()">Tải bản mới</button>
+        </div>
+      }
+      @if (accountImport.isBusy()) {
+        <p class="import-inline-status" role="status" aria-live="polite">{{ accountImport.stageMessage() }}</p>
+      }
+
+      <div class="field-stack account-import-fields">
+        <label for="work-title">Tên tác phẩm <span class="required-mark">*</span></label>
+        <input
+          id="work-title"
+          class="text-field"
+          [value]="title()"
+          maxlength="300"
+          autocomplete="off"
+          [disabled]="accountImport.isBusy() || accountImport.state() === 'committed'"
+          (input)="updateTitle($event)"
+        />
+        <small class="field-hint">Được đọc từ metadata EPUB; tối đa 300 ký tự.</small>
+
+        <label for="work-author">Tác giả <span class="optional-label">Không bắt buộc</span></label>
+        <input
+          id="work-author"
+          class="text-field"
+          [value]="author()"
+          maxlength="200"
+          placeholder="Chưa có thông tin tác giả"
+          autocomplete="off"
+          [disabled]="accountImport.isBusy() || accountImport.state() === 'committed'"
+          (input)="updateAuthor($event)"
+        />
+
+        <label for="work-language">Ngôn ngữ nguồn <span class="required-mark">*</span></label>
+        <input
+          id="work-language"
+          class="text-field"
+          [value]="language()"
+          maxlength="35"
+          placeholder="vi, en…"
+          autocomplete="off"
+          [disabled]="accountImport.isBusy() || accountImport.state() === 'committed'"
+          (input)="updateLanguage($event)"
+        />
+      </div>
+
+      <section class="import-chapter-preview" aria-labelledby="import-chapters-heading">
+        <div class="import-chapter-heading">
+          <div>
+            <h2 id="import-chapters-heading">Mục lục</h2>
+          <p>{{ preview.chapterCount }} chương · dùng nút lên/xuống để sửa thứ tự</p>
+          </div>
+          <span class="private-tag">CHỈ TIÊU ĐỀ</span>
+        </div>
+        @if (chapters().length) {
+          @if (chapterPageCount() > 1) {
+            <div class="chapter-pagination" aria-label="Trang mục lục">
+              <button class="button button-outline" type="button" [disabled]="chapterPage() === 0 || accountImport.isBusy()" (click)="setChapterPage(chapterPage() - 1)">Trang trước</button>
+              <span>Trang {{ chapterPage() + 1 }} / {{ chapterPageCount() }}</span>
+              <button class="button button-outline" type="button" [disabled]="chapterPage() + 1 >= chapterPageCount() || accountImport.isBusy()" (click)="setChapterPage(chapterPage() + 1)">Trang sau</button>
+            </div>
+          }
+          <ol class="import-chapter-list" [attr.start]="chapterPage() * chapterPageSize + 1" aria-label="Thứ tự chương sẽ lưu">
+            @for (chapter of visibleChapters(); track chapter.id; let index = $index) {
+              @let absoluteIndex = chapterPage() * chapterPageSize + index;
+              <li>
+                <span class="chapter-ordinal">{{ absoluteIndex + 1 }}</span>
+                <span class="chapter-title">{{ chapter.title }}</span>
+                <span class="chapter-order-actions">
+                  <button
+                    class="chapter-move"
+                    type="button"
+                    [disabled]="absoluteIndex === 0 || accountImport.isBusy() || accountImport.state() === 'committed'"
+                    [attr.aria-label]="'Chuyển chương ' + (absoluteIndex + 1) + ' lên'"
+                    (click)="moveChapter(absoluteIndex, -1)"
+                  >↑</button>
+                  <button
+                    class="chapter-move"
+                    type="button"
+                    [disabled]="absoluteIndex === chapters().length - 1 || accountImport.isBusy() || accountImport.state() === 'committed'"
+                    [attr.aria-label]="'Chuyển chương ' + (absoluteIndex + 1) + ' xuống'"
+                    (click)="moveChapter(absoluteIndex, 1)"
+                  >↓</button>
+                </span>
+              </li>
+            }
+          </ol>
+        } @else {
+          <p class="empty-chapter-preview">EPUB không có chương đọc được để hiển thị.</p>
+        }
+      </section>
+
+      @if (preview.warnings.length) {
+        <section class="import-warning-list" aria-labelledby="import-warning-heading">
+          <h2 id="import-warning-heading">Cần lưu ý</h2>
+          @for (warning of preview.warnings; track warning.code + $index) {
+            <p><span aria-hidden="true">!</span>{{ warning.message }}</p>
+          }
+        </section>
+      }
+
+      <div class="review-checklist">
+        <h2>Trước khi lưu</h2>
+        <p><span aria-hidden="true">✓</span> Tác phẩm sẽ ở chế độ riêng tư trong thư viện đã chọn</p>
+        <p><span aria-hidden="true">✓</span> Metadata và thứ tự chương được lưu cùng phiên bản nội dung đầu tiên</p>
+        <p><span aria-hidden="true">—</span> Lưu không đồng nghĩa với xuất bản hoặc chia sẻ</p>
+      </div>
+
+      @if (accountImport.state() === 'committed') {
+        @if (accountImport.committedWork(); as work) {
+          <div class="import-success" role="status" aria-live="polite">
+            <span aria-hidden="true">✓</span>
+            <div><strong>Đã thêm riêng tư vào thư viện</strong><p>{{ work.title }} · {{ work.chapterCount }} chương</p></div>
+            <a class="button button-primary" routerLink="/app/library">Mở thư viện</a>
+          </div>
+        }
+      }
+
+      @if (accountImport.state() !== 'committed') {
+        <div class="form-actions mobile-form-actions import-review-actions">
+          @if (hasUnsavedChanges()) {
+            <small class="mobile-action-hint">Lưu các thay đổi trước khi thêm tác phẩm.</small>
+          }
+          <button class="button button-outline button-full" type="button" [disabled]="!canSave()" (click)="saveChanges()">
+            Lưu thay đổi
+          </button>
+          <button class="button button-primary button-full" type="button" [disabled]="!canCommit()" (click)="commitPrivateImport()">
+            Thêm vào thư viện riêng <span aria-hidden="true">→</span>
+          </button>
+          <button class="text-link" type="button" [disabled]="accountImport.isBusy()" (click)="startDifferentImport()">
+            Chọn tệp khác
+          </button>
+          <small class="import-abandon-note">Chọn tệp khác sẽ bỏ lượt nhập chưa lưu. Tệp staging riêng tư được hệ thống tự dọn khi hết hạn.</small>
+        </div>
+      }
+    }
+  } @else {
+    <a class="back-link" routerLink="/app/import">← Quay lại chọn tệp</a>
+    <div class="stepper" role="group" aria-label="Bước 2 trên 2">
+      <span class="stepper-current">02</span><span class="stepper-line"></span
+      ><span>XEM TRƯỚC METADATA</span>
+    </div>
+    <div class="page-heading">
+      <p class="eyebrow">XEM LẠI</p>
+      <h1>Kiểm tra thông tin</h1>
+      <p>Trong sản phẩm thật, Novel sẽ đọc metadata và mục lục để bạn kiểm tra trước khi lưu.</p>
+    </div>
+
+    <div class="demo-callout" role="note">
+      <span class="callout-icon" aria-hidden="true">i</span>
+      <p>
+        <strong>Chưa phân tích nội dung.</strong> Tên tác phẩm được gợi ý từ tên tệp. Các trường bên
+        dưới chỉ lưu tạm trong bản demo.
+      </p>
+    </div>
+
+    @if (demo.selectedFile(); as file) {
+      <div class="review-source">
+        <span class="file-type large-file-type">{{ file.extension }}</span>
+        <div>
+          <small>TỆP ĐÃ CHỌN</small><strong>{{ file.name }}</strong
+          ><span>{{ file.size | number }} byte · {{ file.type }}</span>
+        </div>
+        <span class="private-tag">RIÊNG TƯ</span>
+      </div>
+    }
+
+    <div class="field-stack">
+      <label for="work-title">Tên tác phẩm <span class="required-mark">*</span></label>
+      <input
+        id="work-title"
+        class="text-field"
+        [value]="title()"
+        (input)="updateTitle($event)"
+        autocomplete="off"
+      />
+      <small class="field-hint">Được gợi ý từ tên tệp; bạn có thể sửa.</small>
+      <label for="work-author">Tác giả <span class="optional-label">Không bắt buộc</span></label>
+      <input
+        id="work-author"
+        class="text-field"
+        [value]="author()"
+        (input)="updateAuthor($event)"
+        placeholder="Nhập tên tác giả nếu biết"
+        autocomplete="off"
+      />
+    </div>
+
+    <div class="review-checklist">
+      <h2>Trước khi lưu</h2>
+      <p><span aria-hidden="true">✓</span> Tệp của bạn chỉ dùng cho thư viện riêng</p>
+      <p><span aria-hidden="true">✓</span> Bản demo chỉ lưu tên tệp và thông tin bạn nhập</p>
+      <p><span aria-hidden="true">—</span> Chưa tạo chương hoặc nội dung có thể đọc</p>
+    </div>
+
+    <div class="form-actions mobile-form-actions">
+      @if (!title().trim()) {
+        <small class="mobile-action-hint">Nhập tên tác phẩm để tiếp tục.</small>
+      }
+      <button class="button button-primary button-full" type="button" [disabled]="!title().trim()" (click)="finishImport()">
+        Thêm vào thư viện demo <span aria-hidden="true">→</span>
+      </button>
+      <a class="text-link" routerLink="/app/import">Chọn tệp khác</a>
     </div>
   }
-
-  <div class="field-stack">
-    <label for="work-title">Tên tác phẩm <span class="required-mark">*</span></label>
-    <input
-      id="work-title"
-      class="text-field"
-      [value]="title()"
-      (input)="updateTitle($event)"
-      autocomplete="off"
-    />
-    <small class="field-hint">Được gợi ý từ tên tệp; bạn có thể sửa.</small>
-    <label for="work-author">Tác giả <span class="optional-label">Không bắt buộc</span></label>
-    <input
-      id="work-author"
-      class="text-field"
-      [value]="author()"
-      (input)="updateAuthor($event)"
-      placeholder="Nhập tên tác giả nếu biết"
-      autocomplete="off"
-    />
-  </div>
-
-  <div class="review-checklist">
-    <h2>Trước khi lưu</h2>
-    <p><span aria-hidden="true">✓</span> Tệp của bạn chỉ dùng cho thư viện riêng</p>
-    <p><span aria-hidden="true">✓</span> Bản demo chỉ lưu tên tệp và thông tin bạn nhập</p>
-    <p><span aria-hidden="true">—</span> Chưa tạo chương hoặc nội dung có thể đọc</p>
-  </div>
-
-  <div class="form-actions mobile-form-actions">
-    @if (!title().trim()) {
-      <small class="mobile-action-hint">Nhập tên tác phẩm để tiếp tục.</small>
-    }
-    <button
-      class="button button-primary button-full"
-      type="button"
-      [disabled]="!title().trim()"
-      (click)="finishImport()"
-    >
-      Thêm vào thư viện demo <span aria-hidden="true">→</span>
-    </button>
-    <a class="text-link" routerLink="/app/import">Chọn tệp khác</a>
-  </div>
 </section>

@@ -2,31 +2,49 @@
   <a class="back-link" routerLink="/app/home">← Về trang chủ</a>
   <div class="stepper" role="group" aria-label="Bước 1 trên 2">
     <span class="stepper-current">01</span><span class="stepper-line"></span
-    ><span>THÊM VÀO THƯ VIỆN RIÊNG</span>
+    ><span>{{ accountMode() ? 'NHẬP RIÊNG TƯ' : 'THÊM VÀO THƯ VIỆN RIÊNG' }}</span>
   </div>
   <div class="page-heading">
     <p class="eyebrow">NHẬP TÁC PHẨM</p>
     <h1>Mang câu chuyện của bạn về đây</h1>
-    <p>Chọn một tệp bạn có quyền sử dụng. Trong bản demo, tệp không được đọc hay tải lên.</p>
+    @if (accountMode()) {
+      <p>Chọn EPUB 3. Tệp chỉ được gửi sau khi bạn đọc hướng dẫn quyền, xác nhận và bấm bắt đầu.</p>
+    } @else {
+      <p>Chọn một tệp bạn có quyền sử dụng. Trong bản demo, tệp không được đọc hay tải lên.</p>
+    }
   </div>
 
-  <div class="demo-callout" role="note">
-    <span class="callout-icon" aria-hidden="true">i</span>
-    <p>
-      <strong>Chỉ kiểm tra giao diện.</strong> Ta sẽ xem tên và dung lượng tệp để minh họa bước
-      nhập. Chưa có bộ phân tích EPUB hay máy chủ lưu trữ.
-    </p>
-  </div>
+  @if (accountMode()) {
+    @if (accountImport.state() === 'loading') {
+      <p class="import-inline-status" role="status" aria-live="polite">{{ accountImport.stageMessage() }}</p>
+    }
+    @if (accountImport.errorMessage(); as message) {
+      <div class="import-inline-error" role="alert">
+        <p>{{ message }}</p>
+        @if (accountImport.retryable()) {
+          <button class="button button-outline" type="button" (click)="retryPrerequisites()">Tải lại hướng dẫn và thư viện</button>
+        }
+      </div>
+    }
+  } @else {
+    <div class="demo-callout" role="note">
+      <span class="callout-icon" aria-hidden="true">i</span>
+      <p>
+        <strong>Chỉ kiểm tra giao diện.</strong> Ta sẽ xem tên và dung lượng tệp để minh họa bước
+        nhập. Chưa có bộ phân tích EPUB hay máy chủ lưu trữ.
+      </p>
+    </div>
+  }
 
   <input
     id="work-file"
     #workFileInput
     class="visually-hidden"
     type="file"
-    accept=".epub,.txt,.html,.htm,.md,.markdown"
-    [attr.aria-label]="demo.selectedFile() ? 'Chọn tệp khác' : 'Chọn tệp từ thiết bị'"
+    [attr.accept]="accountMode() ? '.epub,application/epub+zip' : '.epub,.txt,.html,.htm,.md,.markdown'"
+    [attr.aria-label]="selectedFile() ? 'Chọn tệp khác' : 'Chọn tệp từ thiết bị'"
     [attr.aria-describedby]="
-      errorMessage ? 'file-error' : demo.selectedFile() ? 'selected-file-status' : 'file-help'
+      errorMessage ? 'file-error' : selectedFile() ? 'selected-file-status' : 'file-help'
     "
     (change)="onFileSelected($event)"
   />
@@ -35,7 +53,7 @@
     <p class="field-error" id="file-error" role="alert">{{ errorMessage }}</p>
   }
 
-  @if (demo.selectedFile(); as file) {
+  @if (selectedFile(); as file) {
     <div class="selected-file" id="selected-file-status" aria-live="polite">
       <span class="file-type">{{ file.extension }}</span
       ><span class="selected-file-copy"
@@ -46,33 +64,83 @@
         Đổi tệp
       </button>
     </div>
-    <label class="rights-check"
-      ><input
-        type="checkbox"
-        [checked]="demo.rightsConfirmed()"
-        (change)="demo.confirmImportRights($any($event.target).checked)"
-      /><span class="check-visual" aria-hidden="true"></span
-      ><span
-        >Tôi có quyền sử dụng và yêu cầu xử lý tệp này cho <strong>thư viện riêng</strong>. Xác nhận
-        này không cho phép xuất bản hoặc chia sẻ.</span
-      ></label
-    >
   }
 
-  @if (!demo.selectedFile()) {
+  @if (!selectedFile()) {
     <label class="upload-dropzone" for="work-file">
       <span class="upload-icon" aria-hidden="true">↑</span>
       <strong>Chọn tệp từ thiết bị</strong>
       <span class="upload-instruction">Nhấn để duyệt tệp trên thiết bị</span>
-      <small id="file-help">EPUB · TXT · HTML · Markdown</small>
+      @if (accountMode()) {
+        <small id="file-help">EPUB 3 · tối đa 50 MB</small>
+      } @else {
+        <small id="file-help">EPUB · TXT · HTML · Markdown</small>
+      }
     </label>
-    <label class="rights-check"
+  }
+
+  @if (accountMode()) {
+    @if (accountImport.libraries().length > 1) {
+      <div class="field-stack import-library-select">
+        <label for="import-library">Thư viện nhận tác phẩm</label>
+        <select
+          id="import-library"
+          class="text-field"
+          [value]="accountImport.selectedLibraryId() ?? ''"
+          [disabled]="accountImport.isBusy()"
+          (change)="accountImport.setLibrary($any($event.target).value)"
+        >
+          @for (library of accountImport.libraries(); track library.id) {
+            <option [value]="library.id">{{ library.name }}{{ library.isDefault ? ' · Mặc định' : '' }}</option>
+          }
+        </select>
+      </div>
+    }
+
+    @if (accountImport.rightsStatement(); as statement) {
+      <section class="rights-statement" aria-labelledby="rights-statement-heading">
+        <div class="rights-statement-heading">
+          <h2 id="rights-statement-heading">Hướng dẫn quyền nhập · phiên bản {{ statement.version }}</h2>
+          <time [attr.datetime]="statement.effectiveAt">Có hiệu lực {{ statement.effectiveAt | date:'dd/MM/yyyy' }}</time>
+        </div>
+        <p class="rights-statement-copy">{{ statement.displayText }}</p>
+        <p class="rights-scope-note">Xác nhận này chỉ áp dụng cho xử lý trong thư viện riêng; không cấp quyền xuất bản, chia sẻ hoặc bán.</p>
+      </section>
+    } @else if (accountImport.state() !== 'loading') {
+      <div class="demo-callout" role="note">
+        <span class="callout-icon" aria-hidden="true">i</span>
+        <p>Chưa thể hiển thị hướng dẫn quyền đã được duyệt. Novel giữ nguyên tệp trên thiết bị và chưa tải nội dung lên.</p>
+      </div>
+    }
+  } @else {
+    <div class="private-default">
+      <span aria-hidden="true">◉</span>
+      <p>
+        <strong>Riêng tư là mặc định</strong><br />Tác phẩm chỉ thuộc thư viện của bạn trong sản phẩm
+        thật.
+      </p>
+      <span class="private-tag">PRIVATE</span>
+    </div>
+  }
+
+  @if (selectedFile(); as file) {
+    <label class="rights-check account-rights-check"
       ><input
         type="checkbox"
-        [checked]="demo.rightsConfirmed()"
-        disabled
-        (change)="demo.confirmImportRights($any($event.target).checked)"
+        [checked]="rightsConfirmed()"
+        [disabled]="accountMode() && (!accountImport.rightsStatement() || accountImport.isBusy())"
+        (change)="accountMode()
+          ? accountImport.setRightsConfirmed($any($event.target).checked)
+          : demo.confirmImportRights($any($event.target).checked)"
       /><span class="check-visual" aria-hidden="true"></span
+      ><span
+        >Tôi có quyền sử dụng và yêu cầu xử lý tệp <strong>{{ file.name }}</strong> cho
+        <strong>thư viện riêng</strong>. Xác nhận này không cho phép xuất bản hoặc chia sẻ.</span
+      ></label
+    >
+  } @else {
+    <label class="rights-check"
+      ><input type="checkbox" [checked]="false" disabled /><span class="check-visual" aria-hidden="true"></span
       ><span
         >Tôi có quyền sử dụng và yêu cầu xử lý tệp này cho <strong>thư viện riêng</strong>. Xác nhận
         này không cho phép xuất bản hoặc chia sẻ.</span
@@ -80,28 +148,35 @@
     >
   }
 
-  <div class="private-default">
-    <span aria-hidden="true">◉</span>
-    <p>
-      <strong>Riêng tư là mặc định</strong><br />Tác phẩm chỉ thuộc thư viện của bạn trong sản phẩm
-      thật.
-    </p>
-    <span class="private-tag">PRIVATE</span>
-  </div>
+  @if (accountMode() && accountImport.isBusy()) {
+    <p class="import-inline-status" role="status" aria-live="polite">{{ accountImport.stageMessage() }}</p>
+  }
 
   <div class="form-actions mobile-form-actions">
-    @if (!demo.selectedFile()) {
+    @if (!selectedFile()) {
       <small class="mobile-action-hint">Chọn tệp ở trên để tiếp tục.</small>
-    } @else if (!demo.rightsConfirmed()) {
-      <small class="mobile-action-hint">Xác nhận quyền sử dụng ở trên để tiếp tục.</small>
+    } @else if (!rightsConfirmed()) {
+      <small class="mobile-action-hint">Đọc hướng dẫn quyền và xác nhận ở trên để tiếp tục.</small>
+    } @else if (accountMode() && !accountImport.rightsStatement()) {
+      <small class="mobile-action-hint">Chưa thể bắt đầu khi máy chủ chưa có hướng dẫn quyền đã duyệt.</small>
     }
     <button
       class="button button-primary button-full"
       type="button"
-      [disabled]="!demo.canReviewImport"
+      [disabled]="continueDisabled() || accountImport.isBusy()"
       (click)="continueToReview()"
     >
-      Xem lại thông tin <span aria-hidden="true">→</span>
+      @if (accountMode()) {
+        @if (accountImport.isBusy()) {
+          {{ accountImport.stageMessage() }}
+        } @else if (accountImport.state() === 'error' && accountImport.retryable() && accountImport.canStart()) {
+          Thử lại bước nhập
+        } @else {
+          Tải lên và phân tích
+        }
+      } @else {
+        Xem lại thông tin <span aria-hidden="true">→</span>
+      }
     </button>
     <a class="text-link" routerLink="/app/home">Hủy và quay lại</a>
   </div>

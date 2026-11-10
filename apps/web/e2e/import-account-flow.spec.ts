@@ -1,0 +1,393 @@
+import { expect, expectNoAxeViolations, test } from './support';
+import type { Page, Route } from '@playwright/test';
+
+const libraryId = '33333333-3333-4333-8333-333333333333';
+const importId = '44444444-4444-4444-8444-444444444444';
+const rightsReceiptId = '55555555-5555-4555-8555-555555555555';
+const workId = '66666666-6666-4666-8666-666666666666';
+const chapterIds = [
+  '77777777-7777-4777-8777-777777777777',
+  '88888888-8888-4888-8888-888888888888',
+];
+const firstEtag = `"${'a'.repeat(43)}"`;
+const secondEtag = `"${'b'.repeat(43)}"`;
+const rightsCopy = 'Tôi xác nhận có quyền xử lý tệp trong thư viện cá nhân.';
+
+const currentUser = {
+  user: { id: 'user-1', displayName: 'Độc giả', contactEmail: 'reader@example.test', avatarUrl: null, status: 'ACTIVE' },
+  identityProviders: ['google'],
+  policy: {
+    termsAcceptedVersion: 'terms-1',
+    privacyNoticeAcknowledgedVersion: 'privacy-1',
+    requiredAcceptanceComplete: true,
+  },
+  roles: [],
+  features: { privateLibraryEnabled: true, importEnabled: true, readerEnabled: true, commerceEnabled: false, cultivationEnabled: false },
+};
+
+const library = {
+  id: libraryId,
+  name: 'Thư viện riêng',
+  visibility: 'private',
+  isDefault: true,
+  createdAt: '2026-11-10T10:00:00Z',
+};
+
+async function json(route: Route, body: unknown, status = 200, headers: Record<string, string> = {}): Promise<void> {
+  await route.fulfill({ status, contentType: 'application/json', headers, body: JSON.stringify(body) });
+}
+
+function preview(title = 'Sơn Hà', chapterOrder = chapterIds) {
+  const chapterNames = new Map([[chapterIds[0], 'Khởi đầu'], [chapterIds[1], 'Vào núi']]);
+  return {
+    importId,
+    version: title === 'Sơn Hà' ? 1 : 2,
+    title,
+    author: 'Minh An',
+    chapterCount: 2,
+    language: 'vi',
+    chapters: chapterOrder.map((id, index) => ({ id, ordinal: index + 1, title: chapterNames.get(id) ?? 'Chương' })),
+    nextCursor: null,
+    warnings: [],
+  };
+}
+
+async function installAccountRoutes(page: Page, options: {
+  rightsStatus?: number;
+  libraryFailures?: number;
+  rightsVersionChangeOnRetry?: boolean;
+  parseFailure?: boolean;
+} = {}): Promise<{
+  events: string[];
+  createBodies: Record<string, unknown>[];
+  patchBodies: Record<string, unknown>[];
+}> {
+  const events: string[] = [];
+  const createBodies: Record<string, unknown>[] = [];
+  const patchBodies: Record<string, unknown>[] = [];
+  let rightsReads = 0;
+
+  await page.route('**/api/v1/auth/me', (route) => json(route, currentUser));
+  await page.route('**/api/v1/auth/policies/current', (route) => json(route, {
+    terms: {
+      version: 'terms-1',
+      effectiveAt: '2026-11-01T00:00:00Z',
+      documentUrl: '/api/v1/auth/policies/terms/terms-1',
+    },
+    privacyNotice: {
+      version: 'privacy-1',
+      effectiveAt: '2026-11-01T00:00:00Z',
+      documentUrl: '/api/v1/auth/policies/privacy-notice/privacy-1',
+    },
+  }));
+  await page.route('**/api/v1/auth/policies/terms/**', (route) =>
+    route.fulfill({ status: 200, contentType: 'text/markdown; charset=UTF-8', body: '# Terms' }),
+  );
+  await page.route('**/api/v1/auth/policies/privacy-notice/**', (route) =>
+    route.fulfill({ status: 200, contentType: 'text/markdown; charset=UTF-8', body: '# Privacy' }),
+  );
+  await page.route('**/api/v1/auth/csrf', (route) => json(route, { token: 'session-import-csrf-token' }));
+  await page.route('**/api/v1/imports/rights-statement/current', (route) => {
+    events.push('rights');
+    rightsReads += 1;
+    return options.rightsStatus
+      ? json(route, { code: 'IMPORT_RIGHTS_STATEMENT_NOT_CONFIGURED' }, options.rightsStatus)
+      : json(route, {
+        version: options.rightsVersionChangeOnRetry && rightsReads > 1 ? 'private-import-v2' : 'private-import-v1',
+        effectiveAt: '2026-11-01T00:00:00Z',
+        displayText: options.rightsVersionChangeOnRetry && rightsReads > 1 ? `${rightsCopy} Bản cập nhật.` : rightsCopy,
+      });
+  });
+  let libraryFailures = options.libraryFailures ?? 0;
+  await page.route('**/api/v1/libraries**', async (route) => {
+    if (libraryFailures > 0) {
+      libraryFailures -= 1;
+      await json(route, { code: 'LIBRARY_UNAVAILABLE' }, 503);
+      return;
+    }
+    await json(route, { items: [library], nextCursor: null });
+  });
+  await page.route('**/api/v1/imports/rights-statement/acceptance', async (route) => {
+    events.push('accept');
+    expect(route.request().headers()['x-csrf-token']).toBe('session-import-csrf-token');
+    expect(route.request().headers()['idempotency-key']).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(route.request().postDataJSON()).toEqual({ statementVersion: 'private-import-v1', confirmed: true });
+    await json(route, {
+      id: rightsReceiptId,
+      statementVersion: 'private-import-v1',
+      acceptedAt: '2026-11-10T10:00:00Z',
+      statementSha256: 'c'.repeat(64),
+    }, 200);
+  });
+  await page.route('**/api/v1/imports', async (route) => {
+    events.push('create');
+    expect(route.request().headers()['x-csrf-token']).toBe('session-import-csrf-token');
+    createBodies.push(route.request().postDataJSON() as Record<string, unknown>);
+    await json(route, {
+      job: {
+        id: importId,
+        status: 'upload_pending',
+        createdAt: '2026-11-10T10:00:00Z',
+        expiresAt: '2026-11-11T10:00:00Z',
+      },
+      uploadTarget: {
+        method: 'PUT',
+        url: `/api/v1/imports/${importId}/content`,
+        headers: {
+          'Content-Type': 'application/octet-stream',
+          'X-Import-Upload-Token': `one-time-upload-token-${'x'.repeat(48)}`,
+        },
+        expiresAt: '2026-11-12T10:01:00Z',
+      },
+    }, 201);
+  });
+  await page.route(`**/api/v1/imports/${importId}/content`, async (route) => {
+    events.push('upload');
+    expect(route.request().headers()['content-type']).toBe('application/octet-stream');
+    expect(route.request().headers()['x-import-upload-token']).toContain('one-time-upload-token-');
+    expect(route.request().headers()['x-csrf-token']).toBe('session-import-csrf-token');
+    expect(route.request().postDataBuffer()?.length).toBeGreaterThan(0);
+    await route.fulfill({ status: 204 });
+  });
+  await page.route(`**/api/v1/imports/${importId}/parse`, async (route) => {
+    events.push('parse');
+    expect(route.request().headers()['x-csrf-token']).toBe('session-import-csrf-token');
+    if (options.parseFailure) {
+      await json(route, { code: 'IMPORT_PARSE_FAILED', detail: 'Invalid EPUB test fixture' }, 422);
+      return;
+    }
+    await json(route, {
+      id: importId,
+      status: 'queued',
+      createdAt: '2026-11-10T10:00:00Z',
+      expiresAt: '2026-11-11T10:00:00Z',
+      warnings: [],
+    }, 202);
+  });
+  await page.route(`**/api/v1/imports/${importId}`, (route) => json(route, {
+    id: importId,
+    status: 'ready_to_commit',
+    createdAt: '2026-11-10T10:00:00Z',
+    expiresAt: '2026-11-11T10:00:00Z',
+    warnings: [],
+  }));
+  await page.route(`**/api/v1/imports/${importId}/preview**`, async (route) => {
+    if (route.request().method() === 'PATCH') {
+      events.push('save');
+      expect(route.request().headers()['x-csrf-token']).toBe('session-import-csrf-token');
+      expect(route.request().headers()['if-match']).toBe(firstEtag);
+      const body = route.request().postDataJSON() as Record<string, unknown>;
+      patchBodies.push(body);
+      await json(route, preview(String(body['title']), body['chapterOrder'] as string[]), 200, { ETag: secondEtag });
+      return;
+    }
+    const isUpdated = patchBodies.length > 0;
+    const order = isUpdated ? patchBodies.at(-1)?.['chapterOrder'] as string[] : chapterIds;
+    const title = isUpdated ? String(patchBodies.at(-1)?.['title']) : 'Sơn Hà';
+    await json(route, preview(title, order), 200, { ETag: isUpdated ? secondEtag : firstEtag });
+  });
+  await page.route(`**/api/v1/imports/${importId}/commit`, async (route) => {
+    events.push('commit');
+    expect(route.request().headers()['x-csrf-token']).toBe('session-import-csrf-token');
+    expect(route.request().headers()['if-match']).toBe(secondEtag);
+    expect(route.request().headers()['idempotency-key']).toMatch(/^[0-9a-f-]{36}$/i);
+    await json(route, {
+      id: workId,
+      libraryId,
+      title: 'Sơn Hà - Bản chỉnh',
+      author: 'Minh An',
+      language: 'vi',
+      visibility: 'private',
+      chapterCount: 2,
+      createdAt: '2026-11-10T10:10:00Z',
+    }, 201);
+  });
+  return { events, createBodies, patchBodies };
+}
+
+test('account import uploads only after rights confirmation, reviews, edits and commits privately', async ({ page }, testInfo) => {
+  const api = await installAccountRoutes(page);
+  await page.setViewportSize({ width: 360, height: 800 });
+  await page.goto('/app/import');
+  await expect(page.getByRole('heading', { name: 'Mang câu chuyện của bạn về đây' })).toBeVisible();
+  await expect(page.getByText(rightsCopy)).toBeVisible();
+
+  await page.locator('#work-file').setInputFiles({
+    name: 'son-ha.epub',
+    mimeType: 'application/epub+zip',
+    buffer: Buffer.from('private test epub bytes'),
+  });
+  const startButton = page.getByRole('button', { name: 'Tải lên và phân tích' });
+  await expect(startButton).toBeDisabled();
+  await expectNoAxeViolations(page);
+
+  await page.locator('.account-rights-check').click();
+  await expect(startButton).toBeEnabled();
+  await page.screenshot({ path: testInfo.outputPath('01-import-rights-confirmed-360x800.png') });
+  await startButton.click();
+  await expect(page).toHaveURL(/\/app\/import\/review$/);
+  await expect(page.getByRole('heading', { name: 'Kiểm tra metadata và mục lục' })).toBeVisible();
+  await expect(page.getByRole('list', { name: 'Thứ tự chương sẽ lưu' })).toContainText('Khởi đầu');
+  await expectNoAxeViolations(page);
+  await page.screenshot({ path: testInfo.outputPath('02-import-review-360x800.png') });
+  const browser = page.context().browser();
+  if (!browser) throw new Error('Chromium browser context is unavailable for the zoom capture.');
+  const zoomContext = await browser.newContext({
+    baseURL: 'http://127.0.0.1:4300',
+    viewport: { width: 180, height: 400 },
+    deviceScaleFactor: 2,
+  });
+  const zoomPage = await zoomContext.newPage();
+  const zoomPageErrors: string[] = [];
+  zoomPage.on('pageerror', (error) => zoomPageErrors.push(error.message));
+  try {
+    await installAccountRoutes(zoomPage);
+    await zoomPage.goto('/app/import');
+    await expect(zoomPage.getByText(rightsCopy)).toBeVisible();
+    await zoomPage.locator('#work-file').setInputFiles({
+      name: 'son-ha.epub',
+      mimeType: 'application/epub+zip',
+      buffer: Buffer.from('private test epub bytes'),
+    });
+    await zoomPage.locator('.account-rights-check').click();
+    await zoomPage.getByRole('button', { name: 'Tải lên và phân tích' }).click();
+    await expect(zoomPage).toHaveURL(/\/app\/import\/review$/);
+    await expect(zoomPage.getByRole('heading', { name: 'Kiểm tra metadata và mục lục' })).toBeVisible();
+    await zoomPage.screenshot({ path: testInfo.outputPath('03-import-review-200-percent-360x800.png') });
+    const zoomDimensions = await zoomPage.evaluate(() => ({
+      document: document.documentElement.scrollWidth,
+      viewport: document.documentElement.clientWidth,
+      devicePixelRatio: window.devicePixelRatio,
+    }));
+    expect(zoomDimensions.viewport).toBe(180);
+    expect(zoomDimensions.devicePixelRatio).toBe(2);
+    expect(zoomDimensions.document).toBeLessThanOrEqual(zoomDimensions.viewport);
+    const zoomCommitButton = zoomPage.getByRole('button', { name: 'Thêm vào thư viện riêng' });
+    await zoomPage.evaluate(() => { document.documentElement.style.scrollBehavior = 'auto'; });
+    await zoomCommitButton.evaluate((element: HTMLElement) => element.scrollIntoView({ block: 'center' }));
+    await expect(zoomCommitButton).toBeVisible();
+    const [zoomCommitBox, zoomNavBox] = await Promise.all([
+      zoomCommitButton.boundingBox(),
+      zoomPage.locator('.mobile-nav').boundingBox(),
+    ]);
+    expect(zoomCommitBox).not.toBeNull();
+    expect(zoomNavBox).not.toBeNull();
+    expect(zoomCommitBox!.y).toBeGreaterThanOrEqual(0);
+    expect(zoomCommitBox!.y + zoomCommitBox!.height).toBeLessThanOrEqual(zoomNavBox!.y);
+    await zoomPage.screenshot({ path: testInfo.outputPath('03b-import-review-200-percent-action-360x800.png') });
+    expect(zoomPageErrors).toEqual([]);
+  } finally {
+    await zoomContext.close();
+  }
+
+  await page.getByLabel('Tên tác phẩm').fill('Sơn Hà - Bản chỉnh');
+  await page.getByRole('button', { name: 'Chuyển chương 1 xuống' }).click();
+  await page.getByRole('button', { name: 'Lưu thay đổi' }).click();
+  await expect(page.getByRole('button', { name: 'Lưu thay đổi' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Thêm vào thư viện riêng' })).toBeEnabled();
+  expect(api.patchBodies).toHaveLength(1);
+  expect(api.patchBodies[0]).toEqual({
+    title: 'Sơn Hà - Bản chỉnh',
+    author: 'Minh An',
+    language: 'vi',
+    chapterOrder: [chapterIds[1], chapterIds[0]],
+  });
+  expect(api.createBodies).toEqual([{
+    libraryId,
+    rightsAcceptanceId: rightsReceiptId,
+    rightsStatementVersion: 'private-import-v1',
+    rightsConfirmed: true,
+    source: { kind: 'upload', filename: 'son-ha.epub', contentType: 'application/epub+zip', sizeBytes: 23 },
+  }]);
+
+  await page.getByRole('button', { name: 'Thêm vào thư viện riêng' }).click();
+  await expect(page.locator('.import-success')).toContainText('Đã thêm riêng tư vào thư viện');
+  await page.screenshot({ path: testInfo.outputPath('04-import-committed-360x800.png') });
+  await expect(page.getByRole('link', { name: 'Mở thư viện' })).toBeVisible();
+  expect(api.events).toEqual(['rights', 'accept', 'create', 'upload', 'parse', 'save', 'commit']);
+  const dimensions = await page.evaluate(() => ({
+    document: document.documentElement.scrollWidth,
+    viewport: document.documentElement.clientWidth,
+  }));
+  expect(dimensions.document).toBeLessThanOrEqual(dimensions.viewport);
+});
+
+test('account import stays fail-closed when no approved rights statement is available', async ({ page }) => {
+  const api = await installAccountRoutes(page, { rightsStatus: 503 });
+  await page.setViewportSize({ width: 360, height: 800 });
+  await page.goto('/app/import');
+  await expect.poll(() => api.events).toContain('rights');
+  await page.locator('#work-file').setInputFiles({
+    name: 'son-ha.epub',
+    mimeType: 'application/epub+zip',
+    buffer: Buffer.from('private test epub bytes'),
+  });
+  await expect(page.locator('.import-inline-error')).toContainText('hướng dẫn quyền nhập đã được duyệt');
+  await expect(page.getByRole('checkbox')).toBeDisabled();
+  await expect(page.locator('.mobile-form-actions .button-primary')).toBeDisabled();
+  expect(api.createBodies).toHaveLength(0);
+  expect(api.events).toEqual(['rights']);
+  await expectNoAxeViolations(page);
+});
+
+test('account import can retry an unavailable library prerequisite without losing unchanged rights confirmation', async ({ page }) => {
+  await installAccountRoutes(page, { libraryFailures: 1 });
+  await page.setViewportSize({ width: 360, height: 800 });
+  await page.goto('/app/import');
+  await expect(page.getByText(rightsCopy)).toBeVisible();
+  await expect(page.locator('.import-inline-error')).toContainText('Chưa tải được thư viện nhận tác phẩm');
+
+  await page.locator('#work-file').setInputFiles({
+    name: 'son-ha.epub',
+    mimeType: 'application/epub+zip',
+    buffer: Buffer.from('private test epub bytes'),
+  });
+  await page.locator('.account-rights-check').click();
+  const startButton = page.getByRole('button', { name: 'Tải lên và phân tích' });
+  await expect(startButton).toBeDisabled();
+  await page.getByRole('button', { name: 'Tải lại hướng dẫn và thư viện' }).click();
+  await expect(startButton).toBeEnabled();
+  await expect(page.locator('.account-rights-check input')).toBeChecked();
+  await expectNoAxeViolations(page);
+});
+
+test('account import clears confirmation when a refreshed rights statement changes', async ({ page }) => {
+  await installAccountRoutes(page, { libraryFailures: 1, rightsVersionChangeOnRetry: true });
+  await page.setViewportSize({ width: 360, height: 800 });
+  await page.goto('/app/import');
+  await expect(page.getByText(rightsCopy)).toBeVisible();
+  await page.locator('#work-file').setInputFiles({
+    name: 'son-ha.epub',
+    mimeType: 'application/epub+zip',
+    buffer: Buffer.from('private test epub bytes'),
+  });
+  await page.locator('.account-rights-check').click();
+  await expect(page.locator('.account-rights-check input')).toBeChecked();
+
+  await page.getByRole('button', { name: 'Tải lại hướng dẫn và thư viện' }).click();
+  await expect(page.getByText(`${rightsCopy} Bản cập nhật.`)).toBeVisible();
+  await expect(page.locator('.account-rights-check input')).not.toBeChecked();
+  await expect(page.getByRole('button', { name: 'Tải lên và phân tích' })).toBeDisabled();
+  await expectNoAxeViolations(page);
+});
+
+test('an EPUB parse failure stays on the import step and never previews or commits content', async ({ page }) => {
+  const api = await installAccountRoutes(page, { parseFailure: true });
+  await page.setViewportSize({ width: 360, height: 800 });
+  await page.goto('/app/import');
+  await expect(page.getByText(rightsCopy)).toBeVisible();
+  await page.locator('#work-file').setInputFiles({
+    name: 'broken.epub',
+    mimeType: 'application/epub+zip',
+    buffer: Buffer.from('invalid epub fixture'),
+  });
+  await page.locator('.account-rights-check').click();
+  await page.getByRole('button', { name: 'Tải lên và phân tích' }).click();
+
+  await expect(page).toHaveURL(/\/app\/import$/);
+  await expect(page.locator('.import-inline-error')).toContainText('Không thể phân tích tệp EPUB');
+  await expect(page.locator('.mobile-form-actions .button-primary')).toBeDisabled();
+  expect(api.events).toEqual(['rights', 'accept', 'create', 'upload', 'parse']);
+  expect(api.createBodies).toHaveLength(1);
+  await expectNoAxeViolations(page);
+});

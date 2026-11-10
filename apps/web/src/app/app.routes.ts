@@ -2,8 +2,6 @@ import { Routes } from '@angular/router';
 import { AppShellComponent } from './shared/app-shell.component';
 import { CultivationPageComponent } from './pages/cultivation-page.component';
 import { HomePageComponent } from './pages/home-page.component';
-import { ImportPageComponent } from './pages/import-page.component';
-import { ImportReviewPageComponent } from './pages/import-review-page.component';
 import { LandingPageComponent } from './pages/landing-page.component';
 import { LibraryPageComponent } from './pages/library-page.component';
 import { SearchPageComponent } from './pages/search-page.component';
@@ -26,8 +24,16 @@ export const routes: Routes = [
     children: [
       { path: '', pathMatch: 'full', redirectTo: 'home' },
       { path: 'setup', component: SetupPageComponent, title: 'Thiết lập tài khoản — Novel' },
-      { path: 'import', component: ImportPageComponent, title: 'Nhập truyện — Novel' },
-      { path: 'import/review', component: ImportReviewPageComponent, title: 'Xem lại truyện — Novel' },
+      {
+        path: 'import',
+        loadComponent: () => import('./pages/import-page.component').then((page) => page.ImportPageComponent),
+        title: 'Nhập truyện — Novel',
+      },
+      {
+        path: 'import/review',
+        loadComponent: () => import('./pages/import-review-page.component').then((page) => page.ImportReviewPageComponent),
+        title: 'Xem lại truyện — Novel',
+      },
       { path: 'home', component: HomePageComponent, title: 'Trang chủ — Novel' },
       { path: 'library', component: LibraryPageComponent, title: 'Thư viện — Novel' },
       { path: 'search', component: SearchPageComponent, title: 'Tìm trong thư viện — Novel' },
