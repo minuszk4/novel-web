@@ -1,14 +1,15 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 3.1.0
+  version: 4.0.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
     implemented only in the configured PostgreSQL profile. The import-rights statement read and acceptance routes
     are also implemented in that profile; private job creation and local staging upload are now implemented too.
     Import staging applies actor-scoped active-job/declared-byte quotas and persistent create/upload token buckets.
-    Parser, preview, commit and remaining Library and Reader operations tagged planned describe the G2 target.
+    EPUB 3 parse queue/status routes and bounded private-preview persistence are implemented. Preview content/edit,
+    commit and remaining Library and Reader operations tagged planned describe the G2 target.
 servers:
   - url: http://127.0.0.1:8080
 tags:
@@ -1284,9 +1285,9 @@ paths:
     get:
       operationId: getPrivateImport
       tags: [Library]
-      x-implementation-status: planned
-      summary: Get the caller's import state and safe preview summary
-      description: Owner-scoped; out-of-scope job IDs use the same 404 response as missing jobs. Never returns uploaded bytes.
+      x-implementation-status: implemented
+      summary: Get the caller's import and parser state
+      description: Owner-scoped; out-of-scope job IDs use the same 404 response as missing jobs. Returns only bounded metadata summary and safe warnings, never uploaded bytes or chapter body.
       security:
         - appSession: []
       parameters:
@@ -1313,11 +1314,14 @@ paths:
     post:
       operationId: startPrivateImportParse
       tags: [Library]
-      x-implementation-status: planned
+      x-implementation-status: implemented
       summary: Verify an uploaded object and enqueue private parsing
       description: >-
-        Verifies ownership, upload existence, checksum, type and server-side limits before queuing an isolated
-        parser. Repeated calls for one import return the same active parse job. Does not publish or commit a work.
+        Verifies owner access, staged-object availability and the accepted size/SHA-256 before queuing a durable
+        PostgreSQL parser job. A separate worker rechecks the digest and content safety bounds, parses outside the
+        request transaction and atomically stores a bounded private EPUB 3 preview. Repeated calls for one import
+        return the same parse state. Does not publish or commit a work. Preview data is deleted when the staging
+        import expires.
       security:
         - appSession: []
           csrfToken: []
@@ -1354,6 +1358,18 @@ paths:
           $ref: '#/components/responses/Problem'
         '422':
           $ref: '#/components/responses/Problem'
+        '410':
+          description: The staging upload expired before it could be parsed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '503':
+          description: The staging object or durable parser queue is unavailable.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
   /api/v1/imports/{importId}/preview:
     get:
       operationId: getPrivateImportPreview
@@ -2540,7 +2556,7 @@ components:
           type: string
           maxLength: 300
         author:
-          type: string
+          type: [string, 'null']
           maxLength: 200
         chapterCount:
           type: integer

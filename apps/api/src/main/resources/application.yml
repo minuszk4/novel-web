@@ -31,6 +31,8 @@ novel:
         - http://localhost:4200
         - http://127.0.0.1:4200
   imports:
+    parser:
+      poll-delay: ${NOVEL_IMPORT_PARSER_POLL_DELAY:1s}
     staging:
       root: ${NOVEL_IMPORT_STAGING_ROOT:${java.io.tmpdir}/novel-web-import-staging}
       max-upload-bytes: ${NOVEL_IMPORT_MAX_UPLOAD_BYTES:52428800}

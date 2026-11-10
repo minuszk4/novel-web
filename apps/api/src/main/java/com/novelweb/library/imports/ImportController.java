@@ -14,6 +14,7 @@ import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -39,9 +40,70 @@ public class ImportController {
     private static final String UPLOAD_TOKEN_HEADER = "X-Import-Upload-Token";
 
     private final ImportCreationService importCreationService;
+    private final ImportParseService importParseService;
 
-    public ImportController(ImportCreationService importCreationService) {
+    public ImportController(ImportCreationService importCreationService, ImportParseService importParseService) {
         this.importCreationService = importCreationService;
+        this.importParseService = importParseService;
+    }
+
+    @GetMapping("/{importId}")
+    public ResponseEntity<?> status(
+            Authentication authentication, @PathVariable UUID importId, HttpServletRequest request) {
+        UUID correlationId = correlationId(request);
+        SessionService.SessionPrincipal principal = principal(authentication);
+        if (principal == null) {
+            return problem(HttpStatus.UNAUTHORIZED, "UNAUTHENTICATED",
+                    "Sign in with the account that created this import.", correlationId);
+        }
+        try {
+            ImportParseJobRepository.StatusResult result = importParseService.status(principal.userId(), importId);
+            if (!result.found()) {
+                return problem(HttpStatus.NOT_FOUND, "IMPORT_NOT_FOUND",
+                        "This import is unavailable.", correlationId);
+            }
+            return noStore(HttpStatus.OK).body(statusResponse(result.status()));
+        } catch (IllegalStateException exception) {
+            return problem(HttpStatus.SERVICE_UNAVAILABLE, "IMPORT_STATUS_UNAVAILABLE",
+                    "The import status is temporarily unavailable.", correlationId);
+        }
+    }
+
+    @PostMapping("/{importId}/parse")
+    public ResponseEntity<?> parse(
+            Authentication authentication, @PathVariable UUID importId, HttpServletRequest request) {
+        UUID correlationId = correlationId(request);
+        SessionService.SessionPrincipal principal = principal(authentication);
+        if (principal == null) {
+            return problem(HttpStatus.UNAUTHORIZED, "UNAUTHENTICATED",
+                    "Sign in with the account that created this import.", correlationId);
+        }
+        try {
+            ImportParseService.ParseRequestResult result = importParseService.requestParse(
+                    principal.userId(), importId);
+            return switch (result.outcome()) {
+                case ACCEPTED -> noStore(HttpStatus.ACCEPTED)
+                        .header(HttpHeaders.LOCATION, "/api/v1/imports/" + importId)
+                        .header(HttpHeaders.RETRY_AFTER, "2")
+                        .body(statusResponse(result.status()));
+                case FAILED -> problem(HttpStatus.UNPROCESSABLE_CONTENT, "IMPORT_PARSE_FAILED",
+                        "The uploaded file could not be parsed. Review its format or upload another file.",
+                        correlationId);
+                case NOT_FOUND -> problem(HttpStatus.NOT_FOUND, "IMPORT_NOT_FOUND",
+                        "This import is unavailable.", correlationId);
+                case EXPIRED -> problem(HttpStatus.GONE, "IMPORT_EXPIRED",
+                        "This import has expired.", correlationId);
+                case NOT_UPLOADED -> problem(HttpStatus.CONFLICT, "IMPORT_NOT_READY_FOR_PARSE",
+                        "Upload the file successfully before parsing it.", correlationId);
+                case SOURCE_INVALID -> problem(HttpStatus.UNPROCESSABLE_CONTENT, "IMPORT_CONTENT_INVALID",
+                        "The staged upload no longer matches its accepted size or checksum.", correlationId);
+                case STORAGE_UNAVAILABLE -> problem(HttpStatus.SERVICE_UNAVAILABLE,
+                        "IMPORT_STORAGE_UNAVAILABLE", "The private staged upload is unavailable.", correlationId);
+            };
+        } catch (IllegalStateException exception) {
+            return problem(HttpStatus.SERVICE_UNAVAILABLE, "IMPORT_PARSE_UNAVAILABLE",
+                    "The import parser queue is unavailable.", correlationId);
+        }
     }
 
     @PostMapping
@@ -212,6 +274,18 @@ public class ImportController {
             }
         }
         return UUID.randomUUID();
+    }
+
+    private Map<String, Object> statusResponse(ImportParseJobRepository.ImportStatus status) {
+        Map<String, Object> response = new java.util.LinkedHashMap<>();
+        response.put("id", status.id());
+        response.put("status", status.status());
+        response.put("createdAt", status.createdAt());
+        response.put("expiresAt", status.expiresAt());
+        response.put("warnings", importParseService.statusWarnings(status));
+        if (status.failureCode() != null) response.put("failureCode", status.failureCode());
+        if (status.previewSummary() != null) response.put("previewSummary", status.previewSummary());
+        return response;
     }
 
     public static final class CreateImportRequest {

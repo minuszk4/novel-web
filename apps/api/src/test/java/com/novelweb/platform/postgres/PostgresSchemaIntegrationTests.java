@@ -1,6 +1,8 @@
 package com.novelweb.platform.postgres;
 
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.net.InetAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -33,6 +35,9 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.zip.CRC32;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
@@ -59,6 +64,7 @@ import com.novelweb.library.LibraryUserStateService;
 import com.novelweb.library.WorkspaceRepository;
 import com.novelweb.library.WorkspaceService;
 import com.novelweb.library.imports.ImportStagingCleanupService;
+import com.novelweb.library.imports.ImportParseWorker;
 import com.novelweb.library.imports.ImportStagingRateLimiter;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
@@ -149,7 +155,8 @@ class PostgresSchemaIntegrationTests {
             "import_rights_statements",
             "import_rights_acceptances",
             "import_jobs",
-            "import_actor_rate_limits");
+            "import_actor_rate_limits",
+            "import_parse_jobs");
 
     @Autowired
     private DataSource dataSource;
@@ -191,6 +198,9 @@ class PostgresSchemaIntegrationTests {
     private ImportStagingRateLimiter importStagingRateLimiter;
 
     @Autowired
+    private ImportParseWorker importParseWorker;
+
+    @Autowired
     private MockMvc mockMvc;
 
     @Autowired
@@ -224,7 +234,7 @@ class PostgresSchemaIntegrationTests {
                      "SELECT COUNT(*) FROM databasechangelog");
              ResultSet changesets = changesetCount.executeQuery()) {
             changesets.next();
-            assertEquals(60, changesets.getInt(1), "unexpected number of applied changesets");
+            assertEquals(63, changesets.getInt(1), "unexpected number of applied changesets");
         }
 
         Set<String> actualTables = new HashSet<>();
@@ -722,6 +732,107 @@ class PostgresSchemaIntegrationTests {
     }
 
     @Test
+    void privateEpubParseQueueIsOwnerScopedIdempotentAndStoresOnlyCompletePreviews() throws Exception {
+        UUID actorId = createSessionTestUser("EPUB Parse Owner");
+        UUID otherActorId = createSessionTestUser("EPUB Parse Other Owner");
+        UUID approverId = createSessionTestUser("EPUB Parse Approver");
+        var library = libraryService.createLibrary(actorId, "Private parser shelf");
+        String version = "private-import-parse-integration-v1";
+        String statementText = "Synthetic rights copy for private EPUB parser integration coverage.";
+        UUID validJobId = UUID.randomUUID();
+        UUID invalidJobId = UUID.randomUUID();
+        UUID validReceipt = UUID.randomUUID();
+        UUID invalidReceipt = UUID.randomUUID();
+        var actorSession = sessionService.create(actorId).orElseThrow();
+        var otherSession = sessionService.create(otherActorId).orElseThrow();
+        jakarta.servlet.http.Cookie actorCookie = new jakarta.servlet.http.Cookie(
+                "__Host-novel_session", actorSession.cookieValue());
+        jakarta.servlet.http.Cookie otherCookie = new jakarta.servlet.http.Cookie(
+                "__Host-novel_session", otherSession.cookieValue());
+        String actorCsrf = csrfTokenService.tokenFor(actorSession.cookieValue());
+        String otherCsrf = csrfTokenService.tokenFor(otherSession.cookieValue());
+
+        try {
+            insertImportRightsStatement(version, statementText, approverId, "APPROVED", -1);
+            String longTitle = "📖".repeat(400);
+            byte[] validEpub = tinyEpub(longTitle, "Chapter One", "A short private preview.");
+            byte[] malformedEpub = tinyEpub("A Broken Novel", "broken", "<opf-malformed");
+            assertTrue(validEpub.length <= 1024, "integration EPUB fixture must fit the configured upload cap");
+            assertTrue(malformedEpub.length <= 1024, "malformed integration EPUB must fit the configured upload cap");
+            insertUploadedEpubImportFixture(validJobId, actorId, library.id(), validReceipt,
+                    version, statementText, validEpub, 0);
+            insertUploadedEpubImportFixture(invalidJobId, actorId, library.id(), invalidReceipt,
+                    version, statementText, malformedEpub, 0);
+            importStagingFileStore.store(validJobId, new ByteArrayInputStream(validEpub), validEpub.length);
+            importStagingFileStore.store(invalidJobId, new ByteArrayInputStream(malformedEpub), malformedEpub.length);
+
+            assertEquals(404, mockMvc.perform(get("/api/v1/imports/{id}", validJobId)
+                            .cookie(otherCookie)).andReturn().getResponse().getStatus());
+            assertEquals(404, mockMvc.perform(post("/api/v1/imports/{id}/parse", validJobId)
+                            .cookie(otherCookie)
+                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, otherCsrf))
+                    .andReturn().getResponse().getStatus());
+            MvcResult missingCsrf = mockMvc.perform(post("/api/v1/imports/{id}/parse", validJobId)
+                            .cookie(actorCookie))
+                    .andReturn();
+            assertEquals(403, missingCsrf.getResponse().getStatus());
+            assertEquals(0, importParseJobCount(validJobId));
+
+            int workCountBefore = workCountForLibrary(library.id());
+            int chapterCountBefore = chapterCountForLibrary(library.id());
+            MvcResult accepted = mockMvc.perform(post("/api/v1/imports/{id}/parse", validJobId)
+                            .cookie(actorCookie)
+                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf))
+                    .andReturn();
+            assertEquals(202, accepted.getResponse().getStatus());
+            assertTrue(accepted.getResponse().getHeader("Cache-Control").contains("no-store"));
+            assertEquals("2", accepted.getResponse().getHeader("Retry-After"));
+            assertEquals("/api/v1/imports/" + validJobId, accepted.getResponse().getHeader("Location"));
+            assertEquals(1, importParseJobCount(validJobId));
+
+            MvcResult retry = mockMvc.perform(post("/api/v1/imports/{id}/parse", validJobId)
+                            .cookie(actorCookie)
+                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf))
+                    .andReturn();
+            assertEquals(202, retry.getResponse().getStatus());
+            assertEquals(1, importParseJobCount(validJobId), "repeated parse calls must reuse the parser job");
+
+            JsonNode readyStatus = awaitImportStatus(actorCookie, validJobId, "ready_to_commit");
+            assertEquals("📖".repeat(300), readyStatus.path("previewSummary").path("title").asText());
+            assertEquals("An Author", readyStatus.path("previewSummary").path("author").asText());
+            assertEquals(1, readyStatus.path("previewSummary").path("chapterCount").asInt());
+            assertEquals("ready_to_commit", importParseJobStatus(validJobId));
+            assertTrue(importParsePreviewByteCount(validJobId) > 0);
+            assertTrue(importParsePreviewByteCount(validJobId) <= 1_048_576);
+            assertEquals(32, importParseEtagBytes(validJobId));
+            assertEquals(workCountBefore, workCountForLibrary(library.id()));
+            assertEquals(chapterCountBefore, chapterCountForLibrary(library.id()));
+
+            MvcResult failedRequest = mockMvc.perform(post("/api/v1/imports/{id}/parse", invalidJobId)
+                            .cookie(actorCookie)
+                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf))
+                    .andReturn();
+            assertEquals(202, failedRequest.getResponse().getStatus());
+            JsonNode failedStatus = awaitImportStatus(actorCookie, invalidJobId, "failed");
+            assertEquals("EPUB_XML_INVALID", failedStatus.path("failureCode").asText());
+            assertTrue(failedStatus.path("warnings").size() > 0);
+            assertEquals(0, importParsePreviewByteCount(invalidJobId));
+            assertEquals(workCountBefore, workCountForLibrary(library.id()));
+            assertEquals(chapterCountBefore, chapterCountForLibrary(library.id()));
+        } finally {
+            importStagingFileStore.delete(validJobId);
+            importStagingFileStore.delete(invalidJobId);
+            deleteImportJobs(actorId);
+            deleteImportRightsTestAcceptances(actorId);
+            deleteLibrary(library.id());
+            deleteImportRightsTestStatement(version);
+            deleteSessionTestUser(actorId);
+            deleteSessionTestUser(otherActorId);
+            deleteSessionTestUser(approverId);
+        }
+    }
+
+    @Test
     void expiredImportStagingIsDeletedAndFailedCleanupCanRetry() throws Exception {
         UUID actorId = createSessionTestUser("Import Retention Owner");
         UUID approverId = createSessionTestUser("Import Retention Approver");
@@ -744,6 +855,7 @@ class PostgresSchemaIntegrationTests {
                     "upload_pending", content, 1);
             insertImportJobFixture(activeUploadedId, actorId, library.id(), UUID.randomUUID(), version,
                     "uploaded", content, 0);
+            insertQueuedParseJobFixture(expiredUploadedId);
 
             importStagingFileStore.store(expiredUploadedId, new ByteArrayInputStream(content), content.length);
             importStagingFileStore.store(activeUploadedId, new ByteArrayInputStream(content), content.length);
@@ -756,6 +868,8 @@ class PostgresSchemaIntegrationTests {
             assertTrue(Files.exists(blockedTarget.resolve("keep.bin")));
             assertEquals("expired", importJobStatus(expiredUploadedId));
             assertEquals("expired", importJobStatus(expiredPendingId));
+            assertEquals(0, importParseJobCount(expiredUploadedId),
+                    "expiry cleanup must remove private parser preview/queue state before reclaiming the upload");
 
             Files.delete(blockedTarget.resolve("keep.bin"));
             Files.delete(blockedTarget);
@@ -2016,6 +2130,7 @@ class PostgresSchemaIntegrationTests {
                 "import_actor_rate_limits",
                 "policy_acceptances",
                 "import_jobs",
+                "import_parse_jobs",
                 "import_rights_acceptances",
                 "import_rights_statements",
                 "auth_events",
@@ -3726,6 +3841,182 @@ class PostgresSchemaIntegrationTests {
         requestBody.put("rightsConfirmed", rightsConfirmed);
         requestBody.putAll(extraFields);
         return objectMapper.writeValueAsString(requestBody);
+    }
+
+    private void insertUploadedEpubImportFixture(
+            UUID jobId, UUID userId, UUID libraryId, UUID receiptId, String version,
+            String statementText, byte[] content, int expiryDaysAgo) throws SQLException, NoSuchAlgorithmException {
+        Instant now = Instant.now();
+        Instant expiresAt = expiryDaysAgo > 0 ? now.minusSeconds((long) expiryDaysAgo * 86_400) : now.plusSeconds(3600);
+        Instant createdAt = expiresAt.minusSeconds(expiryDaysAgo > 0 ? 86_400 : 60);
+        Instant acceptedAt = createdAt.minusSeconds(60);
+        insertImportRightsAcceptanceAt(userId, receiptId, version, statementText, acceptedAt, acceptedAt.plusSeconds(10));
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement insert = connection.prepareStatement("""
+                     INSERT INTO import_jobs (
+                         id, user_id, library_id, rights_acceptance_id, rights_statement_version,
+                         original_filename, declared_content_type, declared_size_bytes, storage_key,
+                         status, created_at, rights_confirmed_at, expires_at, uploaded_at,
+                         actual_size_bytes, content_sha256)
+                     VALUES (?, ?, ?, ?, ?, 'private-parse-test.epub', 'application/epub+zip', ?, ?,
+                             'uploaded', ?, ?, ?, ?, ?, ?)
+                     """)) {
+            insert.setObject(1, jobId);
+            insert.setObject(2, userId);
+            insert.setObject(3, libraryId);
+            insert.setObject(4, receiptId);
+            insert.setString(5, version);
+            insert.setLong(6, content.length);
+            insert.setString(7, "staging/" + jobId + ".upload");
+            insert.setObject(8, OffsetDateTime.ofInstant(createdAt, ZoneOffset.UTC));
+            insert.setObject(9, OffsetDateTime.ofInstant(createdAt, ZoneOffset.UTC));
+            insert.setObject(10, OffsetDateTime.ofInstant(expiresAt, ZoneOffset.UTC));
+            insert.setObject(11, OffsetDateTime.ofInstant(createdAt.plusSeconds(5), ZoneOffset.UTC));
+            insert.setLong(12, content.length);
+            insert.setBytes(13, sha256(content));
+            assertEquals(1, insert.executeUpdate());
+        }
+    }
+
+    private void insertQueuedParseJobFixture(UUID importId) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement insert = connection.prepareStatement("""
+                     INSERT INTO import_parse_jobs (import_id, status, attempt, parser_version)
+                     VALUES (?, 'queued', 0, 'epub3-v1')
+                     """)) {
+            insert.setObject(1, importId);
+            assertEquals(1, insert.executeUpdate());
+        }
+    }
+
+    private static byte[] tinyEpub(String title, String chapterTitle, String chapterBody) throws IOException {
+        String container = "<container><rootfiles><rootfile full-path=\"package.opf\" "
+                + "media-type=\"application/oebps-package+xml\"/></rootfiles></container>";
+        String packageDocument = "<package xmlns=\"http://www.idpf.org/2007/opf\" version=\"3.0\" "
+                + "unique-identifier=\"uid\"><metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\"><dc:title>"
+                + title + "</dc:title><dc:identifier id=\"uid\">urn:test</dc:identifier>"
+                + "<dc:creator>An Author</dc:creator></metadata><manifest>"
+                + "<item id=\"chapter\" href=\"chapter.xhtml\" media-type=\"application/xhtml+xml\"/>"
+                + "</manifest><spine><itemref idref=\"chapter\"/></spine></package>";
+        String chapter = "<html xmlns=\"http://www.w3.org/1999/xhtml\"><head><title>" + chapterTitle
+                + "</title></head><body><h1>" + chapterTitle + "</h1><p>" + chapterBody + "</p></body></html>";
+        try (ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+             ZipOutputStream archive = new ZipOutputStream(bytes, StandardCharsets.UTF_8)) {
+            writeStoredZipEntry(archive, "mimetype", "application/epub+zip".getBytes(StandardCharsets.US_ASCII));
+            writeDeflatedZipEntry(archive, "META-INF/container.xml", container);
+            writeDeflatedZipEntry(archive, "package.opf", packageDocument);
+            writeDeflatedZipEntry(archive, "chapter.xhtml", chapter);
+            archive.finish();
+            return bytes.toByteArray();
+        }
+    }
+
+    private static void writeStoredZipEntry(ZipOutputStream archive, String name, byte[] value) throws IOException {
+        CRC32 crc = new CRC32();
+        crc.update(value);
+        ZipEntry entry = new ZipEntry(name);
+        entry.setMethod(ZipEntry.STORED);
+        entry.setSize(value.length);
+        entry.setCompressedSize(value.length);
+        entry.setCrc(crc.getValue());
+        archive.putNextEntry(entry);
+        archive.write(value);
+        archive.closeEntry();
+    }
+
+    private static void writeDeflatedZipEntry(ZipOutputStream archive, String name, String value) throws IOException {
+        archive.putNextEntry(new ZipEntry(name));
+        archive.write(value.getBytes(StandardCharsets.UTF_8));
+        archive.closeEntry();
+    }
+
+    private JsonNode awaitImportStatus(jakarta.servlet.http.Cookie cookie, UUID importId, String expectedStatus)
+            throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        JsonNode latest = null;
+        while (System.nanoTime() < deadline) {
+            MvcResult result = mockMvc.perform(get("/api/v1/imports/{id}", importId).cookie(cookie)).andReturn();
+            assertEquals(200, result.getResponse().getStatus());
+            latest = objectMapper.readTree(result.getResponse().getContentAsString());
+            if (expectedStatus.equals(latest.path("status").asText())) return latest;
+            Thread.sleep(50);
+        }
+        throw new AssertionError("Import did not reach status " + expectedStatus + "; latest=" + latest);
+    }
+
+    private int importParseJobCount(UUID importId) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement(
+                     "SELECT COUNT(*) FROM import_parse_jobs WHERE import_id = ?")) {
+            select.setObject(1, importId);
+            try (ResultSet row = select.executeQuery()) {
+                row.next();
+                return row.getInt(1);
+            }
+        }
+    }
+
+    private String importParseJobStatus(UUID importId) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement(
+                     "SELECT status FROM import_parse_jobs WHERE import_id = ?")) {
+            select.setObject(1, importId);
+            try (ResultSet row = select.executeQuery()) {
+                assertTrue(row.next());
+                return row.getString(1);
+            }
+        }
+    }
+
+    private int importParsePreviewByteCount(UUID importId) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement("""
+                     SELECT COALESCE(octet_length(preview_data::text), 0)
+                     FROM import_parse_jobs WHERE import_id = ?
+                     """)) {
+            select.setObject(1, importId);
+            try (ResultSet row = select.executeQuery()) {
+                assertTrue(row.next());
+                return row.getInt(1);
+            }
+        }
+    }
+
+    private int importParseEtagBytes(UUID importId) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement(
+                     "SELECT octet_length(preview_etag) FROM import_parse_jobs WHERE import_id = ?")) {
+            select.setObject(1, importId);
+            try (ResultSet row = select.executeQuery()) {
+                assertTrue(row.next());
+                return row.getInt(1);
+            }
+        }
+    }
+
+    private int workCountForLibrary(UUID libraryId) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement("SELECT COUNT(*) FROM works WHERE library_id = ?")) {
+            select.setObject(1, libraryId);
+            try (ResultSet row = select.executeQuery()) {
+                row.next();
+                return row.getInt(1);
+            }
+        }
+    }
+
+    private int chapterCountForLibrary(UUID libraryId) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement("""
+                     SELECT COUNT(*) FROM chapters WHERE work_id IN
+                         (SELECT id FROM works WHERE library_id = ?)
+                     """)) {
+            select.setObject(1, libraryId);
+            try (ResultSet row = select.executeQuery()) {
+                row.next();
+                return row.getInt(1);
+            }
+        }
     }
 
     private int importJobCount() throws SQLException {

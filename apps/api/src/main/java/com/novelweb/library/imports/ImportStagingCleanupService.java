@@ -54,6 +54,7 @@ public class ImportStagingCleanupService {
             try {
                 List<Candidate> candidates = lockCandidates(connection);
                 for (Candidate candidate : candidates) {
+                    deleteParserResult(connection, candidate.id());
                     if (candidate.status().equals("upload_pending") || candidate.status().equals("uploaded")) {
                         expireJob(connection, candidate.id());
                     }
@@ -100,6 +101,14 @@ public class ImportStagingCleanupService {
             if (update.executeUpdate() != 1) {
                 throw new SQLException("An expired import job changed while it was locked");
             }
+        }
+    }
+
+    private static void deleteParserResult(Connection connection, UUID jobId) throws SQLException {
+        try (PreparedStatement delete = connection.prepareStatement(
+                "DELETE FROM import_parse_jobs WHERE import_id = ?")) {
+            delete.setObject(1, jobId);
+            delete.executeUpdate();
         }
     }
 

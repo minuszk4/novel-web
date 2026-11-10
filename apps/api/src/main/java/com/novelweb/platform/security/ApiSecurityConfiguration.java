@@ -65,6 +65,8 @@ public class ApiSecurityConfiguration {
                                 "/api/v1/imports/rights-statement/acceptance").permitAll();
                         authorize.requestMatchers(HttpMethod.POST, "/api/v1/imports").permitAll();
                         authorize.requestMatchers(HttpMethod.PUT, "/api/v1/imports/*/content").permitAll();
+                        authorize.requestMatchers(HttpMethod.GET, "/api/v1/imports/*").permitAll();
+                        authorize.requestMatchers(HttpMethod.POST, "/api/v1/imports/*/parse").permitAll();
                     }
                     authorize.anyRequest().denyAll();
                 })
@@ -89,7 +91,7 @@ public class ApiSecurityConfiguration {
         apiConfiguration.setAllowedHeaders(List.of(
                 "Accept", "Content-Type", "Idempotency-Key", "X-Import-Upload-Token",
                 SessionCsrfTokenService.TOKEN_HEADER_NAME));
-        apiConfiguration.setExposedHeaders(List.of("X-Correlation-Id"));
+        apiConfiguration.setExposedHeaders(List.of("X-Correlation-Id", "Location", "Retry-After", "ETag"));
         apiConfiguration.setAllowCredentials(true);
         apiConfiguration.setMaxAge(Duration.ofMinutes(30));
 

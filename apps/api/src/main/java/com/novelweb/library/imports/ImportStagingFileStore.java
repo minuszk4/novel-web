@@ -5,6 +5,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
@@ -79,6 +80,26 @@ public class ImportStagingFileStore {
                 Files.deleteIfExists(file);
             }
         }
+    }
+
+    public boolean matchesUploadedDigest(UUID importId, long expectedSize, byte[] expectedSha256) throws IOException {
+        if (expectedSize < 1 || expectedSize > maxUploadBytes
+                || expectedSha256 == null || expectedSha256.length != 32) return false;
+        Path target = targetPath(importId);
+        if (Files.isSymbolicLink(target) || !Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS)
+                || Files.size(target) != expectedSize) return false;
+        MessageDigest digest = sha256Digest();
+        long size = 0;
+        byte[] buffer = new byte[8192];
+        try (InputStream input = Files.newInputStream(target, LinkOption.NOFOLLOW_LINKS)) {
+            int read;
+            while ((read = input.read(buffer)) != -1) {
+                size += read;
+                if (size > expectedSize || size > maxUploadBytes) return false;
+                digest.update(buffer, 0, read);
+            }
+        }
+        return size == expectedSize && MessageDigest.isEqual(digest.digest(), expectedSha256);
     }
 
     public Path targetPath(UUID importId) {
