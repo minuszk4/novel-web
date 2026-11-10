@@ -44,6 +44,7 @@ public class ApiSecurityConfiguration {
                     authorize.requestMatchers(HttpMethod.GET, "/api/v1/system/status", "/actuator/health",
                             "/actuator/health/**").permitAll();
                     if (environment.acceptsProfiles(Profiles.of("postgres"))) {
+                        authorize.requestMatchers(HttpMethod.GET, "/api/v1/libraries", "/api/v1/works").permitAll();
                         authorize.requestMatchers(HttpMethod.GET, "/api/v1/auth/google/bootstrap").permitAll();
                         authorize.requestMatchers(HttpMethod.POST, "/api/v1/auth/google/credential").permitAll();
                         authorize.requestMatchers(HttpMethod.GET, "/api/v1/auth/csrf").permitAll();

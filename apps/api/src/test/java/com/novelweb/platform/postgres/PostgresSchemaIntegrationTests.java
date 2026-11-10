@@ -356,6 +356,147 @@ class PostgresSchemaIntegrationTests {
     }
 
     @Test
+    void libraryListRoutesEnforceActorScopePolicyAndSignedPagination() throws Exception {
+        UUID ownerId = createSessionTestUser("Library Query Owner");
+        UUID readerId = createSessionTestUser("Library Query Reader");
+        UUID outsiderId = createSessionTestUser("Library Query Outsider");
+        UUID workspaceId = null;
+        try {
+            libraryService.createLibrary(ownerId, "Personal Shelf");
+            WorkspaceRepository.WorkspaceRecord workspace =
+                    workspaceService.createWorkspace(ownerId, "Library Query Workspace");
+            workspaceId = workspace.id();
+            workspaceService.addMember(ownerId, workspaceId, readerId, WorkspaceRepository.Role.READER);
+            LibraryRepository.LibraryRecord sharedLibrary =
+                    libraryService.createWorkspaceLibrary(ownerId, workspaceId, "Shared Shelf");
+            for (String title : List.of("Cursor Novel One", "Cursor Novel Two")) {
+                libraryService.createPrivateImportedWork(
+                        ownerId, sharedLibrary.id(), title, "Query Author", "vi", sha256(title));
+            }
+            addCurrentPolicyAcceptances(ownerId);
+            addCurrentPolicyAcceptances(readerId);
+            addCurrentPolicyAcceptances(outsiderId);
+
+            SessionService.IssuedSession ownerSession = sessionService.create(ownerId).orElseThrow();
+            SessionService.IssuedSession readerSession = sessionService.create(readerId).orElseThrow();
+            SessionService.IssuedSession outsiderSession = sessionService.create(outsiderId).orElseThrow();
+            jakarta.servlet.http.Cookie ownerCookie = new jakarta.servlet.http.Cookie(
+                    "__Host-novel_session", ownerSession.cookieValue());
+            jakarta.servlet.http.Cookie readerCookie = new jakarta.servlet.http.Cookie(
+                    "__Host-novel_session", readerSession.cookieValue());
+            jakarta.servlet.http.Cookie outsiderCookie = new jakarta.servlet.http.Cookie(
+                    "__Host-novel_session", outsiderSession.cookieValue());
+
+            assertEquals(401, mockMvc.perform(get("/api/v1/libraries")).andReturn().getResponse().getStatus());
+            UUID policyBlockedUser = createSessionTestUser("Library Query Policy Gate");
+            try {
+                SessionService.IssuedSession blockedSession = sessionService.create(policyBlockedUser).orElseThrow();
+                MvcResult blocked = mockMvc.perform(get("/api/v1/libraries")
+                                .cookie(new jakarta.servlet.http.Cookie(
+                                        "__Host-novel_session", blockedSession.cookieValue())))
+                        .andReturn();
+                assertEquals(403, blocked.getResponse().getStatus());
+                assertTrue(blocked.getResponse().getContentAsString().contains("POLICY_ACCEPTANCE_REQUIRED"));
+            } finally {
+                deleteSessionTestUser(policyBlockedUser);
+            }
+
+            MvcResult firstLibraries = mockMvc.perform(get("/api/v1/libraries")
+                            .param("limit", "1").cookie(ownerCookie))
+                    .andReturn();
+            assertEquals(200, firstLibraries.getResponse().getStatus());
+            assertTrue(firstLibraries.getResponse().getHeader("Cache-Control").contains("no-store"));
+            assertEquals("no-cache", firstLibraries.getResponse().getHeader("Pragma"));
+            JsonNode firstLibraryPage = objectMapper.readTree(firstLibraries.getResponse().getContentAsString());
+            assertEquals(1, firstLibraryPage.path("items").size());
+            assertTrue(firstLibraryPage.path("items").get(0).has("id"));
+            assertFalse(firstLibraryPage.path("items").get(0).has("ownerUserId"));
+            String libraryCursor = firstLibraryPage.path("nextCursor").asText();
+            assertFalse(libraryCursor.isBlank());
+
+            MvcResult secondLibraries = mockMvc.perform(get("/api/v1/libraries")
+                            .param("limit", "1").param("cursor", libraryCursor).cookie(ownerCookie))
+                    .andReturn();
+            assertEquals(200, secondLibraries.getResponse().getStatus());
+            assertEquals(1, objectMapper.readTree(secondLibraries.getResponse().getContentAsString())
+                    .path("items").size());
+
+            MvcResult memberLibraries = mockMvc.perform(get("/api/v1/libraries").cookie(readerCookie)).andReturn();
+            assertEquals(200, memberLibraries.getResponse().getStatus());
+            JsonNode memberLibraryPage = objectMapper.readTree(memberLibraries.getResponse().getContentAsString());
+            assertEquals(1, memberLibraryPage.path("items").size());
+            assertEquals(sharedLibrary.id().toString(), memberLibraryPage.path("items").get(0).path("id").asText());
+            MvcResult foreignCursor = mockMvc.perform(get("/api/v1/libraries")
+                            .param("cursor", libraryCursor).cookie(readerCookie))
+                    .andReturn();
+            assertEquals(400, foreignCursor.getResponse().getStatus());
+            assertTrue(foreignCursor.getResponse().getContentAsString().contains("INVALID_CURSOR"));
+
+            MvcResult firstWorks = mockMvc.perform(get("/api/v1/works")
+                            .param("libraryId", sharedLibrary.id().toString())
+                            .param("limit", "1").cookie(readerCookie))
+                    .andReturn();
+            assertEquals(200, firstWorks.getResponse().getStatus());
+            JsonNode firstWorkPage = objectMapper.readTree(firstWorks.getResponse().getContentAsString());
+            assertEquals(1, firstWorkPage.path("items").size());
+            assertFalse(firstWorkPage.path("items").get(0).has("ownerUserId"));
+            assertFalse(firstWorkPage.path("items").get(0).has("sourceHash"));
+            String workCursor = firstWorkPage.path("nextCursor").asText();
+            assertFalse(workCursor.isBlank());
+
+            MvcResult secondWorks = mockMvc.perform(get("/api/v1/works")
+                            .param("libraryId", sharedLibrary.id().toString())
+                            .param("limit", "1").param("cursor", workCursor).cookie(readerCookie))
+                    .andReturn();
+            assertEquals(200, secondWorks.getResponse().getStatus());
+            assertEquals(1, objectMapper.readTree(secondWorks.getResponse().getContentAsString())
+                    .path("items").size());
+
+            MvcResult tamperedCursor = mockMvc.perform(get("/api/v1/works")
+                            .param("libraryId", sharedLibrary.id().toString())
+                            .param("cursor", workCursor + "x").cookie(readerCookie))
+                    .andReturn();
+            assertEquals(400, tamperedCursor.getResponse().getStatus());
+            assertTrue(tamperedCursor.getResponse().getContentAsString().contains("INVALID_CURSOR"));
+
+            MvcResult invalidLibraryId = mockMvc.perform(get("/api/v1/works")
+                            .param("libraryId", "not-a-uuid").cookie(readerCookie))
+                    .andReturn();
+            assertEquals(400, invalidLibraryId.getResponse().getStatus());
+
+            MvcResult outsiderWorks = mockMvc.perform(get("/api/v1/works")
+                            .param("libraryId", sharedLibrary.id().toString()).cookie(outsiderCookie))
+                    .andReturn();
+            assertEquals(404, outsiderWorks.getResponse().getStatus());
+            MvcResult emptyOutsiderLibraries = mockMvc.perform(get("/api/v1/libraries").cookie(outsiderCookie))
+                    .andReturn();
+            assertEquals(200, emptyOutsiderLibraries.getResponse().getStatus());
+            assertEquals(0, objectMapper.readTree(emptyOutsiderLibraries.getResponse().getContentAsString())
+                    .path("items").size());
+
+            workspaceService.revokeMember(ownerId, workspaceId, readerId);
+            MvcResult revokedReader = mockMvc.perform(get("/api/v1/works")
+                            .param("libraryId", sharedLibrary.id().toString()).cookie(readerCookie))
+                    .andReturn();
+            assertEquals(404, revokedReader.getResponse().getStatus());
+        } finally {
+            try (Connection connection = dataSource.getConnection();
+                 PreparedStatement deleteWorks = connection.prepareStatement(
+                         "DELETE FROM works WHERE owner_user_id = ?")) {
+                deleteWorks.setObject(1, ownerId);
+                deleteWorks.executeUpdate();
+            }
+            deleteLibraryUserData(ownerId, null);
+            deleteLibraryUserData(readerId, null);
+            deleteLibraryUserData(outsiderId, null);
+            if (workspaceId != null) deleteWorkspaceTestData(workspaceId);
+            deleteSessionTestUser(outsiderId);
+            deleteSessionTestUser(readerId);
+            deleteSessionTestUser(ownerId);
+        }
+    }
+
+    @Test
     void workspaceReaderCanChangeOnlyTheirOwnReadingStateWhileMembershipIsActive() throws Exception {
         UUID ownerId = createSessionTestUser("Workspace State Owner");
         UUID readerId = createSessionTestUser("Workspace State Reader");
