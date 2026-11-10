@@ -9,13 +9,16 @@ const viewports = [
 
 const nonce = 'A'.repeat(43);
 
-function bootstrapResponse() {
+function bootstrapResponse(
+  responseNonce = nonce,
+  attemptExpiresAt = new Date(Date.now() + 5 * 60_000).toISOString(),
+) {
   return {
     clientId: 'novel-test-client.apps.googleusercontent.com',
     loginUri: 'http://localhost:8080/api/v1/auth/google/credential',
-    nonce,
+    nonce: responseNonce,
     locale: 'vi',
-    attemptExpiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
+    attemptExpiresAt,
   };
 }
 
@@ -136,6 +139,79 @@ test('sign-in waits after bootstrap rate limiting and lets the user retry', asyn
   await page.getByRole('button', { name: 'Thử lại' }).click();
   await expect(page.getByRole('button', { name: 'Sign in with Google' })).toBeVisible();
   expect(attempts).toBe(2);
+  await expectNoAxeViolations(page);
+});
+
+test('sign-in rejects an expired bootstrap and requests a fresh attempt on retry', async ({
+  page,
+}) => {
+  let bootstrapAttempts = 0;
+  let sdkLoads = 0;
+  await page.route('**/api/v1/auth/google/bootstrap**', (route) => {
+    bootstrapAttempts += 1;
+    const response =
+      bootstrapAttempts === 1
+        ? bootstrapResponse('A'.repeat(43), new Date(Date.now() - 1_000).toISOString())
+        : bootstrapResponse('B'.repeat(43));
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(response),
+    });
+  });
+  await page.route('https://accounts.google.com/gsi/client', (route) => {
+    sdkLoads += 1;
+    return route.fulfill({
+      contentType: 'application/javascript',
+      body: `window.google = { accounts: { id: {
+        initialize(configuration) { window.__novelGoogleConfiguration = configuration; },
+        renderButton(parent) { parent.innerHTML = '<button aria-label="Sign in with Google">Sign in with Google</button>'; }
+      } } };`,
+    });
+  });
+  await page.goto('/sign-in');
+
+  await expect(page.getByRole('status')).toContainText('Chưa tải được dịch vụ đăng nhập Google');
+  await expect(page.getByRole('button', { name: 'Sign in with Google' })).toHaveCount(0);
+  expect(sdkLoads).toBe(0);
+  await page.getByRole('button', { name: 'Thử lại' }).click();
+  await expect(page.getByRole('button', { name: 'Sign in with Google' })).toBeVisible();
+  expect(bootstrapAttempts).toBe(2);
+  expect(sdkLoads).toBe(1);
+  await expectNoAxeViolations(page);
+});
+
+test('sign-in recovers when the GIS script fails to load', async ({ page }) => {
+  let bootstrapAttempts = 0;
+  let sdkLoads = 0;
+  await page.route('**/api/v1/auth/google/bootstrap**', (route) => {
+    bootstrapAttempts += 1;
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(
+        bootstrapResponse(String.fromCharCode(64 + bootstrapAttempts).repeat(43)),
+      ),
+    });
+  });
+  await page.route('https://accounts.google.com/gsi/client', (route) => {
+    sdkLoads += 1;
+    if (sdkLoads === 1) return route.abort('failed');
+    return route.fulfill({
+      contentType: 'application/javascript',
+      body: `window.google = { accounts: { id: {
+        initialize(configuration) { window.__novelGoogleConfiguration = configuration; },
+        renderButton(parent) { parent.innerHTML = '<button aria-label="Sign in with Google">Sign in with Google</button>'; }
+      } } };`,
+    });
+  });
+  await page.goto('/sign-in');
+
+  await expect(page.getByRole('status')).toContainText('Chưa tải được dịch vụ đăng nhập Google');
+  await page.getByRole('button', { name: 'Thử lại' }).click();
+  await expect(page.getByRole('button', { name: 'Sign in with Google' })).toBeVisible();
+  expect(bootstrapAttempts).toBe(2);
+  expect(sdkLoads).toBe(2);
   await expectNoAxeViolations(page);
 });
 
