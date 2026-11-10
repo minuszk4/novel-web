@@ -49,7 +49,8 @@ public class GoogleAuthBootstrapRateLimiter {
         insertBucketIfMissing(connection, clientKeyHash);
         Bucket bucket = lockBucket(connection, clientKeyHash);
         Instant now = databaseNow(connection);
-        BigDecimal available = refill(bucket, now);
+        BigDecimal available =
+            refill(bucket.availableTokens(), bucket.refilledAt(), now, refillInterval);
         boolean acquired = available.compareTo(ONE_TOKEN) >= 0;
 
         if (acquired) {
@@ -144,12 +145,13 @@ public class GoogleAuthBootstrapRateLimiter {
     }
   }
 
-  private BigDecimal refill(Bucket bucket, Instant now) {
-    long elapsedNanos = Math.max(0, Duration.between(bucket.refilledAt(), now).toNanos());
+  static BigDecimal refill(
+      BigDecimal availableTokens, Instant refilledAt, Instant now, Duration refillInterval) {
+    long elapsedNanos = Math.max(0, Duration.between(refilledAt, now).toNanos());
     BigDecimal regeneratedTokens =
         BigDecimal.valueOf(elapsedNanos)
             .divide(BigDecimal.valueOf(refillInterval.toNanos()), TOKEN_SCALE, RoundingMode.DOWN);
-    return bucket.availableTokens().add(regeneratedTokens).min(BUCKET_CAPACITY);
+    return availableTokens.add(regeneratedTokens).min(BUCKET_CAPACITY);
   }
 
   private static void updateBucket(
