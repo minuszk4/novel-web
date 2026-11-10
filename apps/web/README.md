@@ -51,6 +51,8 @@ Playwright starts the Angular dev server on `127.0.0.1:4300`. The suite covers r
 
 The Reader's mobile header keeps a visible arrow to return to Work Detail while hiding the longer text label. The link has the accessible name “Quay lại chi tiết tác phẩm” and a minimum 40×40 px hit area; the browser regression verifies it is visible and navigates back at 360, 768 and 1280 px.
 
+Mobile import regressions also verify that unsupported-format feedback and the selected filename stay above the fixed action bar, the selected-file “Đổi tệp” control is usable and clears the previous rights affirmation, and Review keeps its submit action above bottom navigation. The metadata-only demo still does not parse or upload bytes.
+
 ## Reader keyboard controls
 
 - `Alt+Shift+T` toggles the table of contents.

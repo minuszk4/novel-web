@@ -1,4 +1,4 @@
-import { Component, inject } from '@angular/core';
+import { Component, ElementRef, inject, ViewChild } from '@angular/core';
 import { Router, RouterLink } from '@angular/router';
 import { DemoStateService } from '../core/demo-state.service';
 import { ImportFileMetadata } from '../core/models';
@@ -14,6 +14,8 @@ export class ImportPageComponent {
   protected readonly demo = inject(DemoStateService);
   protected errorMessage = '';
   private readonly router = inject(Router);
+
+  @ViewChild('workFileInput') private workFileInput?: ElementRef<HTMLInputElement>;
 
   constructor() {
     if (!this.demo.canContinueSetup) void this.router.navigateByUrl('/app/setup');
@@ -46,6 +48,13 @@ export class ImportPageComponent {
   continueToReview(): void {
     if (!this.demo.canReviewImport) return;
     void this.router.navigateByUrl('/app/import/review');
+  }
+
+  chooseDifferentFile(): void {
+    const input = this.workFileInput?.nativeElement;
+    if (!input) return;
+    input.value = '';
+    input.click();
   }
 
   formatSize(bytes: number): string {

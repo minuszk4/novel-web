@@ -1,23 +1,74 @@
-<section class="page-wrap narrow-page">
+<section class="page-wrap narrow-page mobile-form-page">
   <a class="back-link" routerLink="/app/import">← Quay lại chọn tệp</a>
-  <div class="stepper" role="group" aria-label="Bước 2 trên 2"><span class="stepper-current">02</span><span class="stepper-line"></span><span>XEM TRƯỚC METADATA</span></div>
-  <div class="page-heading"><p class="eyebrow">XEM LẠI</p><h1>Kiểm tra thông tin</h1><p>Trong sản phẩm thật, Novel sẽ đọc metadata và mục lục để bạn kiểm tra trước khi lưu.</p></div>
+  <div class="stepper" role="group" aria-label="Bước 2 trên 2">
+    <span class="stepper-current">02</span><span class="stepper-line"></span
+    ><span>XEM TRƯỚC METADATA</span>
+  </div>
+  <div class="page-heading">
+    <p class="eyebrow">XEM LẠI</p>
+    <h1>Kiểm tra thông tin</h1>
+    <p>Trong sản phẩm thật, Novel sẽ đọc metadata và mục lục để bạn kiểm tra trước khi lưu.</p>
+  </div>
 
-  <div class="demo-callout" role="note"><span class="callout-icon" aria-hidden="true">i</span><p><strong>Chưa phân tích nội dung.</strong> Tên tác phẩm được gợi ý từ tên tệp. Các trường bên dưới chỉ lưu tạm trong bản demo.</p></div>
+  <div class="demo-callout" role="note">
+    <span class="callout-icon" aria-hidden="true">i</span>
+    <p>
+      <strong>Chưa phân tích nội dung.</strong> Tên tác phẩm được gợi ý từ tên tệp. Các trường bên
+      dưới chỉ lưu tạm trong bản demo.
+    </p>
+  </div>
 
   @if (demo.selectedFile(); as file) {
-    <div class="review-source"><span class="file-type large-file-type">{{ file.extension }}</span><div><small>TỆP ĐÃ CHỌN</small><strong>{{ file.name }}</strong><span>{{ file.size | number }} byte · {{ file.type }}</span></div><span class="private-tag">RIÊNG TƯ</span></div>
+    <div class="review-source">
+      <span class="file-type large-file-type">{{ file.extension }}</span>
+      <div>
+        <small>TỆP ĐÃ CHỌN</small><strong>{{ file.name }}</strong
+        ><span>{{ file.size | number }} byte · {{ file.type }}</span>
+      </div>
+      <span class="private-tag">RIÊNG TƯ</span>
+    </div>
   }
 
   <div class="field-stack">
     <label for="work-title">Tên tác phẩm <span class="required-mark">*</span></label>
-    <input id="work-title" class="text-field" [value]="title()" (input)="updateTitle($event)" autocomplete="off" />
+    <input
+      id="work-title"
+      class="text-field"
+      [value]="title()"
+      (input)="updateTitle($event)"
+      autocomplete="off"
+    />
     <small class="field-hint">Được gợi ý từ tên tệp; bạn có thể sửa.</small>
     <label for="work-author">Tác giả <span class="optional-label">Không bắt buộc</span></label>
-    <input id="work-author" class="text-field" [value]="author()" (input)="updateAuthor($event)" placeholder="Nhập tên tác giả nếu biết" autocomplete="off" />
+    <input
+      id="work-author"
+      class="text-field"
+      [value]="author()"
+      (input)="updateAuthor($event)"
+      placeholder="Nhập tên tác giả nếu biết"
+      autocomplete="off"
+    />
   </div>
 
-  <div class="review-checklist"><h2>Trước khi lưu</h2><p><span aria-hidden="true">✓</span> Tệp của bạn chỉ dùng cho thư viện riêng</p><p><span aria-hidden="true">✓</span> Bản demo chỉ lưu tên tệp và thông tin bạn nhập</p><p><span aria-hidden="true">—</span> Chưa tạo chương hoặc nội dung có thể đọc</p></div>
+  <div class="review-checklist">
+    <h2>Trước khi lưu</h2>
+    <p><span aria-hidden="true">✓</span> Tệp của bạn chỉ dùng cho thư viện riêng</p>
+    <p><span aria-hidden="true">✓</span> Bản demo chỉ lưu tên tệp và thông tin bạn nhập</p>
+    <p><span aria-hidden="true">—</span> Chưa tạo chương hoặc nội dung có thể đọc</p>
+  </div>
 
-  <div class="form-actions"><button class="button button-primary button-full" type="button" [disabled]="!title().trim()" (click)="finishImport()">Thêm vào thư viện demo <span aria-hidden="true">→</span></button><a class="text-link" routerLink="/app/import">Chọn tệp khác</a></div>
+  <div class="form-actions mobile-form-actions">
+    @if (!title().trim()) {
+      <small class="mobile-action-hint">Nhập tên tác phẩm để tiếp tục.</small>
+    }
+    <button
+      class="button button-primary button-full"
+      type="button"
+      [disabled]="!title().trim()"
+      (click)="finishImport()"
+    >
+      Thêm vào thư viện demo <span aria-hidden="true">→</span>
+    </button>
+    <a class="text-link" routerLink="/app/import">Chọn tệp khác</a>
+  </div>
 </section>
