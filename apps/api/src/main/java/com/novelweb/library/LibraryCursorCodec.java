@@ -27,7 +27,7 @@ import org.springframework.stereotype.Service;
 @Profile("postgres")
 public class LibraryCursorCodec {
 
-    private static final int VERSION = 1;
+    private static final int VERSION = 2;
     private static final int PAYLOAD_LENGTH = 98;
     private static final int SIGNATURE_LENGTH = 32;
     private static final int MAX_TOKEN_LENGTH = 2048;
@@ -40,13 +40,23 @@ public class LibraryCursorCodec {
     }
 
     public static CursorContext libraryContext(UUID ownerUserId) {
-        return new CursorContext(Kind.LIBRARY, ownerUserId, NO_SCOPE, "", "", "");
+        return libraryContext(ownerUserId, "");
+    }
+
+    public static CursorContext libraryContext(UUID ownerUserId, String accessScopeFingerprint) {
+        return new CursorContext(Kind.LIBRARY, ownerUserId, NO_SCOPE, "", "", "", accessScopeFingerprint);
     }
 
     public static CursorContext workContext(
             UUID ownerUserId, UUID libraryId, String query, String tag, String status) {
+        return workContext(ownerUserId, libraryId, query, tag, status, "");
+    }
+
+    public static CursorContext workContext(
+            UUID ownerUserId, UUID libraryId, String query, String tag, String status,
+            String accessScopeFingerprint) {
         return new CursorContext(Kind.WORK, ownerUserId, libraryId,
-                normalizeQuery(query), normalizeTag(tag), normalizeStatus(status));
+                normalizeQuery(query), normalizeTag(tag), normalizeStatus(status), accessScopeFingerprint);
     }
 
     public void requireConfigured() {
@@ -209,7 +219,8 @@ public class LibraryCursorCodec {
     }
 
     public record CursorContext(
-            Kind kind, UUID ownerUserId, UUID scopeId, String query, String tag, String status) {
+            Kind kind, UUID ownerUserId, UUID scopeId, String query, String tag, String status,
+            String accessScopeFingerprint) {
         public CursorContext {
             Objects.requireNonNull(kind, "cursor kind is required");
             Objects.requireNonNull(ownerUserId, "owner user id is required");
@@ -217,6 +228,7 @@ public class LibraryCursorCodec {
             query = normalizeQuery(query);
             tag = normalizeTag(tag);
             status = normalizeStatus(status);
+            Objects.requireNonNull(accessScopeFingerprint, "access scope fingerprint is required");
             if (kind == Kind.LIBRARY && (!scopeId.equals(NO_SCOPE)
                     || !query.isEmpty() || !tag.isEmpty() || !status.isEmpty())) {
                 throw new IllegalArgumentException("Library cursors do not accept work filters");
@@ -233,6 +245,7 @@ public class LibraryCursorCodec {
                 updateString(digest, query);
                 updateString(digest, tag);
                 updateString(digest, status);
+                updateString(digest, accessScopeFingerprint);
                 return digest.digest();
             } catch (GeneralSecurityException exception) {
                 throw new IllegalStateException("SHA-256 is unavailable", exception);

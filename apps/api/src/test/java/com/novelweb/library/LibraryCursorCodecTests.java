@@ -57,6 +57,33 @@ class LibraryCursorCodecTests {
     }
 
     @Test
+    void cursorIsBoundToTheCurrentWorkspaceAccessFingerprint() {
+        LibraryCursorCodec codec = new LibraryCursorCodec(TEST_KEY);
+        UUID actor = UUID.randomUUID();
+        UUID library = UUID.randomUUID();
+        LibraryCursorCodec.CursorContext original = LibraryCursorCodec.workContext(
+                actor, library, "dragon", "", "", "workspace-a:7:reader");
+        LibraryCursorCodec.Position position = new LibraryCursorCodec.Position(
+                0, Instant.parse("2026-11-10T08:09:10Z"), UUID.randomUUID());
+        String token = codec.encode(original, position);
+
+        assertEquals(position, codec.decode(token, original));
+        assertThrows(LibraryCursorCodec.InvalidCursorException.class,
+                () -> codec.decode(token, LibraryCursorCodec.workContext(
+                        actor, library, "dragon", "", "", "workspace-a:8:reader")));
+        assertThrows(LibraryCursorCodec.InvalidCursorException.class,
+                () -> codec.decode(token, LibraryCursorCodec.workContext(
+                        actor, library, "dragon", "", "", "workspace-a:7:editor")));
+
+        LibraryCursorCodec.CursorContext libraryList =
+                LibraryCursorCodec.libraryContext(actor, "workspace-set:version-4");
+        String libraryToken = codec.encode(libraryList, position);
+        assertThrows(LibraryCursorCodec.InvalidCursorException.class,
+                () -> codec.decode(libraryToken,
+                        LibraryCursorCodec.libraryContext(actor, "workspace-set:version-5")));
+    }
+
+    @Test
     void rejectsTamperedNonCanonicalAndUnconfiguredCursors() {
         LibraryCursorCodec codec = new LibraryCursorCodec(TEST_KEY);
         LibraryCursorCodec.CursorContext context = LibraryCursorCodec.libraryContext(UUID.randomUUID());

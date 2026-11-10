@@ -59,7 +59,9 @@ public class LibraryService {
         Objects.requireNonNull(ownerUserId, "owner user id is required");
         validateLimit(requestedLimit);
         cursorCodec.requireConfigured();
-        LibraryCursorCodec.CursorContext context = LibraryCursorCodec.libraryContext(ownerUserId);
+        String accessScopeFingerprint = repository.libraryListAccessFingerprint(ownerUserId);
+        LibraryCursorCodec.CursorContext context =
+                LibraryCursorCodec.libraryContext(ownerUserId, accessScopeFingerprint);
         LibraryCursorCodec.Position position = decodeCursor(cursor, context);
         LibraryRepository.Slice<LibraryRepository.LibraryRecord> slice =
                 repository.findLibraries(ownerUserId, requestedLimit, position);
@@ -106,9 +108,6 @@ public class LibraryService {
             int requestedLimit) {
         Objects.requireNonNull(ownerUserId, "owner user id is required");
         Objects.requireNonNull(libraryId, "library id is required");
-        if (repository.findLibrary(ownerUserId, libraryId).isEmpty()) {
-            throw new LibraryRepository.LibraryNotFoundException();
-        }
         String normalizedQuery = requestedQuery == null ? "" : requestedQuery.trim();
         if (normalizedQuery.length() > 160) {
             throw new IllegalArgumentException("query must be at most 160 characters");
@@ -121,8 +120,10 @@ public class LibraryService {
         }
         validateLimit(requestedLimit);
         cursorCodec.requireConfigured();
+        String accessScopeFingerprint = repository.workAccessFingerprint(ownerUserId, libraryId);
         LibraryCursorCodec.CursorContext context =
-                LibraryCursorCodec.workContext(ownerUserId, libraryId, normalizedQuery, tag, status);
+                LibraryCursorCodec.workContext(
+                        ownerUserId, libraryId, normalizedQuery, tag, status, accessScopeFingerprint);
         LibraryCursorCodec.Position position = decodeCursor(cursor, context);
         LibraryRepository.Slice<LibraryRepository.WorkRecord> slice = repository.findWorks(
                 ownerUserId, libraryId, normalizedQuery, tag, status, requestedLimit, position);

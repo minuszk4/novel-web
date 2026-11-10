@@ -581,6 +581,89 @@ class PostgresSchemaIntegrationTests {
     }
 
     @Test
+    void workspaceChangesInvalidateLibraryAndWorkCursors() throws Exception {
+        UUID ownerId = createSessionTestUser("Cursor Scope Owner");
+        UUID memberId = createSessionTestUser("Cursor Scope Member");
+        UUID newcomerId = createSessionTestUser("Cursor Scope New Member");
+        UUID workspaceId = null;
+        try {
+            WorkspaceRepository.WorkspaceRecord workspace =
+                    workspaceService.createWorkspace(ownerId, "Cursor Scope Team");
+            workspaceId = workspace.id();
+            workspaceService.addMember(ownerId, workspaceId, memberId, WorkspaceRepository.Role.READER);
+
+            LibraryRepository.LibraryRecord sharedLibrary = libraryService.createWorkspaceLibrary(
+                    ownerId, workspaceId, "Cursor Shared Shelf");
+            libraryService.createWorkspaceLibrary(ownerId, workspaceId, "Cursor Second Shelf");
+            LibraryRepository.WorkRecord firstWork = libraryService.createPrivateImportedWork(
+                    ownerId, sharedLibrary.id(), "First Shared Story", "Author", "vi", sha256("scope-first-work"));
+            LibraryRepository.WorkRecord secondWork = libraryService.createPrivateImportedWork(
+                    ownerId, sharedLibrary.id(), "Second Shared Story", "Author", "vi", sha256("scope-second-work"));
+            setWorkCreatedAt(firstWork.id(), Instant.parse("2026-02-02T00:00:00Z"));
+            setWorkCreatedAt(secondWork.id(), Instant.parse("2026-02-01T00:00:00Z"));
+
+            LibraryService.Page<LibraryRepository.WorkRecord> beforeRoleChange = libraryService.listWorks(
+                    memberId, sharedLibrary.id(), "", null, null, null, 1);
+            assertTrue(beforeRoleChange.nextCursor() != null);
+            workspaceService.changeMemberRole(
+                    ownerId, workspaceId, memberId, WorkspaceRepository.Role.EDITOR);
+            assertThrows(LibraryCursorCodec.InvalidCursorException.class,
+                    () -> libraryService.listWorks(
+                            memberId, sharedLibrary.id(), "", null, null, beforeRoleChange.nextCursor(), 1));
+
+            LibraryService.Page<LibraryRepository.WorkRecord> beforeTransfer = libraryService.listWorks(
+                    memberId, sharedLibrary.id(), "", null, null, null, 1);
+            workspaceService.transferOwnership(ownerId, workspaceId, memberId);
+            assertThrows(LibraryCursorCodec.InvalidCursorException.class,
+                    () -> libraryService.listWorks(
+                            memberId, sharedLibrary.id(), "", null, null, beforeTransfer.nextCursor(), 1));
+
+            LibraryService.Page<LibraryRepository.WorkRecord> beforeRevocation = libraryService.listWorks(
+                    ownerId, sharedLibrary.id(), "", null, null, null, 1);
+            workspaceService.revokeMember(memberId, workspaceId, ownerId);
+            assertThrows(LibraryRepository.LibraryNotFoundException.class,
+                    () -> libraryService.listWorks(
+                            ownerId, sharedLibrary.id(), "", null, null, beforeRevocation.nextCursor(), 1));
+            workspaceService.addMember(memberId, workspaceId, ownerId, WorkspaceRepository.Role.READER);
+            assertThrows(LibraryCursorCodec.InvalidCursorException.class,
+                    () -> libraryService.listWorks(
+                            ownerId, sharedLibrary.id(), "", null, null, beforeRevocation.nextCursor(), 1));
+
+            LibraryService.Page<LibraryRepository.LibraryRecord> beforeJoin =
+                    libraryService.listLibraries(memberId, null, 1);
+            assertTrue(beforeJoin.nextCursor() != null);
+            workspaceService.addMember(memberId, workspaceId, newcomerId, WorkspaceRepository.Role.READER);
+            assertThrows(LibraryCursorCodec.InvalidCursorException.class,
+                    () -> libraryService.listLibraries(memberId, beforeJoin.nextCursor(), 1));
+
+            LibraryRepository.LibraryRecord memberDefault = libraryService.createLibrary(memberId, "Cursor Personal");
+            LibraryRepository.LibraryRecord movableLibrary = libraryService.createLibrary(memberId, "Cursor Movable");
+            LibraryRepository.WorkRecord personalFirst = libraryService.createPrivateImportedWork(
+                    memberId, movableLibrary.id(), "Personal First", "Author", "vi", sha256("scope-personal-first"));
+            LibraryRepository.WorkRecord personalSecond = libraryService.createPrivateImportedWork(
+                    memberId, movableLibrary.id(), "Personal Second", "Author", "vi", sha256("scope-personal-second"));
+            setWorkCreatedAt(personalFirst.id(), Instant.parse("2026-03-02T00:00:00Z"));
+            setWorkCreatedAt(personalSecond.id(), Instant.parse("2026-03-01T00:00:00Z"));
+            LibraryService.Page<LibraryRepository.WorkRecord> beforeLibraryMove = libraryService.listWorks(
+                    memberId, movableLibrary.id(), "", null, null, null, 1);
+            assertTrue(beforeLibraryMove.nextCursor() != null);
+            assertTrue(memberDefault.isDefault());
+            libraryService.movePersonalLibraryToWorkspace(memberId, movableLibrary.id(), workspaceId);
+            assertThrows(LibraryCursorCodec.InvalidCursorException.class,
+                    () -> libraryService.listWorks(
+                            memberId, movableLibrary.id(), "", null, null, beforeLibraryMove.nextCursor(), 1));
+        } finally {
+            deleteLibraryTestData(ownerId);
+            deleteLibraryTestData(memberId);
+            deleteLibraryTestData(newcomerId);
+            if (workspaceId != null) deleteWorkspaceTestData(workspaceId);
+            deleteSessionTestUser(ownerId);
+            deleteSessionTestUser(memberId);
+            deleteSessionTestUser(newcomerId);
+        }
+    }
+
+    @Test
     void currentPolicyRouteReturnsTheLatestEffectiveVersionAndSameOriginDocuments() throws Exception {
         MvcResult current = mockMvc.perform(get("/api/v1/auth/policies/current")).andReturn();
         assertEquals(200, current.getResponse().getStatus());

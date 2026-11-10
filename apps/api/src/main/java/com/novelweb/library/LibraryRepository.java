@@ -4,9 +4,14 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -25,6 +30,91 @@ public class LibraryRepository {
 
     public LibraryRepository(DataSource dataSource) {
         this.dataSource = dataSource;
+    }
+
+    public String libraryListAccessFingerprint(UUID actorUserId) {
+        Objects.requireNonNull(actorUserId, "actor user id is required");
+        MessageDigest digest = accessDigest("library-list-access-v2");
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement("""
+                     SELECT w.id, w.scope_version, m.role
+                     FROM workspace_members m
+                     JOIN workspaces w ON w.id = m.workspace_id
+                     WHERE m.user_id = ? AND m.status = 'active'
+                     ORDER BY w.id
+                     """)) {
+            select.setObject(1, actorUserId);
+            try (ResultSet rows = select.executeQuery()) {
+                while (rows.next()) {
+                    updateUuid(digest, rows.getObject("id", UUID.class));
+                    digest.update(ByteBuffer.allocate(Long.BYTES).putLong(rows.getLong("scope_version")).array());
+                    updateFingerprintString(digest, rows.getString("role"));
+                }
+            }
+            return HexFormat.of().formatHex(digest.digest());
+        } catch (SQLException exception) {
+            throw new IllegalStateException("Unable to fingerprint the actor's library access scope", exception);
+        }
+    }
+
+    public String workAccessFingerprint(UUID actorUserId, UUID libraryId) {
+        Objects.requireNonNull(actorUserId, "actor user id is required");
+        Objects.requireNonNull(libraryId, "library id is required");
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement("""
+                     SELECT l.workspace_id, w.scope_version, m.role
+                     FROM libraries l
+                     LEFT JOIN workspaces w ON w.id = l.workspace_id
+                     LEFT JOIN workspace_members m
+                       ON m.workspace_id = l.workspace_id AND m.user_id = ? AND m.status = 'active'
+                     WHERE l.id = ? AND can_access_library(l.id, ?, FALSE)
+                     """)) {
+            select.setObject(1, actorUserId);
+            select.setObject(2, libraryId);
+            select.setObject(3, actorUserId);
+            try (ResultSet row = select.executeQuery()) {
+                if (!row.next()) throw new LibraryNotFoundException();
+                UUID workspaceId = row.getObject("workspace_id", UUID.class);
+                MessageDigest digest = accessDigest("work-library-access-v2");
+                if (workspaceId == null) {
+                    updateFingerprintString(digest, "personal");
+                } else {
+                    Long scopeVersion = row.getObject("scope_version", Long.class);
+                    String role = row.getString("role");
+                    if (scopeVersion == null || role == null) throw new LibraryNotFoundException();
+                    updateFingerprintString(digest, "workspace");
+                    updateUuid(digest, workspaceId);
+                    digest.update(ByteBuffer.allocate(Long.BYTES).putLong(scopeVersion).array());
+                    updateFingerprintString(digest, role);
+                }
+                return HexFormat.of().formatHex(digest.digest());
+            }
+        } catch (LibraryNotFoundException exception) {
+            throw exception;
+        } catch (SQLException exception) {
+            throw new IllegalStateException("Unable to fingerprint the actor's work access scope", exception);
+        }
+    }
+
+    private static MessageDigest accessDigest(String purpose) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            updateFingerprintString(digest, purpose);
+            return digest;
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 is unavailable", exception);
+        }
+    }
+
+    private static void updateUuid(MessageDigest digest, UUID value) {
+        digest.update(ByteBuffer.allocate(2 * Long.BYTES)
+                .putLong(value.getMostSignificantBits()).putLong(value.getLeastSignificantBits()).array());
+    }
+
+    private static void updateFingerprintString(MessageDigest digest, String value) {
+        byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
+        digest.update(ByteBuffer.allocate(Integer.BYTES).putInt(bytes.length).array());
+        digest.update(bytes);
     }
 
     public LibraryRecord createLibrary(UUID ownerUserId, String name) {
