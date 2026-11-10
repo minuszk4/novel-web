@@ -9,18 +9,18 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api/v1/system")
 public class SystemStatusController {
 
-    private final String environment;
+  private final String environment;
 
-    public SystemStatusController(@Value("${novel.environment:local}") String environment) {
-        this.environment = environment;
-    }
+  public SystemStatusController(@Value("${novel.environment:local}") String environment) {
+    this.environment = environment;
+  }
 
-    @GetMapping("/status")
-    public ApiSystemStatus status() {
-        return new ApiSystemStatus(
-                "v1",
-                environment,
-                new ApiSystemStatus.Integrations(false, false, "TEST"),
-                new ApiSystemStatus.Features(false, false, false));
-    }
+  @GetMapping("/status")
+  public ApiSystemStatus status() {
+    return new ApiSystemStatus(
+        "v1",
+        environment,
+        new ApiSystemStatus.Integrations(false, false, "TEST"),
+        new ApiSystemStatus.Features(false, false, false));
+  }
 }

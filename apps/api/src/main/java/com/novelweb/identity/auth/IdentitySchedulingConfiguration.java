@@ -7,5 +7,4 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 @Configuration(proxyBeanMethods = false)
 @Profile("postgres")
 @EnableScheduling
-class IdentitySchedulingConfiguration {
-}
+class IdentitySchedulingConfiguration {}

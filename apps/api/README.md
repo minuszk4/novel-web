@@ -49,7 +49,19 @@ From `apps/api`, run the default verification lifecycle:
 .\mvnw.cmd -B -ntp verify
 ```
 
-`verify` runs the Maven compile/test/package lifecycle and executes Checkstyle at the `verify` phase against both main and test Java sources using [`config/checkstyle.xml`](./config/checkstyle.xml). The pinned Maven Checkstyle Plugin and Checkstyle engine versions are `3.6.0` and `14.4.0`. The current rules catch tabs, missing final newlines, lines over 160 characters (excluding package/import/URL lines), wildcard or unused imports, redundant modifiers, whitespace/padding defects and common Java naming errors. To run only the style gate:
+`verify` runs the Maven compile/test/package lifecycle and then checks Google Java Format plus Checkstyle against main and test Java sources. Spotless `3.10.4` pins Google Java Format `1.30.0`; Checkstyle uses plugin `3.6.0`, engine `14.4.0` and [`config/checkstyle.xml`](./config/checkstyle.xml). The Checkstyle rules catch tabs, missing final newlines, lines over 160 characters (excluding package/import/URL lines), wildcard or unused imports, redundant modifiers, whitespace/padding defects and common Java naming errors. To apply Java formatting locally:
+
+```powershell
+.\mvnw.cmd -B -ntp spotless:apply
+```
+
+To verify formatting without applying changes:
+
+```powershell
+.\mvnw.cmd -B -ntp spotless:check
+```
+
+To run only the Checkstyle gate:
 
 ```powershell
 .\mvnw.cmd -B -ntp checkstyle:check

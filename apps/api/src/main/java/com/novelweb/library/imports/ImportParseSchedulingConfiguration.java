@@ -9,13 +9,13 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 @Profile("postgres")
 public class ImportParseSchedulingConfiguration {
 
-    @Bean("importParseTaskScheduler")
-    ThreadPoolTaskScheduler importParseTaskScheduler() {
-        ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
-        scheduler.setPoolSize(1);
-        scheduler.setThreadNamePrefix("novel-import-parse-");
-        scheduler.setWaitForTasksToCompleteOnShutdown(true);
-        scheduler.setAwaitTerminationSeconds(30);
-        return scheduler;
-    }
+  @Bean("importParseTaskScheduler")
+  ThreadPoolTaskScheduler importParseTaskScheduler() {
+    ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
+    scheduler.setPoolSize(1);
+    scheduler.setThreadNamePrefix("novel-import-parse-");
+    scheduler.setWaitForTasksToCompleteOnShutdown(true);
+    scheduler.setAwaitTerminationSeconds(30);
+    return scheduler;
+  }
 }

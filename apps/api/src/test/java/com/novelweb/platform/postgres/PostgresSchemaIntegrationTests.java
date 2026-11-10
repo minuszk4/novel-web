@@ -1,12 +1,49 @@
 package com.novelweb.platform.postgres;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+
+import com.novelweb.identity.auth.GoogleAccountLinkRequiredException;
+import com.novelweb.identity.auth.GoogleAuthAttemptService;
+import com.novelweb.identity.auth.GoogleAuthBootstrapRateLimiter;
+import com.novelweb.identity.auth.GoogleIdTokenVerifier;
+import com.novelweb.identity.auth.GoogleIdentityService;
+import com.novelweb.identity.auth.GoogleIdentityTestFixtures;
+import com.novelweb.identity.auth.UnavailableGoogleIdentityException;
+import com.novelweb.identity.session.LogoutAllConfirmationService;
+import com.novelweb.identity.session.SessionCsrfTokenService;
+import com.novelweb.identity.session.SessionService;
+import com.novelweb.library.LibraryCursorCodec;
+import com.novelweb.library.LibraryRepository;
+import com.novelweb.library.LibraryService;
+import com.novelweb.library.LibraryUserStateRepository;
+import com.novelweb.library.LibraryUserStateService;
+import com.novelweb.library.WorkspaceRepository;
+import com.novelweb.library.WorkspaceService;
+import com.novelweb.library.imports.ImportParseService;
+import com.novelweb.library.imports.ImportStagingCleanupService;
+import com.novelweb.library.imports.ImportStagingRateLimiter;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.net.InetAddress;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.sql.Connection;
@@ -21,9 +58,9 @@ import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.HexFormat;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -38,108 +75,3295 @@ import java.util.concurrent.TimeUnit;
 import java.util.zip.CRC32;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
-
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import javax.sql.DataSource;
-
-import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.ObjectMapper;
-import com.novelweb.identity.auth.GoogleAuthBootstrapRateLimiter;
-import com.novelweb.identity.auth.GoogleAuthAttemptService;
-import com.novelweb.identity.auth.GoogleAccountLinkRequiredException;
-import com.novelweb.identity.auth.GoogleIdentityService;
-import com.novelweb.identity.auth.GoogleIdentityTestFixtures;
-import com.novelweb.identity.auth.UnavailableGoogleIdentityException;
-import com.novelweb.identity.auth.GoogleIdTokenVerifier;
-import org.junit.jupiter.api.BeforeAll;
-import com.novelweb.identity.session.SessionService;
-import com.novelweb.identity.session.SessionCsrfTokenService;
-import com.novelweb.identity.session.LogoutAllConfirmationService;
-import com.novelweb.library.LibraryCursorCodec;
-import com.novelweb.library.LibraryRepository;
-import com.novelweb.library.LibraryService;
-import com.novelweb.library.LibraryUserStateRepository;
-import com.novelweb.library.LibraryUserStateService;
-import com.novelweb.library.WorkspaceRepository;
-import com.novelweb.library.WorkspaceService;
-import com.novelweb.library.imports.ImportStagingCleanupService;
-import com.novelweb.library.imports.ImportParseService;
-import com.novelweb.library.imports.ImportStagingRateLimiter;
 import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.http.MediaType;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
-import org.springframework.http.MediaType;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
-
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 
 @SpringBootTest
 @AutoConfigureMockMvc
 @ActiveProfiles("postgres")
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @EnabledIfSystemProperty(named = "postgres.integration", matches = "true")
-@org.springframework.test.context.TestPropertySource(properties = {
-        "novel.auth.google.rate-limit-refill-interval=24h",
-        "novel.auth.google.rate-limit-hmac-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        "novel.auth.google.web-client-id=novel-web-integration-test.apps.googleusercontent.com",
-        "novel.auth.google.credential-callback-uri=https://api.example.test/api/v1/auth/google/credential",
-        "novel.security.csrf.hmac-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        "novel.library.cursor.hmac-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        "novel.imports.staging.root=${java.io.tmpdir}/novel-web-import-postgres-tests",
-        "novel.imports.staging.max-upload-bytes=1024",
-        "novel.imports.staging.upload-target-ttl=10m",
-        "novel.imports.staging.job-ttl=1h",
-        "novel.imports.staging.cleanup-delay=1h",
-        "novel.imports.staging.cleanup-batch-size=100",
-        "novel.imports.staging.max-active-jobs-per-user=2",
-        "novel.imports.staging.max-active-declared-bytes-per-user=1024",
-        "novel.imports.staging.create-rate-limit-capacity=20",
-        "novel.imports.staging.create-rate-limit-refill-interval=1h",
-        "novel.imports.staging.upload-rate-limit-capacity=20",
-        "novel.imports.staging.upload-rate-limit-refill-interval=1h",
-        "novel.imports.staging.rate-limit-retention=24h",
-        "novel.web.cors.allowed-origins=https://app.example.test"
-})
+@org.springframework.test.context.TestPropertySource(
+    properties = {
+      "novel.auth.google.rate-limit-refill-interval=24h",
+      "novel.auth.google.rate-limit-hmac-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "novel.auth.google.web-client-id=novel-web-integration-test.apps.googleusercontent.com",
+      "novel.auth.google.credential-callback-uri=https://api.example.test/api/v1/auth/google/credential",
+      "novel.security.csrf.hmac-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "novel.library.cursor.hmac-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "novel.imports.staging.root=${java.io.tmpdir}/novel-web-import-postgres-tests",
+      "novel.imports.staging.max-upload-bytes=1024",
+      "novel.imports.staging.upload-target-ttl=10m",
+      "novel.imports.staging.job-ttl=1h",
+      "novel.imports.staging.cleanup-delay=1h",
+      "novel.imports.staging.cleanup-batch-size=100",
+      "novel.imports.staging.max-active-jobs-per-user=2",
+      "novel.imports.staging.max-active-declared-bytes-per-user=1024",
+      "novel.imports.staging.create-rate-limit-capacity=20",
+      "novel.imports.staging.create-rate-limit-refill-interval=1h",
+      "novel.imports.staging.upload-rate-limit-capacity=20",
+      "novel.imports.staging.upload-rate-limit-refill-interval=1h",
+      "novel.imports.staging.rate-limit-retention=24h",
+      "novel.web.cors.allowed-origins=https://app.example.test"
+    })
 class PostgresSchemaIntegrationTests {
 
-    private static final String BOOTSTRAP_RATE_LIMIT_HMAC_KEY =
-            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+  private static final String BOOTSTRAP_RATE_LIMIT_HMAC_KEY =
+      "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
-    private static final Set<String> EXPECTED_APPLICATION_TABLES = Set.of(
+  private static final Set<String> EXPECTED_APPLICATION_TABLES =
+      Set.of(
+          "users",
+          "external_identities",
+          "sessions",
+          "google_auth_attempts",
+          "google_auth_bootstrap_rate_limits",
+          "policy_acceptances",
+          "policy_documents",
+          "auth_events",
+          "session_revoke_confirmations",
+          "libraries",
+          "works",
+          "volumes",
+          "chapters",
+          "chapter_revisions",
+          "segments",
+          "assets",
+          "tags",
+          "work_tags",
+          "workspaces",
+          "workspace_members",
+          "library_reading_states",
+          "library_collections",
+          "library_collection_works",
+          "import_rights_statements",
+          "import_rights_acceptances",
+          "import_jobs",
+          "import_actor_rate_limits",
+          "import_parse_jobs",
+          "import_commits");
+
+  @Autowired private DataSource dataSource;
+
+  @Autowired private GoogleAuthAttemptService googleAuthAttemptService;
+
+  @Autowired private GoogleAuthBootstrapRateLimiter googleAuthBootstrapRateLimiter;
+
+  @Autowired private GoogleIdentityService googleIdentityService;
+
+  @Autowired private SessionService sessionService;
+
+  @Autowired private SessionCsrfTokenService csrfTokenService;
+
+  @Autowired private LogoutAllConfirmationService logoutAllConfirmationService;
+
+  @Autowired private LibraryService libraryService;
+
+  @Autowired private WorkspaceService workspaceService;
+
+  @Autowired private LibraryUserStateService libraryUserStateService;
+
+  @Autowired private com.novelweb.library.imports.ImportStagingFileStore importStagingFileStore;
+
+  @Autowired private ImportStagingCleanupService importStagingCleanupService;
+
+  @Autowired private ImportStagingRateLimiter importStagingRateLimiter;
+
+  @Autowired private ImportParseService importParseService;
+
+  @Autowired private MockMvc mockMvc;
+
+  @Autowired private ObjectMapper objectMapper;
+
+  @MockitoBean private JwtDecoder jwtDecoder;
+
+  @BeforeAll
+  void insertPolicyDocumentFixtures() throws SQLException {
+    insertPolicyTestDocuments();
+  }
+
+  private void insertPolicyTestDocuments() throws SQLException {
+    insertPolicyDocument(
+        "TERMS", "terms-old", -3, "# Test terms v1\n\nSynthetic test document; not legal copy.");
+    insertPolicyDocument(
+        "TERMS",
+        "terms-current-1",
+        -2,
+        "# Test terms v2\n\nSynthetic test document; not legal copy.");
+    insertPolicyDocument(
+        "TERMS",
+        "terms-future-2",
+        1,
+        "# Future test terms\n\nSynthetic test document; not legal copy.");
+    insertPolicyDocument(
+        "PRIVACY_NOTICE",
+        "privacy-old",
+        -2,
+        "# Test privacy v1\n\nSynthetic test document; not legal copy.");
+    insertPolicyDocument(
+        "PRIVACY_NOTICE",
+        "privacy-current-1",
+        -1,
+        "# Test privacy v2\n\nSynthetic test document; not legal copy.");
+  }
+
+  @Test
+  void liquibaseAppliesTheBaselineAndCreatesExpectedTables() throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement changesetCount =
+            connection.prepareStatement("SELECT COUNT(*) FROM databasechangelog");
+        ResultSet changesets = changesetCount.executeQuery()) {
+      changesets.next();
+      assertEquals(69, changesets.getInt(1), "unexpected number of applied changesets");
+    }
+
+    Set<String> actualTables = new HashSet<>();
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement tableQuery =
+            connection.prepareStatement(
+                """
+                     SELECT table_name
+                     FROM information_schema.tables
+                     WHERE table_schema = 'public'
+                       AND table_type = 'BASE TABLE'
+                       AND table_name NOT IN ('databasechangelog', 'databasechangeloglock')
+                     """);
+        ResultSet tables = tableQuery.executeQuery()) {
+      while (tables.next()) {
+        actualTables.add(tables.getString(1));
+      }
+    }
+    assertEquals(EXPECTED_APPLICATION_TABLES, actualTables);
+  }
+
+  @Test
+  void importRightsStatementIsApprovedVersionedFailClosedAndAudited() throws Exception {
+    UUID actorId = createSessionTestUser("Import Rights Reader");
+    UUID blockedActorId = createSessionTestUser("Policy Blocked Import Reader");
+    UUID unconfiguredActorId = createSessionTestUser("Unconfigured Import Creator");
+    UUID approverId = createSessionTestUser("Import Rights Approver");
+    var unconfiguredLibrary = libraryService.createLibrary(unconfiguredActorId, "No rights shelf");
+    String statementVersion = "private-import-test-v1";
+    String statementText = "# Synthetic import rights\n\nFor private test import only.";
+    try {
+      MvcResult unconfigured =
+          mockMvc.perform(get("/api/v1/imports/rights-statement/current")).andReturn();
+      assertEquals(503, unconfigured.getResponse().getStatus());
+      assertTrue(
+          unconfigured
+              .getResponse()
+              .getContentAsString()
+              .contains("IMPORT_RIGHTS_STATEMENT_NOT_CONFIGURED"));
+      addCurrentPolicyAcceptances(unconfiguredActorId);
+      SessionService.IssuedSession unconfiguredSession =
+          sessionService.create(unconfiguredActorId).orElseThrow();
+      jakarta.servlet.http.Cookie unconfiguredCookie =
+          new jakarta.servlet.http.Cookie(
+              "__Host-novel_session", unconfiguredSession.cookieValue());
+      MvcResult createWithoutStatement =
+          mockMvc
+              .perform(
+                  post("/api/v1/imports")
+                      .cookie(unconfiguredCookie)
+                      .header(
+                          SessionCsrfTokenService.TOKEN_HEADER_NAME,
+                          csrfTokenService.tokenFor(unconfiguredSession.cookieValue()))
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          importCreateJson(
+                              unconfiguredLibrary.id(),
+                              UUID.randomUUID(),
+                              statementVersion,
+                              "story.txt",
+                              "text/plain",
+                              12,
+                              true)))
+              .andReturn();
+      assertEquals(503, createWithoutStatement.getResponse().getStatus());
+      assertTrue(
+          createWithoutStatement
+              .getResponse()
+              .getContentAsString()
+              .contains("IMPORT_RIGHTS_STATEMENT_NOT_CONFIGURED"));
+      assertEquals(0, importJobCount());
+
+      insertImportRightsStatement(statementVersion, statementText, approverId, "APPROVED", -1);
+      insertImportRightsStatement("private-import-draft-v2", "Draft copy", null, "DRAFT", 3);
+      MvcResult current =
+          mockMvc.perform(get("/api/v1/imports/rights-statement/current")).andReturn();
+      assertEquals(200, current.getResponse().getStatus());
+      assertTrue(current.getResponse().getHeader("Cache-Control").contains("no-store"));
+      JsonNode currentBody = objectMapper.readTree(current.getResponse().getContentAsString());
+      assertEquals(statementVersion, currentBody.path("version").asText());
+      assertEquals(statementText, currentBody.path("displayText").asText());
+
+      SQLException immutable =
+          assertThrows(
+              SQLException.class,
+              () -> {
+                try (Connection connection = dataSource.getConnection();
+                    PreparedStatement update =
+                        connection.prepareStatement(
+                            "UPDATE import_rights_statements SET display_text = 'tampered' WHERE version = ?")) {
+                  update.setString(1, statementVersion);
+                  update.executeUpdate();
+                }
+              });
+      assertEquals("55000", immutable.getSQLState());
+
+      SessionService.IssuedSession blockedSession =
+          sessionService.create(blockedActorId).orElseThrow();
+      jakarta.servlet.http.Cookie blockedCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", blockedSession.cookieValue());
+      String blockedCsrf = csrfTokenService.tokenFor(blockedSession.cookieValue());
+      MvcResult missingConfirmation =
+          mockMvc
+              .perform(
+                  post("/api/v1/imports/rights-statement/acceptance")
+                      .cookie(blockedCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, blockedCsrf)
+                      .header("Idempotency-Key", UUID.randomUUID().toString())
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          "{\"statementVersion\":\""
+                              + statementVersion
+                              + "\",\"confirmed\":false}"))
+              .andReturn();
+      assertEquals(422, missingConfirmation.getResponse().getStatus());
+      assertEquals(0, importRightsAcceptanceCount(blockedActorId));
+
+      MvcResult policyBlocked =
+          mockMvc
+              .perform(
+                  post("/api/v1/imports/rights-statement/acceptance")
+                      .cookie(blockedCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, blockedCsrf)
+                      .header("Idempotency-Key", UUID.randomUUID().toString())
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          "{\"statementVersion\":\"" + statementVersion + "\",\"confirmed\":true}"))
+              .andReturn();
+      assertEquals(403, policyBlocked.getResponse().getStatus());
+      assertTrue(
+          policyBlocked.getResponse().getContentAsString().contains("POLICY_ACCEPTANCE_REQUIRED"));
+      assertEquals(0, importRightsAcceptanceCount(blockedActorId));
+
+      addCurrentPolicyAcceptances(actorId);
+      SessionService.IssuedSession actorSession = sessionService.create(actorId).orElseThrow();
+      jakarta.servlet.http.Cookie actorCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", actorSession.cookieValue());
+      String actorCsrf = csrfTokenService.tokenFor(actorSession.cookieValue());
+      String acceptanceKey = UUID.randomUUID().toString();
+
+      MvcResult stale =
+          mockMvc
+              .perform(
+                  post("/api/v1/imports/rights-statement/acceptance")
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                      .header("Idempotency-Key", UUID.randomUUID().toString())
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"statementVersion\":\"old-version\",\"confirmed\":true}"))
+              .andReturn();
+      assertEquals(409, stale.getResponse().getStatus());
+      assertTrue(stale.getResponse().getContentAsString().contains(statementVersion));
+      assertEquals(0, importRightsAcceptanceCount(actorId));
+
+      String acceptedBody =
+          "{\"statementVersion\":\"" + statementVersion + "\",\"confirmed\":true}";
+      MvcResult accepted =
+          mockMvc
+              .perform(
+                  post("/api/v1/imports/rights-statement/acceptance")
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                      .header("Idempotency-Key", acceptanceKey)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(acceptedBody))
+              .andReturn();
+      assertEquals(200, accepted.getResponse().getStatus());
+      JsonNode receipt = objectMapper.readTree(accepted.getResponse().getContentAsString());
+      assertEquals(statementVersion, receipt.path("statementVersion").asText());
+      assertEquals(
+          HexFormat.of().formatHex(sha256(statementText)),
+          receipt.path("statementSha256").asText());
+      assertEquals(1, importRightsAcceptanceCount(actorId));
+      SQLException immutableAudit =
+          assertThrows(
+              SQLException.class,
+              () -> {
+                try (Connection connection = dataSource.getConnection();
+                    PreparedStatement update =
+                        connection.prepareStatement(
+                            "UPDATE import_rights_acceptances SET source = 'tampered' WHERE id = ?")) {
+                  update.setObject(1, UUID.fromString(receipt.path("id").asText()));
+                  update.executeUpdate();
+                }
+              });
+      assertEquals("55000", immutableAudit.getSQLState());
+
+      MvcResult retry =
+          mockMvc
+              .perform(
+                  post("/api/v1/imports/rights-statement/acceptance")
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                      .header("Idempotency-Key", acceptanceKey)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(acceptedBody))
+              .andReturn();
+      JsonNode retryReceipt = objectMapper.readTree(retry.getResponse().getContentAsString());
+      assertEquals(200, retry.getResponse().getStatus());
+      assertEquals(receipt.path("id").asText(), retryReceipt.path("id").asText());
+      assertEquals(receipt.path("acceptedAt").asText(), retryReceipt.path("acceptedAt").asText());
+      assertEquals(1, importRightsAcceptanceCount(actorId));
+
+      insertImportRightsStatement(
+          "private-import-test-v2", "Second approved copy", approverId, "APPROVED", -1);
+      MvcResult lateRetry =
+          mockMvc
+              .perform(
+                  post("/api/v1/imports/rights-statement/acceptance")
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                      .header("Idempotency-Key", acceptanceKey)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(acceptedBody))
+              .andReturn();
+      JsonNode lateRetryReceipt =
+          objectMapper.readTree(lateRetry.getResponse().getContentAsString());
+      assertEquals(200, lateRetry.getResponse().getStatus());
+      assertEquals(receipt.path("id").asText(), lateRetryReceipt.path("id").asText());
+
+      MvcResult reusedKey =
+          mockMvc
+              .perform(
+                  post("/api/v1/imports/rights-statement/acceptance")
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                      .header("Idempotency-Key", acceptanceKey)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          "{\"statementVersion\":\"private-import-test-v2\",\"confirmed\":true}"))
+              .andReturn();
+      assertEquals(409, reusedKey.getResponse().getStatus());
+      assertTrue(reusedKey.getResponse().getContentAsString().contains("IDEMPOTENCY_KEY_REUSED"));
+      assertEquals(1, importRightsAcceptanceCount(actorId));
+
+      MvcResult secondAcceptance =
+          mockMvc
+              .perform(
+                  post("/api/v1/imports/rights-statement/acceptance")
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                      .header("Idempotency-Key", UUID.randomUUID().toString())
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          "{\"statementVersion\":\"private-import-test-v2\",\"confirmed\":true}"))
+              .andReturn();
+      assertEquals(200, secondAcceptance.getResponse().getStatus());
+      assertEquals(2, importRightsAcceptanceCount(actorId));
+    } finally {
+      deleteImportRightsTestAcceptances(actorId);
+      deleteImportRightsTestAcceptances(blockedActorId);
+      deleteLibrary(unconfiguredLibrary.id());
+      deleteSessionTestUser(actorId);
+      deleteSessionTestUser(blockedActorId);
+      deleteSessionTestUser(unconfiguredActorId);
+      deleteImportRightsTestStatement(statementVersion);
+      deleteImportRightsTestStatement("private-import-test-v2");
+      deleteImportRightsTestStatement("private-import-draft-v2");
+      deleteSessionTestUser(approverId);
+    }
+  }
+
+  @Test
+  void importCreationRequiresEveryGateAndIssuesOneActorBoundUploadTarget() throws Exception {
+    UUID actorId = createSessionTestUser("Import Creation Owner");
+    UUID otherActorId = createSessionTestUser("Import Creation Other Actor");
+    UUID blockedActorId = createSessionTestUser("Import Creation Policy Blocked");
+    UUID approverId = createSessionTestUser("Import Creation Approver");
+    var library = libraryService.createLibrary(actorId, "Private import shelf");
+    var otherLibrary = libraryService.createLibrary(otherActorId, "Other private shelf");
+    var blockedLibrary = libraryService.createLibrary(blockedActorId, "Policy blocked shelf");
+    String version = "private-import-create-v1";
+    String statementText = "# Synthetic test rights\n\nTest-only private import statement.";
+    byte[] content = "A short private test story.".getBytes(StandardCharsets.UTF_8);
+    UUID rightsReceiptId = null;
+    UUID importId = null;
+    try {
+      insertImportRightsStatement(version, statementText, approverId, "APPROVED", -1);
+      addCurrentPolicyAcceptances(actorId);
+      UUID blockedReceiptId = UUID.randomUUID();
+      insertImportRightsAcceptance(blockedActorId, blockedReceiptId, version, statementText);
+
+      SessionService.IssuedSession actorSession = sessionService.create(actorId).orElseThrow();
+      SessionService.IssuedSession otherSession = sessionService.create(otherActorId).orElseThrow();
+      SessionService.IssuedSession blockedSession =
+          sessionService.create(blockedActorId).orElseThrow();
+      jakarta.servlet.http.Cookie actorCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", actorSession.cookieValue());
+      jakarta.servlet.http.Cookie otherCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", otherSession.cookieValue());
+      jakarta.servlet.http.Cookie blockedCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", blockedSession.cookieValue());
+      String actorCsrf = csrfTokenService.tokenFor(actorSession.cookieValue());
+      String otherCsrf = csrfTokenService.tokenFor(otherSession.cookieValue());
+      String blockedCsrf = csrfTokenService.tokenFor(blockedSession.cookieValue());
+      String filename = "C:\\fakepath\\private-test.txt";
+
+      MvcResult missingCsrf =
+          mockMvc
+              .perform(
+                  post("/api/v1/imports")
+                      .cookie(actorCookie)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          importCreateJson(
+                              library.id(),
+                              UUID.randomUUID(),
+                              version,
+                              filename,
+                              "text/plain",
+                              content.length,
+                              true)))
+              .andReturn();
+      assertEquals(403, missingCsrf.getResponse().getStatus());
+      assertEquals(0, importJobCount());
+
+      MvcResult missingPolicy =
+          mockMvc
+              .perform(
+                  post("/api/v1/imports")
+                      .cookie(blockedCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, blockedCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          importCreateJson(
+                              blockedLibrary.id(),
+                              blockedReceiptId,
+                              version,
+                              filename,
+                              "text/plain",
+                              content.length,
+                              true)))
+              .andReturn();
+      assertEquals(403, missingPolicy.getResponse().getStatus());
+      assertTrue(
+          missingPolicy.getResponse().getContentAsString().contains("POLICY_ACCEPTANCE_REQUIRED"));
+      assertTrue(importRightsAcceptanceConsumedAt(blockedReceiptId).isEmpty());
+      assertEquals(0, importJobCount());
+
+      String missingRights =
+          importCreateJson(
+              library.id(),
+              UUID.randomUUID(),
+              version,
+              filename,
+              "text/plain",
+              content.length,
+              null);
+      MvcResult missing =
+          mockMvc
+              .perform(
+                  post("/api/v1/imports")
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(missingRights))
+              .andReturn();
+      assertEquals(422, missing.getResponse().getStatus());
+      assertTrue(
+          missing
+              .getResponse()
+              .getContentAsString()
+              .contains("IMPORT_RIGHTS_CONFIRMATION_REQUIRED"));
+
+      String falseRights =
+          importCreateJson(
+              library.id(),
+              UUID.randomUUID(),
+              version,
+              filename,
+              "text/plain",
+              content.length,
+              false);
+      MvcResult unconfirmed =
+          mockMvc
+              .perform(
+                  post("/api/v1/imports")
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(falseRights))
+              .andReturn();
+      assertEquals(422, unconfirmed.getResponse().getStatus());
+      assertEquals(0, importJobCount(actorId));
+
+      MvcResult accepted =
+          mockMvc
+              .perform(
+                  post("/api/v1/imports/rights-statement/acceptance")
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                      .header("Idempotency-Key", UUID.randomUUID().toString())
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"statementVersion\":\"" + version + "\",\"confirmed\":true}"))
+              .andReturn();
+      assertEquals(200, accepted.getResponse().getStatus());
+      rightsReceiptId =
+          UUID.fromString(
+              objectMapper
+                  .readTree(accepted.getResponse().getContentAsString())
+                  .path("id")
+                  .asText());
+
+      MvcResult stale =
+          mockMvc
+              .perform(
+                  post("/api/v1/imports")
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          importCreateJson(
+                              library.id(),
+                              rightsReceiptId,
+                              "old-statement-v0",
+                              filename,
+                              "text/plain",
+                              content.length,
+                              true)))
+              .andReturn();
+      assertEquals(409, stale.getResponse().getStatus());
+      assertTrue(
+          stale.getResponse().getContentAsString().contains("IMPORT_RIGHTS_STATEMENT_STALE"));
+
+      MvcResult unsupportedType =
+          mockMvc
+              .perform(
+                  post("/api/v1/imports")
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          importCreateJson(
+                              library.id(),
+                              rightsReceiptId,
+                              version,
+                              "story.exe",
+                              "application/octet-stream",
+                              content.length,
+                              true)))
+              .andReturn();
+      assertEquals(422, unsupportedType.getResponse().getStatus());
+
+      MvcResult mismatchedType =
+          mockMvc
+              .perform(
+                  post("/api/v1/imports")
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          importCreateJson(
+                              library.id(),
+                              rightsReceiptId,
+                              version,
+                              "story.txt",
+                              "application/epub+zip",
+                              content.length,
+                              true)))
+              .andReturn();
+      assertEquals(422, mismatchedType.getResponse().getStatus());
+
+      MvcResult oversized =
+          mockMvc
+              .perform(
+                  post("/api/v1/imports")
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          importCreateJson(
+                              library.id(),
+                              rightsReceiptId,
+                              version,
+                              "story.txt",
+                              "text/plain",
+                              1025,
+                              true)))
+              .andReturn();
+      assertEquals(422, oversized.getResponse().getStatus());
+
+      MvcResult forgedFields =
+          mockMvc
+              .perform(
+                  post("/api/v1/imports")
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          importCreateJson(
+                              library.id(),
+                              rightsReceiptId,
+                              version,
+                              filename,
+                              "text/plain",
+                              content.length,
+                              true,
+                              Map.of(
+                                  "userId", otherActorId.toString(),
+                                  "storageKey", "../../outside.upload",
+                                  "createdAt", "2000-01-01T00:00:00Z"))))
+              .andReturn();
+      assertEquals(400, forgedFields.getResponse().getStatus());
+      assertEquals(0, importJobCount());
+      assertFalse(Files.exists(importStagingFileStore.targetPath(UUID.randomUUID())));
+
+      MvcResult foreignLibrary =
+          mockMvc
+              .perform(
+                  post("/api/v1/imports")
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          importCreateJson(
+                              otherLibrary.id(),
+                              rightsReceiptId,
+                              version,
+                              filename,
+                              "text/plain",
+                              content.length,
+                              true)))
+              .andReturn();
+      assertEquals(404, foreignLibrary.getResponse().getStatus());
+      assertEquals(0, importJobCount());
+
+      MvcResult created =
+          mockMvc
+              .perform(
+                  post("/api/v1/imports")
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          importCreateJson(
+                              library.id(),
+                              rightsReceiptId,
+                              version,
+                              filename,
+                              "text/plain",
+                              content.length,
+                              true)))
+              .andReturn();
+      assertEquals(201, created.getResponse().getStatus());
+      assertTrue(created.getResponse().getHeader("Cache-Control").contains("no-store"));
+      assertTrue(created.getResponse().getHeader("Location").startsWith("/api/v1/imports/"));
+      JsonNode createdBody = objectMapper.readTree(created.getResponse().getContentAsString());
+      importId = UUID.fromString(createdBody.path("job").path("id").asText());
+      assertEquals("upload_pending", createdBody.path("job").path("status").asText());
+      assertEquals("PUT", createdBody.path("uploadTarget").path("method").asText());
+      assertEquals(
+          "/api/v1/imports/" + importId + "/content",
+          createdBody.path("uploadTarget").path("url").asText());
+      String originalToken =
+          createdBody.path("uploadTarget").path("headers").path("X-Import-Upload-Token").asText();
+      assertFalse(originalToken.isBlank());
+      assertEquals(1, importJobCount(actorId));
+      assertEquals(actorId, importJobOwner(importId));
+      assertEquals(library.id(), importJobLibrary(importId));
+      assertEquals("private-test.txt", importJobFilename(importId));
+      assertEquals("staging/" + importId + ".upload", importJobStorageKey(importId));
+      assertTrue(
+          Arrays.equals(
+              sha256(originalToken.getBytes(StandardCharsets.US_ASCII)),
+              importJobTokenHash(importId)));
+      assertTrue(importRightsAcceptanceConsumedAt(rightsReceiptId).isPresent());
+
+      MvcResult retry =
+          mockMvc
+              .perform(
+                  post("/api/v1/imports")
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          importCreateJson(
+                              library.id(),
+                              rightsReceiptId,
+                              version,
+                              filename,
+                              "text/plain",
+                              content.length,
+                              true)))
+              .andReturn();
+      assertEquals(201, retry.getResponse().getStatus());
+      JsonNode retryBody = objectMapper.readTree(retry.getResponse().getContentAsString());
+      assertEquals(importId.toString(), retryBody.path("job").path("id").asText());
+      String rotatedToken =
+          retryBody.path("uploadTarget").path("headers").path("X-Import-Upload-Token").asText();
+      assertNotEquals(originalToken, rotatedToken);
+      assertEquals(1, importJobCount(actorId));
+
+      MvcResult wrongActor =
+          mockMvc
+              .perform(
+                  put("/api/v1/imports/{id}/content", importId)
+                      .cookie(otherCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, otherCsrf)
+                      .header("X-Import-Upload-Token", rotatedToken)
+                      .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                      .content(content))
+              .andReturn();
+      assertEquals(404, wrongActor.getResponse().getStatus());
+      MvcResult revokedToken =
+          mockMvc
+              .perform(
+                  put("/api/v1/imports/{id}/content", importId)
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                      .header("X-Import-Upload-Token", originalToken)
+                      .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                      .content(content))
+              .andReturn();
+      assertEquals(404, revokedToken.getResponse().getStatus());
+      assertFalse(Files.exists(importStagingFileStore.targetPath(importId)));
+
+      byte[] invalidUtf8 = new byte[content.length];
+      Arrays.fill(invalidUtf8, (byte) 'x');
+      invalidUtf8[0] = (byte) 0xc3;
+      invalidUtf8[1] = 0x28;
+      MvcResult invalidContent =
+          mockMvc
+              .perform(
+                  put("/api/v1/imports/{id}/content", importId)
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                      .header("X-Import-Upload-Token", rotatedToken)
+                      .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                      .content(invalidUtf8))
+              .andReturn();
+      assertEquals(422, invalidContent.getResponse().getStatus());
+      assertTrue(
+          invalidContent.getResponse().getContentAsString().contains("IMPORT_CONTENT_INVALID"));
+      assertEquals("upload_pending", importJobStatus(importId));
+      assertTrue(
+          Arrays.equals(
+              sha256(rotatedToken.getBytes(StandardCharsets.US_ASCII)),
+              importJobTokenHash(importId)));
+      assertFalse(Files.exists(importStagingFileStore.targetPath(importId)));
+
+      MvcResult uploaded =
+          mockMvc
+              .perform(
+                  put("/api/v1/imports/{id}/content", importId)
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                      .header("X-Import-Upload-Token", rotatedToken)
+                      .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                      .content(content))
+              .andReturn();
+      assertEquals(204, uploaded.getResponse().getStatus());
+      assertTrue(uploaded.getResponse().getHeader("Cache-Control").contains("no-store"));
+      assertTrue(
+          Arrays.equals(content, Files.readAllBytes(importStagingFileStore.targetPath(importId))));
+      assertEquals("uploaded", importJobStatus(importId));
+      assertTrue(Arrays.equals(sha256(content), importJobContentHash(importId)));
+      assertEquals(content.length, importJobActualSize(importId));
+      assertNull(importJobTokenHash(importId));
+
+      MvcResult replayedUpload =
+          mockMvc
+              .perform(
+                  put("/api/v1/imports/{id}/content", importId)
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                      .header("X-Import-Upload-Token", rotatedToken)
+                      .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                      .content(content))
+              .andReturn();
+      assertEquals(404, replayedUpload.getResponse().getStatus());
+
+      MvcResult secondAcceptance =
+          mockMvc
+              .perform(
+                  post("/api/v1/imports/rights-statement/acceptance")
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                      .header("Idempotency-Key", UUID.randomUUID().toString())
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"statementVersion\":\"" + version + "\",\"confirmed\":true}"))
+              .andReturn();
+      UUID secondReceipt =
+          UUID.fromString(
+              objectMapper
+                  .readTree(secondAcceptance.getResponse().getContentAsString())
+                  .path("id")
+                  .asText());
+      MvcResult secondCreated =
+          mockMvc
+              .perform(
+                  post("/api/v1/imports")
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          importCreateJson(
+                              library.id(),
+                              secondReceipt,
+                              version,
+                              "oversized.txt",
+                              "text/plain",
+                              10,
+                              true)))
+              .andReturn();
+      assertEquals(201, secondCreated.getResponse().getStatus());
+      UUID oversizedJobId =
+          UUID.fromString(
+              objectMapper
+                  .readTree(secondCreated.getResponse().getContentAsString())
+                  .path("job")
+                  .path("id")
+                  .asText());
+      String oversizedToken =
+          objectMapper
+              .readTree(secondCreated.getResponse().getContentAsString())
+              .path("uploadTarget")
+              .path("headers")
+              .path("X-Import-Upload-Token")
+              .asText();
+      MvcResult overrun =
+          mockMvc
+              .perform(
+                  put("/api/v1/imports/{id}/content", oversizedJobId)
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                      .header("X-Import-Upload-Token", oversizedToken)
+                      .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                      .content(new byte[1025]))
+              .andReturn();
+      assertEquals(413, overrun.getResponse().getStatus());
+      assertFalse(Files.exists(importStagingFileStore.targetPath(oversizedJobId)));
+      assertEquals("upload_pending", importJobStatus(oversizedJobId));
+    } finally {
+      deleteImportJobs(actorId);
+      deleteImportRightsTestAcceptances(actorId);
+      deleteImportJobs(blockedActorId);
+      deleteImportRightsTestAcceptances(blockedActorId);
+      deleteLibrary(library.id());
+      deleteLibrary(otherLibrary.id());
+      deleteLibrary(blockedLibrary.id());
+      deleteSessionTestUser(actorId);
+      deleteSessionTestUser(otherActorId);
+      deleteSessionTestUser(blockedActorId);
+      deleteImportRightsTestStatement(version);
+      deleteSessionTestUser(approverId);
+    }
+  }
+
+  @Test
+  void privateEpubParseQueueIsOwnerScopedIdempotentAndStoresOnlyCompletePreviews()
+      throws Exception {
+    UUID actorId = createSessionTestUser("EPUB Parse Owner");
+    UUID otherActorId = createSessionTestUser("EPUB Parse Other Owner");
+    UUID approverId = createSessionTestUser("EPUB Parse Approver");
+    var library = libraryService.createLibrary(actorId, "Private parser shelf");
+    String version = "private-import-parse-integration-v1";
+    String statementText = "Synthetic rights copy for private EPUB parser integration coverage.";
+    UUID validJobId = UUID.randomUUID();
+    UUID invalidJobId = UUID.randomUUID();
+    UUID validReceipt = UUID.randomUUID();
+    UUID invalidReceipt = UUID.randomUUID();
+    var actorSession = sessionService.create(actorId).orElseThrow();
+    var otherSession = sessionService.create(otherActorId).orElseThrow();
+    jakarta.servlet.http.Cookie actorCookie =
+        new jakarta.servlet.http.Cookie("__Host-novel_session", actorSession.cookieValue());
+    jakarta.servlet.http.Cookie otherCookie =
+        new jakarta.servlet.http.Cookie("__Host-novel_session", otherSession.cookieValue());
+    String actorCsrf = csrfTokenService.tokenFor(actorSession.cookieValue());
+    String otherCsrf = csrfTokenService.tokenFor(otherSession.cookieValue());
+
+    try {
+      insertImportRightsStatement(version, statementText, approverId, "APPROVED", -1);
+      String longTitle = "📖".repeat(120);
+      byte[] validEpub =
+          tinyEpub(
+              longTitle,
+              "Chapter One",
+              "A short private preview.",
+              "Chapter One",
+              "A short private preview.");
+      byte[] malformedEpub = tinyEpub("A Broken Novel", "broken", "<opf-malformed");
+      assertTrue(
+          validEpub.length <= 1024,
+          "integration EPUB fixture must fit the configured upload cap: " + validEpub.length);
+      assertTrue(
+          malformedEpub.length <= 1024,
+          "malformed integration EPUB must fit the configured upload cap");
+      insertUploadedEpubImportFixture(
+          validJobId, actorId, library.id(), validReceipt, version, statementText, validEpub, 0);
+      insertUploadedEpubImportFixture(
+          invalidJobId,
+          actorId,
+          library.id(),
+          invalidReceipt,
+          version,
+          statementText,
+          malformedEpub,
+          0);
+      importStagingFileStore.store(
+          validJobId, new ByteArrayInputStream(validEpub), validEpub.length);
+      importStagingFileStore.store(
+          invalidJobId, new ByteArrayInputStream(malformedEpub), malformedEpub.length);
+
+      assertEquals(
+          404,
+          mockMvc
+              .perform(get("/api/v1/imports/{id}", validJobId).cookie(otherCookie))
+              .andReturn()
+              .getResponse()
+              .getStatus());
+      assertEquals(
+          404,
+          mockMvc
+              .perform(
+                  post("/api/v1/imports/{id}/parse", validJobId)
+                      .cookie(otherCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, otherCsrf))
+              .andReturn()
+              .getResponse()
+              .getStatus());
+      MvcResult missingCsrf =
+          mockMvc
+              .perform(post("/api/v1/imports/{id}/parse", validJobId).cookie(actorCookie))
+              .andReturn();
+      assertEquals(403, missingCsrf.getResponse().getStatus());
+      assertEquals(0, importParseJobCount(validJobId));
+
+      int workCountBefore = workCountForLibrary(library.id());
+      int chapterCountBefore = chapterCountForLibrary(library.id());
+      MvcResult accepted =
+          mockMvc
+              .perform(
+                  post("/api/v1/imports/{id}/parse", validJobId)
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf))
+              .andReturn();
+      assertEquals(202, accepted.getResponse().getStatus());
+      assertTrue(accepted.getResponse().getHeader("Cache-Control").contains("no-store"));
+      assertEquals("2", accepted.getResponse().getHeader("Retry-After"));
+      assertEquals("/api/v1/imports/" + validJobId, accepted.getResponse().getHeader("Location"));
+      assertEquals(1, importParseJobCount(validJobId));
+
+      MvcResult retry =
+          mockMvc
+              .perform(
+                  post("/api/v1/imports/{id}/parse", validJobId)
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf))
+              .andReturn();
+      assertEquals(202, retry.getResponse().getStatus());
+      assertEquals(
+          1, importParseJobCount(validJobId), "repeated parse calls must reuse the parser job");
+
+      JsonNode readyStatus = awaitImportStatus(actorCookie, validJobId, "ready_to_commit");
+      assertEquals("📖".repeat(120), readyStatus.path("previewSummary").path("title").asText());
+      assertEquals("An Author", readyStatus.path("previewSummary").path("author").asText());
+      assertEquals(2, readyStatus.path("previewSummary").path("chapterCount").asInt());
+      assertEquals("ready_to_commit", importParseJobStatus(validJobId));
+      assertTrue(importParsePreviewByteCount(validJobId) > 0);
+      assertTrue(importParsePreviewByteCount(validJobId) <= 1_048_576);
+      assertEquals(32, importParseEtagBytes(validJobId));
+      assertEquals("epub3-v2", importParseParserVersion(validJobId));
+      JsonNode storedParseResult = objectMapper.readTree(importParsePreviewJson(validJobId));
+      assertEquals("epub3-v2", storedParseResult.path("parserVersion").asText());
+      assertEquals(2, storedParseResult.path("chapters").get(0).path("segments").size());
+      assertEquals(
+          "h1",
+          storedParseResult.path("chapters").get(0).path("segments").get(0).path("kind").asText());
+      assertEquals(
+          "A short private preview.",
+          storedParseResult.path("chapters").get(0).path("segments").get(1).path("text").asText());
+      assertEquals(workCountBefore, workCountForLibrary(library.id()));
+      assertEquals(chapterCountBefore, chapterCountForLibrary(library.id()));
+
+      MvcResult foreignPreview =
+          mockMvc
+              .perform(get("/api/v1/imports/{id}/preview", validJobId).cookie(otherCookie))
+              .andReturn();
+      assertEquals(404, foreignPreview.getResponse().getStatus());
+      MvcResult firstPageResult =
+          mockMvc
+              .perform(
+                  get("/api/v1/imports/{id}/preview", validJobId)
+                      .queryParam("limit", "1")
+                      .cookie(actorCookie))
+              .andReturn();
+      assertEquals(200, firstPageResult.getResponse().getStatus());
+      assertTrue(firstPageResult.getResponse().getHeader("Cache-Control").contains("no-store"));
+      String originalEtag = firstPageResult.getResponse().getHeader("ETag");
+      JsonNode firstPage =
+          objectMapper.readTree(firstPageResult.getResponse().getContentAsString());
+      assertEquals(1, firstPage.path("version").asInt());
+      assertEquals(2, firstPage.path("chapterCount").asInt());
+      assertEquals(1, firstPage.path("chapters").size());
+      assertTrue(firstPage.path("nextCursor").isTextual());
+      assertFalse(firstPageResult.getResponse().getContentAsString().contains("sourcePath"));
+      assertFalse(firstPageResult.getResponse().getContentAsString().contains("textPreview"));
+      assertFalse(firstPageResult.getResponse().getContentAsString().contains("segments"));
+      String firstChapterId = firstPage.path("chapters").get(0).path("id").asText();
+
+      String originalCursor = firstPage.path("nextCursor").asText();
+      MvcResult secondPageResult =
+          mockMvc
+              .perform(
+                  get("/api/v1/imports/{id}/preview", validJobId)
+                      .queryParam("limit", "1")
+                      .queryParam("cursor", originalCursor)
+                      .cookie(actorCookie))
+              .andReturn();
+      assertEquals(200, secondPageResult.getResponse().getStatus());
+      assertEquals(originalEtag, secondPageResult.getResponse().getHeader("ETag"));
+      JsonNode secondPage =
+          objectMapper.readTree(secondPageResult.getResponse().getContentAsString());
+      assertEquals(1, secondPage.path("chapters").size());
+      String secondChapterId = secondPage.path("chapters").get(0).path("id").asText();
+      assertNotEquals(firstChapterId, secondChapterId);
+
+      byte[] invalidOrder =
+          objectMapper.writeValueAsBytes(Map.of("chapterOrder", List.of(firstChapterId)));
+      MvcResult invalidMapping =
+          mockMvc
+              .perform(
+                  patch("/api/v1/imports/{id}/preview", validJobId)
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                      .header("If-Match", originalEtag)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(invalidOrder))
+              .andReturn();
+      assertEquals(422, invalidMapping.getResponse().getStatus());
+      assertEquals(
+          originalEtag,
+          mockMvc
+              .perform(
+                  get("/api/v1/imports/{id}/preview", validJobId)
+                      .queryParam("limit", "1")
+                      .cookie(actorCookie))
+              .andReturn()
+              .getResponse()
+              .getHeader("ETag"));
+
+      MvcResult missingPatchCsrf =
+          mockMvc
+              .perform(
+                  patch("/api/v1/imports/{id}/preview", validJobId)
+                      .cookie(actorCookie)
+                      .header("If-Match", originalEtag)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"title\":\"Edited Book\"}"))
+              .andReturn();
+      assertEquals(403, missingPatchCsrf.getResponse().getStatus());
+      MvcResult foreignPatch =
+          mockMvc
+              .perform(
+                  patch("/api/v1/imports/{id}/preview", validJobId)
+                      .cookie(otherCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, otherCsrf)
+                      .header("If-Match", originalEtag)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"title\":\"Other Owner\"}"))
+              .andReturn();
+      assertEquals(404, foreignPatch.getResponse().getStatus());
+
+      byte[] validEdit =
+          objectMapper.writeValueAsBytes(
+              Map.of(
+                  "title", "Edited Book",
+                  "author", "Edited Author",
+                  "language", "en",
+                  "chapterOrder", List.of(secondChapterId, firstChapterId)));
+      MvcResult updatedPreviewResult =
+          mockMvc
+              .perform(
+                  patch("/api/v1/imports/{id}/preview", validJobId)
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                      .header("If-Match", originalEtag)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(validEdit))
+              .andReturn();
+      assertEquals(200, updatedPreviewResult.getResponse().getStatus());
+      String updatedEtag = updatedPreviewResult.getResponse().getHeader("ETag");
+      assertNotEquals(originalEtag, updatedEtag);
+      JsonNode updatedPreview =
+          objectMapper.readTree(updatedPreviewResult.getResponse().getContentAsString());
+      assertEquals(2, updatedPreview.path("version").asInt());
+      assertEquals("Edited Book", updatedPreview.path("title").asText());
+      assertEquals("Edited Author", updatedPreview.path("author").asText());
+      assertEquals("en", updatedPreview.path("language").asText());
+      assertEquals(secondChapterId, updatedPreview.path("chapters").get(0).path("id").asText());
+      assertEquals(1, updatedPreview.path("chapters").get(0).path("ordinal").asInt());
+      assertEquals(1, importParseAttempt(validJobId));
+      assertEquals(2, importPreviewVersion(validJobId));
+      assertEquals(workCountBefore, workCountForLibrary(library.id()));
+      assertEquals(chapterCountBefore, chapterCountForLibrary(library.id()));
+
+      MvcResult staleEdit =
+          mockMvc
+              .perform(
+                  patch("/api/v1/imports/{id}/preview", validJobId)
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                      .header("If-Match", originalEtag)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"title\":\"Stale Edit\"}"))
+              .andReturn();
+      assertEquals(412, staleEdit.getResponse().getStatus());
+      MvcResult staleCursor =
+          mockMvc
+              .perform(
+                  get("/api/v1/imports/{id}/preview", validJobId)
+                      .queryParam("limit", "1")
+                      .queryParam("cursor", originalCursor)
+                      .cookie(actorCookie))
+              .andReturn();
+      assertEquals(400, staleCursor.getResponse().getStatus());
+      JsonNode editedStatus =
+          objectMapper.readTree(
+              mockMvc
+                  .perform(get("/api/v1/imports/{id}", validJobId).cookie(actorCookie))
+                  .andReturn()
+                  .getResponse()
+                  .getContentAsString());
+      assertEquals("Edited Book", editedStatus.path("previewSummary").path("title").asText());
+
+      addCurrentPolicyAcceptances(actorId);
+      String commitKey = "import-commit-idempotency-0001";
+      MvcResult missingCommitEtag =
+          mockMvc
+              .perform(
+                  post("/api/v1/imports/{id}/commit", validJobId)
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                      .header("Idempotency-Key", commitKey))
+              .andReturn();
+      assertEquals(428, missingCommitEtag.getResponse().getStatus());
+      MvcResult missingCommitCsrf =
+          mockMvc
+              .perform(
+                  post("/api/v1/imports/{id}/commit", validJobId)
+                      .cookie(actorCookie)
+                      .header("If-Match", updatedEtag)
+                      .header("Idempotency-Key", commitKey))
+              .andReturn();
+      assertEquals(403, missingCommitCsrf.getResponse().getStatus());
+      MvcResult foreignCommit =
+          mockMvc
+              .perform(
+                  post("/api/v1/imports/{id}/commit", validJobId)
+                      .cookie(otherCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, otherCsrf)
+                      .header("If-Match", updatedEtag)
+                      .header("Idempotency-Key", commitKey))
+              .andReturn();
+      assertEquals(404, foreignCommit.getResponse().getStatus());
+      MvcResult staleCommit =
+          mockMvc
+              .perform(
+                  post("/api/v1/imports/{id}/commit", validJobId)
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                      .header("If-Match", originalEtag)
+                      .header("Idempotency-Key", commitKey))
+              .andReturn();
+      assertEquals(412, staleCommit.getResponse().getStatus());
+      MvcResult missingCommitKey =
+          mockMvc
+              .perform(
+                  post("/api/v1/imports/{id}/commit", validJobId)
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                      .header("If-Match", updatedEtag))
+              .andReturn();
+      assertEquals(400, missingCommitKey.getResponse().getStatus());
+
+      createFailImportCommitSegmentsTrigger();
+      try {
+        MvcResult rollbackCommit =
+            mockMvc
+                .perform(
+                    post("/api/v1/imports/{id}/commit", validJobId)
+                        .cookie(actorCookie)
+                        .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                        .header("If-Match", updatedEtag)
+                        .header("Idempotency-Key", commitKey))
+                .andReturn();
+        assertEquals(503, rollbackCommit.getResponse().getStatus());
+        assertEquals("uploaded", importJobStatus(validJobId));
+        assertEquals("ready_to_commit", importParseJobStatus(validJobId));
+        assertTrue(importParsePreviewByteCount(validJobId) > 0);
+        assertEquals(
+            workCountBefore,
+            workCountForLibrary(library.id()),
+            "a failed chapter/segment write must roll back the work row");
+        assertEquals(
+            chapterCountBefore,
+            chapterCountForLibrary(library.id()),
+            "a failed chapter/segment write must roll back all chapter rows");
+      } finally {
+        dropFailImportCommitSegmentsTrigger();
+      }
+
+      Path interruptedStagingCleanup = importStagingFileStore.targetPath(validJobId);
+      Path cleanupBlocker = interruptedStagingCleanup.resolve("interrupted-cleanup.bin");
+      Files.deleteIfExists(interruptedStagingCleanup);
+      Files.createDirectory(interruptedStagingCleanup);
+      Files.writeString(cleanupBlocker, "synthetic interrupted cleanup");
+      try {
+        CountDownLatch commitReady = new CountDownLatch(2);
+        CountDownLatch commitStart = new CountDownLatch(1);
+        ExecutorService commitExecutor = Executors.newFixedThreadPool(2);
+        try {
+          List<Future<MvcResult>> commitRequests = new ArrayList<>();
+          for (int index = 0; index < 2; index++) {
+            commitRequests.add(
+                commitExecutor.submit(
+                    () -> {
+                      commitReady.countDown();
+                      if (!commitStart.await(10, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("concurrent import commit did not start");
+                      }
+                      return mockMvc
+                          .perform(
+                              post("/api/v1/imports/{id}/commit", validJobId)
+                                  .cookie(actorCookie)
+                                  .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                                  .header("If-Match", updatedEtag)
+                                  .header("Idempotency-Key", commitKey))
+                          .andReturn();
+                    }));
+          }
+          assertTrue(
+              commitReady.await(10, TimeUnit.SECONDS),
+              "concurrent commit requests did not become ready");
+          commitStart.countDown();
+          MvcResult committed = commitRequests.get(0).get(20, TimeUnit.SECONDS);
+          MvcResult concurrentRetry = commitRequests.get(1).get(20, TimeUnit.SECONDS);
+          assertEquals(201, committed.getResponse().getStatus());
+          assertEquals(201, concurrentRetry.getResponse().getStatus());
+          assertTrue(committed.getResponse().getHeader("Cache-Control").contains("no-store"));
+          assertEquals(
+              "/api/v1/works/"
+                  + objectMapper
+                      .readTree(committed.getResponse().getContentAsString())
+                      .path("id")
+                      .asText(),
+              committed.getResponse().getHeader("Location"));
+          JsonNode committedWork =
+              objectMapper.readTree(committed.getResponse().getContentAsString());
+          JsonNode concurrentWork =
+              objectMapper.readTree(concurrentRetry.getResponse().getContentAsString());
+          assertEquals(committedWork.path("id").asText(), concurrentWork.path("id").asText());
+          assertEquals("Edited Book", committedWork.path("title").asText());
+          assertEquals("Edited Author", committedWork.path("author").asText());
+          assertEquals("en", committedWork.path("language").asText());
+          assertEquals("private", committedWork.path("visibility").asText());
+          assertEquals(2, committedWork.path("chapterCount").asInt());
+          UUID committedWorkId = UUID.fromString(committedWork.path("id").asText());
+          assertEquals(1, workCountForLibrary(library.id()) - workCountBefore);
+          assertEquals(2, chapterCountForLibrary(library.id()) - chapterCountBefore);
+          assertEquals(2, revisionCountForWork(committedWorkId));
+          assertEquals(4, segmentCountForWork(committedWorkId));
+          assertTrue(revisionContentForWork(committedWorkId).contains("A short private preview."));
+          assertEquals("committed", importJobStatus(validJobId));
+          assertEquals("committed", importParseJobStatus(validJobId));
+          JsonNode committedStatus =
+              objectMapper.readTree(
+                  mockMvc
+                      .perform(get("/api/v1/imports/{id}", validJobId).cookie(actorCookie))
+                      .andReturn()
+                      .getResponse()
+                      .getContentAsString());
+          assertEquals("committed", committedStatus.path("status").asText());
+          assertFalse(committedStatus.has("previewSummary"));
+          assertEquals(
+              0,
+              importParsePreviewByteCount(validJobId),
+              "committing must clear private preview and source-segment staging JSON");
+          assertEquals(0, importParseEtagBytes(validJobId));
+          assertEquals(
+              409,
+              mockMvc
+                  .perform(get("/api/v1/imports/{id}/preview", validJobId).cookie(actorCookie))
+                  .andReturn()
+                  .getResponse()
+                  .getStatus());
+          assertNull(
+              importJobStagingFileDeletedAt(validJobId),
+              "the commit must survive a process interruption before staging cleanup");
+          assertTrue(Files.exists(cleanupBlocker));
+          assertFalse(
+              importParseService.processNext(),
+              "a committed job must not be reclaimed by the parser worker");
+
+          MvcResult retryCommit =
+              mockMvc
+                  .perform(
+                      post("/api/v1/imports/{id}/commit", validJobId)
+                          .cookie(actorCookie)
+                          .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                          .header("If-Match", updatedEtag)
+                          .header("Idempotency-Key", commitKey))
+                  .andReturn();
+          assertEquals(201, retryCommit.getResponse().getStatus());
+          assertEquals(
+              committedWork.path("id").asText(),
+              objectMapper
+                  .readTree(retryCommit.getResponse().getContentAsString())
+                  .path("id")
+                  .asText());
+          MvcResult reusedKey =
+              mockMvc
+                  .perform(
+                      post("/api/v1/imports/{id}/commit", validJobId)
+                          .cookie(actorCookie)
+                          .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                          .header("If-Match", originalEtag)
+                          .header("Idempotency-Key", commitKey))
+                  .andReturn();
+          assertEquals(409, reusedKey.getResponse().getStatus());
+          MvcResult keyReusedForOtherImport =
+              mockMvc
+                  .perform(
+                      post("/api/v1/imports/{id}/commit", invalidJobId)
+                          .cookie(actorCookie)
+                          .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                          .header("If-Match", updatedEtag)
+                          .header("Idempotency-Key", commitKey))
+                  .andReturn();
+          assertEquals(409, keyReusedForOtherImport.getResponse().getStatus());
+          MvcResult otherKey =
+              mockMvc
+                  .perform(
+                      post("/api/v1/imports/{id}/commit", validJobId)
+                          .cookie(actorCookie)
+                          .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                          .header("If-Match", updatedEtag)
+                          .header("Idempotency-Key", "import-commit-idempotency-0002"))
+                  .andReturn();
+          assertEquals(409, otherKey.getResponse().getStatus());
+          assertEquals(
+              1,
+              workCountForLibrary(library.id()) - workCountBefore,
+              "same-key retries and concurrent requests must create exactly one work");
+        } finally {
+          commitExecutor.shutdownNow();
+        }
+
+        assertThrows(
+            IllegalStateException.class,
+            importStagingCleanupService::cleanupExpiredStaging,
+            "a failed post-commit file cleanup must leave the committed job retryable");
+        assertNull(importJobStagingFileDeletedAt(validJobId));
+        Files.delete(cleanupBlocker);
+        Files.delete(interruptedStagingCleanup);
+        assertEquals(1, importStagingCleanupService.cleanupExpiredStaging());
+        assertNotNull(importJobStagingFileDeletedAt(validJobId));
+        assertFalse(Files.exists(interruptedStagingCleanup));
+      } finally {
+        if (Files.exists(cleanupBlocker)) Files.delete(cleanupBlocker);
+        Files.deleteIfExists(interruptedStagingCleanup);
+      }
+
+      MvcResult failedRequest =
+          mockMvc
+              .perform(
+                  post("/api/v1/imports/{id}/parse", invalidJobId)
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf))
+              .andReturn();
+      assertEquals(202, failedRequest.getResponse().getStatus());
+      JsonNode failedStatus = awaitImportStatus(actorCookie, invalidJobId, "failed");
+      assertEquals("EPUB_XML_INVALID", failedStatus.path("failureCode").asText());
+      assertTrue(failedStatus.path("warnings").size() > 0);
+      assertEquals(0, importParsePreviewByteCount(invalidJobId));
+      assertEquals(workCountBefore + 1, workCountForLibrary(library.id()));
+      assertEquals(chapterCountBefore + 2, chapterCountForLibrary(library.id()));
+    } finally {
+      importStagingFileStore.delete(validJobId);
+      importStagingFileStore.delete(invalidJobId);
+      deleteImportJobs(actorId);
+      deleteImportRightsTestAcceptances(actorId);
+      deleteImportedWorksForLibrary(library.id());
+      deleteLibrary(library.id());
+      deleteImportRightsTestStatement(version);
+      deleteSessionTestUser(actorId);
+      deleteSessionTestUser(otherActorId);
+      deleteSessionTestUser(approverId);
+    }
+  }
+
+  @Test
+  void expiredImportStagingIsDeletedAndFailedCleanupCanRetry() throws Exception {
+    UUID actorId = createSessionTestUser("Import Retention Owner");
+    UUID approverId = createSessionTestUser("Import Retention Approver");
+    var library = libraryService.createLibrary(actorId, "Retention test shelf");
+    String version = "private-import-retention-v1";
+    String statementText = "Synthetic test-only import retention statement.";
+    UUID blockedJobId = UUID.randomUUID();
+    UUID expiredUploadedId = UUID.randomUUID();
+    UUID expiredPendingId = UUID.randomUUID();
+    UUID activeUploadedId = UUID.randomUUID();
+    Path blockedTarget = importStagingFileStore.targetPath(blockedJobId);
+    byte[] content = "temporary private import bytes".getBytes(StandardCharsets.UTF_8);
+    try {
+      insertImportRightsStatement(version, statementText, approverId, "APPROVED", -10);
+      insertImportJobFixture(
+          blockedJobId, actorId, library.id(), UUID.randomUUID(), version, "uploaded", content, 4);
+      insertImportJobFixture(
+          expiredUploadedId,
+          actorId,
+          library.id(),
+          UUID.randomUUID(),
+          version,
+          "uploaded",
+          content,
+          1);
+      insertImportJobFixture(
+          expiredPendingId,
+          actorId,
+          library.id(),
+          UUID.randomUUID(),
+          version,
+          "upload_pending",
+          content,
+          1);
+      insertImportJobFixture(
+          activeUploadedId,
+          actorId,
+          library.id(),
+          UUID.randomUUID(),
+          version,
+          "uploaded",
+          content,
+          0);
+      insertQueuedParseJobFixture(expiredUploadedId);
+
+      importStagingFileStore.store(
+          expiredUploadedId, new ByteArrayInputStream(content), content.length);
+      importStagingFileStore.store(
+          activeUploadedId, new ByteArrayInputStream(content), content.length);
+      Files.createDirectories(blockedTarget);
+      Files.write(blockedTarget.resolve("keep.bin"), content);
+
+      assertThrows(IllegalStateException.class, importStagingCleanupService::cleanupExpiredStaging);
+      assertEquals("expired", importJobStatus(blockedJobId));
+      assertNull(importJobStagingFileDeletedAt(blockedJobId));
+      assertTrue(Files.exists(blockedTarget.resolve("keep.bin")));
+      assertEquals("expired", importJobStatus(expiredUploadedId));
+      assertEquals("expired", importJobStatus(expiredPendingId));
+      assertEquals(
+          0,
+          importParseJobCount(expiredUploadedId),
+          "expiry cleanup must remove private parser preview/queue state before reclaiming the upload");
+
+      Files.delete(blockedTarget.resolve("keep.bin"));
+      Files.delete(blockedTarget);
+      assertEquals(3, importStagingCleanupService.cleanupExpiredStaging());
+
+      assertFalse(Files.exists(importStagingFileStore.targetPath(expiredUploadedId)));
+      assertFalse(Files.exists(importStagingFileStore.targetPath(expiredPendingId)));
+      assertEquals("expired", importJobStatus(expiredUploadedId));
+      assertEquals("expired", importJobStatus(expiredPendingId));
+      assertTrue(importJobStagingFileDeletedAt(blockedJobId) != null);
+      assertTrue(importJobStagingFileDeletedAt(expiredUploadedId) != null);
+      assertTrue(importJobStagingFileDeletedAt(expiredPendingId) != null);
+      assertEquals(0, importStagingCleanupService.cleanupExpiredStaging());
+
+      assertEquals("uploaded", importJobStatus(activeUploadedId));
+      assertNull(importJobStagingFileDeletedAt(activeUploadedId));
+      assertTrue(Files.exists(importStagingFileStore.targetPath(activeUploadedId)));
+    } finally {
+      if (Files.exists(blockedTarget.resolve("keep.bin")))
+        Files.delete(blockedTarget.resolve("keep.bin"));
+      Files.deleteIfExists(blockedTarget);
+      deleteImportJobs(actorId);
+      deleteImportRightsTestAcceptances(actorId);
+      deleteLibrary(library.id());
+      deleteImportRightsTestStatement(version);
+      deleteSessionTestUser(actorId);
+      deleteSessionTestUser(approverId);
+    }
+  }
+
+  @Test
+  void importQuotaSerializesConcurrentCreatesAndPreservesRejectedReceipts() throws Exception {
+    UUID actorId = createSessionTestUser("Concurrent Import Quota Owner");
+    UUID approverId = createSessionTestUser("Concurrent Import Quota Approver");
+    var library = libraryService.createLibrary(actorId, "Concurrent quota shelf");
+    String version = "private-import-quota-concurrency-v1";
+    String statementText = "Synthetic test-only concurrent import quota statement.";
+    List<UUID> receiptIds = List.of(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID());
+    try {
+      insertImportRightsStatement(version, statementText, approverId, "APPROVED", -1);
+      addCurrentPolicyAcceptances(actorId);
+      for (UUID receiptId : receiptIds) {
+        insertImportRightsAcceptance(actorId, receiptId, version, statementText);
+      }
+
+      SessionService.IssuedSession actorSession = sessionService.create(actorId).orElseThrow();
+      jakarta.servlet.http.Cookie actorCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", actorSession.cookieValue());
+      String actorCsrf = csrfTokenService.tokenFor(actorSession.cookieValue());
+      CountDownLatch ready = new CountDownLatch(receiptIds.size());
+      CountDownLatch start = new CountDownLatch(1);
+      ExecutorService executor = Executors.newFixedThreadPool(receiptIds.size());
+      try {
+        List<Future<Integer>> requests = new ArrayList<>();
+        for (UUID receiptId : receiptIds) {
+          requests.add(
+              executor.submit(
+                  () -> {
+                    ready.countDown();
+                    if (!start.await(10, TimeUnit.SECONDS))
+                      throw new IllegalStateException("start latch timed out");
+                    return mockMvc
+                        .perform(
+                            post("/api/v1/imports")
+                                .cookie(actorCookie)
+                                .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content(
+                                    importCreateJson(
+                                        library.id(),
+                                        receiptId,
+                                        version,
+                                        "quota-concurrent.txt",
+                                        "text/plain",
+                                        100,
+                                        true)))
+                        .andReturn()
+                        .getResponse()
+                        .getStatus();
+                  }));
+        }
+        assertTrue(
+            ready.await(10, TimeUnit.SECONDS), "concurrent import requests did not become ready");
+        start.countDown();
+        List<Integer> statuses = new ArrayList<>();
+        for (Future<Integer> request : requests) statuses.add(request.get(30, TimeUnit.SECONDS));
+        assertEquals(2, statuses.stream().filter(status -> status == 201).count());
+        assertEquals(1, statuses.stream().filter(status -> status == 429).count());
+      } finally {
+        executor.shutdownNow();
+      }
+
+      assertEquals(
+          2, importJobCount(actorId), "concurrent creates must not overshoot the active-job cap");
+      assertEquals(
+          2,
+          receiptIds.stream()
+              .filter(
+                  receiptId -> {
+                    try {
+                      return importRightsAcceptanceConsumedAt(receiptId).isPresent();
+                    } catch (SQLException exception) {
+                      throw new IllegalStateException(exception);
+                    }
+                  })
+              .count());
+      assertEquals(
+          1,
+          receiptIds.stream()
+              .filter(
+                  receiptId -> {
+                    try {
+                      return importRightsAcceptanceConsumedAt(receiptId).isEmpty();
+                    } catch (SQLException exception) {
+                      throw new IllegalStateException(exception);
+                    }
+                  })
+              .count(),
+          "quota-rejected rights receipt must remain available");
+    } finally {
+      deleteImportJobs(actorId);
+      deleteImportRightsTestAcceptances(actorId);
+      deleteLibrary(library.id());
+      deleteSessionTestUser(actorId);
+      deleteImportRightsTestStatement(version);
+      deleteSessionTestUser(approverId);
+    }
+  }
+
+  @Test
+  void importByteQuotaIncludesExpiredFilesUntilCleanupThenAllowsRetry() throws Exception {
+    UUID actorId = createSessionTestUser("Import Byte Quota Owner");
+    UUID approverId = createSessionTestUser("Import Byte Quota Approver");
+    var library = libraryService.createLibrary(actorId, "Byte quota shelf");
+    String version = "private-import-quota-bytes-v1";
+    String statementText = "Synthetic test-only import byte quota statement.";
+    UUID expiredJobId = UUID.randomUUID();
+    UUID expiredReceiptId = UUID.randomUUID();
+    UUID retryReceiptId = UUID.randomUUID();
+    byte[] expiredContent = new byte[1024];
+    try {
+      insertImportRightsStatement(version, statementText, approverId, "APPROVED", -1);
+      addCurrentPolicyAcceptances(actorId);
+      insertImportJobFixture(
+          expiredJobId,
+          actorId,
+          library.id(),
+          expiredReceiptId,
+          version,
+          "uploaded",
+          expiredContent,
+          1);
+      insertImportRightsAcceptance(actorId, retryReceiptId, version, statementText);
+      importStagingFileStore.store(
+          expiredJobId, new ByteArrayInputStream(expiredContent), expiredContent.length);
+
+      SessionService.IssuedSession actorSession = sessionService.create(actorId).orElseThrow();
+      jakarta.servlet.http.Cookie actorCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", actorSession.cookieValue());
+      String actorCsrf = csrfTokenService.tokenFor(actorSession.cookieValue());
+      String requestBody =
+          importCreateJson(
+              library.id(), retryReceiptId, version, "after-cleanup.txt", "text/plain", 1, true);
+
+      MvcResult quotaRejected =
+          mockMvc
+              .perform(
+                  post("/api/v1/imports")
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(requestBody))
+              .andReturn();
+      assertEquals(429, quotaRejected.getResponse().getStatus());
+      assertTrue(
+          quotaRejected
+              .getResponse()
+              .getContentAsString()
+              .contains("IMPORT_STAGING_QUOTA_EXCEEDED"));
+      assertTrue(importRightsAcceptanceConsumedAt(retryReceiptId).isEmpty());
+      assertTrue(Files.exists(importStagingFileStore.targetPath(expiredJobId)));
+
+      assertEquals(1, importStagingCleanupService.cleanupExpiredStaging());
+      assertFalse(Files.exists(importStagingFileStore.targetPath(expiredJobId)));
+      MvcResult retry =
+          mockMvc
+              .perform(
+                  post("/api/v1/imports")
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(requestBody))
+              .andReturn();
+      assertEquals(201, retry.getResponse().getStatus());
+      assertTrue(importRightsAcceptanceConsumedAt(retryReceiptId).isPresent());
+    } finally {
+      deleteImportJobs(actorId);
+      deleteImportRightsTestAcceptances(actorId);
+      deleteLibrary(library.id());
+      deleteSessionTestUser(actorId);
+      deleteImportRightsTestStatement(version);
+      deleteSessionTestUser(approverId);
+    }
+  }
+
+  @Test
+  void importCreateAndUploadRateLimitsRejectBeforeReceiptConsumptionOrFileWrites()
+      throws Exception {
+    UUID actorId = createSessionTestUser("Import Rate Limit Owner");
+    UUID approverId = createSessionTestUser("Import Rate Limit Approver");
+    var library = libraryService.createLibrary(actorId, "Rate limit shelf");
+    String version = "private-import-rate-limit-v1";
+    String statementText = "Synthetic test-only import rate-limit statement.";
+    UUID initialReceiptId = UUID.randomUUID();
+    UUID blockedReceiptId = UUID.randomUUID();
+    UUID createdJobId = null;
+    try {
+      insertImportRightsStatement(version, statementText, approverId, "APPROVED", -1);
+      addCurrentPolicyAcceptances(actorId);
+      insertImportRightsAcceptance(actorId, initialReceiptId, version, statementText);
+      insertImportRightsAcceptance(actorId, blockedReceiptId, version, statementText);
+
+      SessionService.IssuedSession actorSession = sessionService.create(actorId).orElseThrow();
+      jakarta.servlet.http.Cookie actorCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", actorSession.cookieValue());
+      String actorCsrf = csrfTokenService.tokenFor(actorSession.cookieValue());
+      MvcResult created =
+          mockMvc
+              .perform(
+                  post("/api/v1/imports")
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          importCreateJson(
+                              library.id(),
+                              initialReceiptId,
+                              version,
+                              "rate-limited.txt",
+                              "text/plain",
+                              8,
+                              true)))
+              .andReturn();
+      assertEquals(201, created.getResponse().getStatus());
+      JsonNode createdBody = objectMapper.readTree(created.getResponse().getContentAsString());
+      createdJobId = UUID.fromString(createdBody.path("job").path("id").asText());
+      String uploadToken =
+          createdBody.path("uploadTarget").path("headers").path("X-Import-Upload-Token").asText();
+
+      for (int index = 1; index < 20; index++) {
+        assertTrue(
+            importStagingRateLimiter
+                .tryAcquire(actorId, ImportStagingRateLimiter.Action.CREATE)
+                .allowed());
+      }
+      MvcResult createLimited =
+          mockMvc
+              .perform(
+                  post("/api/v1/imports")
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          importCreateJson(
+                              library.id(),
+                              blockedReceiptId,
+                              version,
+                              "blocked.txt",
+                              "text/plain",
+                              8,
+                              true)))
+              .andReturn();
+      assertEquals(429, createLimited.getResponse().getStatus());
+      assertTrue(
+          createLimited.getResponse().getContentAsString().contains("IMPORT_CREATE_RATE_LIMITED"));
+      assertTrue(Integer.parseInt(createLimited.getResponse().getHeader("Retry-After")) > 0);
+      assertTrue(importRightsAcceptanceConsumedAt(blockedReceiptId).isEmpty());
+      assertEquals(1, importJobCount(actorId));
+
+      for (int index = 0; index < 20; index++) {
+        assertTrue(
+            importStagingRateLimiter
+                .tryAcquire(actorId, ImportStagingRateLimiter.Action.UPLOAD)
+                .allowed());
+      }
+      byte[] uploadBytes = "blocked".getBytes(StandardCharsets.UTF_8);
+      MvcResult uploadLimited =
+          mockMvc
+              .perform(
+                  put("/api/v1/imports/{id}/content", createdJobId)
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                      .header("X-Import-Upload-Token", uploadToken)
+                      .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                      .content(uploadBytes))
+              .andReturn();
+      assertEquals(429, uploadLimited.getResponse().getStatus());
+      assertTrue(
+          uploadLimited.getResponse().getContentAsString().contains("IMPORT_UPLOAD_RATE_LIMITED"));
+      assertTrue(Integer.parseInt(uploadLimited.getResponse().getHeader("Retry-After")) > 0);
+      assertEquals("upload_pending", importJobStatus(createdJobId));
+      assertTrue(
+          Arrays.equals(
+              sha256(uploadToken.getBytes(StandardCharsets.US_ASCII)),
+              importJobTokenHash(createdJobId)));
+      assertFalse(Files.exists(importStagingFileStore.targetPath(createdJobId)));
+
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement ageBuckets =
+              connection.prepareStatement(
+                  """
+                         UPDATE import_actor_rate_limits
+                         SET last_seen_at = clock_timestamp() - INTERVAL '25 hours'
+                         WHERE user_id = ?
+                         """)) {
+        ageBuckets.setObject(1, actorId);
+        assertEquals(2, ageBuckets.executeUpdate());
+      }
+      assertEquals(2, importStagingRateLimiter.purgeInactiveBuckets());
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement count =
+              connection.prepareStatement(
+                  "SELECT COUNT(*) FROM import_actor_rate_limits WHERE user_id = ?")) {
+        count.setObject(1, actorId);
+        try (ResultSet row = count.executeQuery()) {
+          assertTrue(row.next());
+          assertEquals(0, row.getInt(1), "inactive actor buckets must be purged");
+        }
+      }
+    } finally {
+      deleteImportJobs(actorId);
+      deleteImportRightsTestAcceptances(actorId);
+      deleteLibrary(library.id());
+      deleteSessionTestUser(actorId);
+      deleteImportRightsTestStatement(version);
+      deleteSessionTestUser(approverId);
+    }
+  }
+
+  @Test
+  void personalLibraryStateIsActorScopedVersionedAndIndependentOfWorkLifecycle() throws Exception {
+    UUID ownerId = createSessionTestUser("Library State Owner");
+    UUID otherUserId = createSessionTestUser("Other Library State Owner");
+    UUID workId = null;
+    try {
+      LibraryRepository.LibraryRecord library =
+          libraryService.createLibrary(ownerId, "State Shelf");
+      LibraryRepository.WorkRecord work =
+          libraryService.createPrivateImportedWork(
+              ownerId,
+              library.id(),
+              "State Test Novel",
+              "Author",
+              "vi",
+              sha256("library-state-work"));
+      workId = work.id();
+      setWorkStatus(workId, "archived");
+
+      MvcResult unauthenticated =
+          mockMvc.perform(get("/api/v1/me/works/{workId}/library-state", workId)).andReturn();
+      assertEquals(401, unauthenticated.getResponse().getStatus());
+      assertTrue(unauthenticated.getResponse().getContentAsString().contains("UNAUTHENTICATED"));
+
+      SessionService.IssuedSession ownerSession = sessionService.create(ownerId).orElseThrow();
+      SessionService.IssuedSession otherSession = sessionService.create(otherUserId).orElseThrow();
+      jakarta.servlet.http.Cookie ownerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", ownerSession.cookieValue());
+      String ownerCsrf = csrfTokenService.tokenFor(ownerSession.cookieValue());
+
+      MvcResult policyBlocked =
+          mockMvc.perform(get("/api/v1/me/library/collections").cookie(ownerCookie)).andReturn();
+      assertEquals(403, policyBlocked.getResponse().getStatus());
+      assertTrue(
+          policyBlocked.getResponse().getContentAsString().contains("POLICY_ACCEPTANCE_REQUIRED"));
+
+      addCurrentPolicyAcceptances(ownerId);
+      addCurrentPolicyAcceptances(otherUserId);
+
+      MvcResult missingCsrf =
+          mockMvc
+              .perform(
+                  post("/api/v1/me/library/collections")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"name\":\"Must Not Be Stored\"}")
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(403, missingCsrf.getResponse().getStatus());
+      assertTrue(missingCsrf.getResponse().getContentAsString().contains("CSRF_FAILED"));
+      assertTrue(libraryUserStateService.listCollections(ownerId).isEmpty());
+
+      MvcResult created =
+          mockMvc
+              .perform(
+                  post("/api/v1/me/library/collections")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"name\":\"  Weekend Reads  \"}")
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(201, created.getResponse().getStatus());
+      assertTrue(created.getResponse().getHeader("Cache-Control").contains("no-store"));
+      JsonNode collectionBody = objectMapper.readTree(created.getResponse().getContentAsString());
+      UUID collectionId = UUID.fromString(collectionBody.path("id").asText());
+      assertEquals("Weekend Reads", collectionBody.path("name").asText());
+      assertEquals(0, collectionBody.path("workCount").asInt());
+
+      MvcResult initialState =
+          mockMvc
+              .perform(get("/api/v1/me/works/{workId}/library-state", workId).cookie(ownerCookie))
+              .andReturn();
+      assertEquals(200, initialState.getResponse().getStatus());
+      assertEquals("\"v0\"", initialState.getResponse().getHeader("ETag"));
+      JsonNode initialBody = objectMapper.readTree(initialState.getResponse().getContentAsString());
+      assertEquals("want-to-read", initialBody.path("readingStatus").asText());
+      assertEquals(0, initialBody.path("version").asLong());
+      assertTrue(initialBody.path("collectionIds").isEmpty());
+      assertTrue(initialBody.path("updatedAt").isNull());
+
+      MvcResult saved =
+          mockMvc
+              .perform(
+                  put("/api/v1/me/works/{workId}/library-state", workId)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          "{\"readingStatus\":\"reading\",\"collectionIds\":[\""
+                              + collectionId
+                              + "\"]}")
+                      .header("If-Match", "\"v0\"")
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(200, saved.getResponse().getStatus());
+      assertEquals("\"v1\"", saved.getResponse().getHeader("ETag"));
+      JsonNode savedBody = objectMapper.readTree(saved.getResponse().getContentAsString());
+      assertEquals("reading", savedBody.path("readingStatus").asText());
+      assertEquals(1, savedBody.path("version").asLong());
+      assertEquals(collectionId.toString(), savedBody.path("collectionIds").get(0).asText());
+      assertEquals(
+          "archived",
+          libraryService.findOwnedWork(ownerId, workId).orElseThrow().status(),
+          "personal reading state must not change work lifecycle status");
+
+      MvcResult retryAfterLostResponse =
+          mockMvc
+              .perform(
+                  put("/api/v1/me/works/{workId}/library-state", workId)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          "{\"readingStatus\":\"reading\",\"collectionIds\":[\""
+                              + collectionId
+                              + "\"]}")
+                      .header("If-Match", "\"v0\"")
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(200, retryAfterLostResponse.getResponse().getStatus());
+      assertEquals("\"v1\"", retryAfterLostResponse.getResponse().getHeader("ETag"));
+
+      MvcResult stale =
+          mockMvc
+              .perform(
+                  put("/api/v1/me/works/{workId}/library-state", workId)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"readingStatus\":\"completed\",\"collectionIds\":[]}")
+                      .header("If-Match", "\"v0\"")
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(409, stale.getResponse().getStatus());
+      assertTrue(stale.getResponse().getContentAsString().contains("LIBRARY_STATE_VERSION_STALE"));
+      assertEquals(
+          1,
+          objectMapper
+              .readTree(stale.getResponse().getContentAsString())
+              .path("latest")
+              .path("version")
+              .asLong());
+
+      MvcResult otherUserRead =
+          mockMvc
+              .perform(
+                  get("/api/v1/me/works/{workId}/library-state", workId)
+                      .cookie(
+                          new jakarta.servlet.http.Cookie(
+                              "__Host-novel_session", otherSession.cookieValue())))
+              .andReturn();
+      assertEquals(404, otherUserRead.getResponse().getStatus());
+
+      LibraryUserStateRepository.CollectionRecord sameNameForOtherActor =
+          libraryUserStateService.createCollection(otherUserId, "Weekend Reads");
+      assertEquals("Weekend Reads", sameNameForOtherActor.name());
+      assertEquals(1, libraryUserStateService.listCollections(otherUserId).size());
+      assertThrows(
+          LibraryUserStateRepository.CollectionNameConflictException.class,
+          () -> libraryUserStateService.createCollection(ownerId, "weekend reads"));
+
+      for (int index = 1; index < LibraryUserStateService.MAX_COLLECTIONS; index++) {
+        libraryUserStateService.createCollection(ownerId, "Reading List " + index);
+      }
+      assertEquals(12, libraryUserStateService.listCollections(ownerId).size());
+      assertThrows(
+          LibraryUserStateRepository.CollectionLimitReachedException.class,
+          () -> libraryUserStateService.createCollection(ownerId, "Thirteenth List"));
+
+      MvcResult deleted =
+          mockMvc
+              .perform(
+                  delete("/api/v1/me/library/collections/{collectionId}", collectionId)
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(204, deleted.getResponse().getStatus());
+      MvcResult stateAfterCollectionDelete =
+          mockMvc
+              .perform(get("/api/v1/me/works/{workId}/library-state", workId).cookie(ownerCookie))
+              .andReturn();
+      assertEquals(200, stateAfterCollectionDelete.getResponse().getStatus());
+      assertEquals("\"v2\"", stateAfterCollectionDelete.getResponse().getHeader("ETag"));
+      JsonNode afterDelete =
+          objectMapper.readTree(stateAfterCollectionDelete.getResponse().getContentAsString());
+      assertEquals("reading", afterDelete.path("readingStatus").asText());
+      assertTrue(afterDelete.path("collectionIds").isEmpty());
+    } finally {
+      if (workId != null) deleteLibraryUserData(ownerId, workId);
+      deleteLibraryUserData(otherUserId, null);
+      deleteSessionTestUser(otherUserId);
+      deleteSessionTestUser(ownerId);
+    }
+  }
+
+  @Test
+  void libraryListRoutesEnforceActorScopePolicyAndSignedPagination() throws Exception {
+    UUID ownerId = createSessionTestUser("Library Query Owner");
+    UUID readerId = createSessionTestUser("Library Query Reader");
+    UUID outsiderId = createSessionTestUser("Library Query Outsider");
+    UUID workspaceId = null;
+    try {
+      libraryService.createLibrary(ownerId, "Personal Shelf");
+      WorkspaceRepository.WorkspaceRecord workspace =
+          workspaceService.createWorkspace(ownerId, "Library Query Workspace");
+      workspaceId = workspace.id();
+      workspaceService.addMember(ownerId, workspaceId, readerId, WorkspaceRepository.Role.READER);
+      LibraryRepository.LibraryRecord sharedLibrary =
+          libraryService.createWorkspaceLibrary(ownerId, workspaceId, "Shared Shelf");
+      LibraryRepository.WorkRecord firstWork =
+          libraryService.createPrivateImportedWork(
+              ownerId,
+              sharedLibrary.id(),
+              "Cursor Novel One",
+              "Query Author",
+              "vi",
+              sha256("Cursor Novel One"));
+      LibraryRepository.WorkRecord secondWork =
+          libraryService.createPrivateImportedWork(
+              ownerId,
+              sharedLibrary.id(),
+              "Cursor Novel Two",
+              "Query Author",
+              "vi",
+              sha256("Cursor Novel Two"));
+      libraryService.addTagToWork(ownerId, firstWork.id(), "Shared Story");
+      setWorkStatus(firstWork.id(), "archived");
+      addCurrentPolicyAcceptances(ownerId);
+      addCurrentPolicyAcceptances(readerId);
+      addCurrentPolicyAcceptances(outsiderId);
+
+      SessionService.IssuedSession ownerSession = sessionService.create(ownerId).orElseThrow();
+      SessionService.IssuedSession readerSession = sessionService.create(readerId).orElseThrow();
+      SessionService.IssuedSession outsiderSession =
+          sessionService.create(outsiderId).orElseThrow();
+      jakarta.servlet.http.Cookie ownerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", ownerSession.cookieValue());
+      jakarta.servlet.http.Cookie readerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", readerSession.cookieValue());
+      jakarta.servlet.http.Cookie outsiderCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", outsiderSession.cookieValue());
+
+      assertEquals(
+          401, mockMvc.perform(get("/api/v1/libraries")).andReturn().getResponse().getStatus());
+      UUID policyBlockedUser = createSessionTestUser("Library Query Policy Gate");
+      try {
+        SessionService.IssuedSession blockedSession =
+            sessionService.create(policyBlockedUser).orElseThrow();
+        MvcResult blocked =
+            mockMvc
+                .perform(
+                    get("/api/v1/libraries")
+                        .cookie(
+                            new jakarta.servlet.http.Cookie(
+                                "__Host-novel_session", blockedSession.cookieValue())))
+                .andReturn();
+        assertEquals(403, blocked.getResponse().getStatus());
+        assertTrue(
+            blocked.getResponse().getContentAsString().contains("POLICY_ACCEPTANCE_REQUIRED"));
+      } finally {
+        deleteSessionTestUser(policyBlockedUser);
+      }
+
+      MvcResult firstLibraries =
+          mockMvc
+              .perform(get("/api/v1/libraries").param("limit", "1").cookie(ownerCookie))
+              .andReturn();
+      assertEquals(200, firstLibraries.getResponse().getStatus());
+      assertTrue(firstLibraries.getResponse().getHeader("Cache-Control").contains("no-store"));
+      assertEquals("no-cache", firstLibraries.getResponse().getHeader("Pragma"));
+      JsonNode firstLibraryPage =
+          objectMapper.readTree(firstLibraries.getResponse().getContentAsString());
+      assertEquals(1, firstLibraryPage.path("items").size());
+      assertTrue(firstLibraryPage.path("items").get(0).has("id"));
+      assertFalse(firstLibraryPage.path("items").get(0).has("ownerUserId"));
+      String libraryCursor = firstLibraryPage.path("nextCursor").asText();
+      assertFalse(libraryCursor.isBlank());
+
+      MvcResult secondLibraries =
+          mockMvc
+              .perform(
+                  get("/api/v1/libraries")
+                      .param("limit", "1")
+                      .param("cursor", libraryCursor)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(200, secondLibraries.getResponse().getStatus());
+      assertEquals(
+          1,
+          objectMapper
+              .readTree(secondLibraries.getResponse().getContentAsString())
+              .path("items")
+              .size());
+
+      MvcResult memberLibraries =
+          mockMvc.perform(get("/api/v1/libraries").cookie(readerCookie)).andReturn();
+      assertEquals(200, memberLibraries.getResponse().getStatus());
+      JsonNode memberLibraryPage =
+          objectMapper.readTree(memberLibraries.getResponse().getContentAsString());
+      assertEquals(1, memberLibraryPage.path("items").size());
+      assertEquals(
+          sharedLibrary.id().toString(),
+          memberLibraryPage.path("items").get(0).path("id").asText());
+      MvcResult foreignCursor =
+          mockMvc
+              .perform(get("/api/v1/libraries").param("cursor", libraryCursor).cookie(readerCookie))
+              .andReturn();
+      assertEquals(400, foreignCursor.getResponse().getStatus());
+      assertTrue(foreignCursor.getResponse().getContentAsString().contains("INVALID_CURSOR"));
+
+      MvcResult firstWorks =
+          mockMvc
+              .perform(
+                  get("/api/v1/works")
+                      .param("libraryId", sharedLibrary.id().toString())
+                      .param("limit", "1")
+                      .cookie(readerCookie))
+              .andReturn();
+      assertEquals(200, firstWorks.getResponse().getStatus());
+      JsonNode firstWorkPage = objectMapper.readTree(firstWorks.getResponse().getContentAsString());
+      assertEquals(1, firstWorkPage.path("items").size());
+      assertFalse(firstWorkPage.path("items").get(0).has("ownerUserId"));
+      assertFalse(firstWorkPage.path("items").get(0).has("sourceHash"));
+      String workCursor = firstWorkPage.path("nextCursor").asText();
+      assertFalse(workCursor.isBlank());
+
+      MvcResult secondWorks =
+          mockMvc
+              .perform(
+                  get("/api/v1/works")
+                      .param("libraryId", sharedLibrary.id().toString())
+                      .param("limit", "1")
+                      .param("cursor", workCursor)
+                      .cookie(readerCookie))
+              .andReturn();
+      assertEquals(200, secondWorks.getResponse().getStatus());
+      assertEquals(
+          1,
+          objectMapper
+              .readTree(secondWorks.getResponse().getContentAsString())
+              .path("items")
+              .size());
+
+      MvcResult filteredWorks =
+          mockMvc
+              .perform(
+                  get("/api/v1/works")
+                      .param("libraryId", sharedLibrary.id().toString())
+                      .param("q", "Cursor Novel One")
+                      .param("tag", "shared story")
+                      .param("status", "archived")
+                      .cookie(readerCookie))
+              .andReturn();
+      assertEquals(200, filteredWorks.getResponse().getStatus());
+      JsonNode filteredWorkPage =
+          objectMapper.readTree(filteredWorks.getResponse().getContentAsString());
+      assertEquals(1, filteredWorkPage.path("items").size());
+      assertEquals(
+          firstWork.id().toString(), filteredWorkPage.path("items").get(0).path("id").asText());
+
+      MvcResult titleFilteredWorks =
+          mockMvc
+              .perform(
+                  get("/api/v1/works")
+                      .param("libraryId", sharedLibrary.id().toString())
+                      .param("q", "Two")
+                      .param("status", "active")
+                      .cookie(readerCookie))
+              .andReturn();
+      assertEquals(200, titleFilteredWorks.getResponse().getStatus());
+      JsonNode titleFilteredPage =
+          objectMapper.readTree(titleFilteredWorks.getResponse().getContentAsString());
+      assertEquals(1, titleFilteredPage.path("items").size());
+      assertEquals(
+          secondWork.id().toString(), titleFilteredPage.path("items").get(0).path("id").asText());
+
+      MvcResult mismatchedFilterCursor =
+          mockMvc
+              .perform(
+                  get("/api/v1/works")
+                      .param("libraryId", sharedLibrary.id().toString())
+                      .param("cursor", workCursor)
+                      .param("status", "active")
+                      .cookie(readerCookie))
+              .andReturn();
+      assertEquals(400, mismatchedFilterCursor.getResponse().getStatus());
+      assertTrue(
+          mismatchedFilterCursor.getResponse().getContentAsString().contains("INVALID_CURSOR"));
+
+      MvcResult tamperedCursor =
+          mockMvc
+              .perform(
+                  get("/api/v1/works")
+                      .param("libraryId", sharedLibrary.id().toString())
+                      .param("cursor", workCursor + "x")
+                      .cookie(readerCookie))
+              .andReturn();
+      assertEquals(400, tamperedCursor.getResponse().getStatus());
+      assertTrue(tamperedCursor.getResponse().getContentAsString().contains("INVALID_CURSOR"));
+
+      MvcResult invalidLibraryId =
+          mockMvc
+              .perform(get("/api/v1/works").param("libraryId", "not-a-uuid").cookie(readerCookie))
+              .andReturn();
+      assertEquals(400, invalidLibraryId.getResponse().getStatus());
+
+      MvcResult outsiderWorks =
+          mockMvc
+              .perform(
+                  get("/api/v1/works")
+                      .param("libraryId", sharedLibrary.id().toString())
+                      .cookie(outsiderCookie))
+              .andReturn();
+      assertEquals(404, outsiderWorks.getResponse().getStatus());
+      MvcResult emptyOutsiderLibraries =
+          mockMvc.perform(get("/api/v1/libraries").cookie(outsiderCookie)).andReturn();
+      assertEquals(200, emptyOutsiderLibraries.getResponse().getStatus());
+      assertEquals(
+          0,
+          objectMapper
+              .readTree(emptyOutsiderLibraries.getResponse().getContentAsString())
+              .path("items")
+              .size());
+
+      workspaceService.revokeMember(ownerId, workspaceId, readerId);
+      MvcResult revokedReader =
+          mockMvc
+              .perform(
+                  get("/api/v1/works")
+                      .param("libraryId", sharedLibrary.id().toString())
+                      .cookie(readerCookie))
+              .andReturn();
+      assertEquals(404, revokedReader.getResponse().getStatus());
+    } finally {
+      deleteLibraryTestData(ownerId);
+      deleteLibraryUserData(ownerId, null);
+      deleteLibraryUserData(readerId, null);
+      deleteLibraryUserData(outsiderId, null);
+      if (workspaceId != null) deleteWorkspaceTestData(workspaceId);
+      deleteSessionTestUser(outsiderId);
+      deleteSessionTestUser(readerId);
+      deleteSessionTestUser(ownerId);
+    }
+  }
+
+  @Test
+  void workspaceReaderCanChangeOnlyTheirOwnReadingStateWhileMembershipIsActive() throws Exception {
+    UUID ownerId = createSessionTestUser("Workspace State Owner");
+    UUID readerId = createSessionTestUser("Workspace State Reader");
+    UUID workspaceId = null;
+    UUID workId = null;
+    try {
+      WorkspaceRepository.WorkspaceRecord workspace =
+          workspaceService.createWorkspace(ownerId, "Reading State Workspace");
+      workspaceId = workspace.id();
+      workspaceService.addMember(ownerId, workspaceId, readerId, WorkspaceRepository.Role.READER);
+      LibraryRepository.LibraryRecord library =
+          libraryService.createWorkspaceLibrary(ownerId, workspaceId, "Shared Works");
+      LibraryRepository.WorkRecord work =
+          libraryService.createPrivateImportedWork(
+              ownerId,
+              library.id(),
+              "Shared State Novel",
+              "Author",
+              "vi",
+              sha256("shared-state-work"));
+      workId = work.id();
+      addCurrentPolicyAcceptances(ownerId);
+      addCurrentPolicyAcceptances(readerId);
+
+      LibraryUserStateRepository.WorkStateRecord ownerState =
+          libraryUserStateService.replaceWorkState(ownerId, workId, 0, "reading", List.of());
+      assertEquals(1, ownerState.version());
+
+      SessionService.IssuedSession readerSession = sessionService.create(readerId).orElseThrow();
+      jakarta.servlet.http.Cookie readerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", readerSession.cookieValue());
+      String readerCsrf = csrfTokenService.tokenFor(readerSession.cookieValue());
+      MvcResult readerInitial =
+          mockMvc
+              .perform(get("/api/v1/me/works/{workId}/library-state", workId).cookie(readerCookie))
+              .andReturn();
+      assertEquals(200, readerInitial.getResponse().getStatus());
+      assertEquals("\"v0\"", readerInitial.getResponse().getHeader("ETag"));
+      assertEquals(
+          "want-to-read",
+          objectMapper
+              .readTree(readerInitial.getResponse().getContentAsString())
+              .path("readingStatus")
+              .asText());
+
+      MvcResult readerSaved =
+          mockMvc
+              .perform(
+                  put("/api/v1/me/works/{workId}/library-state", workId)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"readingStatus\":\"completed\",\"collectionIds\":[]}")
+                      .header("If-Match", "\"v0\"")
+                      .header("X-CSRF-Token", readerCsrf)
+                      .cookie(readerCookie))
+              .andReturn();
+      assertEquals(200, readerSaved.getResponse().getStatus());
+      assertEquals(
+          "completed",
+          objectMapper
+              .readTree(readerSaved.getResponse().getContentAsString())
+              .path("readingStatus")
+              .asText());
+      assertEquals(
+          "reading", libraryUserStateService.getWorkState(ownerId, workId).readingStatus());
+      assertEquals(
+          "completed", libraryUserStateService.getWorkState(readerId, workId).readingStatus());
+
+      workspaceService.revokeMember(ownerId, workspaceId, readerId);
+      MvcResult revokedReader =
+          mockMvc
+              .perform(get("/api/v1/me/works/{workId}/library-state", workId).cookie(readerCookie))
+              .andReturn();
+      assertEquals(404, revokedReader.getResponse().getStatus());
+    } finally {
+      deleteLibraryUserData(readerId, null);
+      deleteLibraryUserData(ownerId, workId);
+      if (workspaceId != null) deleteWorkspaceTestData(workspaceId);
+      deleteSessionTestUser(readerId);
+      deleteSessionTestUser(ownerId);
+    }
+  }
+
+  @Test
+  void privateLibraryCoreScopesOwnersDefaultsPrivateAndRejectsDuplicateHashesAndOrder()
+      throws Exception {
+    UUID ownerId = createSessionTestUser("Library Owner");
+    UUID otherOwnerId = createSessionTestUser("Other Library Owner");
+    try {
+      LibraryRepository.LibraryRecord defaultLibrary =
+          libraryService.createLibrary(ownerId, "My Library");
+      LibraryRepository.LibraryRecord secondLibrary =
+          libraryService.createLibrary(ownerId, "Research Shelf");
+      LibraryRepository.LibraryRecord otherLibrary =
+          libraryService.createLibrary(otherOwnerId, "My Library");
+
+      assertTrue(defaultLibrary.isDefault());
+      assertFalse(secondLibrary.isDefault());
+      assertTrue(otherLibrary.isDefault());
+      assertEquals("private", defaultLibrary.visibility());
+
+      byte[] digest = sha256("same-import-content");
+      LibraryRepository.WorkRecord work =
+          libraryService.createPrivateImportedWork(
+              ownerId, defaultLibrary.id(), "A Private Novel", "Author", "vi", digest);
+      assertEquals("private", work.visibility());
+      assertEquals("active", work.status());
+      assertEquals(0, work.chapterCount());
+      assertEquals(1, libraryService.listWorks(ownerId, defaultLibrary.id(), "", 25).size());
+      assertTrue(libraryService.findOwnedWork(otherOwnerId, work.id()).isEmpty());
+      assertThrows(
+          LibraryRepository.LibraryNotFoundException.class,
+          () -> libraryService.listWorks(otherOwnerId, defaultLibrary.id(), "", 25));
+      assertThrows(
+          LibraryRepository.DuplicateImportedWorkException.class,
+          () ->
+              libraryService.createPrivateImportedWork(
+                  ownerId, secondLibrary.id(), "Duplicate Copy", "Author", "vi", digest));
+
+      LibraryRepository.WorkRecord sameContentForOtherOwner =
+          libraryService.createPrivateImportedWork(
+              otherOwnerId, otherLibrary.id(), "Own Copy", "Author", "vi", digest);
+      assertEquals("private", sameContentForOtherOwner.visibility());
+
+      LibraryRepository.VolumeRecord volume =
+          libraryService.createVolume(ownerId, work.id(), 1, "Volume 1");
+      SQLException duplicateVolumeOrder =
+          assertThrows(
+              SQLException.class,
+              () -> insertTestVolume(UUID.randomUUID(), work.id(), 1, "Duplicate volume"));
+      assertEquals("23505", duplicateVolumeOrder.getSQLState());
+
+      LibraryRepository.ChapterRecord chapter =
+          libraryService.createChapter(ownerId, work.id(), volume.id(), 1, "Chapter 1", "zh-Hans");
+      assertEquals("draft", chapter.status());
+      assertTrue(libraryService.findOwnedChapter(otherOwnerId, chapter.id()).isEmpty());
+      assertThrows(
+          LibraryRepository.WorkNotFoundException.class,
+          () ->
+              libraryService.createChapter(
+                  otherOwnerId, work.id(), volume.id(), 2, "Foreign", "zh"));
+      SQLException duplicateChapterOrder =
+          assertThrows(
+              SQLException.class,
+              () ->
+                  insertTestChapter(
+                      UUID.randomUUID(), work.id(), volume.id(), 1, "Duplicate chapter"));
+      assertEquals("23505", duplicateChapterOrder.getSQLState());
+
+      assertThrows(
+          IllegalArgumentException.class,
+          () ->
+              libraryService.appendChapterRevision(
+                  ownerId,
+                  chapter.id(),
+                  "plain_text",
+                  "Duplicate anchors must fail before persistence.",
+                  List.of(
+                      new LibraryService.NewSegment(1, "paragraph", "First", "same-anchor"),
+                      new LibraryService.NewSegment(2, "paragraph", "Second", "same-anchor"))));
+      assertEquals(0, revisionCount(chapter.id()));
+
+      LibraryRepository.RevisionRecord revision =
+          libraryService.appendChapterRevision(
+              ownerId,
+              chapter.id(),
+              "plain_text",
+              "First paragraph.\nSecond paragraph.",
+              List.of(
+                  new LibraryService.NewSegment(1, "paragraph", "First paragraph.", "p1"),
+                  new LibraryService.NewSegment(2, "paragraph", "Second paragraph.", "p2")));
+      assertEquals(1, revision.revisionNo());
+      LibraryRepository.ChapterRecord readyChapter =
+          libraryService.findOwnedChapter(ownerId, chapter.id()).orElseThrow();
+      assertEquals("ready", readyChapter.status());
+      assertEquals(revision.id(), readyChapter.sourceRevisionId());
+      assertEquals(2, segmentCount(revision.id()));
+      assertThrows(
+          LibraryRepository.DuplicateRevisionException.class,
+          () ->
+              libraryService.appendChapterRevision(
+                  ownerId,
+                  chapter.id(),
+                  "plain_text",
+                  "First paragraph.\nSecond paragraph.",
+                  List.of()));
+
+      LibraryRepository.AssetRecord asset =
+          libraryService.registerAsset(
+              ownerId,
+              defaultLibrary.id(),
+              "private/" + UUID.randomUUID(),
+              sha256("cover-image"),
+              "image/webp",
+              2048,
+              "cover.webp");
+      assertEquals("staged", asset.status());
+      assertThrows(
+          LibraryRepository.DuplicateAssetException.class,
+          () ->
+              libraryService.registerAsset(
+                  ownerId,
+                  secondLibrary.id(),
+                  "private/" + UUID.randomUUID(),
+                  sha256("cover-image"),
+                  "image/webp",
+                  2048,
+                  "duplicate-cover.webp"));
+      LibraryRepository.AssetRecord sameAssetForOtherOwner =
+          libraryService.registerAsset(
+              otherOwnerId,
+              otherLibrary.id(),
+              "private/" + UUID.randomUUID(),
+              sha256("cover-image"),
+              "image/webp",
+              2048,
+              "cover.webp");
+      assertNotEquals(asset.ownerUserId(), sameAssetForOtherOwner.ownerUserId());
+    } finally {
+      deleteLibraryTestData(ownerId);
+      deleteLibraryTestData(otherOwnerId);
+      deleteSessionTestUser(ownerId);
+      deleteSessionTestUser(otherOwnerId);
+    }
+  }
+
+  @Test
+  void privateLibraryCursorsAreStableOwnerAndFilterBoundAndSearchTagsAndStatus() throws Exception {
+    UUID ownerId = createSessionTestUser("Cursor Library Owner");
+    UUID otherOwnerId = createSessionTestUser("Other Cursor Owner");
+    try {
+      LibraryRepository.LibraryRecord library =
+          libraryService.createLibrary(ownerId, "Cursor Shelf");
+      LibraryRepository.LibraryRecord secondLibrary =
+          libraryService.createLibrary(ownerId, "Second Shelf");
+      LibraryRepository.LibraryRecord otherLibrary =
+          libraryService.createLibrary(otherOwnerId, "Other Shelf");
+      LibraryRepository.WorkRecord dragonRiver =
+          libraryService.createPrivateImportedWork(
+              ownerId, library.id(), "Dragon River", "Writer A", "zh", sha256("cursor-work-a"));
+      LibraryRepository.WorkRecord dragonGate =
+          libraryService.createPrivateImportedWork(
+              ownerId, library.id(), "Dragon Gate", "Writer B", "zh", sha256("cursor-work-b"));
+      LibraryRepository.WorkRecord moonCity =
+          libraryService.createPrivateImportedWork(
+              ownerId, library.id(), "Moon City", "Dragon Pen", "zh", sha256("cursor-work-c"));
+      setWorkCreatedAt(dragonRiver.id(), Instant.parse("2026-01-04T00:00:00Z"));
+      setWorkCreatedAt(dragonGate.id(), Instant.parse("2026-01-03T00:00:00Z"));
+      setWorkCreatedAt(moonCity.id(), Instant.parse("2026-01-02T00:00:00Z"));
+      setWorkStatus(dragonGate.id(), "archived");
+
+      libraryService.addTagToWork(ownerId, dragonRiver.id(), "Tiên Hiệp");
+      libraryService.addTagToWork(ownerId, dragonGate.id(), "TIÊN-hiệp");
+      libraryService.addTagToWork(ownerId, moonCity.id(), "tiên-hiệp");
+      assertThrows(
+          LibraryRepository.WorkNotFoundException.class,
+          () -> libraryService.addTagToWork(otherOwnerId, dragonRiver.id(), "tiên-hiệp"));
+
+      LibraryService.Page<LibraryRepository.LibraryRecord> firstLibraryPage =
+          libraryService.listLibraries(ownerId, null, 1);
+      assertEquals(1, firstLibraryPage.items().size());
+      assertTrue(firstLibraryPage.items().getFirst().isDefault());
+      assertEquals(
+          1,
+          libraryService.listLibraries(ownerId, firstLibraryPage.nextCursor(), 1).items().size());
+      assertThrows(
+          LibraryCursorCodec.InvalidCursorException.class,
+          () -> libraryService.listLibraries(otherOwnerId, firstLibraryPage.nextCursor(), 1));
+
+      LibraryService.Page<LibraryRepository.WorkRecord> firstWorkPage =
+          libraryService.listWorks(ownerId, library.id(), "dragon", "tiên hiệp", "active", null, 1);
+      assertEquals(1, firstWorkPage.items().size());
+      assertTrue(firstWorkPage.nextCursor() != null && !firstWorkPage.nextCursor().isBlank());
+      assertThrows(
+          LibraryCursorCodec.InvalidCursorException.class,
+          () ->
+              libraryService.listWorks(
+                  ownerId,
+                  library.id(),
+                  "moon",
+                  "tiên-hiệp",
+                  "active",
+                  firstWorkPage.nextCursor(),
+                  1));
+      assertThrows(
+          LibraryCursorCodec.InvalidCursorException.class,
+          () ->
+              libraryService.listWorks(
+                  ownerId,
+                  secondLibrary.id(),
+                  "dragon",
+                  "tiên-hiệp",
+                  "active",
+                  firstWorkPage.nextCursor(),
+                  1));
+
+      LibraryRepository.WorkRecord insertedAfterFirstPage =
+          libraryService.createPrivateImportedWork(
+              ownerId, library.id(), "Dragon Update", "Writer C", "zh", sha256("cursor-work-d"));
+      libraryService.addTagToWork(ownerId, insertedAfterFirstPage.id(), "tiên-hiệp");
+      setWorkCreatedAt(insertedAfterFirstPage.id(), Instant.parse("2026-01-05T00:00:00Z"));
+
+      LibraryService.Page<LibraryRepository.WorkRecord> secondWorkPage =
+          libraryService.listWorks(
+              ownerId,
+              library.id(),
+              "dragon",
+              "tiên-hiệp",
+              "active",
+              firstWorkPage.nextCursor(),
+              1);
+      assertEquals(1, secondWorkPage.items().size());
+      assertNotEquals(
+          firstWorkPage.items().getFirst().id(), secondWorkPage.items().getFirst().id());
+      assertNotEquals(insertedAfterFirstPage.id(), secondWorkPage.items().getFirst().id());
+      assertNull(secondWorkPage.nextCursor());
+
+      LibraryService.Page<LibraryRepository.WorkRecord> archived =
+          libraryService.listWorks(
+              ownerId, library.id(), "dragon", "tiên-hiệp", "archived", null, 10);
+      assertEquals(
+          List.of(dragonGate.id()),
+          archived.items().stream().map(LibraryRepository.WorkRecord::id).toList());
+      assertThrows(
+          LibraryRepository.LibraryNotFoundException.class,
+          () ->
+              libraryService.listWorks(
+                  ownerId, otherLibrary.id(), "dragon", "tiên-hiệp", "active", null, 10));
+    } finally {
+      deleteLibraryTestData(ownerId);
+      deleteLibraryTestData(otherOwnerId);
+      deleteSessionTestUser(ownerId);
+      deleteSessionTestUser(otherOwnerId);
+    }
+  }
+
+  @Test
+  void workspaceLifecycleKeepsOneOwnerAndVersionsMembershipChanges() throws Exception {
+    UUID ownerId = createSessionTestUser("Workspace Owner");
+    UUID adminId = createSessionTestUser("Workspace Admin");
+    UUID editorId = createSessionTestUser("Workspace Editor");
+    UUID readerId = createSessionTestUser("Workspace Reader");
+    UUID outsiderId = createSessionTestUser("Workspace Outsider");
+    UUID workspaceId = null;
+    try {
+      WorkspaceRepository.WorkspaceRecord workspace =
+          workspaceService.createWorkspace(ownerId, "  Shared Reading Room  ");
+      UUID createdWorkspaceId = workspace.id();
+      workspaceId = createdWorkspaceId;
+      assertEquals("Shared Reading Room", workspace.name());
+      assertEquals(1, workspace.scopeVersion());
+      assertEquals(
+          WorkspaceRepository.Role.OWNER,
+          workspaceService.listMembers(ownerId, workspaceId).getFirst().role());
+      SQLException missingActiveOwner =
+          assertThrows(
+              SQLException.class,
+              () -> {
+                try (Connection connection = dataSource.getConnection()) {
+                  connection.setAutoCommit(false);
+                  try (PreparedStatement deleteOwner =
+                      connection.prepareStatement(
+                          """
+                            DELETE FROM workspace_members
+                            WHERE workspace_id = ? AND user_id = ? AND role = 'owner'
+                            """)) {
+                    deleteOwner.setObject(1, createdWorkspaceId);
+                    deleteOwner.setObject(2, ownerId);
+                    assertEquals(1, deleteOwner.executeUpdate());
+                  }
+                  connection.commit();
+                }
+              });
+      assertEquals("23514", missingActiveOwner.getSQLState());
+
+      WorkspaceRepository.MemberRecord admin =
+          workspaceService.addMember(ownerId, workspaceId, adminId, WorkspaceRepository.Role.ADMIN);
+      assertEquals(WorkspaceRepository.MemberStatus.ACTIVE, admin.status());
+      workspaceService.addMember(ownerId, workspaceId, editorId, WorkspaceRepository.Role.EDITOR);
+      workspaceService.addMember(ownerId, workspaceId, readerId, WorkspaceRepository.Role.READER);
+      assertEquals(
+          4, workspaceService.findWorkspace(ownerId, workspaceId).orElseThrow().scopeVersion());
+
+      assertThrows(
+          WorkspaceRepository.WorkspaceAccessDeniedException.class,
+          () ->
+              workspaceService.addMember(
+                  outsiderId, createdWorkspaceId, outsiderId, WorkspaceRepository.Role.READER));
+      assertThrows(
+          WorkspaceRepository.WorkspaceAccessDeniedException.class,
+          () ->
+              workspaceService.addMember(
+                  readerId, createdWorkspaceId, outsiderId, WorkspaceRepository.Role.READER));
+      assertThrows(
+          WorkspaceRepository.OwnershipTransferRequiredException.class,
+          () ->
+              workspaceService.addMember(
+                  ownerId, createdWorkspaceId, outsiderId, WorkspaceRepository.Role.OWNER));
+      assertThrows(
+          WorkspaceRepository.WorkspaceAccessDeniedException.class,
+          () -> workspaceService.transferOwnership(adminId, createdWorkspaceId, editorId));
+      assertThrows(
+          WorkspaceRepository.WorkspaceMemberConflictException.class,
+          () ->
+              workspaceService.addMember(
+                  ownerId, createdWorkspaceId, adminId, WorkspaceRepository.Role.EDITOR));
+
+      WorkspaceRepository.MemberRecord changed =
+          workspaceService.changeMemberRole(
+              adminId, workspaceId, readerId, WorkspaceRepository.Role.EDITOR);
+      assertEquals(WorkspaceRepository.Role.EDITOR, changed.role());
+      assertEquals(
+          5, workspaceService.findWorkspace(ownerId, workspaceId).orElseThrow().scopeVersion());
+
+      WorkspaceRepository.WorkspaceRecord transferred =
+          workspaceService.transferOwnership(ownerId, workspaceId, adminId);
+      assertEquals(6, transferred.scopeVersion());
+      assertEquals(
+          WorkspaceRepository.Role.ADMIN,
+          workspaceService.listMembers(ownerId, workspaceId).stream()
+              .filter(member -> member.userId().equals(ownerId))
+              .findFirst()
+              .orElseThrow()
+              .role());
+      assertEquals(
+          WorkspaceRepository.Role.OWNER,
+          workspaceService.listMembers(adminId, workspaceId).stream()
+              .filter(member -> member.userId().equals(adminId))
+              .findFirst()
+              .orElseThrow()
+              .role());
+      assertThrows(
+          WorkspaceRepository.WorkspaceOwnerCannotBeRevokedException.class,
+          () -> workspaceService.revokeMember(adminId, createdWorkspaceId, adminId));
+
+      WorkspaceRepository.MemberRecord revoked =
+          workspaceService.revokeMember(adminId, workspaceId, editorId);
+      assertEquals(WorkspaceRepository.MemberStatus.REVOKED, revoked.status());
+      assertTrue(revoked.revokedAt() != null);
+      assertEquals(
+          7, workspaceService.findWorkspace(adminId, workspaceId).orElseThrow().scopeVersion());
+      assertTrue(workspaceService.findWorkspace(editorId, workspaceId).isEmpty());
+      assertThrows(
+          WorkspaceRepository.WorkspaceAccessDeniedException.class,
+          () -> workspaceService.transferOwnership(ownerId, createdWorkspaceId, readerId));
+    } finally {
+      if (workspaceId != null) deleteWorkspaceTestData(workspaceId);
+      deleteSessionTestUser(ownerId);
+      deleteSessionTestUser(adminId);
+      deleteSessionTestUser(editorId);
+      deleteSessionTestUser(readerId);
+      deleteSessionTestUser(outsiderId);
+    }
+  }
+
+  @Test
+  void workspaceRolesScopeLibraryAndContentReadsWritesAndSearch() throws Exception {
+    UUID ownerId = createSessionTestUser("Workspace Library Owner");
+    UUID adminId = createSessionTestUser("Workspace Library Admin");
+    UUID editorId = createSessionTestUser("Workspace Library Editor");
+    UUID readerId = createSessionTestUser("Workspace Library Reader");
+    UUID outsiderId = createSessionTestUser("Other Workspace Owner");
+    UUID workspaceId = null;
+    UUID otherWorkspaceId = null;
+    try {
+      WorkspaceRepository.WorkspaceRecord workspace =
+          workspaceService.createWorkspace(ownerId, "Shared Shelf Team");
+      UUID createdWorkspaceId = workspace.id();
+      workspaceId = createdWorkspaceId;
+      workspaceService.addMember(ownerId, workspaceId, adminId, WorkspaceRepository.Role.ADMIN);
+      workspaceService.addMember(ownerId, workspaceId, editorId, WorkspaceRepository.Role.EDITOR);
+      workspaceService.addMember(ownerId, workspaceId, readerId, WorkspaceRepository.Role.READER);
+
+      LibraryRepository.LibraryRecord defaultLibrary =
+          libraryService.createLibrary(ownerId, "My Personal Shelf");
+      LibraryRepository.LibraryRecord movableLibrary =
+          libraryService.createLibrary(ownerId, "Research Shelf");
+      LibraryRepository.LibraryRecord workspaceLibrary =
+          libraryService.createWorkspaceLibrary(ownerId, createdWorkspaceId, "Collaborative Shelf");
+      LibraryRepository.LibraryRecord adminLibrary =
+          libraryService.createWorkspaceLibrary(adminId, createdWorkspaceId, "Admin Shelf");
+      assertEquals(createdWorkspaceId, workspaceLibrary.workspaceId());
+      assertEquals(createdWorkspaceId, adminLibrary.workspaceId());
+      assertThrows(
+          LibraryRepository.DefaultLibraryCannotMoveException.class,
+          () ->
+              libraryService.movePersonalLibraryToWorkspace(
+                  ownerId, defaultLibrary.id(), createdWorkspaceId));
+      LibraryRepository.LibraryRecord movedLibrary =
+          libraryService.movePersonalLibraryToWorkspace(
+              ownerId, movableLibrary.id(), createdWorkspaceId);
+      assertEquals(createdWorkspaceId, movedLibrary.workspaceId());
+
+      LibraryRepository.WorkRecord ownerWork =
+          libraryService.createPrivateImportedWork(
+              ownerId,
+              workspaceLibrary.id(),
+              "Shared Story",
+              "Author A",
+              "vi",
+              sha256("shared-owner-work"));
+      LibraryRepository.WorkRecord editorWork =
+          libraryService.createPrivateImportedWork(
+              editorId,
+              workspaceLibrary.id(),
+              "Editor Story",
+              "Author B",
+              "vi",
+              sha256("shared-editor-work"));
+      assertEquals(
+          ownerId, editorWork.ownerUserId(), "shared work keeps library creator as data owner");
+      libraryService.addTagToWork(editorId, ownerWork.id(), "Shared Tag");
+
+      List<UUID> editorLibraryIds =
+          libraryService.listLibraries(editorId).stream()
+              .map(LibraryRepository.LibraryRecord::id)
+              .toList();
+      assertTrue(editorLibraryIds.contains(workspaceLibrary.id()));
+      assertTrue(editorLibraryIds.contains(movedLibrary.id()));
+      assertFalse(editorLibraryIds.contains(defaultLibrary.id()));
+      assertTrue(libraryService.findOwnedWork(readerId, ownerWork.id()).isPresent());
+      LibraryService.Page<LibraryRepository.WorkRecord> tagSearch =
+          libraryService.listWorks(
+              readerId, workspaceLibrary.id(), "Shared", "shared-tag", "active", null, 10);
+      assertEquals(
+          List.of(ownerWork.id()),
+          tagSearch.items().stream().map(LibraryRepository.WorkRecord::id).toList());
+
+      LibraryRepository.VolumeRecord volume =
+          libraryService.createVolume(editorId, ownerWork.id(), 1, "Shared Volume");
+      LibraryRepository.ChapterRecord chapter =
+          libraryService.createChapter(
+              editorId, ownerWork.id(), volume.id(), 1, "Shared Chapter", "vi");
+      LibraryRepository.RevisionRecord revision =
+          libraryService.appendChapterRevision(
+              editorId,
+              chapter.id(),
+              "plain_text",
+              "Shared chapter content.",
+              List.of(
+                  new LibraryService.NewSegment(1, "paragraph", "Shared chapter content.", "p1")));
+      assertEquals(1, revision.revisionNo());
+      assertTrue(libraryService.findOwnedChapter(readerId, chapter.id()).isPresent());
+      LibraryRepository.AssetRecord asset =
+          libraryService.registerAsset(
+              editorId,
+              workspaceLibrary.id(),
+              "workspace/" + UUID.randomUUID(),
+              sha256("workspace-cover"),
+              "image/webp",
+              4096,
+              "shared-cover.webp");
+      assertEquals(ownerId, asset.ownerUserId());
+
+      assertThrows(
+          LibraryRepository.LibraryNotFoundException.class,
+          () ->
+              libraryService.createWorkspaceLibrary(
+                  editorId, createdWorkspaceId, "Editor Created Shelf"));
+      assertThrows(
+          LibraryRepository.LibraryNotFoundException.class,
+          () ->
+              libraryService.createPrivateImportedWork(
+                  readerId,
+                  workspaceLibrary.id(),
+                  "Reader Write",
+                  "Author",
+                  "vi",
+                  sha256("reader-write")));
+      assertThrows(
+          LibraryRepository.WorkNotFoundException.class,
+          () -> libraryService.addTagToWork(readerId, ownerWork.id(), "forbidden"));
+      assertThrows(
+          LibraryRepository.WorkNotFoundException.class,
+          () -> libraryService.createVolume(readerId, ownerWork.id(), 2, "Reader Volume"));
+      assertThrows(
+          LibraryRepository.WorkNotFoundException.class,
+          () ->
+              libraryService.createChapter(
+                  readerId, ownerWork.id(), null, 2, "Reader Chapter", "vi"));
+      assertThrows(
+          LibraryRepository.ChapterNotFoundException.class,
+          () ->
+              libraryService.appendChapterRevision(
+                  readerId, chapter.id(), "plain_text", "Unauthorized edit", List.of()));
+      assertThrows(
+          LibraryRepository.LibraryNotFoundException.class,
+          () ->
+              libraryService.registerAsset(
+                  readerId,
+                  workspaceLibrary.id(),
+                  "workspace/reader-forbidden",
+                  sha256("reader-asset"),
+                  "image/webp",
+                  100,
+                  "reader.webp"));
+
+      WorkspaceRepository.WorkspaceRecord otherWorkspace =
+          workspaceService.createWorkspace(outsiderId, "Separate Team");
+      UUID createdOtherWorkspaceId = otherWorkspace.id();
+      otherWorkspaceId = createdOtherWorkspaceId;
+      LibraryRepository.LibraryRecord otherLibrary =
+          libraryService.createWorkspaceLibrary(
+              outsiderId, createdOtherWorkspaceId, "Separate Shelf");
+      LibraryRepository.WorkRecord otherWork =
+          libraryService.createPrivateImportedWork(
+              outsiderId,
+              otherLibrary.id(),
+              "Separate Story",
+              "Author",
+              "vi",
+              sha256("separate-work"));
+      assertTrue(libraryService.findOwnedWork(outsiderId, ownerWork.id()).isEmpty());
+      assertTrue(libraryService.findOwnedWork(readerId, otherWork.id()).isEmpty());
+      assertThrows(
+          LibraryRepository.LibraryNotFoundException.class,
+          () ->
+              libraryService.listWorks(
+                  outsiderId, workspaceLibrary.id(), "", null, null, null, 10));
+      assertThrows(
+          LibraryRepository.LibraryNotFoundException.class,
+          () ->
+              libraryService.movePersonalLibraryToWorkspace(
+                  outsiderId, defaultLibrary.id(), createdOtherWorkspaceId));
+
+      WorkspaceRepository.MemberRecord revoked =
+          workspaceService.revokeMember(ownerId, workspaceId, readerId);
+      assertEquals(WorkspaceRepository.MemberStatus.REVOKED, revoked.status());
+      assertTrue(libraryService.findOwnedWork(readerId, ownerWork.id()).isEmpty());
+      assertFalse(
+          libraryService.listLibraries(readerId).stream()
+              .anyMatch(library -> library.id().equals(workspaceLibrary.id())));
+    } finally {
+      deleteLibraryTestData(ownerId);
+      deleteLibraryTestData(adminId);
+      deleteLibraryTestData(editorId);
+      deleteLibraryTestData(readerId);
+      deleteLibraryTestData(outsiderId);
+      if (workspaceId != null) deleteWorkspaceTestData(workspaceId);
+      if (otherWorkspaceId != null) deleteWorkspaceTestData(otherWorkspaceId);
+      deleteSessionTestUser(ownerId);
+      deleteSessionTestUser(adminId);
+      deleteSessionTestUser(editorId);
+      deleteSessionTestUser(readerId);
+      deleteSessionTestUser(outsiderId);
+    }
+  }
+
+  @Test
+  void workspaceChangesInvalidateLibraryAndWorkCursors() throws Exception {
+    UUID ownerId = createSessionTestUser("Cursor Scope Owner");
+    UUID memberId = createSessionTestUser("Cursor Scope Member");
+    UUID newcomerId = createSessionTestUser("Cursor Scope New Member");
+    UUID workspaceId = null;
+    try {
+      WorkspaceRepository.WorkspaceRecord workspace =
+          workspaceService.createWorkspace(ownerId, "Cursor Scope Team");
+      workspaceId = workspace.id();
+      workspaceService.addMember(ownerId, workspaceId, memberId, WorkspaceRepository.Role.READER);
+
+      LibraryRepository.LibraryRecord sharedLibrary =
+          libraryService.createWorkspaceLibrary(ownerId, workspaceId, "Cursor Shared Shelf");
+      libraryService.createWorkspaceLibrary(ownerId, workspaceId, "Cursor Second Shelf");
+      LibraryRepository.WorkRecord firstWork =
+          libraryService.createPrivateImportedWork(
+              ownerId,
+              sharedLibrary.id(),
+              "First Shared Story",
+              "Author",
+              "vi",
+              sha256("scope-first-work"));
+      LibraryRepository.WorkRecord secondWork =
+          libraryService.createPrivateImportedWork(
+              ownerId,
+              sharedLibrary.id(),
+              "Second Shared Story",
+              "Author",
+              "vi",
+              sha256("scope-second-work"));
+      setWorkCreatedAt(firstWork.id(), Instant.parse("2026-02-02T00:00:00Z"));
+      setWorkCreatedAt(secondWork.id(), Instant.parse("2026-02-01T00:00:00Z"));
+
+      LibraryService.Page<LibraryRepository.WorkRecord> beforeRoleChange =
+          libraryService.listWorks(memberId, sharedLibrary.id(), "", null, null, null, 1);
+      assertTrue(beforeRoleChange.nextCursor() != null);
+      workspaceService.changeMemberRole(
+          ownerId, workspaceId, memberId, WorkspaceRepository.Role.EDITOR);
+      assertThrows(
+          LibraryCursorCodec.InvalidCursorException.class,
+          () ->
+              libraryService.listWorks(
+                  memberId, sharedLibrary.id(), "", null, null, beforeRoleChange.nextCursor(), 1));
+
+      LibraryService.Page<LibraryRepository.WorkRecord> beforeTransfer =
+          libraryService.listWorks(memberId, sharedLibrary.id(), "", null, null, null, 1);
+      workspaceService.transferOwnership(ownerId, workspaceId, memberId);
+      assertThrows(
+          LibraryCursorCodec.InvalidCursorException.class,
+          () ->
+              libraryService.listWorks(
+                  memberId, sharedLibrary.id(), "", null, null, beforeTransfer.nextCursor(), 1));
+
+      LibraryService.Page<LibraryRepository.WorkRecord> beforeRevocation =
+          libraryService.listWorks(ownerId, sharedLibrary.id(), "", null, null, null, 1);
+      workspaceService.revokeMember(memberId, workspaceId, ownerId);
+      assertThrows(
+          LibraryRepository.LibraryNotFoundException.class,
+          () ->
+              libraryService.listWorks(
+                  ownerId, sharedLibrary.id(), "", null, null, beforeRevocation.nextCursor(), 1));
+      workspaceService.addMember(memberId, workspaceId, ownerId, WorkspaceRepository.Role.READER);
+      assertThrows(
+          LibraryCursorCodec.InvalidCursorException.class,
+          () ->
+              libraryService.listWorks(
+                  ownerId, sharedLibrary.id(), "", null, null, beforeRevocation.nextCursor(), 1));
+
+      LibraryService.Page<LibraryRepository.LibraryRecord> beforeJoin =
+          libraryService.listLibraries(memberId, null, 1);
+      assertTrue(beforeJoin.nextCursor() != null);
+      workspaceService.addMember(
+          memberId, workspaceId, newcomerId, WorkspaceRepository.Role.READER);
+      assertThrows(
+          LibraryCursorCodec.InvalidCursorException.class,
+          () -> libraryService.listLibraries(memberId, beforeJoin.nextCursor(), 1));
+
+      LibraryRepository.LibraryRecord memberDefault =
+          libraryService.createLibrary(memberId, "Cursor Personal");
+      LibraryRepository.LibraryRecord movableLibrary =
+          libraryService.createLibrary(memberId, "Cursor Movable");
+      LibraryRepository.WorkRecord personalFirst =
+          libraryService.createPrivateImportedWork(
+              memberId,
+              movableLibrary.id(),
+              "Personal First",
+              "Author",
+              "vi",
+              sha256("scope-personal-first"));
+      LibraryRepository.WorkRecord personalSecond =
+          libraryService.createPrivateImportedWork(
+              memberId,
+              movableLibrary.id(),
+              "Personal Second",
+              "Author",
+              "vi",
+              sha256("scope-personal-second"));
+      setWorkCreatedAt(personalFirst.id(), Instant.parse("2026-03-02T00:00:00Z"));
+      setWorkCreatedAt(personalSecond.id(), Instant.parse("2026-03-01T00:00:00Z"));
+      LibraryService.Page<LibraryRepository.WorkRecord> beforeLibraryMove =
+          libraryService.listWorks(memberId, movableLibrary.id(), "", null, null, null, 1);
+      assertTrue(beforeLibraryMove.nextCursor() != null);
+      assertTrue(memberDefault.isDefault());
+      libraryService.movePersonalLibraryToWorkspace(memberId, movableLibrary.id(), workspaceId);
+      assertThrows(
+          LibraryCursorCodec.InvalidCursorException.class,
+          () ->
+              libraryService.listWorks(
+                  memberId,
+                  movableLibrary.id(),
+                  "",
+                  null,
+                  null,
+                  beforeLibraryMove.nextCursor(),
+                  1));
+    } finally {
+      deleteLibraryTestData(ownerId);
+      deleteLibraryTestData(memberId);
+      deleteLibraryTestData(newcomerId);
+      if (workspaceId != null) deleteWorkspaceTestData(workspaceId);
+      deleteSessionTestUser(ownerId);
+      deleteSessionTestUser(memberId);
+      deleteSessionTestUser(newcomerId);
+    }
+  }
+
+  @Test
+  void currentPolicyRouteReturnsTheLatestEffectiveVersionAndSameOriginDocuments() throws Exception {
+    MvcResult current = mockMvc.perform(get("/api/v1/auth/policies/current")).andReturn();
+    assertEquals(200, current.getResponse().getStatus());
+    assertTrue(current.getResponse().getHeader("Cache-Control").contains("no-store"));
+    assertEquals("no-cache", current.getResponse().getHeader("Pragma"));
+    JsonNode policies = objectMapper.readTree(current.getResponse().getContentAsString());
+    assertEquals("terms-current-1", policies.path("terms").path("version").asText());
+    assertEquals("privacy-current-1", policies.path("privacyNotice").path("version").asText());
+    assertTrue(
+        Instant.parse(policies.path("terms").path("effectiveAt").asText()).isBefore(Instant.now()));
+    assertEquals(
+        "/api/v1/auth/policies/terms/terms-current-1",
+        policies.path("terms").path("documentUrl").asText());
+    assertEquals(
+        "/api/v1/auth/policies/privacy-notice/privacy-current-1",
+        policies.path("privacyNotice").path("documentUrl").asText());
+
+    MvcResult document =
+        mockMvc.perform(get("/api/v1/auth/policies/terms/terms-current-1")).andReturn();
+    assertEquals(200, document.getResponse().getStatus());
+    assertTrue(document.getResponse().getContentType().startsWith("text/markdown"));
+    assertTrue(document.getResponse().getHeader("Cache-Control").contains("max-age=3600"));
+    assertEquals("nosniff", document.getResponse().getHeader("X-Content-Type-Options"));
+    assertTrue(document.getResponse().getContentAsString().contains("Synthetic test document"));
+
+    MvcResult unknownVersion =
+        mockMvc.perform(get("/api/v1/auth/policies/terms/missing-version")).andReturn();
+    assertEquals(404, unknownVersion.getResponse().getStatus());
+    assertTrue(
+        unknownVersion.getResponse().getContentAsString().contains("POLICY_DOCUMENT_NOT_FOUND"));
+
+    MvcResult futureVersion =
+        mockMvc.perform(get("/api/v1/auth/policies/terms/terms-future-2")).andReturn();
+    assertEquals(404, futureVersion.getResponse().getStatus());
+    assertTrue(
+        futureVersion.getResponse().getContentAsString().contains("POLICY_DOCUMENT_NOT_FOUND"));
+  }
+
+  @Test
+  void policyAcceptanceRequiresBothCurrentExplicitChoicesIsAtomicAndIdempotent() throws Exception {
+    UUID userId = createSessionTestUser("Policy Acceptance Reader");
+    try {
+      SessionService.IssuedSession session = sessionService.create(userId).orElseThrow();
+      String csrfToken = csrfTokenService.tokenFor(session.cookieValue());
+      jakarta.servlet.http.Cookie cookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", session.cookieValue());
+
+      MvcResult missingChoice =
+          mockMvc
+              .perform(
+                  post("/api/v1/auth/policies/accept")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          objectMapper.writeValueAsString(
+                              Map.of(
+                                  "termsVersion", "terms-current-1",
+                                  "privacyNoticeVersion", "privacy-current-1",
+                                  "termsAccepted", true)))
+                      .header("X-CSRF-Token", csrfToken)
+                      .cookie(cookie))
+              .andReturn();
+      assertEquals(422, missingChoice.getResponse().getStatus());
+      assertTrue(
+          missingChoice.getResponse().getContentAsString().contains("POLICY_ACCEPTANCE_REQUIRED"));
+      assertEquals(0, policyAcceptanceCount(userId));
+
+      MvcResult stale =
+          mockMvc
+              .perform(
+                  post("/api/v1/auth/policies/accept")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          objectMapper.writeValueAsString(
+                              Map.of(
+                                  "termsVersion",
+                                  "terms-old",
+                                  "privacyNoticeVersion",
+                                  "privacy-current-1",
+                                  "termsAccepted",
+                                  true,
+                                  "privacyNoticeAcknowledged",
+                                  true)))
+                      .header("X-CSRF-Token", csrfToken)
+                      .cookie(cookie))
+              .andReturn();
+      assertEquals(409, stale.getResponse().getStatus());
+      JsonNode staleProblem = objectMapper.readTree(stale.getResponse().getContentAsString());
+      assertEquals("POLICY_VERSION_STALE", staleProblem.path("code").asText());
+      assertEquals("terms-current-1", staleProblem.path("currentTermsVersion").asText());
+      assertEquals(0, policyAcceptanceCount(userId));
+
+      Map<String, Object> acceptedBody =
+          Map.of(
+              "termsVersion",
+              "terms-current-1",
+              "privacyNoticeVersion",
+              "privacy-current-1",
+              "termsAccepted",
+              true,
+              "privacyNoticeAcknowledged",
+              true);
+      MvcResult accepted =
+          mockMvc
+              .perform(
+                  post("/api/v1/auth/policies/accept")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(objectMapper.writeValueAsString(acceptedBody))
+                      .header("X-CSRF-Token", csrfToken)
+                      .cookie(cookie))
+              .andReturn();
+      assertEquals(200, accepted.getResponse().getStatus());
+      assertTrue(accepted.getResponse().getHeader("Cache-Control").contains("no-store"));
+      JsonNode acceptance = objectMapper.readTree(accepted.getResponse().getContentAsString());
+      Instant termsAcceptedAt = Instant.parse(acceptance.path("termsAcceptedAt").asText());
+      Instant privacyAcknowledgedAt =
+          Instant.parse(acceptance.path("privacyNoticeAcknowledgedAt").asText());
+      assertTrue(termsAcceptedAt.isBefore(Instant.now().plusSeconds(1)));
+      assertTrue(privacyAcknowledgedAt.isBefore(Instant.now().plusSeconds(1)));
+      assertEquals(2, policyAcceptanceCount(userId));
+      assertEquals(2, policyAcceptanceCountBySource(userId, "web-onboarding"));
+
+      MvcResult retry =
+          mockMvc
+              .perform(
+                  post("/api/v1/auth/policies/accept")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(objectMapper.writeValueAsString(acceptedBody))
+                      .header("X-CSRF-Token", csrfToken)
+                      .cookie(cookie))
+              .andReturn();
+      assertEquals(200, retry.getResponse().getStatus());
+      JsonNode retriedAcceptance = objectMapper.readTree(retry.getResponse().getContentAsString());
+      assertEquals(
+          acceptance.path("termsAcceptedAt").asText(),
+          retriedAcceptance.path("termsAcceptedAt").asText());
+      assertEquals(
+          acceptance.path("privacyNoticeAcknowledgedAt").asText(),
+          retriedAcceptance.path("privacyNoticeAcknowledgedAt").asText());
+      assertEquals(2, policyAcceptanceCount(userId));
+
+      MvcResult currentUser = mockMvc.perform(get("/api/v1/auth/me").cookie(cookie)).andReturn();
+      assertTrue(
+          objectMapper
+              .readTree(currentUser.getResponse().getContentAsString())
+              .path("policy")
+              .path("requiredAcceptanceComplete")
+              .asBoolean());
+    } finally {
+      deleteSessionTestUser(userId);
+    }
+  }
+
+  @Test
+  void policyRoutesFailClosedUntilBothApprovedDocumentsAreProvisioned() throws Exception {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement deleteDocuments =
+            connection.prepareStatement("DELETE FROM policy_documents")) {
+      assertEquals(5, deleteDocuments.executeUpdate());
+    }
+
+    UUID userId = createSessionTestUser("Unconfigured Policy Reader");
+    try {
+      SessionService.IssuedSession session = sessionService.create(userId).orElseThrow();
+      String csrfToken = csrfTokenService.tokenFor(session.cookieValue());
+      MvcResult current = mockMvc.perform(get("/api/v1/auth/policies/current")).andReturn();
+      assertEquals(503, current.getResponse().getStatus());
+      assertTrue(current.getResponse().getContentAsString().contains("POLICY_NOT_CONFIGURED"));
+
+      MvcResult acceptance =
+          mockMvc
+              .perform(
+                  post("/api/v1/auth/policies/accept")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          objectMapper.writeValueAsString(
+                              Map.of(
+                                  "termsVersion",
+                                  "terms-current-1",
+                                  "privacyNoticeVersion",
+                                  "privacy-current-1",
+                                  "termsAccepted",
+                                  true,
+                                  "privacyNoticeAcknowledged",
+                                  true)))
+                      .header("X-CSRF-Token", csrfToken)
+                      .cookie(
+                          new jakarta.servlet.http.Cookie(
+                              "__Host-novel_session", session.cookieValue())))
+              .andReturn();
+      assertEquals(503, acceptance.getResponse().getStatus());
+      assertTrue(acceptance.getResponse().getContentAsString().contains("POLICY_NOT_CONFIGURED"));
+      assertEquals(0, policyAcceptanceCount(userId));
+    } finally {
+      deleteSessionTestUser(userId);
+      insertPolicyTestDocuments();
+    }
+  }
+
+  @AfterAll
+  void integrationFixturesAreRemoved() throws SQLException, java.io.IOException {
+    for (String table :
+        List.of(
             "users",
             "external_identities",
             "sessions",
             "google_auth_attempts",
             "google_auth_bootstrap_rate_limits",
+            "import_actor_rate_limits",
             "policy_acceptances",
-            "policy_documents",
+            "import_jobs",
+            "import_parse_jobs",
+            "import_commits",
+            "import_rights_acceptances",
+            "import_rights_statements",
             "auth_events",
             "session_revoke_confirmations",
+            "workspace_members",
+            "workspaces",
+            "library_collection_works",
+            "library_reading_states",
+            "library_collections",
             "libraries",
             "works",
             "volumes",
@@ -148,3459 +3372,1413 @@ class PostgresSchemaIntegrationTests {
             "segments",
             "assets",
             "tags",
-            "work_tags",
-            "workspaces",
-            "workspace_members",
-            "library_reading_states",
-            "library_collections",
-            "library_collection_works",
-            "import_rights_statements",
-            "import_rights_acceptances",
-            "import_jobs",
-            "import_actor_rate_limits",
-            "import_parse_jobs",
-            "import_commits");
-
-    @Autowired
-    private DataSource dataSource;
-
-    @Autowired
-    private GoogleAuthAttemptService googleAuthAttemptService;
-
-    @Autowired
-    private GoogleAuthBootstrapRateLimiter googleAuthBootstrapRateLimiter;
-
-    @Autowired
-    private GoogleIdentityService googleIdentityService;
-
-    @Autowired
-    private SessionService sessionService;
-
-    @Autowired
-    private SessionCsrfTokenService csrfTokenService;
-
-    @Autowired
-    private LogoutAllConfirmationService logoutAllConfirmationService;
-
-    @Autowired
-    private LibraryService libraryService;
-
-    @Autowired
-    private WorkspaceService workspaceService;
-
-    @Autowired
-    private LibraryUserStateService libraryUserStateService;
-
-    @Autowired
-    private com.novelweb.library.imports.ImportStagingFileStore importStagingFileStore;
-
-    @Autowired
-    private ImportStagingCleanupService importStagingCleanupService;
-
-    @Autowired
-    private ImportStagingRateLimiter importStagingRateLimiter;
-
-    @Autowired
-    private ImportParseService importParseService;
-
-    @Autowired
-    private MockMvc mockMvc;
-
-    @Autowired
-    private ObjectMapper objectMapper;
-
-    @MockitoBean
-    private JwtDecoder jwtDecoder;
-
-    @BeforeAll
-    void insertPolicyDocumentFixtures() throws SQLException {
-        insertPolicyTestDocuments();
+            "work_tags")) {
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement count = connection.prepareStatement("SELECT COUNT(*) FROM " + table);
+          ResultSet rows = count.executeQuery()) {
+        assertTrue(rows.next());
+        assertEquals(0, rows.getInt(1), "integration fixtures remain in " + table);
+      }
     }
-
-    private void insertPolicyTestDocuments() throws SQLException {
-        insertPolicyDocument("TERMS", "terms-old", -3,
-                "# Test terms v1\n\nSynthetic test document; not legal copy.");
-        insertPolicyDocument("TERMS", "terms-current-1", -2,
-                "# Test terms v2\n\nSynthetic test document; not legal copy.");
-        insertPolicyDocument("TERMS", "terms-future-2", 1,
-                "# Future test terms\n\nSynthetic test document; not legal copy.");
-        insertPolicyDocument("PRIVACY_NOTICE", "privacy-old", -2,
-                "# Test privacy v1\n\nSynthetic test document; not legal copy.");
-        insertPolicyDocument("PRIVACY_NOTICE", "privacy-current-1", -1,
-                "# Test privacy v2\n\nSynthetic test document; not legal copy.");
+    assertEquals(
+        0, stagedUploadCount(), "integration upload objects remain in local staging storage");
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement deleteDocuments =
+            connection.prepareStatement("DELETE FROM policy_documents")) {
+      deleteDocuments.executeUpdate();
     }
-
-    @Test
-    void liquibaseAppliesTheBaselineAndCreatesExpectedTables() throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement changesetCount = connection.prepareStatement(
-                     "SELECT COUNT(*) FROM databasechangelog");
-             ResultSet changesets = changesetCount.executeQuery()) {
-            changesets.next();
-            assertEquals(69, changesets.getInt(1), "unexpected number of applied changesets");
-        }
-
-        Set<String> actualTables = new HashSet<>();
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement tableQuery = connection.prepareStatement("""
-                     SELECT table_name
-                     FROM information_schema.tables
-                     WHERE table_schema = 'public'
-                       AND table_type = 'BASE TABLE'
-                       AND table_name NOT IN ('databasechangelog', 'databasechangeloglock')
-                     """);
-             ResultSet tables = tableQuery.executeQuery()) {
-            while (tables.next()) {
-                actualTables.add(tables.getString(1));
-            }
-        }
-        assertEquals(EXPECTED_APPLICATION_TABLES, actualTables);
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement count =
+            connection.prepareStatement("SELECT COUNT(*) FROM policy_documents");
+        ResultSet rows = count.executeQuery()) {
+      assertTrue(rows.next());
+      assertEquals(0, rows.getInt(1), "policy document test fixtures remain");
     }
+  }
 
-    @Test
-    void importRightsStatementIsApprovedVersionedFailClosedAndAudited() throws Exception {
-        UUID actorId = createSessionTestUser("Import Rights Reader");
-        UUID blockedActorId = createSessionTestUser("Policy Blocked Import Reader");
-        UUID unconfiguredActorId = createSessionTestUser("Unconfigured Import Creator");
-        UUID approverId = createSessionTestUser("Import Rights Approver");
-        var unconfiguredLibrary = libraryService.createLibrary(unconfiguredActorId, "No rights shelf");
-        String statementVersion = "private-import-test-v1";
-        String statementText = "# Synthetic import rights\n\nFor private test import only.";
-        try {
-            MvcResult unconfigured = mockMvc.perform(get("/api/v1/imports/rights-statement/current")).andReturn();
-            assertEquals(503, unconfigured.getResponse().getStatus());
-            assertTrue(unconfigured.getResponse().getContentAsString()
-                    .contains("IMPORT_RIGHTS_STATEMENT_NOT_CONFIGURED"));
-            addCurrentPolicyAcceptances(unconfiguredActorId);
-            SessionService.IssuedSession unconfiguredSession = sessionService.create(unconfiguredActorId).orElseThrow();
-            jakarta.servlet.http.Cookie unconfiguredCookie = new jakarta.servlet.http.Cookie(
-                    "__Host-novel_session", unconfiguredSession.cookieValue());
-            MvcResult createWithoutStatement = mockMvc.perform(post("/api/v1/imports")
-                            .cookie(unconfiguredCookie)
-                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME,
-                                    csrfTokenService.tokenFor(unconfiguredSession.cookieValue()))
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content(importCreateJson(unconfiguredLibrary.id(), UUID.randomUUID(), statementVersion,
-                                    "story.txt", "text/plain", 12, true)))
-                    .andReturn();
-            assertEquals(503, createWithoutStatement.getResponse().getStatus());
-            assertTrue(createWithoutStatement.getResponse().getContentAsString()
-                    .contains("IMPORT_RIGHTS_STATEMENT_NOT_CONFIGURED"));
-            assertEquals(0, importJobCount());
+  @Test
+  void verifiedEmailIsCaseInsensitiveUniqueButCanBeReusedAfterDeletion() throws SQLException {
+    try (Connection connection = dataSource.getConnection()) {
+      connection.setAutoCommit(false);
+      try {
+        insertUser(connection, "First Reader", "Reader@example.test", "active", false);
 
-            insertImportRightsStatement(statementVersion, statementText, approverId, "APPROVED", -1);
-            insertImportRightsStatement("private-import-draft-v2", "Draft copy", null, "DRAFT", 3);
-            MvcResult current = mockMvc.perform(get("/api/v1/imports/rights-statement/current")).andReturn();
-            assertEquals(200, current.getResponse().getStatus());
-            assertTrue(current.getResponse().getHeader("Cache-Control").contains("no-store"));
-            JsonNode currentBody = objectMapper.readTree(current.getResponse().getContentAsString());
-            assertEquals(statementVersion, currentBody.path("version").asText());
-            assertEquals(statementText, currentBody.path("displayText").asText());
+        Savepoint beforeDuplicate = connection.setSavepoint();
+        SQLException duplicateEmail =
+            assertThrows(
+                SQLException.class,
+                () ->
+                    insertUser(
+                        connection, "Second Reader", "reader@example.test", "active", false));
+        assertEquals("23505", duplicateEmail.getSQLState(), "expected unique-index violation");
+        connection.rollback(beforeDuplicate);
 
-            SQLException immutable = assertThrows(SQLException.class, () -> {
-                try (Connection connection = dataSource.getConnection();
-                     PreparedStatement update = connection.prepareStatement(
-                             "UPDATE import_rights_statements SET display_text = 'tampered' WHERE version = ?")) {
-                    update.setString(1, statementVersion);
-                    update.executeUpdate();
-                }
-            });
-            assertEquals("55000", immutable.getSQLState());
-
-            SessionService.IssuedSession blockedSession = sessionService.create(blockedActorId).orElseThrow();
-            jakarta.servlet.http.Cookie blockedCookie = new jakarta.servlet.http.Cookie(
-                    "__Host-novel_session", blockedSession.cookieValue());
-            String blockedCsrf = csrfTokenService.tokenFor(blockedSession.cookieValue());
-            MvcResult missingConfirmation = mockMvc.perform(post("/api/v1/imports/rights-statement/acceptance")
-                            .cookie(blockedCookie)
-                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, blockedCsrf)
-                            .header("Idempotency-Key", UUID.randomUUID().toString())
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content("{\"statementVersion\":\"" + statementVersion
-                                    + "\",\"confirmed\":false}"))
-                    .andReturn();
-            assertEquals(422, missingConfirmation.getResponse().getStatus());
-            assertEquals(0, importRightsAcceptanceCount(blockedActorId));
-
-            MvcResult policyBlocked = mockMvc.perform(post("/api/v1/imports/rights-statement/acceptance")
-                            .cookie(blockedCookie)
-                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, blockedCsrf)
-                            .header("Idempotency-Key", UUID.randomUUID().toString())
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content("{\"statementVersion\":\"" + statementVersion
-                                    + "\",\"confirmed\":true}"))
-                    .andReturn();
-            assertEquals(403, policyBlocked.getResponse().getStatus());
-            assertTrue(policyBlocked.getResponse().getContentAsString().contains("POLICY_ACCEPTANCE_REQUIRED"));
-            assertEquals(0, importRightsAcceptanceCount(blockedActorId));
-
-            addCurrentPolicyAcceptances(actorId);
-            SessionService.IssuedSession actorSession = sessionService.create(actorId).orElseThrow();
-            jakarta.servlet.http.Cookie actorCookie = new jakarta.servlet.http.Cookie(
-                    "__Host-novel_session", actorSession.cookieValue());
-            String actorCsrf = csrfTokenService.tokenFor(actorSession.cookieValue());
-            String acceptanceKey = UUID.randomUUID().toString();
-
-            MvcResult stale = mockMvc.perform(post("/api/v1/imports/rights-statement/acceptance")
-                            .cookie(actorCookie)
-                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
-                            .header("Idempotency-Key", UUID.randomUUID().toString())
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content("{\"statementVersion\":\"old-version\",\"confirmed\":true}"))
-                    .andReturn();
-            assertEquals(409, stale.getResponse().getStatus());
-            assertTrue(stale.getResponse().getContentAsString().contains(statementVersion));
-            assertEquals(0, importRightsAcceptanceCount(actorId));
-
-            String acceptedBody = "{\"statementVersion\":\"" + statementVersion + "\",\"confirmed\":true}";
-            MvcResult accepted = mockMvc.perform(post("/api/v1/imports/rights-statement/acceptance")
-                            .cookie(actorCookie)
-                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
-                            .header("Idempotency-Key", acceptanceKey)
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content(acceptedBody))
-                    .andReturn();
-            assertEquals(200, accepted.getResponse().getStatus());
-            JsonNode receipt = objectMapper.readTree(accepted.getResponse().getContentAsString());
-            assertEquals(statementVersion, receipt.path("statementVersion").asText());
-            assertEquals(HexFormat.of().formatHex(sha256(statementText)), receipt.path("statementSha256").asText());
-            assertEquals(1, importRightsAcceptanceCount(actorId));
-            SQLException immutableAudit = assertThrows(SQLException.class, () -> {
-                try (Connection connection = dataSource.getConnection();
-                     PreparedStatement update = connection.prepareStatement(
-                             "UPDATE import_rights_acceptances SET source = 'tampered' WHERE id = ?")) {
-                    update.setObject(1, UUID.fromString(receipt.path("id").asText()));
-                    update.executeUpdate();
-                }
-            });
-            assertEquals("55000", immutableAudit.getSQLState());
-
-            MvcResult retry = mockMvc.perform(post("/api/v1/imports/rights-statement/acceptance")
-                            .cookie(actorCookie)
-                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
-                            .header("Idempotency-Key", acceptanceKey)
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content(acceptedBody))
-                    .andReturn();
-            JsonNode retryReceipt = objectMapper.readTree(retry.getResponse().getContentAsString());
-            assertEquals(200, retry.getResponse().getStatus());
-            assertEquals(receipt.path("id").asText(), retryReceipt.path("id").asText());
-            assertEquals(receipt.path("acceptedAt").asText(), retryReceipt.path("acceptedAt").asText());
-            assertEquals(1, importRightsAcceptanceCount(actorId));
-
-            insertImportRightsStatement("private-import-test-v2", "Second approved copy", approverId,
-                    "APPROVED", -1);
-            MvcResult lateRetry = mockMvc.perform(post("/api/v1/imports/rights-statement/acceptance")
-                            .cookie(actorCookie)
-                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
-                            .header("Idempotency-Key", acceptanceKey)
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content(acceptedBody))
-                    .andReturn();
-            JsonNode lateRetryReceipt = objectMapper.readTree(lateRetry.getResponse().getContentAsString());
-            assertEquals(200, lateRetry.getResponse().getStatus());
-            assertEquals(receipt.path("id").asText(), lateRetryReceipt.path("id").asText());
-
-            MvcResult reusedKey = mockMvc.perform(post("/api/v1/imports/rights-statement/acceptance")
-                            .cookie(actorCookie)
-                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
-                            .header("Idempotency-Key", acceptanceKey)
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content("{\"statementVersion\":\"private-import-test-v2\",\"confirmed\":true}"))
-                    .andReturn();
-            assertEquals(409, reusedKey.getResponse().getStatus());
-            assertTrue(reusedKey.getResponse().getContentAsString().contains("IDEMPOTENCY_KEY_REUSED"));
-            assertEquals(1, importRightsAcceptanceCount(actorId));
-
-            MvcResult secondAcceptance = mockMvc.perform(post("/api/v1/imports/rights-statement/acceptance")
-                            .cookie(actorCookie)
-                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
-                            .header("Idempotency-Key", UUID.randomUUID().toString())
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content("{\"statementVersion\":\"private-import-test-v2\",\"confirmed\":true}"))
-                    .andReturn();
-            assertEquals(200, secondAcceptance.getResponse().getStatus());
-            assertEquals(2, importRightsAcceptanceCount(actorId));
-        } finally {
-            deleteImportRightsTestAcceptances(actorId);
-            deleteImportRightsTestAcceptances(blockedActorId);
-            deleteLibrary(unconfiguredLibrary.id());
-            deleteSessionTestUser(actorId);
-            deleteSessionTestUser(blockedActorId);
-            deleteSessionTestUser(unconfiguredActorId);
-            deleteImportRightsTestStatement(statementVersion);
-            deleteImportRightsTestStatement("private-import-test-v2");
-            deleteImportRightsTestStatement("private-import-draft-v2");
-            deleteSessionTestUser(approverId);
-        }
+        insertUser(connection, "Deleted Reader", "reader@example.test", "deleted", true);
+      } finally {
+        connection.rollback();
+      }
     }
-
-    @Test
-    void importCreationRequiresEveryGateAndIssuesOneActorBoundUploadTarget() throws Exception {
-        UUID actorId = createSessionTestUser("Import Creation Owner");
-        UUID otherActorId = createSessionTestUser("Import Creation Other Actor");
-        UUID blockedActorId = createSessionTestUser("Import Creation Policy Blocked");
-        UUID approverId = createSessionTestUser("Import Creation Approver");
-        var library = libraryService.createLibrary(actorId, "Private import shelf");
-        var otherLibrary = libraryService.createLibrary(otherActorId, "Other private shelf");
-        var blockedLibrary = libraryService.createLibrary(blockedActorId, "Policy blocked shelf");
-        String version = "private-import-create-v1";
-        String statementText = "# Synthetic test rights\n\nTest-only private import statement.";
-        byte[] content = "A short private test story.".getBytes(StandardCharsets.UTF_8);
-        UUID rightsReceiptId = null;
-        UUID importId = null;
-        try {
-            insertImportRightsStatement(version, statementText, approverId, "APPROVED", -1);
-            addCurrentPolicyAcceptances(actorId);
-            UUID blockedReceiptId = UUID.randomUUID();
-            insertImportRightsAcceptance(blockedActorId, blockedReceiptId, version, statementText);
-
-            SessionService.IssuedSession actorSession = sessionService.create(actorId).orElseThrow();
-            SessionService.IssuedSession otherSession = sessionService.create(otherActorId).orElseThrow();
-            SessionService.IssuedSession blockedSession = sessionService.create(blockedActorId).orElseThrow();
-            jakarta.servlet.http.Cookie actorCookie = new jakarta.servlet.http.Cookie(
-                    "__Host-novel_session", actorSession.cookieValue());
-            jakarta.servlet.http.Cookie otherCookie = new jakarta.servlet.http.Cookie(
-                    "__Host-novel_session", otherSession.cookieValue());
-            jakarta.servlet.http.Cookie blockedCookie = new jakarta.servlet.http.Cookie(
-                    "__Host-novel_session", blockedSession.cookieValue());
-            String actorCsrf = csrfTokenService.tokenFor(actorSession.cookieValue());
-            String otherCsrf = csrfTokenService.tokenFor(otherSession.cookieValue());
-            String blockedCsrf = csrfTokenService.tokenFor(blockedSession.cookieValue());
-            String filename = "C:\\fakepath\\private-test.txt";
-
-            MvcResult missingCsrf = mockMvc.perform(post("/api/v1/imports")
-                            .cookie(actorCookie)
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content(importCreateJson(library.id(), UUID.randomUUID(), version, filename,
-                                    "text/plain", content.length, true)))
-                    .andReturn();
-            assertEquals(403, missingCsrf.getResponse().getStatus());
-            assertEquals(0, importJobCount());
-
-            MvcResult missingPolicy = mockMvc.perform(post("/api/v1/imports")
-                            .cookie(blockedCookie)
-                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, blockedCsrf)
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content(importCreateJson(blockedLibrary.id(), blockedReceiptId, version, filename,
-                                    "text/plain", content.length, true)))
-                    .andReturn();
-            assertEquals(403, missingPolicy.getResponse().getStatus());
-            assertTrue(missingPolicy.getResponse().getContentAsString().contains("POLICY_ACCEPTANCE_REQUIRED"));
-            assertTrue(importRightsAcceptanceConsumedAt(blockedReceiptId).isEmpty());
-            assertEquals(0, importJobCount());
-
-            String missingRights = importCreateJson(library.id(), UUID.randomUUID(), version, filename,
-                    "text/plain", content.length, null);
-            MvcResult missing = mockMvc.perform(post("/api/v1/imports")
-                            .cookie(actorCookie)
-                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content(missingRights))
-                    .andReturn();
-            assertEquals(422, missing.getResponse().getStatus());
-            assertTrue(missing.getResponse().getContentAsString().contains("IMPORT_RIGHTS_CONFIRMATION_REQUIRED"));
-
-            String falseRights = importCreateJson(library.id(), UUID.randomUUID(), version, filename,
-                    "text/plain", content.length, false);
-            MvcResult unconfirmed = mockMvc.perform(post("/api/v1/imports")
-                            .cookie(actorCookie)
-                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content(falseRights))
-                    .andReturn();
-            assertEquals(422, unconfirmed.getResponse().getStatus());
-            assertEquals(0, importJobCount(actorId));
-
-            MvcResult accepted = mockMvc.perform(post("/api/v1/imports/rights-statement/acceptance")
-                            .cookie(actorCookie)
-                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
-                            .header("Idempotency-Key", UUID.randomUUID().toString())
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content("{\"statementVersion\":\"" + version + "\",\"confirmed\":true}"))
-                    .andReturn();
-            assertEquals(200, accepted.getResponse().getStatus());
-            rightsReceiptId = UUID.fromString(objectMapper.readTree(accepted.getResponse().getContentAsString())
-                    .path("id").asText());
-
-            MvcResult stale = mockMvc.perform(post("/api/v1/imports")
-                            .cookie(actorCookie)
-                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content(importCreateJson(library.id(), rightsReceiptId, "old-statement-v0", filename,
-                                    "text/plain", content.length, true)))
-                    .andReturn();
-            assertEquals(409, stale.getResponse().getStatus());
-            assertTrue(stale.getResponse().getContentAsString().contains("IMPORT_RIGHTS_STATEMENT_STALE"));
-
-            MvcResult unsupportedType = mockMvc.perform(post("/api/v1/imports")
-                            .cookie(actorCookie)
-                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content(importCreateJson(library.id(), rightsReceiptId, version, "story.exe",
-                                    "application/octet-stream", content.length, true)))
-                    .andReturn();
-            assertEquals(422, unsupportedType.getResponse().getStatus());
-
-            MvcResult mismatchedType = mockMvc.perform(post("/api/v1/imports")
-                            .cookie(actorCookie)
-                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content(importCreateJson(library.id(), rightsReceiptId, version, "story.txt",
-                                    "application/epub+zip", content.length, true)))
-                    .andReturn();
-            assertEquals(422, mismatchedType.getResponse().getStatus());
-
-            MvcResult oversized = mockMvc.perform(post("/api/v1/imports")
-                            .cookie(actorCookie)
-                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content(importCreateJson(library.id(), rightsReceiptId, version, "story.txt",
-                                    "text/plain", 1025, true)))
-                    .andReturn();
-            assertEquals(422, oversized.getResponse().getStatus());
-
-            MvcResult forgedFields = mockMvc.perform(post("/api/v1/imports")
-                            .cookie(actorCookie)
-                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content(importCreateJson(library.id(), rightsReceiptId, version, filename,
-                                    "text/plain", content.length, true, Map.of(
-                                            "userId", otherActorId.toString(),
-                                            "storageKey", "../../outside.upload",
-                                            "createdAt", "2000-01-01T00:00:00Z"))))
-                    .andReturn();
-            assertEquals(400, forgedFields.getResponse().getStatus());
-            assertEquals(0, importJobCount());
-            assertFalse(Files.exists(importStagingFileStore.targetPath(UUID.randomUUID())));
-
-            MvcResult foreignLibrary = mockMvc.perform(post("/api/v1/imports")
-                            .cookie(actorCookie)
-                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content(importCreateJson(otherLibrary.id(),
-                                    rightsReceiptId, version, filename, "text/plain", content.length, true)))
-                    .andReturn();
-            assertEquals(404, foreignLibrary.getResponse().getStatus());
-            assertEquals(0, importJobCount());
-
-            MvcResult created = mockMvc.perform(post("/api/v1/imports")
-                            .cookie(actorCookie)
-                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content(importCreateJson(library.id(), rightsReceiptId, version, filename,
-                                    "text/plain", content.length, true)))
-                    .andReturn();
-            assertEquals(201, created.getResponse().getStatus());
-            assertTrue(created.getResponse().getHeader("Cache-Control").contains("no-store"));
-            assertTrue(created.getResponse().getHeader("Location").startsWith("/api/v1/imports/"));
-            JsonNode createdBody = objectMapper.readTree(created.getResponse().getContentAsString());
-            importId = UUID.fromString(createdBody.path("job").path("id").asText());
-            assertEquals("upload_pending", createdBody.path("job").path("status").asText());
-            assertEquals("PUT", createdBody.path("uploadTarget").path("method").asText());
-            assertEquals("/api/v1/imports/" + importId + "/content",
-                    createdBody.path("uploadTarget").path("url").asText());
-            String originalToken = createdBody.path("uploadTarget").path("headers")
-                    .path("X-Import-Upload-Token").asText();
-            assertFalse(originalToken.isBlank());
-            assertEquals(1, importJobCount(actorId));
-            assertEquals(actorId, importJobOwner(importId));
-            assertEquals(library.id(), importJobLibrary(importId));
-            assertEquals("private-test.txt", importJobFilename(importId));
-            assertEquals("staging/" + importId + ".upload", importJobStorageKey(importId));
-            assertTrue(Arrays.equals(sha256(originalToken.getBytes(StandardCharsets.US_ASCII)),
-                    importJobTokenHash(importId)));
-            assertTrue(importRightsAcceptanceConsumedAt(rightsReceiptId).isPresent());
-
-            MvcResult retry = mockMvc.perform(post("/api/v1/imports")
-                            .cookie(actorCookie)
-                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content(importCreateJson(library.id(), rightsReceiptId, version, filename,
-                                    "text/plain", content.length, true)))
-                    .andReturn();
-            assertEquals(201, retry.getResponse().getStatus());
-            JsonNode retryBody = objectMapper.readTree(retry.getResponse().getContentAsString());
-            assertEquals(importId.toString(), retryBody.path("job").path("id").asText());
-            String rotatedToken = retryBody.path("uploadTarget").path("headers")
-                    .path("X-Import-Upload-Token").asText();
-            assertNotEquals(originalToken, rotatedToken);
-            assertEquals(1, importJobCount(actorId));
-
-            MvcResult wrongActor = mockMvc.perform(put("/api/v1/imports/{id}/content", importId)
-                            .cookie(otherCookie)
-                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, otherCsrf)
-                            .header("X-Import-Upload-Token", rotatedToken)
-                            .contentType(MediaType.APPLICATION_OCTET_STREAM)
-                            .content(content))
-                    .andReturn();
-            assertEquals(404, wrongActor.getResponse().getStatus());
-            MvcResult revokedToken = mockMvc.perform(put("/api/v1/imports/{id}/content", importId)
-                            .cookie(actorCookie)
-                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
-                            .header("X-Import-Upload-Token", originalToken)
-                            .contentType(MediaType.APPLICATION_OCTET_STREAM)
-                            .content(content))
-                    .andReturn();
-            assertEquals(404, revokedToken.getResponse().getStatus());
-            assertFalse(Files.exists(importStagingFileStore.targetPath(importId)));
-
-            byte[] invalidUtf8 = new byte[content.length];
-            Arrays.fill(invalidUtf8, (byte) 'x');
-            invalidUtf8[0] = (byte) 0xc3;
-            invalidUtf8[1] = 0x28;
-            MvcResult invalidContent = mockMvc.perform(put("/api/v1/imports/{id}/content", importId)
-                            .cookie(actorCookie)
-                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
-                            .header("X-Import-Upload-Token", rotatedToken)
-                            .contentType(MediaType.APPLICATION_OCTET_STREAM)
-                            .content(invalidUtf8))
-                    .andReturn();
-            assertEquals(422, invalidContent.getResponse().getStatus());
-            assertTrue(invalidContent.getResponse().getContentAsString().contains("IMPORT_CONTENT_INVALID"));
-            assertEquals("upload_pending", importJobStatus(importId));
-            assertTrue(Arrays.equals(sha256(rotatedToken.getBytes(StandardCharsets.US_ASCII)),
-                    importJobTokenHash(importId)));
-            assertFalse(Files.exists(importStagingFileStore.targetPath(importId)));
-
-            MvcResult uploaded = mockMvc.perform(put("/api/v1/imports/{id}/content", importId)
-                            .cookie(actorCookie)
-                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
-                            .header("X-Import-Upload-Token", rotatedToken)
-                            .contentType(MediaType.APPLICATION_OCTET_STREAM)
-                            .content(content))
-                    .andReturn();
-            assertEquals(204, uploaded.getResponse().getStatus());
-            assertTrue(uploaded.getResponse().getHeader("Cache-Control").contains("no-store"));
-            assertTrue(Arrays.equals(content, Files.readAllBytes(importStagingFileStore.targetPath(importId))));
-            assertEquals("uploaded", importJobStatus(importId));
-            assertTrue(Arrays.equals(sha256(content), importJobContentHash(importId)));
-            assertEquals(content.length, importJobActualSize(importId));
-            assertNull(importJobTokenHash(importId));
-
-            MvcResult replayedUpload = mockMvc.perform(put("/api/v1/imports/{id}/content", importId)
-                            .cookie(actorCookie)
-                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
-                            .header("X-Import-Upload-Token", rotatedToken)
-                            .contentType(MediaType.APPLICATION_OCTET_STREAM)
-                            .content(content))
-                    .andReturn();
-            assertEquals(404, replayedUpload.getResponse().getStatus());
-
-            MvcResult secondAcceptance = mockMvc.perform(post("/api/v1/imports/rights-statement/acceptance")
-                            .cookie(actorCookie)
-                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
-                            .header("Idempotency-Key", UUID.randomUUID().toString())
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content("{\"statementVersion\":\"" + version + "\",\"confirmed\":true}"))
-                    .andReturn();
-            UUID secondReceipt = UUID.fromString(objectMapper.readTree(
-                    secondAcceptance.getResponse().getContentAsString()).path("id").asText());
-            MvcResult secondCreated = mockMvc.perform(post("/api/v1/imports")
-                            .cookie(actorCookie)
-                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content(importCreateJson(library.id(), secondReceipt, version, "oversized.txt",
-                                    "text/plain", 10, true)))
-                    .andReturn();
-            assertEquals(201, secondCreated.getResponse().getStatus());
-            UUID oversizedJobId = UUID.fromString(objectMapper.readTree(secondCreated.getResponse().getContentAsString())
-                    .path("job").path("id").asText());
-            String oversizedToken = objectMapper.readTree(secondCreated.getResponse().getContentAsString())
-                    .path("uploadTarget").path("headers").path("X-Import-Upload-Token").asText();
-            MvcResult overrun = mockMvc.perform(put("/api/v1/imports/{id}/content", oversizedJobId)
-                            .cookie(actorCookie)
-                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
-                            .header("X-Import-Upload-Token", oversizedToken)
-                            .contentType(MediaType.APPLICATION_OCTET_STREAM)
-                            .content(new byte[1025]))
-                    .andReturn();
-            assertEquals(413, overrun.getResponse().getStatus());
-            assertFalse(Files.exists(importStagingFileStore.targetPath(oversizedJobId)));
-            assertEquals("upload_pending", importJobStatus(oversizedJobId));
-        } finally {
-            deleteImportJobs(actorId);
-            deleteImportRightsTestAcceptances(actorId);
-            deleteImportJobs(blockedActorId);
-            deleteImportRightsTestAcceptances(blockedActorId);
-            deleteLibrary(library.id());
-            deleteLibrary(otherLibrary.id());
-            deleteLibrary(blockedLibrary.id());
-            deleteSessionTestUser(actorId);
-            deleteSessionTestUser(otherActorId);
-            deleteSessionTestUser(blockedActorId);
-            deleteImportRightsTestStatement(version);
-            deleteSessionTestUser(approverId);
-        }
-    }
-
-    @Test
-    void privateEpubParseQueueIsOwnerScopedIdempotentAndStoresOnlyCompletePreviews() throws Exception {
-        UUID actorId = createSessionTestUser("EPUB Parse Owner");
-        UUID otherActorId = createSessionTestUser("EPUB Parse Other Owner");
-        UUID approverId = createSessionTestUser("EPUB Parse Approver");
-        var library = libraryService.createLibrary(actorId, "Private parser shelf");
-        String version = "private-import-parse-integration-v1";
-        String statementText = "Synthetic rights copy for private EPUB parser integration coverage.";
-        UUID validJobId = UUID.randomUUID();
-        UUID invalidJobId = UUID.randomUUID();
-        UUID validReceipt = UUID.randomUUID();
-        UUID invalidReceipt = UUID.randomUUID();
-        var actorSession = sessionService.create(actorId).orElseThrow();
-        var otherSession = sessionService.create(otherActorId).orElseThrow();
-        jakarta.servlet.http.Cookie actorCookie = new jakarta.servlet.http.Cookie(
-                "__Host-novel_session", actorSession.cookieValue());
-        jakarta.servlet.http.Cookie otherCookie = new jakarta.servlet.http.Cookie(
-                "__Host-novel_session", otherSession.cookieValue());
-        String actorCsrf = csrfTokenService.tokenFor(actorSession.cookieValue());
-        String otherCsrf = csrfTokenService.tokenFor(otherSession.cookieValue());
-
-        try {
-            insertImportRightsStatement(version, statementText, approverId, "APPROVED", -1);
-            String longTitle = "📖".repeat(120);
-            byte[] validEpub = tinyEpub(longTitle, "Chapter One", "A short private preview.",
-                    "Chapter One", "A short private preview.");
-            byte[] malformedEpub = tinyEpub("A Broken Novel", "broken", "<opf-malformed");
-            assertTrue(validEpub.length <= 1024,
-                    "integration EPUB fixture must fit the configured upload cap: " + validEpub.length);
-            assertTrue(malformedEpub.length <= 1024, "malformed integration EPUB must fit the configured upload cap");
-            insertUploadedEpubImportFixture(validJobId, actorId, library.id(), validReceipt,
-                    version, statementText, validEpub, 0);
-            insertUploadedEpubImportFixture(invalidJobId, actorId, library.id(), invalidReceipt,
-                    version, statementText, malformedEpub, 0);
-            importStagingFileStore.store(validJobId, new ByteArrayInputStream(validEpub), validEpub.length);
-            importStagingFileStore.store(invalidJobId, new ByteArrayInputStream(malformedEpub), malformedEpub.length);
-
-            assertEquals(404, mockMvc.perform(get("/api/v1/imports/{id}", validJobId)
-                            .cookie(otherCookie)).andReturn().getResponse().getStatus());
-            assertEquals(404, mockMvc.perform(post("/api/v1/imports/{id}/parse", validJobId)
-                            .cookie(otherCookie)
-                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, otherCsrf))
-                    .andReturn().getResponse().getStatus());
-            MvcResult missingCsrf = mockMvc.perform(post("/api/v1/imports/{id}/parse", validJobId)
-                            .cookie(actorCookie))
-                    .andReturn();
-            assertEquals(403, missingCsrf.getResponse().getStatus());
-            assertEquals(0, importParseJobCount(validJobId));
-
-            int workCountBefore = workCountForLibrary(library.id());
-            int chapterCountBefore = chapterCountForLibrary(library.id());
-            MvcResult accepted = mockMvc.perform(post("/api/v1/imports/{id}/parse", validJobId)
-                            .cookie(actorCookie)
-                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf))
-                    .andReturn();
-            assertEquals(202, accepted.getResponse().getStatus());
-            assertTrue(accepted.getResponse().getHeader("Cache-Control").contains("no-store"));
-            assertEquals("2", accepted.getResponse().getHeader("Retry-After"));
-            assertEquals("/api/v1/imports/" + validJobId, accepted.getResponse().getHeader("Location"));
-            assertEquals(1, importParseJobCount(validJobId));
-
-            MvcResult retry = mockMvc.perform(post("/api/v1/imports/{id}/parse", validJobId)
-                            .cookie(actorCookie)
-                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf))
-                    .andReturn();
-            assertEquals(202, retry.getResponse().getStatus());
-            assertEquals(1, importParseJobCount(validJobId), "repeated parse calls must reuse the parser job");
-
-            JsonNode readyStatus = awaitImportStatus(actorCookie, validJobId, "ready_to_commit");
-            assertEquals("📖".repeat(120), readyStatus.path("previewSummary").path("title").asText());
-            assertEquals("An Author", readyStatus.path("previewSummary").path("author").asText());
-            assertEquals(2, readyStatus.path("previewSummary").path("chapterCount").asInt());
-            assertEquals("ready_to_commit", importParseJobStatus(validJobId));
-            assertTrue(importParsePreviewByteCount(validJobId) > 0);
-            assertTrue(importParsePreviewByteCount(validJobId) <= 1_048_576);
-            assertEquals(32, importParseEtagBytes(validJobId));
-            assertEquals("epub3-v2", importParseParserVersion(validJobId));
-            JsonNode storedParseResult = objectMapper.readTree(importParsePreviewJson(validJobId));
-            assertEquals("epub3-v2", storedParseResult.path("parserVersion").asText());
-            assertEquals(2, storedParseResult.path("chapters").get(0).path("segments").size());
-            assertEquals("h1", storedParseResult.path("chapters").get(0).path("segments")
-                    .get(0).path("kind").asText());
-            assertEquals("A short private preview.", storedParseResult.path("chapters").get(0)
-                    .path("segments").get(1).path("text").asText());
-            assertEquals(workCountBefore, workCountForLibrary(library.id()));
-            assertEquals(chapterCountBefore, chapterCountForLibrary(library.id()));
-
-            MvcResult foreignPreview = mockMvc.perform(get("/api/v1/imports/{id}/preview", validJobId)
-                            .cookie(otherCookie))
-                    .andReturn();
-            assertEquals(404, foreignPreview.getResponse().getStatus());
-            MvcResult firstPageResult = mockMvc.perform(get("/api/v1/imports/{id}/preview", validJobId)
-                            .queryParam("limit", "1")
-                            .cookie(actorCookie))
-                    .andReturn();
-            assertEquals(200, firstPageResult.getResponse().getStatus());
-            assertTrue(firstPageResult.getResponse().getHeader("Cache-Control").contains("no-store"));
-            String originalEtag = firstPageResult.getResponse().getHeader("ETag");
-            JsonNode firstPage = objectMapper.readTree(firstPageResult.getResponse().getContentAsString());
-            assertEquals(1, firstPage.path("version").asInt());
-            assertEquals(2, firstPage.path("chapterCount").asInt());
-            assertEquals(1, firstPage.path("chapters").size());
-            assertTrue(firstPage.path("nextCursor").isTextual());
-            assertFalse(firstPageResult.getResponse().getContentAsString().contains("sourcePath"));
-            assertFalse(firstPageResult.getResponse().getContentAsString().contains("textPreview"));
-            assertFalse(firstPageResult.getResponse().getContentAsString().contains("segments"));
-            String firstChapterId = firstPage.path("chapters").get(0).path("id").asText();
-
-            String originalCursor = firstPage.path("nextCursor").asText();
-            MvcResult secondPageResult = mockMvc.perform(get("/api/v1/imports/{id}/preview", validJobId)
-                            .queryParam("limit", "1")
-                            .queryParam("cursor", originalCursor)
-                            .cookie(actorCookie))
-                    .andReturn();
-            assertEquals(200, secondPageResult.getResponse().getStatus());
-            assertEquals(originalEtag, secondPageResult.getResponse().getHeader("ETag"));
-            JsonNode secondPage = objectMapper.readTree(secondPageResult.getResponse().getContentAsString());
-            assertEquals(1, secondPage.path("chapters").size());
-            String secondChapterId = secondPage.path("chapters").get(0).path("id").asText();
-            assertNotEquals(firstChapterId, secondChapterId);
-
-            byte[] invalidOrder = objectMapper.writeValueAsBytes(Map.of("chapterOrder", List.of(firstChapterId)));
-            MvcResult invalidMapping = mockMvc.perform(patch("/api/v1/imports/{id}/preview", validJobId)
-                            .cookie(actorCookie)
-                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
-                            .header("If-Match", originalEtag)
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content(invalidOrder))
-                    .andReturn();
-            assertEquals(422, invalidMapping.getResponse().getStatus());
-            assertEquals(originalEtag, mockMvc.perform(get("/api/v1/imports/{id}/preview", validJobId)
-                            .queryParam("limit", "1")
-                            .cookie(actorCookie)).andReturn().getResponse().getHeader("ETag"));
-
-            MvcResult missingPatchCsrf = mockMvc.perform(patch("/api/v1/imports/{id}/preview", validJobId)
-                            .cookie(actorCookie)
-                            .header("If-Match", originalEtag)
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content("{\"title\":\"Edited Book\"}"))
-                    .andReturn();
-            assertEquals(403, missingPatchCsrf.getResponse().getStatus());
-            MvcResult foreignPatch = mockMvc.perform(patch("/api/v1/imports/{id}/preview", validJobId)
-                            .cookie(otherCookie)
-                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, otherCsrf)
-                            .header("If-Match", originalEtag)
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content("{\"title\":\"Other Owner\"}"))
-                    .andReturn();
-            assertEquals(404, foreignPatch.getResponse().getStatus());
-
-            byte[] validEdit = objectMapper.writeValueAsBytes(Map.of(
-                    "title", "Edited Book",
-                    "author", "Edited Author",
-                    "language", "en",
-                    "chapterOrder", List.of(secondChapterId, firstChapterId)));
-            MvcResult updatedPreviewResult = mockMvc.perform(patch("/api/v1/imports/{id}/preview", validJobId)
-                            .cookie(actorCookie)
-                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
-                            .header("If-Match", originalEtag)
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content(validEdit))
-                    .andReturn();
-            assertEquals(200, updatedPreviewResult.getResponse().getStatus());
-            String updatedEtag = updatedPreviewResult.getResponse().getHeader("ETag");
-            assertNotEquals(originalEtag, updatedEtag);
-            JsonNode updatedPreview = objectMapper.readTree(updatedPreviewResult.getResponse().getContentAsString());
-            assertEquals(2, updatedPreview.path("version").asInt());
-            assertEquals("Edited Book", updatedPreview.path("title").asText());
-            assertEquals("Edited Author", updatedPreview.path("author").asText());
-            assertEquals("en", updatedPreview.path("language").asText());
-            assertEquals(secondChapterId, updatedPreview.path("chapters").get(0).path("id").asText());
-            assertEquals(1, updatedPreview.path("chapters").get(0).path("ordinal").asInt());
-            assertEquals(1, importParseAttempt(validJobId));
-            assertEquals(2, importPreviewVersion(validJobId));
-            assertEquals(workCountBefore, workCountForLibrary(library.id()));
-            assertEquals(chapterCountBefore, chapterCountForLibrary(library.id()));
-
-            MvcResult staleEdit = mockMvc.perform(patch("/api/v1/imports/{id}/preview", validJobId)
-                            .cookie(actorCookie)
-                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
-                            .header("If-Match", originalEtag)
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content("{\"title\":\"Stale Edit\"}"))
-                    .andReturn();
-            assertEquals(412, staleEdit.getResponse().getStatus());
-            MvcResult staleCursor = mockMvc.perform(get("/api/v1/imports/{id}/preview", validJobId)
-                            .queryParam("limit", "1")
-                            .queryParam("cursor", originalCursor)
-                            .cookie(actorCookie))
-                    .andReturn();
-            assertEquals(400, staleCursor.getResponse().getStatus());
-            JsonNode editedStatus = objectMapper.readTree(mockMvc.perform(get("/api/v1/imports/{id}", validJobId)
-                            .cookie(actorCookie)).andReturn().getResponse().getContentAsString());
-            assertEquals("Edited Book", editedStatus.path("previewSummary").path("title").asText());
-
-            addCurrentPolicyAcceptances(actorId);
-            String commitKey = "import-commit-idempotency-0001";
-            MvcResult missingCommitEtag = mockMvc.perform(post("/api/v1/imports/{id}/commit", validJobId)
-                            .cookie(actorCookie)
-                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
-                            .header("Idempotency-Key", commitKey))
-                    .andReturn();
-            assertEquals(428, missingCommitEtag.getResponse().getStatus());
-            MvcResult missingCommitCsrf = mockMvc.perform(post("/api/v1/imports/{id}/commit", validJobId)
-                            .cookie(actorCookie)
-                            .header("If-Match", updatedEtag)
-                            .header("Idempotency-Key", commitKey))
-                    .andReturn();
-            assertEquals(403, missingCommitCsrf.getResponse().getStatus());
-            MvcResult foreignCommit = mockMvc.perform(post("/api/v1/imports/{id}/commit", validJobId)
-                            .cookie(otherCookie)
-                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, otherCsrf)
-                            .header("If-Match", updatedEtag)
-                            .header("Idempotency-Key", commitKey))
-                    .andReturn();
-            assertEquals(404, foreignCommit.getResponse().getStatus());
-            MvcResult staleCommit = mockMvc.perform(post("/api/v1/imports/{id}/commit", validJobId)
-                            .cookie(actorCookie)
-                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
-                            .header("If-Match", originalEtag)
-                            .header("Idempotency-Key", commitKey))
-                    .andReturn();
-            assertEquals(412, staleCommit.getResponse().getStatus());
-            MvcResult missingCommitKey = mockMvc.perform(post("/api/v1/imports/{id}/commit", validJobId)
-                            .cookie(actorCookie)
-                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
-                            .header("If-Match", updatedEtag))
-                    .andReturn();
-            assertEquals(400, missingCommitKey.getResponse().getStatus());
-
-            createFailImportCommitSegmentsTrigger();
-            try {
-                MvcResult rollbackCommit = mockMvc.perform(post("/api/v1/imports/{id}/commit", validJobId)
-                                .cookie(actorCookie)
-                                .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
-                                .header("If-Match", updatedEtag)
-                                .header("Idempotency-Key", commitKey))
-                        .andReturn();
-                assertEquals(503, rollbackCommit.getResponse().getStatus());
-                assertEquals("uploaded", importJobStatus(validJobId));
-                assertEquals("ready_to_commit", importParseJobStatus(validJobId));
-                assertTrue(importParsePreviewByteCount(validJobId) > 0);
-                assertEquals(workCountBefore, workCountForLibrary(library.id()),
-                        "a failed chapter/segment write must roll back the work row");
-                assertEquals(chapterCountBefore, chapterCountForLibrary(library.id()),
-                        "a failed chapter/segment write must roll back all chapter rows");
-            } finally {
-                dropFailImportCommitSegmentsTrigger();
-            }
-
-            Path interruptedStagingCleanup = importStagingFileStore.targetPath(validJobId);
-            Path cleanupBlocker = interruptedStagingCleanup.resolve("interrupted-cleanup.bin");
-            Files.deleteIfExists(interruptedStagingCleanup);
-            Files.createDirectory(interruptedStagingCleanup);
-            Files.writeString(cleanupBlocker, "synthetic interrupted cleanup");
-            try {
-                CountDownLatch commitReady = new CountDownLatch(2);
-                CountDownLatch commitStart = new CountDownLatch(1);
-                ExecutorService commitExecutor = Executors.newFixedThreadPool(2);
-                try {
-                    List<Future<MvcResult>> commitRequests = new ArrayList<>();
-                    for (int index = 0; index < 2; index++) {
-                        commitRequests.add(commitExecutor.submit(() -> {
-                            commitReady.countDown();
-                            if (!commitStart.await(10, TimeUnit.SECONDS)) {
-                                throw new IllegalStateException("concurrent import commit did not start");
-                            }
-                            return mockMvc.perform(post("/api/v1/imports/{id}/commit", validJobId)
-                                            .cookie(actorCookie)
-                                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
-                                            .header("If-Match", updatedEtag)
-                                            .header("Idempotency-Key", commitKey))
-                                    .andReturn();
-                        }));
-                    }
-                    assertTrue(commitReady.await(10, TimeUnit.SECONDS), "concurrent commit requests did not become ready");
-                    commitStart.countDown();
-                    MvcResult committed = commitRequests.get(0).get(20, TimeUnit.SECONDS);
-                    MvcResult concurrentRetry = commitRequests.get(1).get(20, TimeUnit.SECONDS);
-                    assertEquals(201, committed.getResponse().getStatus());
-                    assertEquals(201, concurrentRetry.getResponse().getStatus());
-                    assertTrue(committed.getResponse().getHeader("Cache-Control").contains("no-store"));
-                    assertEquals("/api/v1/works/" + objectMapper.readTree(committed.getResponse().getContentAsString())
-                            .path("id").asText(), committed.getResponse().getHeader("Location"));
-                    JsonNode committedWork = objectMapper.readTree(committed.getResponse().getContentAsString());
-                    JsonNode concurrentWork = objectMapper.readTree(concurrentRetry.getResponse().getContentAsString());
-                    assertEquals(committedWork.path("id").asText(), concurrentWork.path("id").asText());
-                    assertEquals("Edited Book", committedWork.path("title").asText());
-                    assertEquals("Edited Author", committedWork.path("author").asText());
-                    assertEquals("en", committedWork.path("language").asText());
-                    assertEquals("private", committedWork.path("visibility").asText());
-                    assertEquals(2, committedWork.path("chapterCount").asInt());
-                    UUID committedWorkId = UUID.fromString(committedWork.path("id").asText());
-                    assertEquals(1, workCountForLibrary(library.id()) - workCountBefore);
-                    assertEquals(2, chapterCountForLibrary(library.id()) - chapterCountBefore);
-                    assertEquals(2, revisionCountForWork(committedWorkId));
-                    assertEquals(4, segmentCountForWork(committedWorkId));
-                    assertTrue(revisionContentForWork(committedWorkId).contains("A short private preview."));
-                    assertEquals("committed", importJobStatus(validJobId));
-                    assertEquals("committed", importParseJobStatus(validJobId));
-                    JsonNode committedStatus = objectMapper.readTree(mockMvc.perform(get(
-                                    "/api/v1/imports/{id}", validJobId).cookie(actorCookie))
-                            .andReturn().getResponse().getContentAsString());
-                    assertEquals("committed", committedStatus.path("status").asText());
-                    assertFalse(committedStatus.has("previewSummary"));
-                    assertEquals(0, importParsePreviewByteCount(validJobId),
-                            "committing must clear private preview and source-segment staging JSON");
-                    assertEquals(0, importParseEtagBytes(validJobId));
-                    assertEquals(409, mockMvc.perform(get("/api/v1/imports/{id}/preview", validJobId)
-                                    .cookie(actorCookie)).andReturn().getResponse().getStatus());
-                    assertNull(importJobStagingFileDeletedAt(validJobId),
-                            "the commit must survive a process interruption before staging cleanup");
-                    assertTrue(Files.exists(cleanupBlocker));
-                    assertFalse(importParseService.processNext(), "a committed job must not be reclaimed by the parser worker");
-
-                    MvcResult retryCommit = mockMvc.perform(post("/api/v1/imports/{id}/commit", validJobId)
-                                    .cookie(actorCookie)
-                                    .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
-                                    .header("If-Match", updatedEtag)
-                                    .header("Idempotency-Key", commitKey))
-                            .andReturn();
-                    assertEquals(201, retryCommit.getResponse().getStatus());
-                    assertEquals(committedWork.path("id").asText(),
-                            objectMapper.readTree(retryCommit.getResponse().getContentAsString()).path("id").asText());
-                    MvcResult reusedKey = mockMvc.perform(post("/api/v1/imports/{id}/commit", validJobId)
-                                    .cookie(actorCookie)
-                                    .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
-                                    .header("If-Match", originalEtag)
-                                    .header("Idempotency-Key", commitKey))
-                            .andReturn();
-                    assertEquals(409, reusedKey.getResponse().getStatus());
-                    MvcResult keyReusedForOtherImport = mockMvc.perform(post(
-                                    "/api/v1/imports/{id}/commit", invalidJobId)
-                                    .cookie(actorCookie)
-                                    .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
-                                    .header("If-Match", updatedEtag)
-                                    .header("Idempotency-Key", commitKey))
-                            .andReturn();
-                    assertEquals(409, keyReusedForOtherImport.getResponse().getStatus());
-                    MvcResult otherKey = mockMvc.perform(post("/api/v1/imports/{id}/commit", validJobId)
-                                    .cookie(actorCookie)
-                                    .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
-                                    .header("If-Match", updatedEtag)
-                                    .header("Idempotency-Key", "import-commit-idempotency-0002"))
-                            .andReturn();
-                    assertEquals(409, otherKey.getResponse().getStatus());
-                    assertEquals(1, workCountForLibrary(library.id()) - workCountBefore,
-                            "same-key retries and concurrent requests must create exactly one work");
-                } finally {
-                    commitExecutor.shutdownNow();
-                }
-
-                    assertThrows(IllegalStateException.class, importStagingCleanupService::cleanupExpiredStaging,
-                            "a failed post-commit file cleanup must leave the committed job retryable");
-                    assertNull(importJobStagingFileDeletedAt(validJobId));
-                    Files.delete(cleanupBlocker);
-                    Files.delete(interruptedStagingCleanup);
-                    assertEquals(1, importStagingCleanupService.cleanupExpiredStaging());
-                    assertNotNull(importJobStagingFileDeletedAt(validJobId));
-                    assertFalse(Files.exists(interruptedStagingCleanup));
-            } finally {
-                if (Files.exists(cleanupBlocker)) Files.delete(cleanupBlocker);
-                Files.deleteIfExists(interruptedStagingCleanup);
-            }
-
-            MvcResult failedRequest = mockMvc.perform(post("/api/v1/imports/{id}/parse", invalidJobId)
-                            .cookie(actorCookie)
-                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf))
-                    .andReturn();
-            assertEquals(202, failedRequest.getResponse().getStatus());
-            JsonNode failedStatus = awaitImportStatus(actorCookie, invalidJobId, "failed");
-            assertEquals("EPUB_XML_INVALID", failedStatus.path("failureCode").asText());
-            assertTrue(failedStatus.path("warnings").size() > 0);
-            assertEquals(0, importParsePreviewByteCount(invalidJobId));
-            assertEquals(workCountBefore + 1, workCountForLibrary(library.id()));
-            assertEquals(chapterCountBefore + 2, chapterCountForLibrary(library.id()));
-        } finally {
-            importStagingFileStore.delete(validJobId);
-            importStagingFileStore.delete(invalidJobId);
-            deleteImportJobs(actorId);
-            deleteImportRightsTestAcceptances(actorId);
-            deleteImportedWorksForLibrary(library.id());
-            deleteLibrary(library.id());
-            deleteImportRightsTestStatement(version);
-            deleteSessionTestUser(actorId);
-            deleteSessionTestUser(otherActorId);
-            deleteSessionTestUser(approverId);
-        }
-    }
-
-    @Test
-    void expiredImportStagingIsDeletedAndFailedCleanupCanRetry() throws Exception {
-        UUID actorId = createSessionTestUser("Import Retention Owner");
-        UUID approverId = createSessionTestUser("Import Retention Approver");
-        var library = libraryService.createLibrary(actorId, "Retention test shelf");
-        String version = "private-import-retention-v1";
-        String statementText = "Synthetic test-only import retention statement.";
-        UUID blockedJobId = UUID.randomUUID();
-        UUID expiredUploadedId = UUID.randomUUID();
-        UUID expiredPendingId = UUID.randomUUID();
-        UUID activeUploadedId = UUID.randomUUID();
-        Path blockedTarget = importStagingFileStore.targetPath(blockedJobId);
-        byte[] content = "temporary private import bytes".getBytes(StandardCharsets.UTF_8);
-        try {
-            insertImportRightsStatement(version, statementText, approverId, "APPROVED", -10);
-            insertImportJobFixture(blockedJobId, actorId, library.id(), UUID.randomUUID(), version,
-                    "uploaded", content, 4);
-            insertImportJobFixture(expiredUploadedId, actorId, library.id(), UUID.randomUUID(), version,
-                    "uploaded", content, 1);
-            insertImportJobFixture(expiredPendingId, actorId, library.id(), UUID.randomUUID(), version,
-                    "upload_pending", content, 1);
-            insertImportJobFixture(activeUploadedId, actorId, library.id(), UUID.randomUUID(), version,
-                    "uploaded", content, 0);
-            insertQueuedParseJobFixture(expiredUploadedId);
-
-            importStagingFileStore.store(expiredUploadedId, new ByteArrayInputStream(content), content.length);
-            importStagingFileStore.store(activeUploadedId, new ByteArrayInputStream(content), content.length);
-            Files.createDirectories(blockedTarget);
-            Files.write(blockedTarget.resolve("keep.bin"), content);
-
-            assertThrows(IllegalStateException.class, importStagingCleanupService::cleanupExpiredStaging);
-            assertEquals("expired", importJobStatus(blockedJobId));
-            assertNull(importJobStagingFileDeletedAt(blockedJobId));
-            assertTrue(Files.exists(blockedTarget.resolve("keep.bin")));
-            assertEquals("expired", importJobStatus(expiredUploadedId));
-            assertEquals("expired", importJobStatus(expiredPendingId));
-            assertEquals(0, importParseJobCount(expiredUploadedId),
-                    "expiry cleanup must remove private parser preview/queue state before reclaiming the upload");
-
-            Files.delete(blockedTarget.resolve("keep.bin"));
-            Files.delete(blockedTarget);
-            assertEquals(3, importStagingCleanupService.cleanupExpiredStaging());
-
-            assertFalse(Files.exists(importStagingFileStore.targetPath(expiredUploadedId)));
-            assertFalse(Files.exists(importStagingFileStore.targetPath(expiredPendingId)));
-            assertEquals("expired", importJobStatus(expiredUploadedId));
-            assertEquals("expired", importJobStatus(expiredPendingId));
-            assertTrue(importJobStagingFileDeletedAt(blockedJobId) != null);
-            assertTrue(importJobStagingFileDeletedAt(expiredUploadedId) != null);
-            assertTrue(importJobStagingFileDeletedAt(expiredPendingId) != null);
-            assertEquals(0, importStagingCleanupService.cleanupExpiredStaging());
-
-            assertEquals("uploaded", importJobStatus(activeUploadedId));
-            assertNull(importJobStagingFileDeletedAt(activeUploadedId));
-            assertTrue(Files.exists(importStagingFileStore.targetPath(activeUploadedId)));
-        } finally {
-            if (Files.exists(blockedTarget.resolve("keep.bin"))) Files.delete(blockedTarget.resolve("keep.bin"));
-            Files.deleteIfExists(blockedTarget);
-            deleteImportJobs(actorId);
-            deleteImportRightsTestAcceptances(actorId);
-            deleteLibrary(library.id());
-            deleteImportRightsTestStatement(version);
-            deleteSessionTestUser(actorId);
-            deleteSessionTestUser(approverId);
-        }
-    }
-
-    @Test
-    void importQuotaSerializesConcurrentCreatesAndPreservesRejectedReceipts() throws Exception {
-        UUID actorId = createSessionTestUser("Concurrent Import Quota Owner");
-        UUID approverId = createSessionTestUser("Concurrent Import Quota Approver");
-        var library = libraryService.createLibrary(actorId, "Concurrent quota shelf");
-        String version = "private-import-quota-concurrency-v1";
-        String statementText = "Synthetic test-only concurrent import quota statement.";
-        List<UUID> receiptIds = List.of(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID());
-        try {
-            insertImportRightsStatement(version, statementText, approverId, "APPROVED", -1);
-            addCurrentPolicyAcceptances(actorId);
-            for (UUID receiptId : receiptIds) {
-                insertImportRightsAcceptance(actorId, receiptId, version, statementText);
-            }
-
-            SessionService.IssuedSession actorSession = sessionService.create(actorId).orElseThrow();
-            jakarta.servlet.http.Cookie actorCookie = new jakarta.servlet.http.Cookie(
-                    "__Host-novel_session", actorSession.cookieValue());
-            String actorCsrf = csrfTokenService.tokenFor(actorSession.cookieValue());
-            CountDownLatch ready = new CountDownLatch(receiptIds.size());
-            CountDownLatch start = new CountDownLatch(1);
-            ExecutorService executor = Executors.newFixedThreadPool(receiptIds.size());
-            try {
-                List<Future<Integer>> requests = new ArrayList<>();
-                for (UUID receiptId : receiptIds) {
-                    requests.add(executor.submit(() -> {
-                        ready.countDown();
-                        if (!start.await(10, TimeUnit.SECONDS)) throw new IllegalStateException("start latch timed out");
-                        return mockMvc.perform(post("/api/v1/imports")
-                                        .cookie(actorCookie)
-                                        .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
-                                        .contentType(MediaType.APPLICATION_JSON)
-                                        .content(importCreateJson(library.id(), receiptId, version,
-                                                "quota-concurrent.txt", "text/plain", 100, true)))
-                                .andReturn().getResponse().getStatus();
-                    }));
-                }
-                assertTrue(ready.await(10, TimeUnit.SECONDS), "concurrent import requests did not become ready");
-                start.countDown();
-                List<Integer> statuses = new ArrayList<>();
-                for (Future<Integer> request : requests) statuses.add(request.get(30, TimeUnit.SECONDS));
-                assertEquals(2, statuses.stream().filter(status -> status == 201).count());
-                assertEquals(1, statuses.stream().filter(status -> status == 429).count());
-            } finally {
-                executor.shutdownNow();
-            }
-
-            assertEquals(2, importJobCount(actorId), "concurrent creates must not overshoot the active-job cap");
-            assertEquals(2, receiptIds.stream().filter(receiptId -> {
-                try {
-                    return importRightsAcceptanceConsumedAt(receiptId).isPresent();
-                } catch (SQLException exception) {
-                    throw new IllegalStateException(exception);
-                }
-            }).count());
-            assertEquals(1, receiptIds.stream().filter(receiptId -> {
-                try {
-                    return importRightsAcceptanceConsumedAt(receiptId).isEmpty();
-                } catch (SQLException exception) {
-                    throw new IllegalStateException(exception);
-                }
-            }).count(), "quota-rejected rights receipt must remain available");
-        } finally {
-            deleteImportJobs(actorId);
-            deleteImportRightsTestAcceptances(actorId);
-            deleteLibrary(library.id());
-            deleteSessionTestUser(actorId);
-            deleteImportRightsTestStatement(version);
-            deleteSessionTestUser(approverId);
-        }
-    }
-
-    @Test
-    void importByteQuotaIncludesExpiredFilesUntilCleanupThenAllowsRetry() throws Exception {
-        UUID actorId = createSessionTestUser("Import Byte Quota Owner");
-        UUID approverId = createSessionTestUser("Import Byte Quota Approver");
-        var library = libraryService.createLibrary(actorId, "Byte quota shelf");
-        String version = "private-import-quota-bytes-v1";
-        String statementText = "Synthetic test-only import byte quota statement.";
-        UUID expiredJobId = UUID.randomUUID();
-        UUID expiredReceiptId = UUID.randomUUID();
-        UUID retryReceiptId = UUID.randomUUID();
-        byte[] expiredContent = new byte[1024];
-        try {
-            insertImportRightsStatement(version, statementText, approverId, "APPROVED", -1);
-            addCurrentPolicyAcceptances(actorId);
-            insertImportJobFixture(expiredJobId, actorId, library.id(), expiredReceiptId,
-                    version, "uploaded", expiredContent, 1);
-            insertImportRightsAcceptance(actorId, retryReceiptId, version, statementText);
-            importStagingFileStore.store(expiredJobId, new ByteArrayInputStream(expiredContent), expiredContent.length);
-
-            SessionService.IssuedSession actorSession = sessionService.create(actorId).orElseThrow();
-            jakarta.servlet.http.Cookie actorCookie = new jakarta.servlet.http.Cookie(
-                    "__Host-novel_session", actorSession.cookieValue());
-            String actorCsrf = csrfTokenService.tokenFor(actorSession.cookieValue());
-            String requestBody = importCreateJson(library.id(), retryReceiptId, version,
-                    "after-cleanup.txt", "text/plain", 1, true);
-
-            MvcResult quotaRejected = mockMvc.perform(post("/api/v1/imports")
-                            .cookie(actorCookie)
-                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content(requestBody))
-                    .andReturn();
-            assertEquals(429, quotaRejected.getResponse().getStatus());
-            assertTrue(quotaRejected.getResponse().getContentAsString().contains("IMPORT_STAGING_QUOTA_EXCEEDED"));
-            assertTrue(importRightsAcceptanceConsumedAt(retryReceiptId).isEmpty());
-            assertTrue(Files.exists(importStagingFileStore.targetPath(expiredJobId)));
-
-            assertEquals(1, importStagingCleanupService.cleanupExpiredStaging());
-            assertFalse(Files.exists(importStagingFileStore.targetPath(expiredJobId)));
-            MvcResult retry = mockMvc.perform(post("/api/v1/imports")
-                            .cookie(actorCookie)
-                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content(requestBody))
-                    .andReturn();
-            assertEquals(201, retry.getResponse().getStatus());
-            assertTrue(importRightsAcceptanceConsumedAt(retryReceiptId).isPresent());
-        } finally {
-            deleteImportJobs(actorId);
-            deleteImportRightsTestAcceptances(actorId);
-            deleteLibrary(library.id());
-            deleteSessionTestUser(actorId);
-            deleteImportRightsTestStatement(version);
-            deleteSessionTestUser(approverId);
-        }
-    }
-
-    @Test
-    void importCreateAndUploadRateLimitsRejectBeforeReceiptConsumptionOrFileWrites() throws Exception {
-        UUID actorId = createSessionTestUser("Import Rate Limit Owner");
-        UUID approverId = createSessionTestUser("Import Rate Limit Approver");
-        var library = libraryService.createLibrary(actorId, "Rate limit shelf");
-        String version = "private-import-rate-limit-v1";
-        String statementText = "Synthetic test-only import rate-limit statement.";
-        UUID initialReceiptId = UUID.randomUUID();
-        UUID blockedReceiptId = UUID.randomUUID();
-        UUID createdJobId = null;
-        try {
-            insertImportRightsStatement(version, statementText, approverId, "APPROVED", -1);
-            addCurrentPolicyAcceptances(actorId);
-            insertImportRightsAcceptance(actorId, initialReceiptId, version, statementText);
-            insertImportRightsAcceptance(actorId, blockedReceiptId, version, statementText);
-
-            SessionService.IssuedSession actorSession = sessionService.create(actorId).orElseThrow();
-            jakarta.servlet.http.Cookie actorCookie = new jakarta.servlet.http.Cookie(
-                    "__Host-novel_session", actorSession.cookieValue());
-            String actorCsrf = csrfTokenService.tokenFor(actorSession.cookieValue());
-            MvcResult created = mockMvc.perform(post("/api/v1/imports")
-                            .cookie(actorCookie)
-                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content(importCreateJson(library.id(), initialReceiptId, version,
-                                    "rate-limited.txt", "text/plain", 8, true)))
-                    .andReturn();
-            assertEquals(201, created.getResponse().getStatus());
-            JsonNode createdBody = objectMapper.readTree(created.getResponse().getContentAsString());
-            createdJobId = UUID.fromString(createdBody.path("job").path("id").asText());
-            String uploadToken = createdBody.path("uploadTarget").path("headers")
-                    .path("X-Import-Upload-Token").asText();
-
-            for (int index = 1; index < 20; index++) {
-                assertTrue(importStagingRateLimiter.tryAcquire(actorId, ImportStagingRateLimiter.Action.CREATE).allowed());
-            }
-            MvcResult createLimited = mockMvc.perform(post("/api/v1/imports")
-                            .cookie(actorCookie)
-                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content(importCreateJson(library.id(), blockedReceiptId, version,
-                                    "blocked.txt", "text/plain", 8, true)))
-                    .andReturn();
-            assertEquals(429, createLimited.getResponse().getStatus());
-            assertTrue(createLimited.getResponse().getContentAsString().contains("IMPORT_CREATE_RATE_LIMITED"));
-            assertTrue(Integer.parseInt(createLimited.getResponse().getHeader("Retry-After")) > 0);
-            assertTrue(importRightsAcceptanceConsumedAt(blockedReceiptId).isEmpty());
-            assertEquals(1, importJobCount(actorId));
-
-            for (int index = 0; index < 20; index++) {
-                assertTrue(importStagingRateLimiter.tryAcquire(actorId, ImportStagingRateLimiter.Action.UPLOAD).allowed());
-            }
-            byte[] uploadBytes = "blocked".getBytes(StandardCharsets.UTF_8);
-            MvcResult uploadLimited = mockMvc.perform(put("/api/v1/imports/{id}/content", createdJobId)
-                            .cookie(actorCookie)
-                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
-                            .header("X-Import-Upload-Token", uploadToken)
-                            .contentType(MediaType.APPLICATION_OCTET_STREAM)
-                            .content(uploadBytes))
-                    .andReturn();
-            assertEquals(429, uploadLimited.getResponse().getStatus());
-            assertTrue(uploadLimited.getResponse().getContentAsString().contains("IMPORT_UPLOAD_RATE_LIMITED"));
-            assertTrue(Integer.parseInt(uploadLimited.getResponse().getHeader("Retry-After")) > 0);
-            assertEquals("upload_pending", importJobStatus(createdJobId));
-            assertTrue(Arrays.equals(sha256(uploadToken.getBytes(StandardCharsets.US_ASCII)),
-                    importJobTokenHash(createdJobId)));
-            assertFalse(Files.exists(importStagingFileStore.targetPath(createdJobId)));
-
-            try (Connection connection = dataSource.getConnection();
-                 PreparedStatement ageBuckets = connection.prepareStatement("""
-                         UPDATE import_actor_rate_limits
-                         SET last_seen_at = clock_timestamp() - INTERVAL '25 hours'
-                         WHERE user_id = ?
-                         """)) {
-                ageBuckets.setObject(1, actorId);
-                assertEquals(2, ageBuckets.executeUpdate());
-            }
-            assertEquals(2, importStagingRateLimiter.purgeInactiveBuckets());
-            try (Connection connection = dataSource.getConnection();
-                 PreparedStatement count = connection.prepareStatement(
-                         "SELECT COUNT(*) FROM import_actor_rate_limits WHERE user_id = ?")) {
-                count.setObject(1, actorId);
-                try (ResultSet row = count.executeQuery()) {
-                    assertTrue(row.next());
-                    assertEquals(0, row.getInt(1), "inactive actor buckets must be purged");
-                }
-            }
-        } finally {
-            deleteImportJobs(actorId);
-            deleteImportRightsTestAcceptances(actorId);
-            deleteLibrary(library.id());
-            deleteSessionTestUser(actorId);
-            deleteImportRightsTestStatement(version);
-            deleteSessionTestUser(approverId);
-        }
-    }
-
-    @Test
-    void personalLibraryStateIsActorScopedVersionedAndIndependentOfWorkLifecycle() throws Exception {
-        UUID ownerId = createSessionTestUser("Library State Owner");
-        UUID otherUserId = createSessionTestUser("Other Library State Owner");
-        UUID workId = null;
-        try {
-            LibraryRepository.LibraryRecord library = libraryService.createLibrary(ownerId, "State Shelf");
-            LibraryRepository.WorkRecord work = libraryService.createPrivateImportedWork(
-                    ownerId, library.id(), "State Test Novel", "Author", "vi", sha256("library-state-work"));
-            workId = work.id();
-            setWorkStatus(workId, "archived");
-
-            MvcResult unauthenticated = mockMvc.perform(get("/api/v1/me/works/{workId}/library-state", workId))
-                    .andReturn();
-            assertEquals(401, unauthenticated.getResponse().getStatus());
-            assertTrue(unauthenticated.getResponse().getContentAsString().contains("UNAUTHENTICATED"));
-
-            SessionService.IssuedSession ownerSession = sessionService.create(ownerId).orElseThrow();
-            SessionService.IssuedSession otherSession = sessionService.create(otherUserId).orElseThrow();
-            jakarta.servlet.http.Cookie ownerCookie = new jakarta.servlet.http.Cookie(
-                    "__Host-novel_session", ownerSession.cookieValue());
-            String ownerCsrf = csrfTokenService.tokenFor(ownerSession.cookieValue());
-
-            MvcResult policyBlocked = mockMvc.perform(get("/api/v1/me/library/collections")
-                            .cookie(ownerCookie))
-                    .andReturn();
-            assertEquals(403, policyBlocked.getResponse().getStatus());
-            assertTrue(policyBlocked.getResponse().getContentAsString().contains("POLICY_ACCEPTANCE_REQUIRED"));
-
-            addCurrentPolicyAcceptances(ownerId);
-            addCurrentPolicyAcceptances(otherUserId);
-
-            MvcResult missingCsrf = mockMvc.perform(post("/api/v1/me/library/collections")
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content("{\"name\":\"Must Not Be Stored\"}")
-                            .cookie(ownerCookie))
-                    .andReturn();
-            assertEquals(403, missingCsrf.getResponse().getStatus());
-            assertTrue(missingCsrf.getResponse().getContentAsString().contains("CSRF_FAILED"));
-            assertTrue(libraryUserStateService.listCollections(ownerId).isEmpty());
-
-            MvcResult created = mockMvc.perform(post("/api/v1/me/library/collections")
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content("{\"name\":\"  Weekend Reads  \"}")
-                            .header("X-CSRF-Token", ownerCsrf)
-                            .cookie(ownerCookie))
-                    .andReturn();
-            assertEquals(201, created.getResponse().getStatus());
-            assertTrue(created.getResponse().getHeader("Cache-Control").contains("no-store"));
-            JsonNode collectionBody = objectMapper.readTree(created.getResponse().getContentAsString());
-            UUID collectionId = UUID.fromString(collectionBody.path("id").asText());
-            assertEquals("Weekend Reads", collectionBody.path("name").asText());
-            assertEquals(0, collectionBody.path("workCount").asInt());
-
-            MvcResult initialState = mockMvc.perform(get("/api/v1/me/works/{workId}/library-state", workId)
-                            .cookie(ownerCookie))
-                    .andReturn();
-            assertEquals(200, initialState.getResponse().getStatus());
-            assertEquals("\"v0\"", initialState.getResponse().getHeader("ETag"));
-            JsonNode initialBody = objectMapper.readTree(initialState.getResponse().getContentAsString());
-            assertEquals("want-to-read", initialBody.path("readingStatus").asText());
-            assertEquals(0, initialBody.path("version").asLong());
-            assertTrue(initialBody.path("collectionIds").isEmpty());
-            assertTrue(initialBody.path("updatedAt").isNull());
-
-            MvcResult saved = mockMvc.perform(put("/api/v1/me/works/{workId}/library-state", workId)
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content("{\"readingStatus\":\"reading\",\"collectionIds\":[\""
-                                    + collectionId + "\"]}")
-                            .header("If-Match", "\"v0\"")
-                            .header("X-CSRF-Token", ownerCsrf)
-                            .cookie(ownerCookie))
-                    .andReturn();
-            assertEquals(200, saved.getResponse().getStatus());
-            assertEquals("\"v1\"", saved.getResponse().getHeader("ETag"));
-            JsonNode savedBody = objectMapper.readTree(saved.getResponse().getContentAsString());
-            assertEquals("reading", savedBody.path("readingStatus").asText());
-            assertEquals(1, savedBody.path("version").asLong());
-            assertEquals(collectionId.toString(), savedBody.path("collectionIds").get(0).asText());
-            assertEquals("archived", libraryService.findOwnedWork(ownerId, workId).orElseThrow().status(),
-                    "personal reading state must not change work lifecycle status");
-
-            MvcResult retryAfterLostResponse = mockMvc.perform(put(
-                            "/api/v1/me/works/{workId}/library-state", workId)
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content("{\"readingStatus\":\"reading\",\"collectionIds\":[\""
-                                    + collectionId + "\"]}")
-                            .header("If-Match", "\"v0\"")
-                            .header("X-CSRF-Token", ownerCsrf)
-                            .cookie(ownerCookie))
-                    .andReturn();
-            assertEquals(200, retryAfterLostResponse.getResponse().getStatus());
-            assertEquals("\"v1\"", retryAfterLostResponse.getResponse().getHeader("ETag"));
-
-            MvcResult stale = mockMvc.perform(put("/api/v1/me/works/{workId}/library-state", workId)
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content("{\"readingStatus\":\"completed\",\"collectionIds\":[]}")
-                            .header("If-Match", "\"v0\"")
-                            .header("X-CSRF-Token", ownerCsrf)
-                            .cookie(ownerCookie))
-                    .andReturn();
-            assertEquals(409, stale.getResponse().getStatus());
-            assertTrue(stale.getResponse().getContentAsString().contains("LIBRARY_STATE_VERSION_STALE"));
-            assertEquals(1, objectMapper.readTree(stale.getResponse().getContentAsString())
-                    .path("latest").path("version").asLong());
-
-            MvcResult otherUserRead = mockMvc.perform(get("/api/v1/me/works/{workId}/library-state", workId)
-                            .cookie(new jakarta.servlet.http.Cookie(
-                                    "__Host-novel_session", otherSession.cookieValue())))
-                    .andReturn();
-            assertEquals(404, otherUserRead.getResponse().getStatus());
-
-            LibraryUserStateRepository.CollectionRecord sameNameForOtherActor =
-                    libraryUserStateService.createCollection(otherUserId, "Weekend Reads");
-            assertEquals("Weekend Reads", sameNameForOtherActor.name());
-            assertEquals(1, libraryUserStateService.listCollections(otherUserId).size());
-            assertThrows(LibraryUserStateRepository.CollectionNameConflictException.class,
-                    () -> libraryUserStateService.createCollection(ownerId, "weekend reads"));
-
-            for (int index = 1; index < LibraryUserStateService.MAX_COLLECTIONS; index++) {
-                libraryUserStateService.createCollection(ownerId, "Reading List " + index);
-            }
-            assertEquals(12, libraryUserStateService.listCollections(ownerId).size());
-            assertThrows(LibraryUserStateRepository.CollectionLimitReachedException.class,
-                    () -> libraryUserStateService.createCollection(ownerId, "Thirteenth List"));
-
-            MvcResult deleted = mockMvc.perform(delete("/api/v1/me/library/collections/{collectionId}", collectionId)
-                            .header("X-CSRF-Token", ownerCsrf)
-                            .cookie(ownerCookie))
-                    .andReturn();
-            assertEquals(204, deleted.getResponse().getStatus());
-            MvcResult stateAfterCollectionDelete = mockMvc.perform(
-                            get("/api/v1/me/works/{workId}/library-state", workId).cookie(ownerCookie))
-                    .andReturn();
-            assertEquals(200, stateAfterCollectionDelete.getResponse().getStatus());
-            assertEquals("\"v2\"", stateAfterCollectionDelete.getResponse().getHeader("ETag"));
-            JsonNode afterDelete = objectMapper.readTree(stateAfterCollectionDelete.getResponse().getContentAsString());
-            assertEquals("reading", afterDelete.path("readingStatus").asText());
-            assertTrue(afterDelete.path("collectionIds").isEmpty());
-        } finally {
-            if (workId != null) deleteLibraryUserData(ownerId, workId);
-            deleteLibraryUserData(otherUserId, null);
-            deleteSessionTestUser(otherUserId);
-            deleteSessionTestUser(ownerId);
-        }
-    }
-
-    @Test
-    void libraryListRoutesEnforceActorScopePolicyAndSignedPagination() throws Exception {
-        UUID ownerId = createSessionTestUser("Library Query Owner");
-        UUID readerId = createSessionTestUser("Library Query Reader");
-        UUID outsiderId = createSessionTestUser("Library Query Outsider");
-        UUID workspaceId = null;
-        try {
-            libraryService.createLibrary(ownerId, "Personal Shelf");
-            WorkspaceRepository.WorkspaceRecord workspace =
-                    workspaceService.createWorkspace(ownerId, "Library Query Workspace");
-            workspaceId = workspace.id();
-            workspaceService.addMember(ownerId, workspaceId, readerId, WorkspaceRepository.Role.READER);
-            LibraryRepository.LibraryRecord sharedLibrary =
-                    libraryService.createWorkspaceLibrary(ownerId, workspaceId, "Shared Shelf");
-            LibraryRepository.WorkRecord firstWork = libraryService.createPrivateImportedWork(
-                    ownerId, sharedLibrary.id(), "Cursor Novel One", "Query Author", "vi",
-                    sha256("Cursor Novel One"));
-            LibraryRepository.WorkRecord secondWork = libraryService.createPrivateImportedWork(
-                    ownerId, sharedLibrary.id(), "Cursor Novel Two", "Query Author", "vi",
-                    sha256("Cursor Novel Two"));
-            libraryService.addTagToWork(ownerId, firstWork.id(), "Shared Story");
-            setWorkStatus(firstWork.id(), "archived");
-            addCurrentPolicyAcceptances(ownerId);
-            addCurrentPolicyAcceptances(readerId);
-            addCurrentPolicyAcceptances(outsiderId);
-
-            SessionService.IssuedSession ownerSession = sessionService.create(ownerId).orElseThrow();
-            SessionService.IssuedSession readerSession = sessionService.create(readerId).orElseThrow();
-            SessionService.IssuedSession outsiderSession = sessionService.create(outsiderId).orElseThrow();
-            jakarta.servlet.http.Cookie ownerCookie = new jakarta.servlet.http.Cookie(
-                    "__Host-novel_session", ownerSession.cookieValue());
-            jakarta.servlet.http.Cookie readerCookie = new jakarta.servlet.http.Cookie(
-                    "__Host-novel_session", readerSession.cookieValue());
-            jakarta.servlet.http.Cookie outsiderCookie = new jakarta.servlet.http.Cookie(
-                    "__Host-novel_session", outsiderSession.cookieValue());
-
-            assertEquals(401, mockMvc.perform(get("/api/v1/libraries")).andReturn().getResponse().getStatus());
-            UUID policyBlockedUser = createSessionTestUser("Library Query Policy Gate");
-            try {
-                SessionService.IssuedSession blockedSession = sessionService.create(policyBlockedUser).orElseThrow();
-                MvcResult blocked = mockMvc.perform(get("/api/v1/libraries")
-                                .cookie(new jakarta.servlet.http.Cookie(
-                                        "__Host-novel_session", blockedSession.cookieValue())))
-                        .andReturn();
-                assertEquals(403, blocked.getResponse().getStatus());
-                assertTrue(blocked.getResponse().getContentAsString().contains("POLICY_ACCEPTANCE_REQUIRED"));
-            } finally {
-                deleteSessionTestUser(policyBlockedUser);
-            }
-
-            MvcResult firstLibraries = mockMvc.perform(get("/api/v1/libraries")
-                            .param("limit", "1").cookie(ownerCookie))
-                    .andReturn();
-            assertEquals(200, firstLibraries.getResponse().getStatus());
-            assertTrue(firstLibraries.getResponse().getHeader("Cache-Control").contains("no-store"));
-            assertEquals("no-cache", firstLibraries.getResponse().getHeader("Pragma"));
-            JsonNode firstLibraryPage = objectMapper.readTree(firstLibraries.getResponse().getContentAsString());
-            assertEquals(1, firstLibraryPage.path("items").size());
-            assertTrue(firstLibraryPage.path("items").get(0).has("id"));
-            assertFalse(firstLibraryPage.path("items").get(0).has("ownerUserId"));
-            String libraryCursor = firstLibraryPage.path("nextCursor").asText();
-            assertFalse(libraryCursor.isBlank());
-
-            MvcResult secondLibraries = mockMvc.perform(get("/api/v1/libraries")
-                            .param("limit", "1").param("cursor", libraryCursor).cookie(ownerCookie))
-                    .andReturn();
-            assertEquals(200, secondLibraries.getResponse().getStatus());
-            assertEquals(1, objectMapper.readTree(secondLibraries.getResponse().getContentAsString())
-                    .path("items").size());
-
-            MvcResult memberLibraries = mockMvc.perform(get("/api/v1/libraries").cookie(readerCookie)).andReturn();
-            assertEquals(200, memberLibraries.getResponse().getStatus());
-            JsonNode memberLibraryPage = objectMapper.readTree(memberLibraries.getResponse().getContentAsString());
-            assertEquals(1, memberLibraryPage.path("items").size());
-            assertEquals(sharedLibrary.id().toString(), memberLibraryPage.path("items").get(0).path("id").asText());
-            MvcResult foreignCursor = mockMvc.perform(get("/api/v1/libraries")
-                            .param("cursor", libraryCursor).cookie(readerCookie))
-                    .andReturn();
-            assertEquals(400, foreignCursor.getResponse().getStatus());
-            assertTrue(foreignCursor.getResponse().getContentAsString().contains("INVALID_CURSOR"));
-
-            MvcResult firstWorks = mockMvc.perform(get("/api/v1/works")
-                            .param("libraryId", sharedLibrary.id().toString())
-                            .param("limit", "1").cookie(readerCookie))
-                    .andReturn();
-            assertEquals(200, firstWorks.getResponse().getStatus());
-            JsonNode firstWorkPage = objectMapper.readTree(firstWorks.getResponse().getContentAsString());
-            assertEquals(1, firstWorkPage.path("items").size());
-            assertFalse(firstWorkPage.path("items").get(0).has("ownerUserId"));
-            assertFalse(firstWorkPage.path("items").get(0).has("sourceHash"));
-            String workCursor = firstWorkPage.path("nextCursor").asText();
-            assertFalse(workCursor.isBlank());
-
-            MvcResult secondWorks = mockMvc.perform(get("/api/v1/works")
-                            .param("libraryId", sharedLibrary.id().toString())
-                            .param("limit", "1").param("cursor", workCursor).cookie(readerCookie))
-                    .andReturn();
-            assertEquals(200, secondWorks.getResponse().getStatus());
-            assertEquals(1, objectMapper.readTree(secondWorks.getResponse().getContentAsString())
-                    .path("items").size());
-
-            MvcResult filteredWorks = mockMvc.perform(get("/api/v1/works")
-                            .param("libraryId", sharedLibrary.id().toString())
-                            .param("q", "Cursor Novel One")
-                            .param("tag", "shared story")
-                            .param("status", "archived")
-                            .cookie(readerCookie))
-                    .andReturn();
-            assertEquals(200, filteredWorks.getResponse().getStatus());
-            JsonNode filteredWorkPage = objectMapper.readTree(filteredWorks.getResponse().getContentAsString());
-            assertEquals(1, filteredWorkPage.path("items").size());
-            assertEquals(firstWork.id().toString(), filteredWorkPage.path("items").get(0).path("id").asText());
-
-            MvcResult titleFilteredWorks = mockMvc.perform(get("/api/v1/works")
-                            .param("libraryId", sharedLibrary.id().toString())
-                            .param("q", "Two")
-                            .param("status", "active")
-                            .cookie(readerCookie))
-                    .andReturn();
-            assertEquals(200, titleFilteredWorks.getResponse().getStatus());
-            JsonNode titleFilteredPage = objectMapper.readTree(titleFilteredWorks.getResponse().getContentAsString());
-            assertEquals(1, titleFilteredPage.path("items").size());
-            assertEquals(secondWork.id().toString(), titleFilteredPage.path("items").get(0).path("id").asText());
-
-            MvcResult mismatchedFilterCursor = mockMvc.perform(get("/api/v1/works")
-                            .param("libraryId", sharedLibrary.id().toString())
-                            .param("cursor", workCursor)
-                            .param("status", "active")
-                            .cookie(readerCookie))
-                    .andReturn();
-            assertEquals(400, mismatchedFilterCursor.getResponse().getStatus());
-            assertTrue(mismatchedFilterCursor.getResponse().getContentAsString().contains("INVALID_CURSOR"));
-
-            MvcResult tamperedCursor = mockMvc.perform(get("/api/v1/works")
-                            .param("libraryId", sharedLibrary.id().toString())
-                            .param("cursor", workCursor + "x").cookie(readerCookie))
-                    .andReturn();
-            assertEquals(400, tamperedCursor.getResponse().getStatus());
-            assertTrue(tamperedCursor.getResponse().getContentAsString().contains("INVALID_CURSOR"));
-
-            MvcResult invalidLibraryId = mockMvc.perform(get("/api/v1/works")
-                            .param("libraryId", "not-a-uuid").cookie(readerCookie))
-                    .andReturn();
-            assertEquals(400, invalidLibraryId.getResponse().getStatus());
-
-            MvcResult outsiderWorks = mockMvc.perform(get("/api/v1/works")
-                            .param("libraryId", sharedLibrary.id().toString()).cookie(outsiderCookie))
-                    .andReturn();
-            assertEquals(404, outsiderWorks.getResponse().getStatus());
-            MvcResult emptyOutsiderLibraries = mockMvc.perform(get("/api/v1/libraries").cookie(outsiderCookie))
-                    .andReturn();
-            assertEquals(200, emptyOutsiderLibraries.getResponse().getStatus());
-            assertEquals(0, objectMapper.readTree(emptyOutsiderLibraries.getResponse().getContentAsString())
-                    .path("items").size());
-
-            workspaceService.revokeMember(ownerId, workspaceId, readerId);
-            MvcResult revokedReader = mockMvc.perform(get("/api/v1/works")
-                            .param("libraryId", sharedLibrary.id().toString()).cookie(readerCookie))
-                    .andReturn();
-            assertEquals(404, revokedReader.getResponse().getStatus());
-        } finally {
-            deleteLibraryTestData(ownerId);
-            deleteLibraryUserData(ownerId, null);
-            deleteLibraryUserData(readerId, null);
-            deleteLibraryUserData(outsiderId, null);
-            if (workspaceId != null) deleteWorkspaceTestData(workspaceId);
-            deleteSessionTestUser(outsiderId);
-            deleteSessionTestUser(readerId);
-            deleteSessionTestUser(ownerId);
-        }
-    }
-
-    @Test
-    void workspaceReaderCanChangeOnlyTheirOwnReadingStateWhileMembershipIsActive() throws Exception {
-        UUID ownerId = createSessionTestUser("Workspace State Owner");
-        UUID readerId = createSessionTestUser("Workspace State Reader");
-        UUID workspaceId = null;
-        UUID workId = null;
-        try {
-            WorkspaceRepository.WorkspaceRecord workspace =
-                    workspaceService.createWorkspace(ownerId, "Reading State Workspace");
-            workspaceId = workspace.id();
-            workspaceService.addMember(ownerId, workspaceId, readerId, WorkspaceRepository.Role.READER);
-            LibraryRepository.LibraryRecord library =
-                    libraryService.createWorkspaceLibrary(ownerId, workspaceId, "Shared Works");
-            LibraryRepository.WorkRecord work = libraryService.createPrivateImportedWork(
-                    ownerId, library.id(), "Shared State Novel", "Author", "vi", sha256("shared-state-work"));
-            workId = work.id();
-            addCurrentPolicyAcceptances(ownerId);
-            addCurrentPolicyAcceptances(readerId);
-
-            LibraryUserStateRepository.WorkStateRecord ownerState = libraryUserStateService.replaceWorkState(
-                    ownerId, workId, 0, "reading", List.of());
-            assertEquals(1, ownerState.version());
-
-            SessionService.IssuedSession readerSession = sessionService.create(readerId).orElseThrow();
-            jakarta.servlet.http.Cookie readerCookie = new jakarta.servlet.http.Cookie(
-                    "__Host-novel_session", readerSession.cookieValue());
-            String readerCsrf = csrfTokenService.tokenFor(readerSession.cookieValue());
-            MvcResult readerInitial = mockMvc.perform(get("/api/v1/me/works/{workId}/library-state", workId)
-                            .cookie(readerCookie))
-                    .andReturn();
-            assertEquals(200, readerInitial.getResponse().getStatus());
-            assertEquals("\"v0\"", readerInitial.getResponse().getHeader("ETag"));
-            assertEquals("want-to-read", objectMapper.readTree(readerInitial.getResponse().getContentAsString())
-                    .path("readingStatus").asText());
-
-            MvcResult readerSaved = mockMvc.perform(put("/api/v1/me/works/{workId}/library-state", workId)
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content("{\"readingStatus\":\"completed\",\"collectionIds\":[]}")
-                            .header("If-Match", "\"v0\"")
-                            .header("X-CSRF-Token", readerCsrf)
-                            .cookie(readerCookie))
-                    .andReturn();
-            assertEquals(200, readerSaved.getResponse().getStatus());
-            assertEquals("completed", objectMapper.readTree(readerSaved.getResponse().getContentAsString())
-                    .path("readingStatus").asText());
-            assertEquals("reading", libraryUserStateService.getWorkState(ownerId, workId).readingStatus());
-            assertEquals("completed", libraryUserStateService.getWorkState(readerId, workId).readingStatus());
-
-            workspaceService.revokeMember(ownerId, workspaceId, readerId);
-            MvcResult revokedReader = mockMvc.perform(get("/api/v1/me/works/{workId}/library-state", workId)
-                            .cookie(readerCookie))
-                    .andReturn();
-            assertEquals(404, revokedReader.getResponse().getStatus());
-        } finally {
-            deleteLibraryUserData(readerId, null);
-            deleteLibraryUserData(ownerId, workId);
-            if (workspaceId != null) deleteWorkspaceTestData(workspaceId);
-            deleteSessionTestUser(readerId);
-            deleteSessionTestUser(ownerId);
-        }
-    }
-
-    @Test
-    void privateLibraryCoreScopesOwnersDefaultsPrivateAndRejectsDuplicateHashesAndOrder() throws Exception {
-        UUID ownerId = createSessionTestUser("Library Owner");
-        UUID otherOwnerId = createSessionTestUser("Other Library Owner");
-        try {
-            LibraryRepository.LibraryRecord defaultLibrary = libraryService.createLibrary(ownerId, "My Library");
-            LibraryRepository.LibraryRecord secondLibrary = libraryService.createLibrary(ownerId, "Research Shelf");
-            LibraryRepository.LibraryRecord otherLibrary = libraryService.createLibrary(otherOwnerId, "My Library");
-
-            assertTrue(defaultLibrary.isDefault());
-            assertFalse(secondLibrary.isDefault());
-            assertTrue(otherLibrary.isDefault());
-            assertEquals("private", defaultLibrary.visibility());
-
-            byte[] digest = sha256("same-import-content");
-            LibraryRepository.WorkRecord work = libraryService.createPrivateImportedWork(
-                    ownerId, defaultLibrary.id(), "A Private Novel", "Author", "vi", digest);
-            assertEquals("private", work.visibility());
-            assertEquals("active", work.status());
-            assertEquals(0, work.chapterCount());
-            assertEquals(1, libraryService.listWorks(ownerId, defaultLibrary.id(), "", 25).size());
-            assertTrue(libraryService.findOwnedWork(otherOwnerId, work.id()).isEmpty());
-            assertThrows(LibraryRepository.LibraryNotFoundException.class,
-                    () -> libraryService.listWorks(otherOwnerId, defaultLibrary.id(), "", 25));
-            assertThrows(LibraryRepository.DuplicateImportedWorkException.class,
-                    () -> libraryService.createPrivateImportedWork(
-                            ownerId, secondLibrary.id(), "Duplicate Copy", "Author", "vi", digest));
-
-            LibraryRepository.WorkRecord sameContentForOtherOwner = libraryService.createPrivateImportedWork(
-                    otherOwnerId, otherLibrary.id(), "Own Copy", "Author", "vi", digest);
-            assertEquals("private", sameContentForOtherOwner.visibility());
-
-            LibraryRepository.VolumeRecord volume = libraryService.createVolume(ownerId, work.id(), 1, "Volume 1");
-            SQLException duplicateVolumeOrder = assertThrows(SQLException.class,
-                    () -> insertTestVolume(UUID.randomUUID(), work.id(), 1, "Duplicate volume"));
-            assertEquals("23505", duplicateVolumeOrder.getSQLState());
-
-            LibraryRepository.ChapterRecord chapter = libraryService.createChapter(
-                    ownerId, work.id(), volume.id(), 1, "Chapter 1", "zh-Hans");
-            assertEquals("draft", chapter.status());
-            assertTrue(libraryService.findOwnedChapter(otherOwnerId, chapter.id()).isEmpty());
-            assertThrows(LibraryRepository.WorkNotFoundException.class,
-                    () -> libraryService.createChapter(otherOwnerId, work.id(), volume.id(), 2, "Foreign", "zh"));
-            SQLException duplicateChapterOrder = assertThrows(SQLException.class,
-                    () -> insertTestChapter(UUID.randomUUID(), work.id(), volume.id(), 1, "Duplicate chapter"));
-            assertEquals("23505", duplicateChapterOrder.getSQLState());
-
-            assertThrows(IllegalArgumentException.class,
-                    () -> libraryService.appendChapterRevision(
-                            ownerId,
-                            chapter.id(),
-                            "plain_text",
-                            "Duplicate anchors must fail before persistence.",
-                            List.of(
-                                    new LibraryService.NewSegment(1, "paragraph", "First", "same-anchor"),
-                                    new LibraryService.NewSegment(2, "paragraph", "Second", "same-anchor"))));
-            assertEquals(0, revisionCount(chapter.id()));
-
-            LibraryRepository.RevisionRecord revision = libraryService.appendChapterRevision(
-                    ownerId,
-                    chapter.id(),
-                    "plain_text",
-                    "First paragraph.\nSecond paragraph.",
-                    List.of(
-                            new LibraryService.NewSegment(1, "paragraph", "First paragraph.", "p1"),
-                            new LibraryService.NewSegment(2, "paragraph", "Second paragraph.", "p2")));
-            assertEquals(1, revision.revisionNo());
-            LibraryRepository.ChapterRecord readyChapter = libraryService.findOwnedChapter(ownerId, chapter.id())
-                    .orElseThrow();
-            assertEquals("ready", readyChapter.status());
-            assertEquals(revision.id(), readyChapter.sourceRevisionId());
-            assertEquals(2, segmentCount(revision.id()));
-            assertThrows(LibraryRepository.DuplicateRevisionException.class,
-                    () -> libraryService.appendChapterRevision(
-                            ownerId, chapter.id(), "plain_text", "First paragraph.\nSecond paragraph.", List.of()));
-
-            LibraryRepository.AssetRecord asset = libraryService.registerAsset(
-                    ownerId, defaultLibrary.id(), "private/" + UUID.randomUUID(), sha256("cover-image"),
-                    "image/webp", 2048, "cover.webp");
-            assertEquals("staged", asset.status());
-            assertThrows(LibraryRepository.DuplicateAssetException.class,
-                    () -> libraryService.registerAsset(
-                            ownerId, secondLibrary.id(), "private/" + UUID.randomUUID(), sha256("cover-image"),
-                            "image/webp", 2048, "duplicate-cover.webp"));
-            LibraryRepository.AssetRecord sameAssetForOtherOwner = libraryService.registerAsset(
-                    otherOwnerId, otherLibrary.id(), "private/" + UUID.randomUUID(), sha256("cover-image"),
-                    "image/webp", 2048, "cover.webp");
-            assertNotEquals(asset.ownerUserId(), sameAssetForOtherOwner.ownerUserId());
-        } finally {
-            deleteLibraryTestData(ownerId);
-            deleteLibraryTestData(otherOwnerId);
-            deleteSessionTestUser(ownerId);
-            deleteSessionTestUser(otherOwnerId);
-        }
-    }
-
-    @Test
-    void privateLibraryCursorsAreStableOwnerAndFilterBoundAndSearchTagsAndStatus() throws Exception {
-        UUID ownerId = createSessionTestUser("Cursor Library Owner");
-        UUID otherOwnerId = createSessionTestUser("Other Cursor Owner");
-        try {
-            LibraryRepository.LibraryRecord library = libraryService.createLibrary(ownerId, "Cursor Shelf");
-            LibraryRepository.LibraryRecord secondLibrary = libraryService.createLibrary(ownerId, "Second Shelf");
-            LibraryRepository.LibraryRecord otherLibrary = libraryService.createLibrary(otherOwnerId, "Other Shelf");
-            LibraryRepository.WorkRecord dragonRiver = libraryService.createPrivateImportedWork(
-                    ownerId, library.id(), "Dragon River", "Writer A", "zh", sha256("cursor-work-a"));
-            LibraryRepository.WorkRecord dragonGate = libraryService.createPrivateImportedWork(
-                    ownerId, library.id(), "Dragon Gate", "Writer B", "zh", sha256("cursor-work-b"));
-            LibraryRepository.WorkRecord moonCity = libraryService.createPrivateImportedWork(
-                    ownerId, library.id(), "Moon City", "Dragon Pen", "zh", sha256("cursor-work-c"));
-            setWorkCreatedAt(dragonRiver.id(), Instant.parse("2026-01-04T00:00:00Z"));
-            setWorkCreatedAt(dragonGate.id(), Instant.parse("2026-01-03T00:00:00Z"));
-            setWorkCreatedAt(moonCity.id(), Instant.parse("2026-01-02T00:00:00Z"));
-            setWorkStatus(dragonGate.id(), "archived");
-
-            libraryService.addTagToWork(ownerId, dragonRiver.id(), "Tiên Hiệp");
-            libraryService.addTagToWork(ownerId, dragonGate.id(), "TIÊN-hiệp");
-            libraryService.addTagToWork(ownerId, moonCity.id(), "tiên-hiệp");
-            assertThrows(LibraryRepository.WorkNotFoundException.class,
-                    () -> libraryService.addTagToWork(otherOwnerId, dragonRiver.id(), "tiên-hiệp"));
-
-            LibraryService.Page<LibraryRepository.LibraryRecord> firstLibraryPage =
-                    libraryService.listLibraries(ownerId, null, 1);
-            assertEquals(1, firstLibraryPage.items().size());
-            assertTrue(firstLibraryPage.items().getFirst().isDefault());
-            assertEquals(1, libraryService.listLibraries(ownerId, firstLibraryPage.nextCursor(), 1).items().size());
-            assertThrows(LibraryCursorCodec.InvalidCursorException.class,
-                    () -> libraryService.listLibraries(otherOwnerId, firstLibraryPage.nextCursor(), 1));
-
-            LibraryService.Page<LibraryRepository.WorkRecord> firstWorkPage = libraryService.listWorks(
-                    ownerId, library.id(), "dragon", "tiên hiệp", "active", null, 1);
-            assertEquals(1, firstWorkPage.items().size());
-            assertTrue(firstWorkPage.nextCursor() != null && !firstWorkPage.nextCursor().isBlank());
-            assertThrows(LibraryCursorCodec.InvalidCursorException.class,
-                    () -> libraryService.listWorks(
-                            ownerId, library.id(), "moon", "tiên-hiệp", "active", firstWorkPage.nextCursor(), 1));
-            assertThrows(LibraryCursorCodec.InvalidCursorException.class,
-                    () -> libraryService.listWorks(
-                            ownerId, secondLibrary.id(), "dragon", "tiên-hiệp", "active",
-                            firstWorkPage.nextCursor(), 1));
-
-            LibraryRepository.WorkRecord insertedAfterFirstPage = libraryService.createPrivateImportedWork(
-                    ownerId, library.id(), "Dragon Update", "Writer C", "zh", sha256("cursor-work-d"));
-            libraryService.addTagToWork(ownerId, insertedAfterFirstPage.id(), "tiên-hiệp");
-            setWorkCreatedAt(insertedAfterFirstPage.id(), Instant.parse("2026-01-05T00:00:00Z"));
-
-            LibraryService.Page<LibraryRepository.WorkRecord> secondWorkPage = libraryService.listWorks(
-                    ownerId, library.id(), "dragon", "tiên-hiệp", "active", firstWorkPage.nextCursor(), 1);
-            assertEquals(1, secondWorkPage.items().size());
-            assertNotEquals(firstWorkPage.items().getFirst().id(), secondWorkPage.items().getFirst().id());
-            assertNotEquals(insertedAfterFirstPage.id(), secondWorkPage.items().getFirst().id());
-            assertNull(secondWorkPage.nextCursor());
-
-            LibraryService.Page<LibraryRepository.WorkRecord> archived = libraryService.listWorks(
-                    ownerId, library.id(), "dragon", "tiên-hiệp", "archived", null, 10);
-            assertEquals(List.of(dragonGate.id()), archived.items().stream().map(LibraryRepository.WorkRecord::id).toList());
-            assertThrows(LibraryRepository.LibraryNotFoundException.class,
-                    () -> libraryService.listWorks(
-                            ownerId, otherLibrary.id(), "dragon", "tiên-hiệp", "active", null, 10));
-        } finally {
-            deleteLibraryTestData(ownerId);
-            deleteLibraryTestData(otherOwnerId);
-            deleteSessionTestUser(ownerId);
-            deleteSessionTestUser(otherOwnerId);
-        }
-    }
-
-    @Test
-    void workspaceLifecycleKeepsOneOwnerAndVersionsMembershipChanges() throws Exception {
-        UUID ownerId = createSessionTestUser("Workspace Owner");
-        UUID adminId = createSessionTestUser("Workspace Admin");
-        UUID editorId = createSessionTestUser("Workspace Editor");
-        UUID readerId = createSessionTestUser("Workspace Reader");
-        UUID outsiderId = createSessionTestUser("Workspace Outsider");
-        UUID workspaceId = null;
-        try {
-            WorkspaceRepository.WorkspaceRecord workspace =
-                    workspaceService.createWorkspace(ownerId, "  Shared Reading Room  ");
-            UUID createdWorkspaceId = workspace.id();
-            workspaceId = createdWorkspaceId;
-            assertEquals("Shared Reading Room", workspace.name());
-            assertEquals(1, workspace.scopeVersion());
-            assertEquals(WorkspaceRepository.Role.OWNER,
-                    workspaceService.listMembers(ownerId, workspaceId).getFirst().role());
-            SQLException missingActiveOwner = assertThrows(SQLException.class, () -> {
-                try (Connection connection = dataSource.getConnection()) {
-                    connection.setAutoCommit(false);
-                    try (PreparedStatement deleteOwner = connection.prepareStatement("""
-                            DELETE FROM workspace_members
-                            WHERE workspace_id = ? AND user_id = ? AND role = 'owner'
-                            """)) {
-                        deleteOwner.setObject(1, createdWorkspaceId);
-                        deleteOwner.setObject(2, ownerId);
-                        assertEquals(1, deleteOwner.executeUpdate());
-                    }
-                    connection.commit();
-                }
-            });
-            assertEquals("23514", missingActiveOwner.getSQLState());
-
-            WorkspaceRepository.MemberRecord admin = workspaceService.addMember(
-                    ownerId, workspaceId, adminId, WorkspaceRepository.Role.ADMIN);
-            assertEquals(WorkspaceRepository.MemberStatus.ACTIVE, admin.status());
-            workspaceService.addMember(ownerId, workspaceId, editorId, WorkspaceRepository.Role.EDITOR);
-            workspaceService.addMember(ownerId, workspaceId, readerId, WorkspaceRepository.Role.READER);
-            assertEquals(4, workspaceService.findWorkspace(ownerId, workspaceId).orElseThrow().scopeVersion());
-
-            assertThrows(WorkspaceRepository.WorkspaceAccessDeniedException.class,
-                    () -> workspaceService.addMember(outsiderId, createdWorkspaceId, outsiderId,
-                            WorkspaceRepository.Role.READER));
-            assertThrows(WorkspaceRepository.WorkspaceAccessDeniedException.class,
-                    () -> workspaceService.addMember(readerId, createdWorkspaceId, outsiderId,
-                            WorkspaceRepository.Role.READER));
-            assertThrows(WorkspaceRepository.OwnershipTransferRequiredException.class,
-                    () -> workspaceService.addMember(ownerId, createdWorkspaceId, outsiderId,
-                            WorkspaceRepository.Role.OWNER));
-            assertThrows(WorkspaceRepository.WorkspaceAccessDeniedException.class,
-                    () -> workspaceService.transferOwnership(adminId, createdWorkspaceId, editorId));
-            assertThrows(WorkspaceRepository.WorkspaceMemberConflictException.class,
-                    () -> workspaceService.addMember(ownerId, createdWorkspaceId, adminId,
-                            WorkspaceRepository.Role.EDITOR));
-
-            WorkspaceRepository.MemberRecord changed = workspaceService.changeMemberRole(
-                    adminId, workspaceId, readerId, WorkspaceRepository.Role.EDITOR);
-            assertEquals(WorkspaceRepository.Role.EDITOR, changed.role());
-            assertEquals(5, workspaceService.findWorkspace(ownerId, workspaceId).orElseThrow().scopeVersion());
-
-            WorkspaceRepository.WorkspaceRecord transferred =
-                    workspaceService.transferOwnership(ownerId, workspaceId, adminId);
-            assertEquals(6, transferred.scopeVersion());
-            assertEquals(WorkspaceRepository.Role.ADMIN, workspaceService.listMembers(ownerId, workspaceId)
-                    .stream().filter(member -> member.userId().equals(ownerId)).findFirst().orElseThrow().role());
-            assertEquals(WorkspaceRepository.Role.OWNER, workspaceService.listMembers(adminId, workspaceId)
-                    .stream().filter(member -> member.userId().equals(adminId)).findFirst().orElseThrow().role());
-            assertThrows(WorkspaceRepository.WorkspaceOwnerCannotBeRevokedException.class,
-                    () -> workspaceService.revokeMember(adminId, createdWorkspaceId, adminId));
-
-            WorkspaceRepository.MemberRecord revoked = workspaceService.revokeMember(
-                    adminId, workspaceId, editorId);
-            assertEquals(WorkspaceRepository.MemberStatus.REVOKED, revoked.status());
-            assertTrue(revoked.revokedAt() != null);
-            assertEquals(7, workspaceService.findWorkspace(adminId, workspaceId).orElseThrow().scopeVersion());
-            assertTrue(workspaceService.findWorkspace(editorId, workspaceId).isEmpty());
-            assertThrows(WorkspaceRepository.WorkspaceAccessDeniedException.class,
-                    () -> workspaceService.transferOwnership(ownerId, createdWorkspaceId, readerId));
-        } finally {
-            if (workspaceId != null) deleteWorkspaceTestData(workspaceId);
-            deleteSessionTestUser(ownerId);
-            deleteSessionTestUser(adminId);
-            deleteSessionTestUser(editorId);
-            deleteSessionTestUser(readerId);
-            deleteSessionTestUser(outsiderId);
-        }
-    }
-
-    @Test
-    void workspaceRolesScopeLibraryAndContentReadsWritesAndSearch() throws Exception {
-        UUID ownerId = createSessionTestUser("Workspace Library Owner");
-        UUID adminId = createSessionTestUser("Workspace Library Admin");
-        UUID editorId = createSessionTestUser("Workspace Library Editor");
-        UUID readerId = createSessionTestUser("Workspace Library Reader");
-        UUID outsiderId = createSessionTestUser("Other Workspace Owner");
-        UUID workspaceId = null;
-        UUID otherWorkspaceId = null;
-        try {
-            WorkspaceRepository.WorkspaceRecord workspace =
-                    workspaceService.createWorkspace(ownerId, "Shared Shelf Team");
-            UUID createdWorkspaceId = workspace.id();
-            workspaceId = createdWorkspaceId;
-            workspaceService.addMember(ownerId, workspaceId, adminId, WorkspaceRepository.Role.ADMIN);
-            workspaceService.addMember(ownerId, workspaceId, editorId, WorkspaceRepository.Role.EDITOR);
-            workspaceService.addMember(ownerId, workspaceId, readerId, WorkspaceRepository.Role.READER);
-
-            LibraryRepository.LibraryRecord defaultLibrary = libraryService.createLibrary(ownerId, "My Personal Shelf");
-            LibraryRepository.LibraryRecord movableLibrary = libraryService.createLibrary(ownerId, "Research Shelf");
-            LibraryRepository.LibraryRecord workspaceLibrary =
-                    libraryService.createWorkspaceLibrary(ownerId, createdWorkspaceId, "Collaborative Shelf");
-            LibraryRepository.LibraryRecord adminLibrary =
-                    libraryService.createWorkspaceLibrary(adminId, createdWorkspaceId, "Admin Shelf");
-            assertEquals(createdWorkspaceId, workspaceLibrary.workspaceId());
-            assertEquals(createdWorkspaceId, adminLibrary.workspaceId());
-            assertThrows(LibraryRepository.DefaultLibraryCannotMoveException.class,
-                    () -> libraryService.movePersonalLibraryToWorkspace(
-                            ownerId, defaultLibrary.id(), createdWorkspaceId));
-            LibraryRepository.LibraryRecord movedLibrary = libraryService.movePersonalLibraryToWorkspace(
-                    ownerId, movableLibrary.id(), createdWorkspaceId);
-            assertEquals(createdWorkspaceId, movedLibrary.workspaceId());
-
-            LibraryRepository.WorkRecord ownerWork = libraryService.createPrivateImportedWork(
-                    ownerId, workspaceLibrary.id(), "Shared Story", "Author A", "vi", sha256("shared-owner-work"));
-            LibraryRepository.WorkRecord editorWork = libraryService.createPrivateImportedWork(
-                    editorId, workspaceLibrary.id(), "Editor Story", "Author B", "vi", sha256("shared-editor-work"));
-            assertEquals(ownerId, editorWork.ownerUserId(), "shared work keeps library creator as data owner");
-            libraryService.addTagToWork(editorId, ownerWork.id(), "Shared Tag");
-
-            List<UUID> editorLibraryIds = libraryService.listLibraries(editorId).stream()
-                    .map(LibraryRepository.LibraryRecord::id).toList();
-            assertTrue(editorLibraryIds.contains(workspaceLibrary.id()));
-            assertTrue(editorLibraryIds.contains(movedLibrary.id()));
-            assertFalse(editorLibraryIds.contains(defaultLibrary.id()));
-            assertTrue(libraryService.findOwnedWork(readerId, ownerWork.id()).isPresent());
-            LibraryService.Page<LibraryRepository.WorkRecord> tagSearch = libraryService.listWorks(
-                    readerId, workspaceLibrary.id(), "Shared", "shared-tag", "active", null, 10);
-            assertEquals(List.of(ownerWork.id()), tagSearch.items().stream()
-                    .map(LibraryRepository.WorkRecord::id).toList());
-
-            LibraryRepository.VolumeRecord volume = libraryService.createVolume(
-                    editorId, ownerWork.id(), 1, "Shared Volume");
-            LibraryRepository.ChapterRecord chapter = libraryService.createChapter(
-                    editorId, ownerWork.id(), volume.id(), 1, "Shared Chapter", "vi");
-            LibraryRepository.RevisionRecord revision = libraryService.appendChapterRevision(
-                    editorId, chapter.id(), "plain_text", "Shared chapter content.",
-                    List.of(new LibraryService.NewSegment(1, "paragraph", "Shared chapter content.", "p1")));
-            assertEquals(1, revision.revisionNo());
-            assertTrue(libraryService.findOwnedChapter(readerId, chapter.id()).isPresent());
-            LibraryRepository.AssetRecord asset = libraryService.registerAsset(
-                    editorId, workspaceLibrary.id(), "workspace/" + UUID.randomUUID(),
-                    sha256("workspace-cover"), "image/webp", 4096, "shared-cover.webp");
-            assertEquals(ownerId, asset.ownerUserId());
-
-            assertThrows(LibraryRepository.LibraryNotFoundException.class,
-                    () -> libraryService.createWorkspaceLibrary(
-                            editorId, createdWorkspaceId, "Editor Created Shelf"));
-            assertThrows(LibraryRepository.LibraryNotFoundException.class,
-                    () -> libraryService.createPrivateImportedWork(
-                            readerId, workspaceLibrary.id(), "Reader Write", "Author", "vi",
-                            sha256("reader-write")));
-            assertThrows(LibraryRepository.WorkNotFoundException.class,
-                    () -> libraryService.addTagToWork(readerId, ownerWork.id(), "forbidden"));
-            assertThrows(LibraryRepository.WorkNotFoundException.class,
-                    () -> libraryService.createVolume(readerId, ownerWork.id(), 2, "Reader Volume"));
-            assertThrows(LibraryRepository.WorkNotFoundException.class,
-                    () -> libraryService.createChapter(
-                            readerId, ownerWork.id(), null, 2, "Reader Chapter", "vi"));
-            assertThrows(LibraryRepository.ChapterNotFoundException.class,
-                    () -> libraryService.appendChapterRevision(
-                            readerId, chapter.id(), "plain_text", "Unauthorized edit", List.of()));
-            assertThrows(LibraryRepository.LibraryNotFoundException.class,
-                    () -> libraryService.registerAsset(readerId, workspaceLibrary.id(),
-                            "workspace/reader-forbidden", sha256("reader-asset"),
-                            "image/webp", 100, "reader.webp"));
-
-            WorkspaceRepository.WorkspaceRecord otherWorkspace =
-                    workspaceService.createWorkspace(outsiderId, "Separate Team");
-            UUID createdOtherWorkspaceId = otherWorkspace.id();
-            otherWorkspaceId = createdOtherWorkspaceId;
-            LibraryRepository.LibraryRecord otherLibrary =
-                    libraryService.createWorkspaceLibrary(outsiderId, createdOtherWorkspaceId, "Separate Shelf");
-            LibraryRepository.WorkRecord otherWork = libraryService.createPrivateImportedWork(
-                    outsiderId, otherLibrary.id(), "Separate Story", "Author", "vi",
-                    sha256("separate-work"));
-            assertTrue(libraryService.findOwnedWork(outsiderId, ownerWork.id()).isEmpty());
-            assertTrue(libraryService.findOwnedWork(readerId, otherWork.id()).isEmpty());
-            assertThrows(LibraryRepository.LibraryNotFoundException.class,
-                    () -> libraryService.listWorks(
-                            outsiderId, workspaceLibrary.id(), "", null, null, null, 10));
-            assertThrows(LibraryRepository.LibraryNotFoundException.class,
-                    () -> libraryService.movePersonalLibraryToWorkspace(
-                            outsiderId, defaultLibrary.id(), createdOtherWorkspaceId));
-
-            WorkspaceRepository.MemberRecord revoked = workspaceService.revokeMember(
-                    ownerId, workspaceId, readerId);
-            assertEquals(WorkspaceRepository.MemberStatus.REVOKED, revoked.status());
-            assertTrue(libraryService.findOwnedWork(readerId, ownerWork.id()).isEmpty());
-            assertFalse(libraryService.listLibraries(readerId).stream()
-                    .anyMatch(library -> library.id().equals(workspaceLibrary.id())));
-        } finally {
-            deleteLibraryTestData(ownerId);
-            deleteLibraryTestData(adminId);
-            deleteLibraryTestData(editorId);
-            deleteLibraryTestData(readerId);
-            deleteLibraryTestData(outsiderId);
-            if (workspaceId != null) deleteWorkspaceTestData(workspaceId);
-            if (otherWorkspaceId != null) deleteWorkspaceTestData(otherWorkspaceId);
-            deleteSessionTestUser(ownerId);
-            deleteSessionTestUser(adminId);
-            deleteSessionTestUser(editorId);
-            deleteSessionTestUser(readerId);
-            deleteSessionTestUser(outsiderId);
-        }
-    }
-
-    @Test
-    void workspaceChangesInvalidateLibraryAndWorkCursors() throws Exception {
-        UUID ownerId = createSessionTestUser("Cursor Scope Owner");
-        UUID memberId = createSessionTestUser("Cursor Scope Member");
-        UUID newcomerId = createSessionTestUser("Cursor Scope New Member");
-        UUID workspaceId = null;
-        try {
-            WorkspaceRepository.WorkspaceRecord workspace =
-                    workspaceService.createWorkspace(ownerId, "Cursor Scope Team");
-            workspaceId = workspace.id();
-            workspaceService.addMember(ownerId, workspaceId, memberId, WorkspaceRepository.Role.READER);
-
-            LibraryRepository.LibraryRecord sharedLibrary = libraryService.createWorkspaceLibrary(
-                    ownerId, workspaceId, "Cursor Shared Shelf");
-            libraryService.createWorkspaceLibrary(ownerId, workspaceId, "Cursor Second Shelf");
-            LibraryRepository.WorkRecord firstWork = libraryService.createPrivateImportedWork(
-                    ownerId, sharedLibrary.id(), "First Shared Story", "Author", "vi", sha256("scope-first-work"));
-            LibraryRepository.WorkRecord secondWork = libraryService.createPrivateImportedWork(
-                    ownerId, sharedLibrary.id(), "Second Shared Story", "Author", "vi", sha256("scope-second-work"));
-            setWorkCreatedAt(firstWork.id(), Instant.parse("2026-02-02T00:00:00Z"));
-            setWorkCreatedAt(secondWork.id(), Instant.parse("2026-02-01T00:00:00Z"));
-
-            LibraryService.Page<LibraryRepository.WorkRecord> beforeRoleChange = libraryService.listWorks(
-                    memberId, sharedLibrary.id(), "", null, null, null, 1);
-            assertTrue(beforeRoleChange.nextCursor() != null);
-            workspaceService.changeMemberRole(
-                    ownerId, workspaceId, memberId, WorkspaceRepository.Role.EDITOR);
-            assertThrows(LibraryCursorCodec.InvalidCursorException.class,
-                    () -> libraryService.listWorks(
-                            memberId, sharedLibrary.id(), "", null, null, beforeRoleChange.nextCursor(), 1));
-
-            LibraryService.Page<LibraryRepository.WorkRecord> beforeTransfer = libraryService.listWorks(
-                    memberId, sharedLibrary.id(), "", null, null, null, 1);
-            workspaceService.transferOwnership(ownerId, workspaceId, memberId);
-            assertThrows(LibraryCursorCodec.InvalidCursorException.class,
-                    () -> libraryService.listWorks(
-                            memberId, sharedLibrary.id(), "", null, null, beforeTransfer.nextCursor(), 1));
-
-            LibraryService.Page<LibraryRepository.WorkRecord> beforeRevocation = libraryService.listWorks(
-                    ownerId, sharedLibrary.id(), "", null, null, null, 1);
-            workspaceService.revokeMember(memberId, workspaceId, ownerId);
-            assertThrows(LibraryRepository.LibraryNotFoundException.class,
-                    () -> libraryService.listWorks(
-                            ownerId, sharedLibrary.id(), "", null, null, beforeRevocation.nextCursor(), 1));
-            workspaceService.addMember(memberId, workspaceId, ownerId, WorkspaceRepository.Role.READER);
-            assertThrows(LibraryCursorCodec.InvalidCursorException.class,
-                    () -> libraryService.listWorks(
-                            ownerId, sharedLibrary.id(), "", null, null, beforeRevocation.nextCursor(), 1));
-
-            LibraryService.Page<LibraryRepository.LibraryRecord> beforeJoin =
-                    libraryService.listLibraries(memberId, null, 1);
-            assertTrue(beforeJoin.nextCursor() != null);
-            workspaceService.addMember(memberId, workspaceId, newcomerId, WorkspaceRepository.Role.READER);
-            assertThrows(LibraryCursorCodec.InvalidCursorException.class,
-                    () -> libraryService.listLibraries(memberId, beforeJoin.nextCursor(), 1));
-
-            LibraryRepository.LibraryRecord memberDefault = libraryService.createLibrary(memberId, "Cursor Personal");
-            LibraryRepository.LibraryRecord movableLibrary = libraryService.createLibrary(memberId, "Cursor Movable");
-            LibraryRepository.WorkRecord personalFirst = libraryService.createPrivateImportedWork(
-                    memberId, movableLibrary.id(), "Personal First", "Author", "vi", sha256("scope-personal-first"));
-            LibraryRepository.WorkRecord personalSecond = libraryService.createPrivateImportedWork(
-                    memberId, movableLibrary.id(), "Personal Second", "Author", "vi", sha256("scope-personal-second"));
-            setWorkCreatedAt(personalFirst.id(), Instant.parse("2026-03-02T00:00:00Z"));
-            setWorkCreatedAt(personalSecond.id(), Instant.parse("2026-03-01T00:00:00Z"));
-            LibraryService.Page<LibraryRepository.WorkRecord> beforeLibraryMove = libraryService.listWorks(
-                    memberId, movableLibrary.id(), "", null, null, null, 1);
-            assertTrue(beforeLibraryMove.nextCursor() != null);
-            assertTrue(memberDefault.isDefault());
-            libraryService.movePersonalLibraryToWorkspace(memberId, movableLibrary.id(), workspaceId);
-            assertThrows(LibraryCursorCodec.InvalidCursorException.class,
-                    () -> libraryService.listWorks(
-                            memberId, movableLibrary.id(), "", null, null, beforeLibraryMove.nextCursor(), 1));
-        } finally {
-            deleteLibraryTestData(ownerId);
-            deleteLibraryTestData(memberId);
-            deleteLibraryTestData(newcomerId);
-            if (workspaceId != null) deleteWorkspaceTestData(workspaceId);
-            deleteSessionTestUser(ownerId);
-            deleteSessionTestUser(memberId);
-            deleteSessionTestUser(newcomerId);
-        }
-    }
-
-    @Test
-    void currentPolicyRouteReturnsTheLatestEffectiveVersionAndSameOriginDocuments() throws Exception {
-        MvcResult current = mockMvc.perform(get("/api/v1/auth/policies/current")).andReturn();
-        assertEquals(200, current.getResponse().getStatus());
-        assertTrue(current.getResponse().getHeader("Cache-Control").contains("no-store"));
-        assertEquals("no-cache", current.getResponse().getHeader("Pragma"));
-        JsonNode policies = objectMapper.readTree(current.getResponse().getContentAsString());
-        assertEquals("terms-current-1", policies.path("terms").path("version").asText());
-        assertEquals("privacy-current-1", policies.path("privacyNotice").path("version").asText());
-        assertTrue(Instant.parse(policies.path("terms").path("effectiveAt").asText()).isBefore(Instant.now()));
-        assertEquals("/api/v1/auth/policies/terms/terms-current-1",
-                policies.path("terms").path("documentUrl").asText());
-        assertEquals("/api/v1/auth/policies/privacy-notice/privacy-current-1",
-                policies.path("privacyNotice").path("documentUrl").asText());
-
-        MvcResult document = mockMvc.perform(get("/api/v1/auth/policies/terms/terms-current-1")).andReturn();
-        assertEquals(200, document.getResponse().getStatus());
-        assertTrue(document.getResponse().getContentType().startsWith("text/markdown"));
-        assertTrue(document.getResponse().getHeader("Cache-Control").contains("max-age=3600"));
-        assertEquals("nosniff", document.getResponse().getHeader("X-Content-Type-Options"));
-        assertTrue(document.getResponse().getContentAsString().contains("Synthetic test document"));
-
-        MvcResult unknownVersion = mockMvc.perform(get("/api/v1/auth/policies/terms/missing-version")).andReturn();
-        assertEquals(404, unknownVersion.getResponse().getStatus());
-        assertTrue(unknownVersion.getResponse().getContentAsString().contains("POLICY_DOCUMENT_NOT_FOUND"));
-
-        MvcResult futureVersion = mockMvc.perform(get("/api/v1/auth/policies/terms/terms-future-2")).andReturn();
-        assertEquals(404, futureVersion.getResponse().getStatus());
-        assertTrue(futureVersion.getResponse().getContentAsString().contains("POLICY_DOCUMENT_NOT_FOUND"));
-    }
-
-    @Test
-    void policyAcceptanceRequiresBothCurrentExplicitChoicesIsAtomicAndIdempotent() throws Exception {
-        UUID userId = createSessionTestUser("Policy Acceptance Reader");
-        try {
-            SessionService.IssuedSession session = sessionService.create(userId).orElseThrow();
-            String csrfToken = csrfTokenService.tokenFor(session.cookieValue());
-            jakarta.servlet.http.Cookie cookie = new jakarta.servlet.http.Cookie(
-                    "__Host-novel_session", session.cookieValue());
-
-            MvcResult missingChoice = mockMvc.perform(post("/api/v1/auth/policies/accept")
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content(objectMapper.writeValueAsString(Map.of(
-                                    "termsVersion", "terms-current-1",
-                                    "privacyNoticeVersion", "privacy-current-1",
-                                    "termsAccepted", true)))
-                            .header("X-CSRF-Token", csrfToken)
-                            .cookie(cookie))
-                    .andReturn();
-            assertEquals(422, missingChoice.getResponse().getStatus());
-            assertTrue(missingChoice.getResponse().getContentAsString().contains("POLICY_ACCEPTANCE_REQUIRED"));
-            assertEquals(0, policyAcceptanceCount(userId));
-
-            MvcResult stale = mockMvc.perform(post("/api/v1/auth/policies/accept")
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content(objectMapper.writeValueAsString(Map.of(
-                                    "termsVersion", "terms-old",
-                                    "privacyNoticeVersion", "privacy-current-1",
-                                    "termsAccepted", true,
-                                    "privacyNoticeAcknowledged", true)))
-                            .header("X-CSRF-Token", csrfToken)
-                            .cookie(cookie))
-                    .andReturn();
-            assertEquals(409, stale.getResponse().getStatus());
-            JsonNode staleProblem = objectMapper.readTree(stale.getResponse().getContentAsString());
-            assertEquals("POLICY_VERSION_STALE", staleProblem.path("code").asText());
-            assertEquals("terms-current-1", staleProblem.path("currentTermsVersion").asText());
-            assertEquals(0, policyAcceptanceCount(userId));
-
-            Map<String, Object> acceptedBody = Map.of(
-                    "termsVersion", "terms-current-1",
-                    "privacyNoticeVersion", "privacy-current-1",
-                    "termsAccepted", true,
-                    "privacyNoticeAcknowledged", true);
-            MvcResult accepted = mockMvc.perform(post("/api/v1/auth/policies/accept")
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content(objectMapper.writeValueAsString(acceptedBody))
-                            .header("X-CSRF-Token", csrfToken)
-                            .cookie(cookie))
-                    .andReturn();
-            assertEquals(200, accepted.getResponse().getStatus());
-            assertTrue(accepted.getResponse().getHeader("Cache-Control").contains("no-store"));
-            JsonNode acceptance = objectMapper.readTree(accepted.getResponse().getContentAsString());
-            Instant termsAcceptedAt = Instant.parse(acceptance.path("termsAcceptedAt").asText());
-            Instant privacyAcknowledgedAt = Instant.parse(
-                    acceptance.path("privacyNoticeAcknowledgedAt").asText());
-            assertTrue(termsAcceptedAt.isBefore(Instant.now().plusSeconds(1)));
-            assertTrue(privacyAcknowledgedAt.isBefore(Instant.now().plusSeconds(1)));
-            assertEquals(2, policyAcceptanceCount(userId));
-            assertEquals(2, policyAcceptanceCountBySource(userId, "web-onboarding"));
-
-            MvcResult retry = mockMvc.perform(post("/api/v1/auth/policies/accept")
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content(objectMapper.writeValueAsString(acceptedBody))
-                            .header("X-CSRF-Token", csrfToken)
-                            .cookie(cookie))
-                    .andReturn();
-            assertEquals(200, retry.getResponse().getStatus());
-            JsonNode retriedAcceptance = objectMapper.readTree(retry.getResponse().getContentAsString());
-            assertEquals(acceptance.path("termsAcceptedAt").asText(),
-                    retriedAcceptance.path("termsAcceptedAt").asText());
-            assertEquals(acceptance.path("privacyNoticeAcknowledgedAt").asText(),
-                    retriedAcceptance.path("privacyNoticeAcknowledgedAt").asText());
-            assertEquals(2, policyAcceptanceCount(userId));
-
-            MvcResult currentUser = mockMvc.perform(get("/api/v1/auth/me").cookie(cookie)).andReturn();
-            assertTrue(objectMapper.readTree(currentUser.getResponse().getContentAsString())
-                    .path("policy").path("requiredAcceptanceComplete").asBoolean());
-        } finally {
-            deleteSessionTestUser(userId);
-        }
-    }
-
-    @Test
-    void policyRoutesFailClosedUntilBothApprovedDocumentsAreProvisioned() throws Exception {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement deleteDocuments = connection.prepareStatement("DELETE FROM policy_documents")) {
-            assertEquals(5, deleteDocuments.executeUpdate());
-        }
-
-        UUID userId = createSessionTestUser("Unconfigured Policy Reader");
-        try {
-            SessionService.IssuedSession session = sessionService.create(userId).orElseThrow();
-            String csrfToken = csrfTokenService.tokenFor(session.cookieValue());
-            MvcResult current = mockMvc.perform(get("/api/v1/auth/policies/current")).andReturn();
-            assertEquals(503, current.getResponse().getStatus());
-            assertTrue(current.getResponse().getContentAsString().contains("POLICY_NOT_CONFIGURED"));
-
-            MvcResult acceptance = mockMvc.perform(post("/api/v1/auth/policies/accept")
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content(objectMapper.writeValueAsString(Map.of(
-                                    "termsVersion", "terms-current-1",
-                                    "privacyNoticeVersion", "privacy-current-1",
-                                    "termsAccepted", true,
-                                    "privacyNoticeAcknowledged", true)))
-                            .header("X-CSRF-Token", csrfToken)
-                            .cookie(new jakarta.servlet.http.Cookie(
-                                    "__Host-novel_session", session.cookieValue())))
-                    .andReturn();
-            assertEquals(503, acceptance.getResponse().getStatus());
-            assertTrue(acceptance.getResponse().getContentAsString().contains("POLICY_NOT_CONFIGURED"));
-            assertEquals(0, policyAcceptanceCount(userId));
-        } finally {
-            deleteSessionTestUser(userId);
-            insertPolicyTestDocuments();
-        }
-    }
-
-    @AfterAll
-    void integrationFixturesAreRemoved() throws SQLException, java.io.IOException {
-        for (String table : List.of(
-                "users",
-                "external_identities",
-                "sessions",
-                "google_auth_attempts",
-                "google_auth_bootstrap_rate_limits",
-                "import_actor_rate_limits",
-                "policy_acceptances",
-                "import_jobs",
-                "import_parse_jobs",
-                "import_commits",
-                "import_rights_acceptances",
-                "import_rights_statements",
-                "auth_events",
-                "session_revoke_confirmations",
-                "workspace_members",
-                "workspaces",
-                "library_collection_works",
-                "library_reading_states",
-                "library_collections",
-                "libraries",
-                "works",
-                "volumes",
-                "chapters",
-                "chapter_revisions",
-                "segments",
-                "assets",
-                "tags",
-                "work_tags")) {
-            try (Connection connection = dataSource.getConnection();
-                 PreparedStatement count = connection.prepareStatement("SELECT COUNT(*) FROM " + table);
-                 ResultSet rows = count.executeQuery()) {
-                assertTrue(rows.next());
-                assertEquals(0, rows.getInt(1), "integration fixtures remain in " + table);
-            }
-        }
-        assertEquals(0, stagedUploadCount(), "integration upload objects remain in local staging storage");
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement deleteDocuments = connection.prepareStatement("DELETE FROM policy_documents")) {
-            deleteDocuments.executeUpdate();
-        }
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement count = connection.prepareStatement("SELECT COUNT(*) FROM policy_documents");
-             ResultSet rows = count.executeQuery()) {
-            assertTrue(rows.next());
-            assertEquals(0, rows.getInt(1), "policy document test fixtures remain");
-        }
-    }
-
-    @Test
-    void verifiedEmailIsCaseInsensitiveUniqueButCanBeReusedAfterDeletion() throws SQLException {
-        try (Connection connection = dataSource.getConnection()) {
-            connection.setAutoCommit(false);
-            try {
-                insertUser(connection, "First Reader", "Reader@example.test", "active", false);
-
-                Savepoint beforeDuplicate = connection.setSavepoint();
-                SQLException duplicateEmail = assertThrows(SQLException.class,
-                        () -> insertUser(connection, "Second Reader", "reader@example.test", "active", false));
-                assertEquals("23505", duplicateEmail.getSQLState(), "expected unique-index violation");
-                connection.rollback(beforeDuplicate);
-
-                insertUser(connection, "Deleted Reader", "reader@example.test", "deleted", true);
-            } finally {
-                connection.rollback();
-            }
-        }
-    }
-
-    @Test
-    void authAttemptRejectsProtocolRelativeReturnPath() throws SQLException {
-        try (Connection connection = dataSource.getConnection()) {
-            connection.setAutoCommit(false);
-            try (PreparedStatement insert = connection.prepareStatement("""
+  }
+
+  @Test
+  void authAttemptRejectsProtocolRelativeReturnPath() throws SQLException {
+    try (Connection connection = dataSource.getConnection()) {
+      connection.setAutoCommit(false);
+      try (PreparedStatement insert =
+          connection.prepareStatement(
+              """
                     INSERT INTO google_auth_attempts (id, nonce_hash, safe_return_path, expires_at, correlation_id)
                     VALUES (?, ?, ?, ?, ?)
                     """)) {
-                insert.setObject(1, UUID.randomUUID());
-                insert.setBytes(2, new byte[32]);
-                insert.setString(3, "//attacker.example/collect");
-                insert.setTimestamp(4, Timestamp.from(Instant.now().plusSeconds(300)));
-                insert.setObject(5, UUID.randomUUID());
+        insert.setObject(1, UUID.randomUUID());
+        insert.setBytes(2, new byte[32]);
+        insert.setString(3, "//attacker.example/collect");
+        insert.setTimestamp(4, Timestamp.from(Instant.now().plusSeconds(300)));
+        insert.setObject(5, UUID.randomUUID());
 
-                SQLException invalidPath = assertThrows(SQLException.class, insert::executeUpdate);
-                assertEquals("23514", invalidPath.getSQLState(), "expected CHECK constraint violation");
-            } finally {
-                connection.rollback();
-            }
-        }
+        SQLException invalidPath = assertThrows(SQLException.class, insert::executeUpdate);
+        assertEquals("23514", invalidPath.getSQLState(), "expected CHECK constraint violation");
+      } finally {
+        connection.rollback();
+      }
     }
+  }
 
-    @Test
-    void googleAuthAttemptStoresOnlyHashedNonceAndCorrelatesTheSafePath() throws Exception {
-        Instant beforeCreate = Instant.now();
-        UUID correlationId = UUID.randomUUID();
+  @Test
+  void googleAuthAttemptStoresOnlyHashedNonceAndCorrelatesTheSafePath() throws Exception {
+    Instant beforeCreate = Instant.now();
+    UUID correlationId = UUID.randomUUID();
 
-        GoogleAuthAttemptService.CreatedAttempt attempt = googleAuthAttemptService.create(
-                "/app/reader?work=private-123", correlationId);
-        byte[] nonceHash = sha256(attempt.nonce());
-        try {
-            assertEquals(43, attempt.nonce().length(), "32 random bytes should use unpadded base64url encoding");
-            assertEquals("/app/reader?work=private-123", attempt.returnTo());
-            assertEquals(correlationId, attempt.correlationId());
-            long secondsUntilExpiry = java.time.Duration.between(beforeCreate, attempt.expiresAt()).toSeconds();
-            assertTrue(secondsUntilExpiry >= 290 && secondsUntilExpiry <= 300,
-                    "new attempts should expire in approximately five minutes");
+    GoogleAuthAttemptService.CreatedAttempt attempt =
+        googleAuthAttemptService.create("/app/reader?work=private-123", correlationId);
+    byte[] nonceHash = sha256(attempt.nonce());
+    try {
+      assertEquals(
+          43, attempt.nonce().length(), "32 random bytes should use unpadded base64url encoding");
+      assertEquals("/app/reader?work=private-123", attempt.returnTo());
+      assertEquals(correlationId, attempt.correlationId());
+      long secondsUntilExpiry =
+          java.time.Duration.between(beforeCreate, attempt.expiresAt()).toSeconds();
+      assertTrue(
+          secondsUntilExpiry >= 290 && secondsUntilExpiry <= 300,
+          "new attempts should expire in approximately five minutes");
 
-            try (Connection connection = dataSource.getConnection();
-                 PreparedStatement query = connection.prepareStatement("""
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement query =
+              connection.prepareStatement(
+                  """
                          SELECT nonce_hash, safe_return_path, correlation_id,
                                 expires_at > created_at AS expires_after_creation
                          FROM google_auth_attempts
                          WHERE nonce_hash = ?
                          """)) {
-                query.setBytes(1, nonceHash);
-                try (ResultSet storedAttempt = query.executeQuery()) {
-                    assertTrue(storedAttempt.next(), "the auth attempt must be persisted");
-                    byte[] storedHash = storedAttempt.getBytes("nonce_hash");
-                    assertEquals(32, storedHash.length);
-                    assertEquals("/app/reader?work=private-123", storedAttempt.getString("safe_return_path"));
-                    assertEquals(correlationId, storedAttempt.getObject("correlation_id", UUID.class));
-                    assertTrue(storedAttempt.getBoolean("expires_after_creation"));
-                    assertFalse(java.util.Arrays.equals(attempt.nonce().getBytes(StandardCharsets.UTF_8), storedHash));
-                }
-            }
-        } finally {
-            deleteAuthAttempt(nonceHash);
+        query.setBytes(1, nonceHash);
+        try (ResultSet storedAttempt = query.executeQuery()) {
+          assertTrue(storedAttempt.next(), "the auth attempt must be persisted");
+          byte[] storedHash = storedAttempt.getBytes("nonce_hash");
+          assertEquals(32, storedHash.length);
+          assertEquals("/app/reader?work=private-123", storedAttempt.getString("safe_return_path"));
+          assertEquals(correlationId, storedAttempt.getObject("correlation_id", UUID.class));
+          assertTrue(storedAttempt.getBoolean("expires_after_creation"));
+          assertFalse(
+              java.util.Arrays.equals(
+                  attempt.nonce().getBytes(StandardCharsets.UTF_8), storedHash));
         }
+      }
+    } finally {
+      deleteAuthAttempt(nonceHash);
     }
+  }
 
-    @Test
-    void googleAuthAttemptNoncesAreUniqueAndUnsafeReturnPathsFallBackToHome() throws Exception {
-        Set<String> nonces = new HashSet<>();
-        try {
-            for (int index = 0; index < 16; index++) {
-                GoogleAuthAttemptService.CreatedAttempt attempt = googleAuthAttemptService.create(
-                        "//attacker.example/collect", UUID.randomUUID());
-                assertTrue(nonces.add(attempt.nonce()), "generated auth attempt nonces must be unique");
-                assertEquals("/app/home", attempt.returnTo());
-            }
-        } finally {
-            for (String nonce : nonces) {
-                deleteAuthAttempt(sha256(nonce));
-            }
-        }
+  @Test
+  void googleAuthAttemptNoncesAreUniqueAndUnsafeReturnPathsFallBackToHome() throws Exception {
+    Set<String> nonces = new HashSet<>();
+    try {
+      for (int index = 0; index < 16; index++) {
+        GoogleAuthAttemptService.CreatedAttempt attempt =
+            googleAuthAttemptService.create("//attacker.example/collect", UUID.randomUUID());
+        assertTrue(nonces.add(attempt.nonce()), "generated auth attempt nonces must be unique");
+        assertEquals("/app/home", attempt.returnTo());
+      }
+    } finally {
+      for (String nonce : nonces) {
+        deleteAuthAttempt(sha256(nonce));
+      }
     }
+  }
 
-    @Test
-    void googleAuthAttemptIsConsumedAtMostOnce() throws Exception {
-        GoogleAuthAttemptService.CreatedAttempt attempt = googleAuthAttemptService.create(
-                "/app/library", UUID.randomUUID());
-        byte[] nonceHash = sha256(attempt.nonce());
-        try {
-            Optional<GoogleAuthAttemptService.ConsumedAttempt> consumed =
-                    googleAuthAttemptService.consumeOnce(attempt.nonce());
+  @Test
+  void googleAuthAttemptIsConsumedAtMostOnce() throws Exception {
+    GoogleAuthAttemptService.CreatedAttempt attempt =
+        googleAuthAttemptService.create("/app/library", UUID.randomUUID());
+    byte[] nonceHash = sha256(attempt.nonce());
+    try {
+      Optional<GoogleAuthAttemptService.ConsumedAttempt> consumed =
+          googleAuthAttemptService.consumeOnce(attempt.nonce());
 
-            assertTrue(consumed.isPresent());
-            assertEquals("/app/library", consumed.orElseThrow().returnTo());
-            assertEquals(attempt.correlationId(), consumed.orElseThrow().correlationId());
-            assertTrue(googleAuthAttemptService.consumeOnce(attempt.nonce()).isEmpty(),
-                    "a replay must not consume the same attempt twice");
-            assertTrue(googleAuthAttemptService.consumeOnce("not-a-valid-nonce").isEmpty());
-        } finally {
-            deleteAuthAttempt(nonceHash);
-        }
+      assertTrue(consumed.isPresent());
+      assertEquals("/app/library", consumed.orElseThrow().returnTo());
+      assertEquals(attempt.correlationId(), consumed.orElseThrow().correlationId());
+      assertTrue(
+          googleAuthAttemptService.consumeOnce(attempt.nonce()).isEmpty(),
+          "a replay must not consume the same attempt twice");
+      assertTrue(googleAuthAttemptService.consumeOnce("not-a-valid-nonce").isEmpty());
+    } finally {
+      deleteAuthAttempt(nonceHash);
     }
+  }
 
-    @Test
-    void expiredGoogleAuthAttemptCannotBeConsumed() throws Exception {
-        GoogleAuthAttemptService.CreatedAttempt attempt = googleAuthAttemptService.create(
-                "/app/home", UUID.randomUUID());
-        byte[] nonceHash = sha256(attempt.nonce());
-        try {
-            try (Connection connection = dataSource.getConnection();
-                 PreparedStatement expire = connection.prepareStatement("""
+  @Test
+  void expiredGoogleAuthAttemptCannotBeConsumed() throws Exception {
+    GoogleAuthAttemptService.CreatedAttempt attempt =
+        googleAuthAttemptService.create("/app/home", UUID.randomUUID());
+    byte[] nonceHash = sha256(attempt.nonce());
+    try {
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement expire =
+              connection.prepareStatement(
+                  """
                          UPDATE google_auth_attempts
                          SET expires_at = CURRENT_TIMESTAMP - INTERVAL '1 millisecond'
                          WHERE nonce_hash = ?
                          """)) {
-                expire.setBytes(1, nonceHash);
-                assertEquals(1, expire.executeUpdate());
-            }
+        expire.setBytes(1, nonceHash);
+        assertEquals(1, expire.executeUpdate());
+      }
 
-            assertTrue(googleAuthAttemptService.consumeOnce(attempt.nonce()).isEmpty(),
-                    "an expired attempt must not return its stored path");
-        } finally {
-            deleteAuthAttempt(nonceHash);
-        }
+      assertTrue(
+          googleAuthAttemptService.consumeOnce(attempt.nonce()).isEmpty(),
+          "an expired attempt must not return its stored path");
+    } finally {
+      deleteAuthAttempt(nonceHash);
     }
+  }
 
-    @Test
-    void concurrentGoogleAuthAttemptConsumersHaveOnlyOneWinner() throws Exception {
-        GoogleAuthAttemptService.CreatedAttempt attempt = googleAuthAttemptService.create(
-                "/app/reader", UUID.randomUUID());
-        byte[] nonceHash = sha256(attempt.nonce());
-        int consumers = 5;
-        ExecutorService executor = Executors.newFixedThreadPool(consumers);
-        CountDownLatch ready = new CountDownLatch(consumers);
-        CountDownLatch start = new CountDownLatch(1);
-        List<Future<Optional<GoogleAuthAttemptService.ConsumedAttempt>>> results = new ArrayList<>();
+  @Test
+  void concurrentGoogleAuthAttemptConsumersHaveOnlyOneWinner() throws Exception {
+    GoogleAuthAttemptService.CreatedAttempt attempt =
+        googleAuthAttemptService.create("/app/reader", UUID.randomUUID());
+    byte[] nonceHash = sha256(attempt.nonce());
+    int consumers = 5;
+    ExecutorService executor = Executors.newFixedThreadPool(consumers);
+    CountDownLatch ready = new CountDownLatch(consumers);
+    CountDownLatch start = new CountDownLatch(1);
+    List<Future<Optional<GoogleAuthAttemptService.ConsumedAttempt>>> results = new ArrayList<>();
 
-        try {
-            for (int index = 0; index < consumers; index++) {
-                results.add(executor.submit(() -> {
-                    ready.countDown();
-                    if (!start.await(5, TimeUnit.SECONDS)) {
-                        throw new IllegalStateException("consumer start signal timed out");
-                    }
-                    return googleAuthAttemptService.consumeOnce(attempt.nonce());
+    try {
+      for (int index = 0; index < consumers; index++) {
+        results.add(
+            executor.submit(
+                () -> {
+                  ready.countDown();
+                  if (!start.await(5, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("consumer start signal timed out");
+                  }
+                  return googleAuthAttemptService.consumeOnce(attempt.nonce());
                 }));
-            }
+      }
 
-            assertTrue(ready.await(5, TimeUnit.SECONDS), "all consumers should reach the start barrier");
-            start.countDown();
-            long winners = 0;
-            for (Future<Optional<GoogleAuthAttemptService.ConsumedAttempt>> result : results) {
-                if (result.get(10, TimeUnit.SECONDS).isPresent()) {
-                    winners++;
-                }
-            }
-            assertEquals(1, winners, "the database compare-and-set should admit one concurrent consumer");
-        } finally {
-            start.countDown();
-            executor.shutdownNow();
-            assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
-            deleteAuthAttempt(nonceHash);
+      assertTrue(ready.await(5, TimeUnit.SECONDS), "all consumers should reach the start barrier");
+      start.countDown();
+      long winners = 0;
+      for (Future<Optional<GoogleAuthAttemptService.ConsumedAttempt>> result : results) {
+        if (result.get(10, TimeUnit.SECONDS).isPresent()) {
+          winners++;
         }
+      }
+      assertEquals(1, winners, "the database compare-and-set should admit one concurrent consumer");
+    } finally {
+      start.countDown();
+      executor.shutdownNow();
+      assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
+      deleteAuthAttempt(nonceHash);
     }
+  }
 
-    @Test
-    void googleAuthBootstrapRateLimiterAllowsTenRequestsThenRefillsOneToken() throws Exception {
-        byte[] rateLimitKeyHash = sha256(UUID.randomUUID().toString());
-        try {
-            for (int request = 0; request < 10; request++) {
-                assertTrue(googleAuthBootstrapRateLimiter.tryAcquire(rateLimitKeyHash),
-                        "the initial bucket should allow ten bootstrap requests");
-            }
-            assertFalse(googleAuthBootstrapRateLimiter.tryAcquire(rateLimitKeyHash),
-                    "the eleventh request should be throttled");
+  @Test
+  void googleAuthBootstrapRateLimiterAllowsTenRequestsThenRefillsOneToken() throws Exception {
+    byte[] rateLimitKeyHash = sha256(UUID.randomUUID().toString());
+    try {
+      for (int request = 0; request < 10; request++) {
+        assertTrue(
+            googleAuthBootstrapRateLimiter.tryAcquire(rateLimitKeyHash),
+            "the initial bucket should allow ten bootstrap requests");
+      }
+      assertFalse(
+          googleAuthBootstrapRateLimiter.tryAcquire(rateLimitKeyHash),
+          "the eleventh request should be throttled");
 
-            try (Connection connection = dataSource.getConnection();
-                 PreparedStatement refill = connection.prepareStatement("""
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement refill =
+              connection.prepareStatement(
+                  """
                          UPDATE google_auth_bootstrap_rate_limits
                          SET available_tokens = 0,
                              refilled_at = clock_timestamp() - INTERVAL '24 hours'
                          WHERE rate_limit_key_hash = ?
                          """)) {
-                refill.setBytes(1, rateLimitKeyHash);
-                assertEquals(1, refill.executeUpdate());
-            }
+        refill.setBytes(1, rateLimitKeyHash);
+        assertEquals(1, refill.executeUpdate());
+      }
 
-            assertTrue(googleAuthBootstrapRateLimiter.tryAcquire(rateLimitKeyHash),
-                    "a full configured refill interval should restore one request");
-            assertFalse(googleAuthBootstrapRateLimiter.tryAcquire(rateLimitKeyHash),
-                    "the refilled token should be consumed once");
-        } finally {
-            deleteRateLimitBucket(rateLimitKeyHash);
-        }
+      assertTrue(
+          googleAuthBootstrapRateLimiter.tryAcquire(rateLimitKeyHash),
+          "a full configured refill interval should restore one request");
+      assertFalse(
+          googleAuthBootstrapRateLimiter.tryAcquire(rateLimitKeyHash),
+          "the refilled token should be consumed once");
+    } finally {
+      deleteRateLimitBucket(rateLimitKeyHash);
     }
+  }
 
-    @Test
-    void googleBootstrapHttpEndpointReturnsFreshSafeAttempt() throws Exception {
-        String clientAddress = bootstrapTestClientAddress();
-        List<UUID> correlationIds = new ArrayList<>();
-        try {
-            MvcResult result = mockMvc.perform(get("/api/v1/auth/google/bootstrap")
-                            .param("returnTo", "/library/recent?sort=updated")
-                            .param("locale", "en")
-                            .with(request -> {
-                                request.setRemoteAddr(clientAddress);
-                                return request;
-                            }))
-                    .andReturn();
-            UUID correlationId = UUID.fromString(result.getResponse().getHeader("X-Correlation-Id"));
-            correlationIds.add(correlationId);
+  @Test
+  void googleBootstrapHttpEndpointReturnsFreshSafeAttempt() throws Exception {
+    String clientAddress = bootstrapTestClientAddress();
+    List<UUID> correlationIds = new ArrayList<>();
+    try {
+      MvcResult result =
+          mockMvc
+              .perform(
+                  get("/api/v1/auth/google/bootstrap")
+                      .param("returnTo", "/library/recent?sort=updated")
+                      .param("locale", "en")
+                      .with(
+                          request -> {
+                            request.setRemoteAddr(clientAddress);
+                            return request;
+                          }))
+              .andReturn();
+      UUID correlationId = UUID.fromString(result.getResponse().getHeader("X-Correlation-Id"));
+      correlationIds.add(correlationId);
 
-            assertEquals(200, result.getResponse().getStatus());
-            assertTrue(result.getResponse().getHeader("Cache-Control").contains("no-store"));
-            assertEquals("no-cache", result.getResponse().getHeader("Pragma"));
-            assertNull(result.getResponse().getHeader("Set-Cookie"));
+      assertEquals(200, result.getResponse().getStatus());
+      assertTrue(result.getResponse().getHeader("Cache-Control").contains("no-store"));
+      assertEquals("no-cache", result.getResponse().getHeader("Pragma"));
+      assertNull(result.getResponse().getHeader("Set-Cookie"));
 
-            JsonNode body = objectMapper.readTree(result.getResponse().getContentAsString());
-            assertEquals("novel-web-integration-test.apps.googleusercontent.com", body.path("clientId").asText());
-            assertEquals("https://api.example.test/api/v1/auth/google/credential", body.path("loginUri").asText());
-            assertTrue(body.path("nonce").asText().matches("[A-Za-z0-9_-]{43}"));
-            assertEquals("en", body.path("locale").asText());
-            assertTrue(Instant.parse(body.path("attemptExpiresAt").asText()).isAfter(Instant.now()));
-            assertEquals("/library/recent?sort=updated", storedBootstrapReturnPath(body.path("nonce").asText()));
-            assertEquals(1, googleAuthAttemptCount(correlationId));
-        } finally {
-            deleteBootstrapFixtures(clientAddress, correlationIds);
-        }
+      JsonNode body = objectMapper.readTree(result.getResponse().getContentAsString());
+      assertEquals(
+          "novel-web-integration-test.apps.googleusercontent.com", body.path("clientId").asText());
+      assertEquals(
+          "https://api.example.test/api/v1/auth/google/credential", body.path("loginUri").asText());
+      assertTrue(body.path("nonce").asText().matches("[A-Za-z0-9_-]{43}"));
+      assertEquals("en", body.path("locale").asText());
+      assertTrue(Instant.parse(body.path("attemptExpiresAt").asText()).isAfter(Instant.now()));
+      assertEquals(
+          "/library/recent?sort=updated", storedBootstrapReturnPath(body.path("nonce").asText()));
+      assertEquals(1, googleAuthAttemptCount(correlationId));
+    } finally {
+      deleteBootstrapFixtures(clientAddress, correlationIds);
     }
+  }
 
-    @Test
-    void googleCredentialCallbackRejectsMissingCsrfCookieBeforeDecodingCredential() throws Exception {
-        MvcResult result = mockMvc.perform(post("/api/v1/auth/google/credential")
-                        .header("Origin", "https://app.example.test")
-                        .contentType(MediaType.APPLICATION_FORM_URLENCODED)
-                        .content("credential=synthetic-invalid-token&g_csrf_token=synthetic-csrf-token"))
-                .andReturn();
+  @Test
+  void googleCredentialCallbackRejectsMissingCsrfCookieBeforeDecodingCredential() throws Exception {
+    MvcResult result =
+        mockMvc
+            .perform(
+                post("/api/v1/auth/google/credential")
+                    .header("Origin", "https://app.example.test")
+                    .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                    .content(
+                        "credential=synthetic-invalid-token&g_csrf_token=synthetic-csrf-token"))
+            .andReturn();
 
-        assertEquals(401, result.getResponse().getStatus());
-        assertTrue(result.getResponse().getContentType().startsWith("application/problem+json"));
-        assertTrue(result.getResponse().getContentAsString().contains("SIGN_IN_FAILED"));
-        assertTrue(result.getResponse().getHeader("Cache-Control").contains("no-store"));
-        verify(jwtDecoder, never()).decode(anyString());
+    assertEquals(401, result.getResponse().getStatus());
+    assertTrue(result.getResponse().getContentType().startsWith("application/problem+json"));
+    assertTrue(result.getResponse().getContentAsString().contains("SIGN_IN_FAILED"));
+    assertTrue(result.getResponse().getHeader("Cache-Control").contains("no-store"));
+    verify(jwtDecoder, never()).decode(anyString());
+  }
+
+  @Test
+  void googleCredentialCallbackRejectsMissingOriginAndUnsupportedMediaType() throws Exception {
+    MvcResult missingOrigin =
+        mockMvc
+            .perform(
+                post("/api/v1/auth/google/credential")
+                    .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                    .content(
+                        "credential=synthetic-invalid-token&g_csrf_token=synthetic-csrf-token"))
+            .andReturn();
+    assertEquals(403, missingOrigin.getResponse().getStatus());
+    assertTrue(missingOrigin.getResponse().getContentAsString().contains("INVALID_ORIGIN"));
+
+    MvcResult wrongContentType =
+        mockMvc
+            .perform(
+                post("/api/v1/auth/google/credential")
+                    .header("Origin", "https://app.example.test")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("{}"))
+            .andReturn();
+    assertEquals(415, wrongContentType.getResponse().getStatus());
+    assertTrue(
+        wrongContentType.getResponse().getContentAsString().contains("UNSUPPORTED_MEDIA_TYPE"));
+    verify(jwtDecoder, never()).decode(anyString());
+  }
+
+  @Test
+  void googleCredentialCallbackRejectsOversizedAndDuplicateCredentialForms() throws Exception {
+    String oversized = "x".repeat(24 * 1024 + 1);
+    MvcResult tooLarge =
+        mockMvc
+            .perform(
+                post("/api/v1/auth/google/credential")
+                    .header("Origin", "https://app.example.test")
+                    .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                    .content(oversized))
+            .andReturn();
+    assertEquals(413, tooLarge.getResponse().getStatus());
+
+    MvcResult duplicate =
+        mockMvc
+            .perform(
+                post("/api/v1/auth/google/credential")
+                    .header("Origin", "https://app.example.test")
+                    .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                    .content("credential=first&credential=second&g_csrf_token=csrf-token")
+                    .cookie(new jakarta.servlet.http.Cookie("g_csrf_token", "csrf-token")))
+            .andReturn();
+    assertEquals(400, duplicate.getResponse().getStatus());
+    verify(jwtDecoder, never()).decode(anyString());
+  }
+
+  @Test
+  void googleCredentialCallbackCreatesIdentitySessionAndRedirectsToStoredPath() throws Exception {
+    String subject = "callback-" + UUID.randomUUID();
+    String email = subject + "@example.test";
+    GoogleAuthAttemptService.CreatedAttempt attempt =
+        googleAuthAttemptService.create("/library/recent?sort=updated", UUID.randomUUID());
+    when(jwtDecoder.decode("synthetic-google-id-token"))
+        .thenReturn(googleJwt(attempt.nonce(), subject, email));
+
+    try {
+      MvcResult result =
+          mockMvc
+              .perform(
+                  post("/api/v1/auth/google/credential")
+                      .header("Origin", "https://app.example.test")
+                      .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                      .content("credential=synthetic-google-id-token&g_csrf_token=csrf-token")
+                      .cookie(new jakarta.servlet.http.Cookie("g_csrf_token", "csrf-token")))
+              .andReturn();
+
+      assertEquals(303, result.getResponse().getStatus());
+      assertEquals("/library/recent?sort=updated", result.getResponse().getHeader("Location"));
+      assertTrue(result.getResponse().getHeader("Cache-Control").contains("no-store"));
+      assertEquals("no-cache", result.getResponse().getHeader("Pragma"));
+      assertEquals("no-referrer", result.getResponse().getHeader("Referrer-Policy"));
+      assertEquals("", result.getResponse().getContentAsString());
+
+      String setCookie = result.getResponse().getHeader("Set-Cookie");
+      assertTrue(setCookie.startsWith("__Host-novel_session="));
+      assertTrue(setCookie.contains("Path=/"));
+      assertTrue(setCookie.contains("Secure"));
+      assertTrue(setCookie.contains("HttpOnly"));
+      assertTrue(setCookie.contains("SameSite=Lax"));
+      String sessionToken =
+          setCookie.substring("__Host-novel_session=".length(), setCookie.indexOf(';'));
+      assertTrue(sessionToken.matches("[A-Za-z0-9_-]{43}"));
+
+      UUID userId = userIdForGoogleSubject(subject);
+      assertEquals(1, identityCount(subject));
+      assertTrue(sessionHashMatches(sessionToken, userId), "only the cookie-token hash is stored");
+      assertEquals(userId, sessionService.validateAndTouch(sessionToken).orElseThrow().userId());
+    } finally {
+      deleteAuthAttempt(sha256(attempt.nonce()));
+      deleteGoogleSignInFixtures(subject);
     }
+  }
 
-    @Test
-    void googleCredentialCallbackRejectsMissingOriginAndUnsupportedMediaType() throws Exception {
-        MvcResult missingOrigin = mockMvc.perform(post("/api/v1/auth/google/credential")
-                        .contentType(MediaType.APPLICATION_FORM_URLENCODED)
-                        .content("credential=synthetic-invalid-token&g_csrf_token=synthetic-csrf-token"))
-                .andReturn();
-        assertEquals(403, missingOrigin.getResponse().getStatus());
-        assertTrue(missingOrigin.getResponse().getContentAsString().contains("INVALID_ORIGIN"));
+  @Test
+  void googleCredentialCallbackRotatesAnExistingSessionForTheSameAccount() throws Exception {
+    String subject = "rotate-callback-" + UUID.randomUUID();
+    String email = subject + "@example.test";
+    GoogleIdentityService.IdentityAccount account =
+        googleIdentityService.findOrCreate(verifiedIdentity(subject, email, "Callback Reader"));
+    SessionService.IssuedSession previous = sessionService.create(account.userId()).orElseThrow();
+    GoogleAuthAttemptService.CreatedAttempt attempt =
+        googleAuthAttemptService.create("/app/home", UUID.randomUUID());
+    when(jwtDecoder.decode("synthetic-google-id-token"))
+        .thenReturn(googleJwt(attempt.nonce(), subject, email));
 
-        MvcResult wrongContentType = mockMvc.perform(post("/api/v1/auth/google/credential")
-                        .header("Origin", "https://app.example.test")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{}"))
-                .andReturn();
-        assertEquals(415, wrongContentType.getResponse().getStatus());
-        assertTrue(wrongContentType.getResponse().getContentAsString().contains("UNSUPPORTED_MEDIA_TYPE"));
-        verify(jwtDecoder, never()).decode(anyString());
+    try {
+      MvcResult result =
+          mockMvc
+              .perform(
+                  post("/api/v1/auth/google/credential")
+                      .header("Origin", "https://app.example.test")
+                      .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                      .content("credential=synthetic-google-id-token&g_csrf_token=csrf-token")
+                      .cookie(
+                          new jakarta.servlet.http.Cookie("g_csrf_token", "csrf-token"),
+                          new jakarta.servlet.http.Cookie(
+                              "__Host-novel_session", previous.cookieValue())))
+              .andReturn();
+
+      assertEquals(303, result.getResponse().getStatus());
+      String setCookie = result.getResponse().getHeader("Set-Cookie");
+      String rotatedToken =
+          setCookie.substring("__Host-novel_session=".length(), setCookie.indexOf(';'));
+      assertNotEquals(previous.cookieValue(), rotatedToken);
+      assertTrue(sessionService.validateAndTouch(previous.cookieValue()).isEmpty());
+      assertEquals(
+          account.userId(), sessionService.validateAndTouch(rotatedToken).orElseThrow().userId());
+      assertTrue(sessionHashMatches(rotatedToken, account.userId()));
+      assertEquals(1, activeSessionCount(account.userId()));
+    } finally {
+      deleteAuthAttempt(sha256(attempt.nonce()));
+      deleteGoogleSignInFixtures(subject);
     }
+  }
 
-    @Test
-    void googleCredentialCallbackRejectsOversizedAndDuplicateCredentialForms() throws Exception {
-        String oversized = "x".repeat(24 * 1024 + 1);
-        MvcResult tooLarge = mockMvc.perform(post("/api/v1/auth/google/credential")
-                        .header("Origin", "https://app.example.test")
-                        .contentType(MediaType.APPLICATION_FORM_URLENCODED)
-                        .content(oversized))
-                .andReturn();
-        assertEquals(413, tooLarge.getResponse().getStatus());
+  @Test
+  void googleCredentialCallbackRevokesThePreviousAccountSessionOnAccountSwitch() throws Exception {
+    String previousSubject = "previous-callback-" + UUID.randomUUID();
+    String previousEmail = previousSubject + "@example.test";
+    GoogleIdentityService.IdentityAccount previousAccount =
+        googleIdentityService.findOrCreate(
+            verifiedIdentity(previousSubject, previousEmail, "Previous Reader"));
+    SessionService.IssuedSession previous =
+        sessionService.create(previousAccount.userId()).orElseThrow();
 
-        MvcResult duplicate = mockMvc.perform(post("/api/v1/auth/google/credential")
-                        .header("Origin", "https://app.example.test")
-                        .contentType(MediaType.APPLICATION_FORM_URLENCODED)
-                        .content("credential=first&credential=second&g_csrf_token=csrf-token")
-                        .cookie(new jakarta.servlet.http.Cookie("g_csrf_token", "csrf-token")))
-                .andReturn();
-        assertEquals(400, duplicate.getResponse().getStatus());
-        verify(jwtDecoder, never()).decode(anyString());
+    String nextSubject = "next-callback-" + UUID.randomUUID();
+    String nextEmail = nextSubject + "@example.test";
+    GoogleAuthAttemptService.CreatedAttempt attempt =
+        googleAuthAttemptService.create("/app/home", UUID.randomUUID());
+    when(jwtDecoder.decode("synthetic-google-id-token"))
+        .thenReturn(googleJwt(attempt.nonce(), nextSubject, nextEmail));
+
+    try {
+      MvcResult result =
+          mockMvc
+              .perform(
+                  post("/api/v1/auth/google/credential")
+                      .header("Origin", "https://app.example.test")
+                      .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                      .content("credential=synthetic-google-id-token&g_csrf_token=csrf-token")
+                      .cookie(
+                          new jakarta.servlet.http.Cookie("g_csrf_token", "csrf-token"),
+                          new jakarta.servlet.http.Cookie(
+                              "__Host-novel_session", previous.cookieValue())))
+              .andReturn();
+
+      assertEquals(303, result.getResponse().getStatus());
+      String setCookie = result.getResponse().getHeader("Set-Cookie");
+      String nextToken =
+          setCookie.substring("__Host-novel_session=".length(), setCookie.indexOf(';'));
+      UUID nextUserId = userIdForGoogleSubject(nextSubject);
+      assertTrue(sessionService.validateAndTouch(previous.cookieValue()).isEmpty());
+      assertEquals(nextUserId, sessionService.validateAndTouch(nextToken).orElseThrow().userId());
+      assertEquals(0, activeSessionCount(previousAccount.userId()));
+      assertEquals(1, activeSessionCount(nextUserId));
+    } finally {
+      deleteAuthAttempt(sha256(attempt.nonce()));
+      deleteGoogleSignInFixtures(previousSubject);
+      deleteGoogleSignInFixtures(nextSubject);
     }
+  }
 
-    @Test
-    void googleCredentialCallbackCreatesIdentitySessionAndRedirectsToStoredPath() throws Exception {
-        String subject = "callback-" + UUID.randomUUID();
-        String email = subject + "@example.test";
-        GoogleAuthAttemptService.CreatedAttempt attempt = googleAuthAttemptService.create(
-                "/library/recent?sort=updated", UUID.randomUUID());
-        when(jwtDecoder.decode("synthetic-google-id-token"))
-                .thenReturn(googleJwt(attempt.nonce(), subject, email));
+  @Test
+  void csrfTokenRouteRequiresSessionAndChangesWhenSessionRotates() throws Exception {
+    MvcResult unauthenticated = mockMvc.perform(get("/api/v1/auth/csrf")).andReturn();
+    assertEquals(401, unauthenticated.getResponse().getStatus());
+    assertTrue(unauthenticated.getResponse().getContentAsString().contains("UNAUTHENTICATED"));
 
-        try {
-            MvcResult result = mockMvc.perform(post("/api/v1/auth/google/credential")
-                            .header("Origin", "https://app.example.test")
-                            .contentType(MediaType.APPLICATION_FORM_URLENCODED)
-                            .content("credential=synthetic-google-id-token&g_csrf_token=csrf-token")
-                            .cookie(new jakarta.servlet.http.Cookie("g_csrf_token", "csrf-token")))
-                    .andReturn();
+    UUID userId = createSessionTestUser("CSRF Route Reader");
+    try {
+      SessionService.IssuedSession original = sessionService.create(userId).orElseThrow();
+      MvcResult first =
+          mockMvc
+              .perform(
+                  get("/api/v1/auth/csrf")
+                      .cookie(
+                          new jakarta.servlet.http.Cookie(
+                              "__Host-novel_session", original.cookieValue())))
+              .andReturn();
 
-            assertEquals(303, result.getResponse().getStatus());
-            assertEquals("/library/recent?sort=updated", result.getResponse().getHeader("Location"));
-            assertTrue(result.getResponse().getHeader("Cache-Control").contains("no-store"));
-            assertEquals("no-cache", result.getResponse().getHeader("Pragma"));
-            assertEquals("no-referrer", result.getResponse().getHeader("Referrer-Policy"));
-            assertEquals("", result.getResponse().getContentAsString());
+      assertEquals(200, first.getResponse().getStatus());
+      assertTrue(first.getResponse().getHeader("Cache-Control").contains("no-store"));
+      assertEquals("no-cache", first.getResponse().getHeader("Pragma"));
+      assertNull(first.getResponse().getHeader("Set-Cookie"));
+      JsonNode firstBody = objectMapper.readTree(first.getResponse().getContentAsString());
+      String firstToken = firstBody.path("token").asText();
+      assertTrue(firstToken.matches("[A-Za-z0-9_-]{43}"));
+      assertTrue(csrfTokenService.matches(original.cookieValue(), firstToken));
+      assertEquals(original.expiresAt(), Instant.parse(firstBody.path("expiresAt").asText()));
 
-            String setCookie = result.getResponse().getHeader("Set-Cookie");
-            assertTrue(setCookie.startsWith("__Host-novel_session="));
-            assertTrue(setCookie.contains("Path=/"));
-            assertTrue(setCookie.contains("Secure"));
-            assertTrue(setCookie.contains("HttpOnly"));
-            assertTrue(setCookie.contains("SameSite=Lax"));
-            String sessionToken = setCookie.substring("__Host-novel_session=".length(), setCookie.indexOf(';'));
-            assertTrue(sessionToken.matches("[A-Za-z0-9_-]{43}"));
+      SessionService.IssuedSession rotated =
+          sessionService.rotate(original.cookieValue()).orElseThrow();
+      MvcResult second =
+          mockMvc
+              .perform(
+                  get("/api/v1/auth/csrf")
+                      .cookie(
+                          new jakarta.servlet.http.Cookie(
+                              "__Host-novel_session", rotated.cookieValue())))
+              .andReturn();
+      JsonNode secondBody = objectMapper.readTree(second.getResponse().getContentAsString());
+      String secondToken = secondBody.path("token").asText();
+      assertEquals(200, second.getResponse().getStatus());
+      assertNotEquals(firstToken, secondToken);
+      assertTrue(csrfTokenService.matches(rotated.cookieValue(), secondToken));
 
-            UUID userId = userIdForGoogleSubject(subject);
-            assertEquals(1, identityCount(subject));
-            assertTrue(sessionHashMatches(sessionToken, userId), "only the cookie-token hash is stored");
-            assertEquals(userId, sessionService.validateAndTouch(sessionToken).orElseThrow().userId());
-        } finally {
-            deleteAuthAttempt(sha256(attempt.nonce()));
-            deleteGoogleSignInFixtures(subject);
-        }
+      MvcResult revokedMutation =
+          mockMvc
+              .perform(
+                  post("/api/v1/auth/policies/accept")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{}")
+                      .header("X-CSRF-Token", firstToken)
+                      .cookie(
+                          new jakarta.servlet.http.Cookie(
+                              "__Host-novel_session", original.cookieValue())))
+              .andReturn();
+      assertEquals(401, revokedMutation.getResponse().getStatus());
+      assertTrue(revokedMutation.getResponse().getContentAsString().contains("UNAUTHENTICATED"));
+      assertFalse(revokedMutation.getResponse().getContentAsString().contains("CSRF_FAILED"));
+    } finally {
+      deleteSessionTestUser(userId);
     }
+  }
 
-    @Test
-    void googleCredentialCallbackRotatesAnExistingSessionForTheSameAccount() throws Exception {
-        String subject = "rotate-callback-" + UUID.randomUUID();
-        String email = subject + "@example.test";
-        GoogleIdentityService.IdentityAccount account = googleIdentityService.findOrCreate(
-                verifiedIdentity(subject, email, "Callback Reader"));
-        SessionService.IssuedSession previous = sessionService.create(account.userId()).orElseThrow();
-        GoogleAuthAttemptService.CreatedAttempt attempt = googleAuthAttemptService.create(
-                "/app/home", UUID.randomUUID());
-        when(jwtDecoder.decode("synthetic-google-id-token"))
-                .thenReturn(googleJwt(attempt.nonce(), subject, email));
+  @Test
+  void cookieAuthenticatedMutationRequiresTheSessionBoundCsrfHeader() throws Exception {
+    UUID userId = createSessionTestUser("CSRF Mutation Reader");
+    try {
+      SessionService.IssuedSession session = sessionService.create(userId).orElseThrow();
+      String csrfToken = csrfTokenService.tokenFor(session.cookieValue());
 
-        try {
-            MvcResult result = mockMvc.perform(post("/api/v1/auth/google/credential")
-                            .header("Origin", "https://app.example.test")
-                            .contentType(MediaType.APPLICATION_FORM_URLENCODED)
-                            .content("credential=synthetic-google-id-token&g_csrf_token=csrf-token")
-                            .cookie(
-                                    new jakarta.servlet.http.Cookie("g_csrf_token", "csrf-token"),
-                                    new jakarta.servlet.http.Cookie("__Host-novel_session", previous.cookieValue())))
-                    .andReturn();
+      MvcResult invalid =
+          mockMvc
+              .perform(
+                  post("/api/v1/auth/policies/accept")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{}")
+                      .header("X-CSRF-Token", "invalid-token")
+                      .cookie(
+                          new jakarta.servlet.http.Cookie(
+                              "__Host-novel_session", session.cookieValue())))
+              .andReturn();
+      assertEquals(403, invalid.getResponse().getStatus());
+      assertTrue(invalid.getResponse().getContentAsString().contains("CSRF_FAILED"));
 
-            assertEquals(303, result.getResponse().getStatus());
-            String setCookie = result.getResponse().getHeader("Set-Cookie");
-            String rotatedToken = setCookie.substring("__Host-novel_session=".length(), setCookie.indexOf(';'));
-            assertNotEquals(previous.cookieValue(), rotatedToken);
-            assertTrue(sessionService.validateAndTouch(previous.cookieValue()).isEmpty());
-            assertEquals(account.userId(), sessionService.validateAndTouch(rotatedToken).orElseThrow().userId());
-            assertTrue(sessionHashMatches(rotatedToken, account.userId()));
-            assertEquals(1, activeSessionCount(account.userId()));
-        } finally {
-            deleteAuthAttempt(sha256(attempt.nonce()));
-            deleteGoogleSignInFixtures(subject);
-        }
+      MvcResult validCsrf =
+          mockMvc
+              .perform(
+                  post("/api/v1/auth/policies/accept")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{}")
+                      .header("X-CSRF-Token", csrfToken)
+                      .cookie(
+                          new jakarta.servlet.http.Cookie(
+                              "__Host-novel_session", session.cookieValue())))
+              .andReturn();
+      assertEquals(422, validCsrf.getResponse().getStatus());
+      assertTrue(
+          validCsrf.getResponse().getContentAsString().contains("POLICY_ACCEPTANCE_REQUIRED"));
+      assertFalse(validCsrf.getResponse().getContentAsString().contains("CSRF_FAILED"));
+    } finally {
+      deleteSessionTestUser(userId);
     }
+  }
 
-    @Test
-    void googleCredentialCallbackRevokesThePreviousAccountSessionOnAccountSwitch() throws Exception {
-        String previousSubject = "previous-callback-" + UUID.randomUUID();
-        String previousEmail = previousSubject + "@example.test";
-        GoogleIdentityService.IdentityAccount previousAccount = googleIdentityService.findOrCreate(
-                verifiedIdentity(previousSubject, previousEmail, "Previous Reader"));
-        SessionService.IssuedSession previous = sessionService.create(previousAccount.userId()).orElseThrow();
+  @Test
+  void currentUserRequiresSessionAndReturnsOnlyTheSessionOwnersCurrentProfile() throws Exception {
+    MvcResult unauthenticated = mockMvc.perform(get("/api/v1/auth/me")).andReturn();
+    assertEquals(401, unauthenticated.getResponse().getStatus());
+    assertTrue(unauthenticated.getResponse().getContentAsString().contains("UNAUTHENTICATED"));
 
-        String nextSubject = "next-callback-" + UUID.randomUUID();
-        String nextEmail = nextSubject + "@example.test";
-        GoogleAuthAttemptService.CreatedAttempt attempt = googleAuthAttemptService.create(
-                "/app/home", UUID.randomUUID());
-        when(jwtDecoder.decode("synthetic-google-id-token"))
-                .thenReturn(googleJwt(attempt.nonce(), nextSubject, nextEmail));
+    UUID userId = createSessionTestUser("Current User Reader");
+    try {
+      addSessionTestGoogleIdentity(userId);
+      addPolicyAcceptance(userId, "TERMS", "terms-current-1", "TERMS_ACCEPTED");
+      addPolicyAcceptance(
+          userId, "PRIVACY_NOTICE", "privacy-current-1", "PRIVACY_NOTICE_ACKNOWLEDGED");
+      SessionService.IssuedSession session = sessionService.create(userId).orElseThrow();
 
-        try {
-            MvcResult result = mockMvc.perform(post("/api/v1/auth/google/credential")
-                            .header("Origin", "https://app.example.test")
-                            .contentType(MediaType.APPLICATION_FORM_URLENCODED)
-                            .content("credential=synthetic-google-id-token&g_csrf_token=csrf-token")
-                            .cookie(
-                                    new jakarta.servlet.http.Cookie("g_csrf_token", "csrf-token"),
-                                    new jakarta.servlet.http.Cookie("__Host-novel_session", previous.cookieValue())))
-                    .andReturn();
+      MvcResult authenticated =
+          mockMvc
+              .perform(
+                  get("/api/v1/auth/me")
+                      .queryParam("userId", UUID.randomUUID().toString())
+                      .cookie(
+                          new jakarta.servlet.http.Cookie(
+                              "__Host-novel_session", session.cookieValue())))
+              .andReturn();
 
-            assertEquals(303, result.getResponse().getStatus());
-            String setCookie = result.getResponse().getHeader("Set-Cookie");
-            String nextToken = setCookie.substring("__Host-novel_session=".length(), setCookie.indexOf(';'));
-            UUID nextUserId = userIdForGoogleSubject(nextSubject);
-            assertTrue(sessionService.validateAndTouch(previous.cookieValue()).isEmpty());
-            assertEquals(nextUserId, sessionService.validateAndTouch(nextToken).orElseThrow().userId());
-            assertEquals(0, activeSessionCount(previousAccount.userId()));
-            assertEquals(1, activeSessionCount(nextUserId));
-        } finally {
-            deleteAuthAttempt(sha256(attempt.nonce()));
-            deleteGoogleSignInFixtures(previousSubject);
-            deleteGoogleSignInFixtures(nextSubject);
-        }
+      assertEquals(200, authenticated.getResponse().getStatus());
+      assertTrue(authenticated.getResponse().getHeader("Cache-Control").contains("no-store"));
+      assertEquals("no-cache", authenticated.getResponse().getHeader("Pragma"));
+      assertNull(authenticated.getResponse().getHeader("Set-Cookie"));
+      JsonNode body = objectMapper.readTree(authenticated.getResponse().getContentAsString());
+      assertEquals(userId.toString(), body.path("user").path("id").asText());
+      assertEquals("Current User Reader", body.path("user").path("displayName").asText());
+      assertEquals("active", body.path("user").path("status").asText());
+      assertEquals(
+          "session-" + userId + "@example.test", body.path("user").path("contactEmail").asText());
+      assertTrue(body.path("user").path("avatarUrl").isNull());
+      assertEquals(
+          List.of("google"),
+          objectMapper.convertValue(
+              body.path("identityProviders"),
+              objectMapper.getTypeFactory().constructCollectionType(List.class, String.class)));
+      assertEquals("terms-current-1", body.path("policy").path("termsAcceptedVersion").asText());
+      assertEquals(
+          "privacy-current-1",
+          body.path("policy").path("privacyNoticeAcknowledgedVersion").asText());
+      assertTrue(body.path("policy").path("requiredAcceptanceComplete").asBoolean());
+      assertEquals("personal", body.path("roles").get(0).path("scope").asText());
+      assertEquals(0, body.path("roles").get(0).path("permissions").size());
+      assertFalse(body.path("features").path("privateLibraryEnabled").asBoolean());
+      assertFalse(body.path("features").path("importEnabled").asBoolean());
+      assertFalse(body.path("features").path("readerEnabled").asBoolean());
+      assertFalse(body.path("features").path("cultivationEnabled").asBoolean());
+      assertFalse(body.path("features").path("commerceSandboxEnabled").asBoolean());
+      assertFalse(authenticated.getResponse().getContentAsString().contains(session.cookieValue()));
+    } finally {
+      deleteSessionTestUser(userId);
     }
+  }
 
-    @Test
-    void csrfTokenRouteRequiresSessionAndChangesWhenSessionRotates() throws Exception {
-        MvcResult unauthenticated = mockMvc.perform(get("/api/v1/auth/csrf")).andReturn();
-        assertEquals(401, unauthenticated.getResponse().getStatus());
-        assertTrue(unauthenticated.getResponse().getContentAsString().contains("UNAUTHENTICATED"));
+  @Test
+  void currentUserMarksOldPolicyVersionsIncomplete() throws Exception {
+    UUID userId = createSessionTestUser("Old Policy Reader");
+    try {
+      addPolicyAcceptance(userId, "TERMS", "terms-old", "TERMS_ACCEPTED");
+      addPolicyAcceptance(userId, "PRIVACY_NOTICE", "privacy-old", "PRIVACY_NOTICE_ACKNOWLEDGED");
+      SessionService.IssuedSession session = sessionService.create(userId).orElseThrow();
 
-        UUID userId = createSessionTestUser("CSRF Route Reader");
-        try {
-            SessionService.IssuedSession original = sessionService.create(userId).orElseThrow();
-            MvcResult first = mockMvc.perform(get("/api/v1/auth/csrf")
-                            .cookie(new jakarta.servlet.http.Cookie("__Host-novel_session", original.cookieValue())))
-                    .andReturn();
+      MvcResult response =
+          mockMvc
+              .perform(
+                  get("/api/v1/auth/me")
+                      .cookie(
+                          new jakarta.servlet.http.Cookie(
+                              "__Host-novel_session", session.cookieValue())))
+              .andReturn();
 
-            assertEquals(200, first.getResponse().getStatus());
-            assertTrue(first.getResponse().getHeader("Cache-Control").contains("no-store"));
-            assertEquals("no-cache", first.getResponse().getHeader("Pragma"));
-            assertNull(first.getResponse().getHeader("Set-Cookie"));
-            JsonNode firstBody = objectMapper.readTree(first.getResponse().getContentAsString());
-            String firstToken = firstBody.path("token").asText();
-            assertTrue(firstToken.matches("[A-Za-z0-9_-]{43}"));
-            assertTrue(csrfTokenService.matches(original.cookieValue(), firstToken));
-            assertEquals(original.expiresAt(), Instant.parse(firstBody.path("expiresAt").asText()));
-
-            SessionService.IssuedSession rotated = sessionService.rotate(original.cookieValue()).orElseThrow();
-            MvcResult second = mockMvc.perform(get("/api/v1/auth/csrf")
-                            .cookie(new jakarta.servlet.http.Cookie("__Host-novel_session", rotated.cookieValue())))
-                    .andReturn();
-            JsonNode secondBody = objectMapper.readTree(second.getResponse().getContentAsString());
-            String secondToken = secondBody.path("token").asText();
-            assertEquals(200, second.getResponse().getStatus());
-            assertNotEquals(firstToken, secondToken);
-            assertTrue(csrfTokenService.matches(rotated.cookieValue(), secondToken));
-
-            MvcResult revokedMutation = mockMvc.perform(post("/api/v1/auth/policies/accept")
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content("{}")
-                            .header("X-CSRF-Token", firstToken)
-                            .cookie(new jakarta.servlet.http.Cookie("__Host-novel_session", original.cookieValue())))
-                    .andReturn();
-            assertEquals(401, revokedMutation.getResponse().getStatus());
-            assertTrue(revokedMutation.getResponse().getContentAsString().contains("UNAUTHENTICATED"));
-            assertFalse(revokedMutation.getResponse().getContentAsString().contains("CSRF_FAILED"));
-        } finally {
-            deleteSessionTestUser(userId);
-        }
+      assertEquals(200, response.getResponse().getStatus());
+      JsonNode policy =
+          objectMapper.readTree(response.getResponse().getContentAsString()).path("policy");
+      assertEquals("terms-old", policy.path("termsAcceptedVersion").asText());
+      assertEquals("privacy-old", policy.path("privacyNoticeAcknowledgedVersion").asText());
+      assertFalse(policy.path("requiredAcceptanceComplete").asBoolean());
+    } finally {
+      deleteSessionTestUser(userId);
     }
+  }
 
-    @Test
-    void cookieAuthenticatedMutationRequiresTheSessionBoundCsrfHeader() throws Exception {
-        UUID userId = createSessionTestUser("CSRF Mutation Reader");
-        try {
-            SessionService.IssuedSession session = sessionService.create(userId).orElseThrow();
-            String csrfToken = csrfTokenService.tokenFor(session.cookieValue());
+  @Test
+  void currentUserRejectsAUserWhoseAccountWasSuspendedAfterSessionIssue() throws Exception {
+    UUID userId = createSessionTestUser("Suspended Reader");
+    try {
+      SessionService.IssuedSession session = sessionService.create(userId).orElseThrow();
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement suspend =
+              connection.prepareStatement("UPDATE users SET status = 'suspended' WHERE id = ?")) {
+        suspend.setObject(1, userId);
+        assertEquals(1, suspend.executeUpdate());
+      }
 
-            MvcResult invalid = mockMvc.perform(post("/api/v1/auth/policies/accept")
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content("{}")
-                            .header("X-CSRF-Token", "invalid-token")
-                            .cookie(new jakarta.servlet.http.Cookie("__Host-novel_session", session.cookieValue())))
-                    .andReturn();
-            assertEquals(403, invalid.getResponse().getStatus());
-            assertTrue(invalid.getResponse().getContentAsString().contains("CSRF_FAILED"));
-
-            MvcResult validCsrf = mockMvc.perform(post("/api/v1/auth/policies/accept")
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content("{}")
-                            .header("X-CSRF-Token", csrfToken)
-                            .cookie(new jakarta.servlet.http.Cookie("__Host-novel_session", session.cookieValue())))
-                    .andReturn();
-            assertEquals(422, validCsrf.getResponse().getStatus());
-            assertTrue(validCsrf.getResponse().getContentAsString().contains("POLICY_ACCEPTANCE_REQUIRED"));
-            assertFalse(validCsrf.getResponse().getContentAsString().contains("CSRF_FAILED"));
-        } finally {
-            deleteSessionTestUser(userId);
-        }
+      MvcResult response =
+          mockMvc
+              .perform(
+                  get("/api/v1/auth/me")
+                      .cookie(
+                          new jakarta.servlet.http.Cookie(
+                              "__Host-novel_session", session.cookieValue())))
+              .andReturn();
+      assertEquals(401, response.getResponse().getStatus());
+      assertTrue(response.getResponse().getContentAsString().contains("UNAUTHENTICATED"));
+    } finally {
+      deleteSessionTestUser(userId);
     }
+  }
 
-    @Test
-    void currentUserRequiresSessionAndReturnsOnlyTheSessionOwnersCurrentProfile() throws Exception {
-        MvcResult unauthenticated = mockMvc.perform(get("/api/v1/auth/me")).andReturn();
-        assertEquals(401, unauthenticated.getResponse().getStatus());
-        assertTrue(unauthenticated.getResponse().getContentAsString().contains("UNAUTHENTICATED"));
+  @Test
+  void logoutRevokesTheSessionClearsTheCookieAndCanBeRepeated() throws Exception {
+    UUID userId = createSessionTestUser("Logout Reader");
+    try {
+      SessionService.IssuedSession session = sessionService.create(userId).orElseThrow();
+      String csrfToken = csrfTokenService.tokenFor(session.cookieValue());
 
-        UUID userId = createSessionTestUser("Current User Reader");
-        try {
-            addSessionTestGoogleIdentity(userId);
-            addPolicyAcceptance(userId, "TERMS", "terms-current-1", "TERMS_ACCEPTED");
-            addPolicyAcceptance(userId, "PRIVACY_NOTICE", "privacy-current-1", "PRIVACY_NOTICE_ACKNOWLEDGED");
-            SessionService.IssuedSession session = sessionService.create(userId).orElseThrow();
+      MvcResult first =
+          mockMvc
+              .perform(
+                  post("/api/v1/auth/logout")
+                      .header("X-CSRF-Token", csrfToken)
+                      .cookie(
+                          new jakarta.servlet.http.Cookie(
+                              "__Host-novel_session", session.cookieValue())))
+              .andReturn();
+      assertEquals(204, first.getResponse().getStatus());
+      assertTrue(first.getResponse().getHeader("Cache-Control").contains("no-store"));
+      assertTrue(first.getResponse().getHeader("Set-Cookie").contains("__Host-novel_session="));
+      assertTrue(first.getResponse().getHeader("Set-Cookie").contains("Max-Age=0"));
+      assertTrue(first.getResponse().getHeader("Set-Cookie").contains("Secure"));
+      assertTrue(first.getResponse().getHeader("Set-Cookie").contains("HttpOnly"));
+      assertTrue(first.getResponse().getHeader("Set-Cookie").contains("SameSite=Lax"));
+      assertFalse(first.getResponse().getHeader("Set-Cookie").contains("Domain="));
+      assertTrue(sessionService.validateAndTouch(session.cookieValue()).isEmpty());
 
-            MvcResult authenticated = mockMvc.perform(get("/api/v1/auth/me")
-                            .queryParam("userId", UUID.randomUUID().toString())
-                            .cookie(new jakarta.servlet.http.Cookie("__Host-novel_session", session.cookieValue())))
-                    .andReturn();
-
-            assertEquals(200, authenticated.getResponse().getStatus());
-            assertTrue(authenticated.getResponse().getHeader("Cache-Control").contains("no-store"));
-            assertEquals("no-cache", authenticated.getResponse().getHeader("Pragma"));
-            assertNull(authenticated.getResponse().getHeader("Set-Cookie"));
-            JsonNode body = objectMapper.readTree(authenticated.getResponse().getContentAsString());
-            assertEquals(userId.toString(), body.path("user").path("id").asText());
-            assertEquals("Current User Reader", body.path("user").path("displayName").asText());
-            assertEquals("active", body.path("user").path("status").asText());
-            assertEquals("session-" + userId + "@example.test", body.path("user").path("contactEmail").asText());
-            assertTrue(body.path("user").path("avatarUrl").isNull());
-            assertEquals(List.of("google"), objectMapper.convertValue(
-                    body.path("identityProviders"), objectMapper.getTypeFactory()
-                            .constructCollectionType(List.class, String.class)));
-            assertEquals("terms-current-1", body.path("policy").path("termsAcceptedVersion").asText());
-            assertEquals("privacy-current-1", body.path("policy")
-                    .path("privacyNoticeAcknowledgedVersion").asText());
-            assertTrue(body.path("policy").path("requiredAcceptanceComplete").asBoolean());
-            assertEquals("personal", body.path("roles").get(0).path("scope").asText());
-            assertEquals(0, body.path("roles").get(0).path("permissions").size());
-            assertFalse(body.path("features").path("privateLibraryEnabled").asBoolean());
-            assertFalse(body.path("features").path("importEnabled").asBoolean());
-            assertFalse(body.path("features").path("readerEnabled").asBoolean());
-            assertFalse(body.path("features").path("cultivationEnabled").asBoolean());
-            assertFalse(body.path("features").path("commerceSandboxEnabled").asBoolean());
-            assertFalse(authenticated.getResponse().getContentAsString().contains(session.cookieValue()));
-        } finally {
-            deleteSessionTestUser(userId);
-        }
+      MvcResult repeated =
+          mockMvc
+              .perform(
+                  post("/api/v1/auth/logout")
+                      .header("X-CSRF-Token", csrfToken)
+                      .cookie(
+                          new jakarta.servlet.http.Cookie(
+                              "__Host-novel_session", session.cookieValue())))
+              .andReturn();
+      assertEquals(204, repeated.getResponse().getStatus());
+      assertTrue(repeated.getResponse().getHeader("Set-Cookie").contains("Max-Age=0"));
+    } finally {
+      deleteSessionTestUser(userId);
     }
+  }
 
-    @Test
-    void currentUserMarksOldPolicyVersionsIncomplete() throws Exception {
-        UUID userId = createSessionTestUser("Old Policy Reader");
-        try {
-            addPolicyAcceptance(userId, "TERMS", "terms-old", "TERMS_ACCEPTED");
-            addPolicyAcceptance(userId, "PRIVACY_NOTICE", "privacy-old", "PRIVACY_NOTICE_ACKNOWLEDGED");
-            SessionService.IssuedSession session = sessionService.create(userId).orElseThrow();
+  @Test
+  void logoutWithoutASessionIsIdempotentAndStillClearsCookie() throws Exception {
+    MvcResult response = mockMvc.perform(post("/api/v1/auth/logout")).andReturn();
+    assertEquals(204, response.getResponse().getStatus());
+    assertTrue(response.getResponse().getHeader("Set-Cookie").contains("Max-Age=0"));
+  }
 
-            MvcResult response = mockMvc.perform(get("/api/v1/auth/me")
-                            .cookie(new jakarta.servlet.http.Cookie("__Host-novel_session", session.cookieValue())))
-                    .andReturn();
+  @Test
+  void logoutRejectsInvalidCsrfWithoutRevokingTheCurrentSession() throws Exception {
+    UUID userId = createSessionTestUser("Logout CSRF Reader");
+    try {
+      SessionService.IssuedSession session = sessionService.create(userId).orElseThrow();
+      MvcResult response =
+          mockMvc
+              .perform(
+                  post("/api/v1/auth/logout")
+                      .header("X-CSRF-Token", "invalid-token")
+                      .cookie(
+                          new jakarta.servlet.http.Cookie(
+                              "__Host-novel_session", session.cookieValue())))
+              .andReturn();
 
-            assertEquals(200, response.getResponse().getStatus());
-            JsonNode policy = objectMapper.readTree(response.getResponse().getContentAsString()).path("policy");
-            assertEquals("terms-old", policy.path("termsAcceptedVersion").asText());
-            assertEquals("privacy-old", policy.path("privacyNoticeAcknowledgedVersion").asText());
-            assertFalse(policy.path("requiredAcceptanceComplete").asBoolean());
-        } finally {
-            deleteSessionTestUser(userId);
-        }
+      assertEquals(403, response.getResponse().getStatus());
+      assertTrue(response.getResponse().getContentAsString().contains("CSRF_FAILED"));
+      assertNull(response.getResponse().getHeader("Set-Cookie"));
+      assertTrue(sessionService.validateAndTouch(session.cookieValue()).isPresent());
+    } finally {
+      deleteSessionTestUser(userId);
     }
+  }
 
-    @Test
-    void currentUserRejectsAUserWhoseAccountWasSuspendedAfterSessionIssue() throws Exception {
-        UUID userId = createSessionTestUser("Suspended Reader");
-        try {
-            SessionService.IssuedSession session = sessionService.create(userId).orElseThrow();
-            try (Connection connection = dataSource.getConnection();
-                 PreparedStatement suspend = connection.prepareStatement(
-                         "UPDATE users SET status = 'suspended' WHERE id = ?")) {
-                suspend.setObject(1, userId);
-                assertEquals(1, suspend.executeUpdate());
-            }
+  @Test
+  void logoutAllConfirmationIsNoStoreHashedBoundAndReplacedPerSession() throws Exception {
+    MvcResult unauthenticated =
+        mockMvc.perform(post("/api/v1/auth/logout-all/confirmation")).andReturn();
+    assertEquals(403, unauthenticated.getResponse().getStatus());
+    assertTrue(unauthenticated.getResponse().getContentAsString().contains("CSRF_FAILED"));
 
-            MvcResult response = mockMvc.perform(get("/api/v1/auth/me")
-                            .cookie(new jakarta.servlet.http.Cookie("__Host-novel_session", session.cookieValue())))
-                    .andReturn();
-            assertEquals(401, response.getResponse().getStatus());
-            assertTrue(response.getResponse().getContentAsString().contains("UNAUTHENTICATED"));
-        } finally {
-            deleteSessionTestUser(userId);
-        }
+    UUID userId = createSessionTestUser("Logout All Confirmation Reader");
+    try {
+      SessionService.IssuedSession session = sessionService.create(userId).orElseThrow();
+      String csrfToken = csrfTokenService.tokenFor(session.cookieValue());
+      MvcResult first =
+          mockMvc
+              .perform(
+                  post("/api/v1/auth/logout-all/confirmation")
+                      .header("X-CSRF-Token", csrfToken)
+                      .cookie(
+                          new jakarta.servlet.http.Cookie(
+                              "__Host-novel_session", session.cookieValue())))
+              .andReturn();
+
+      assertEquals(200, first.getResponse().getStatus());
+      assertTrue(first.getResponse().getHeader("Cache-Control").contains("no-store"));
+      assertEquals("no-cache", first.getResponse().getHeader("Pragma"));
+      JsonNode firstBody = objectMapper.readTree(first.getResponse().getContentAsString());
+      String firstToken = firstBody.path("confirmationToken").asText();
+      assertTrue(firstToken.matches("[A-Za-z0-9_-]{43}"));
+      Instant firstExpiry = Instant.parse(firstBody.path("expiresAt").asText());
+      assertTrue(firstExpiry.isAfter(Instant.now()));
+      assertTrue(firstExpiry.isBefore(Instant.now().plusSeconds(6 * 60)));
+      assertTrue(confirmationHashStoredForUser(firstToken, userId, session.cookieValue()));
+
+      MvcResult replacement =
+          mockMvc
+              .perform(
+                  post("/api/v1/auth/logout-all/confirmation")
+                      .header("X-CSRF-Token", csrfToken)
+                      .cookie(
+                          new jakarta.servlet.http.Cookie(
+                              "__Host-novel_session", session.cookieValue())))
+              .andReturn();
+      assertEquals(200, replacement.getResponse().getStatus());
+      String replacementToken =
+          objectMapper
+              .readTree(replacement.getResponse().getContentAsString())
+              .path("confirmationToken")
+              .asText();
+      assertFalse(confirmationHashExists(firstToken));
+      assertTrue(confirmationHashExists(replacementToken));
+      assertEquals(1, activeSessionCount(userId));
+    } finally {
+      deleteSessionTestUser(userId);
     }
+  }
 
-    @Test
-    void logoutRevokesTheSessionClearsTheCookieAndCanBeRepeated() throws Exception {
-        UUID userId = createSessionTestUser("Logout Reader");
-        try {
-            SessionService.IssuedSession session = sessionService.create(userId).orElseThrow();
-            String csrfToken = csrfTokenService.tokenFor(session.cookieValue());
+  @Test
+  void logoutAllRejectsWrongUserOrSessionThenRevokesOnlyTheBoundUsersSessions() throws Exception {
+    UUID userId = createSessionTestUser("Logout All Owner");
+    UUID otherUserId = createSessionTestUser("Other Logout All Owner");
+    try {
+      SessionService.IssuedSession current = sessionService.create(userId).orElseThrow();
+      SessionService.IssuedSession otherDevice = sessionService.create(userId).orElseThrow();
+      SessionService.IssuedSession otherUserSession =
+          sessionService.create(otherUserId).orElseThrow();
+      String currentCsrf = csrfTokenService.tokenFor(current.cookieValue());
+      MvcResult confirmationResponse =
+          mockMvc
+              .perform(
+                  post("/api/v1/auth/logout-all/confirmation")
+                      .header("X-CSRF-Token", currentCsrf)
+                      .cookie(
+                          new jakarta.servlet.http.Cookie(
+                              "__Host-novel_session", current.cookieValue())))
+              .andReturn();
+      String confirmationToken =
+          objectMapper
+              .readTree(confirmationResponse.getResponse().getContentAsString())
+              .path("confirmationToken")
+              .asText();
 
-            MvcResult first = mockMvc.perform(post("/api/v1/auth/logout")
-                            .header("X-CSRF-Token", csrfToken)
-                            .cookie(new jakarta.servlet.http.Cookie("__Host-novel_session", session.cookieValue())))
-                    .andReturn();
-            assertEquals(204, first.getResponse().getStatus());
-            assertTrue(first.getResponse().getHeader("Cache-Control").contains("no-store"));
-            assertTrue(first.getResponse().getHeader("Set-Cookie").contains("__Host-novel_session="));
-            assertTrue(first.getResponse().getHeader("Set-Cookie").contains("Max-Age=0"));
-            assertTrue(first.getResponse().getHeader("Set-Cookie").contains("Secure"));
-            assertTrue(first.getResponse().getHeader("Set-Cookie").contains("HttpOnly"));
-            assertTrue(first.getResponse().getHeader("Set-Cookie").contains("SameSite=Lax"));
-            assertFalse(first.getResponse().getHeader("Set-Cookie").contains("Domain="));
-            assertTrue(sessionService.validateAndTouch(session.cookieValue()).isEmpty());
+      MvcResult wrongSession =
+          mockMvc
+              .perform(
+                  post("/api/v1/auth/logout-all")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          objectMapper.writeValueAsString(
+                              Map.of("confirmationToken", confirmationToken)))
+                      .header("X-CSRF-Token", csrfTokenService.tokenFor(otherDevice.cookieValue()))
+                      .cookie(
+                          new jakarta.servlet.http.Cookie(
+                              "__Host-novel_session", otherDevice.cookieValue())))
+              .andReturn();
+      assertEquals(403, wrongSession.getResponse().getStatus());
+      assertTrue(
+          wrongSession
+              .getResponse()
+              .getContentAsString()
+              .contains("LOGOUT_ALL_CONFIRMATION_INVALID"));
 
-            MvcResult repeated = mockMvc.perform(post("/api/v1/auth/logout")
-                            .header("X-CSRF-Token", csrfToken)
-                            .cookie(new jakarta.servlet.http.Cookie("__Host-novel_session", session.cookieValue())))
-                    .andReturn();
-            assertEquals(204, repeated.getResponse().getStatus());
-            assertTrue(repeated.getResponse().getHeader("Set-Cookie").contains("Max-Age=0"));
-        } finally {
-            deleteSessionTestUser(userId);
-        }
+      MvcResult wrongUser =
+          mockMvc
+              .perform(
+                  post("/api/v1/auth/logout-all")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          objectMapper.writeValueAsString(
+                              Map.of("confirmationToken", confirmationToken)))
+                      .header(
+                          "X-CSRF-Token", csrfTokenService.tokenFor(otherUserSession.cookieValue()))
+                      .cookie(
+                          new jakarta.servlet.http.Cookie(
+                              "__Host-novel_session", otherUserSession.cookieValue())))
+              .andReturn();
+      assertEquals(403, wrongUser.getResponse().getStatus());
+      assertTrue(
+          wrongUser.getResponse().getContentAsString().contains("LOGOUT_ALL_CONFIRMATION_INVALID"));
+      assertEquals(2, activeSessionCount(userId));
+      assertEquals(1, activeSessionCount(otherUserId));
+
+      MvcResult success =
+          mockMvc
+              .perform(
+                  post("/api/v1/auth/logout-all")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          objectMapper.writeValueAsString(
+                              Map.of("confirmationToken", confirmationToken)))
+                      .header("X-CSRF-Token", currentCsrf)
+                      .cookie(
+                          new jakarta.servlet.http.Cookie(
+                              "__Host-novel_session", current.cookieValue())))
+              .andReturn();
+      assertEquals(204, success.getResponse().getStatus());
+      assertTrue(success.getResponse().getHeader("Cache-Control").contains("no-store"));
+      assertTrue(success.getResponse().getHeader("Set-Cookie").contains("Max-Age=0"));
+      assertEquals(0, activeSessionCount(userId));
+      assertEquals(1, activeSessionCount(otherUserId));
+
+      MvcResult replay =
+          mockMvc
+              .perform(
+                  post("/api/v1/auth/logout-all")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          objectMapper.writeValueAsString(
+                              Map.of("confirmationToken", confirmationToken)))
+                      .header("X-CSRF-Token", currentCsrf)
+                      .cookie(
+                          new jakarta.servlet.http.Cookie(
+                              "__Host-novel_session", current.cookieValue())))
+              .andReturn();
+      assertEquals(401, replay.getResponse().getStatus());
+      assertEquals(1, activeSessionCount(otherUserId));
+    } finally {
+      deleteSessionTestUser(userId);
+      deleteSessionTestUser(otherUserId);
     }
+  }
 
-    @Test
-    void logoutWithoutASessionIsIdempotentAndStillClearsCookie() throws Exception {
-        MvcResult response = mockMvc.perform(post("/api/v1/auth/logout")).andReturn();
-        assertEquals(204, response.getResponse().getStatus());
-        assertTrue(response.getResponse().getHeader("Set-Cookie").contains("Max-Age=0"));
-    }
-
-    @Test
-    void logoutRejectsInvalidCsrfWithoutRevokingTheCurrentSession() throws Exception {
-        UUID userId = createSessionTestUser("Logout CSRF Reader");
-        try {
-            SessionService.IssuedSession session = sessionService.create(userId).orElseThrow();
-            MvcResult response = mockMvc.perform(post("/api/v1/auth/logout")
-                            .header("X-CSRF-Token", "invalid-token")
-                            .cookie(new jakarta.servlet.http.Cookie("__Host-novel_session", session.cookieValue())))
-                    .andReturn();
-
-            assertEquals(403, response.getResponse().getStatus());
-            assertTrue(response.getResponse().getContentAsString().contains("CSRF_FAILED"));
-            assertNull(response.getResponse().getHeader("Set-Cookie"));
-            assertTrue(sessionService.validateAndTouch(session.cookieValue()).isPresent());
-        } finally {
-            deleteSessionTestUser(userId);
-        }
-    }
-
-    @Test
-    void logoutAllConfirmationIsNoStoreHashedBoundAndReplacedPerSession() throws Exception {
-        MvcResult unauthenticated = mockMvc.perform(post("/api/v1/auth/logout-all/confirmation")).andReturn();
-        assertEquals(403, unauthenticated.getResponse().getStatus());
-        assertTrue(unauthenticated.getResponse().getContentAsString().contains("CSRF_FAILED"));
-
-        UUID userId = createSessionTestUser("Logout All Confirmation Reader");
-        try {
-            SessionService.IssuedSession session = sessionService.create(userId).orElseThrow();
-            String csrfToken = csrfTokenService.tokenFor(session.cookieValue());
-            MvcResult first = mockMvc.perform(post("/api/v1/auth/logout-all/confirmation")
-                            .header("X-CSRF-Token", csrfToken)
-                            .cookie(new jakarta.servlet.http.Cookie("__Host-novel_session", session.cookieValue())))
-                    .andReturn();
-
-            assertEquals(200, first.getResponse().getStatus());
-            assertTrue(first.getResponse().getHeader("Cache-Control").contains("no-store"));
-            assertEquals("no-cache", first.getResponse().getHeader("Pragma"));
-            JsonNode firstBody = objectMapper.readTree(first.getResponse().getContentAsString());
-            String firstToken = firstBody.path("confirmationToken").asText();
-            assertTrue(firstToken.matches("[A-Za-z0-9_-]{43}"));
-            Instant firstExpiry = Instant.parse(firstBody.path("expiresAt").asText());
-            assertTrue(firstExpiry.isAfter(Instant.now()));
-            assertTrue(firstExpiry.isBefore(Instant.now().plusSeconds(6 * 60)));
-            assertTrue(confirmationHashStoredForUser(firstToken, userId, session.cookieValue()));
-
-            MvcResult replacement = mockMvc.perform(post("/api/v1/auth/logout-all/confirmation")
-                            .header("X-CSRF-Token", csrfToken)
-                            .cookie(new jakarta.servlet.http.Cookie("__Host-novel_session", session.cookieValue())))
-                    .andReturn();
-            assertEquals(200, replacement.getResponse().getStatus());
-            String replacementToken = objectMapper.readTree(replacement.getResponse().getContentAsString())
-                    .path("confirmationToken").asText();
-            assertFalse(confirmationHashExists(firstToken));
-            assertTrue(confirmationHashExists(replacementToken));
-            assertEquals(1, activeSessionCount(userId));
-        } finally {
-            deleteSessionTestUser(userId);
-        }
-    }
-
-    @Test
-    void logoutAllRejectsWrongUserOrSessionThenRevokesOnlyTheBoundUsersSessions() throws Exception {
-        UUID userId = createSessionTestUser("Logout All Owner");
-        UUID otherUserId = createSessionTestUser("Other Logout All Owner");
-        try {
-            SessionService.IssuedSession current = sessionService.create(userId).orElseThrow();
-            SessionService.IssuedSession otherDevice = sessionService.create(userId).orElseThrow();
-            SessionService.IssuedSession otherUserSession = sessionService.create(otherUserId).orElseThrow();
-            String currentCsrf = csrfTokenService.tokenFor(current.cookieValue());
-            MvcResult confirmationResponse = mockMvc.perform(post("/api/v1/auth/logout-all/confirmation")
-                            .header("X-CSRF-Token", currentCsrf)
-                            .cookie(new jakarta.servlet.http.Cookie("__Host-novel_session", current.cookieValue())))
-                    .andReturn();
-            String confirmationToken = objectMapper.readTree(confirmationResponse.getResponse().getContentAsString())
-                    .path("confirmationToken").asText();
-
-            MvcResult wrongSession = mockMvc.perform(post("/api/v1/auth/logout-all")
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content(objectMapper.writeValueAsString(Map.of("confirmationToken", confirmationToken)))
-                            .header("X-CSRF-Token", csrfTokenService.tokenFor(otherDevice.cookieValue()))
-                            .cookie(new jakarta.servlet.http.Cookie("__Host-novel_session", otherDevice.cookieValue())))
-                    .andReturn();
-            assertEquals(403, wrongSession.getResponse().getStatus());
-            assertTrue(wrongSession.getResponse().getContentAsString().contains("LOGOUT_ALL_CONFIRMATION_INVALID"));
-
-            MvcResult wrongUser = mockMvc.perform(post("/api/v1/auth/logout-all")
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content(objectMapper.writeValueAsString(Map.of("confirmationToken", confirmationToken)))
-                            .header("X-CSRF-Token", csrfTokenService.tokenFor(otherUserSession.cookieValue()))
-                            .cookie(new jakarta.servlet.http.Cookie("__Host-novel_session", otherUserSession.cookieValue())))
-                    .andReturn();
-            assertEquals(403, wrongUser.getResponse().getStatus());
-            assertTrue(wrongUser.getResponse().getContentAsString().contains("LOGOUT_ALL_CONFIRMATION_INVALID"));
-            assertEquals(2, activeSessionCount(userId));
-            assertEquals(1, activeSessionCount(otherUserId));
-
-            MvcResult success = mockMvc.perform(post("/api/v1/auth/logout-all")
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content(objectMapper.writeValueAsString(Map.of("confirmationToken", confirmationToken)))
-                            .header("X-CSRF-Token", currentCsrf)
-                            .cookie(new jakarta.servlet.http.Cookie("__Host-novel_session", current.cookieValue())))
-                    .andReturn();
-            assertEquals(204, success.getResponse().getStatus());
-            assertTrue(success.getResponse().getHeader("Cache-Control").contains("no-store"));
-            assertTrue(success.getResponse().getHeader("Set-Cookie").contains("Max-Age=0"));
-            assertEquals(0, activeSessionCount(userId));
-            assertEquals(1, activeSessionCount(otherUserId));
-
-            MvcResult replay = mockMvc.perform(post("/api/v1/auth/logout-all")
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content(objectMapper.writeValueAsString(Map.of("confirmationToken", confirmationToken)))
-                            .header("X-CSRF-Token", currentCsrf)
-                            .cookie(new jakarta.servlet.http.Cookie("__Host-novel_session", current.cookieValue())))
-                    .andReturn();
-            assertEquals(401, replay.getResponse().getStatus());
-            assertEquals(1, activeSessionCount(otherUserId));
-        } finally {
-            deleteSessionTestUser(userId);
-            deleteSessionTestUser(otherUserId);
-        }
-    }
-
-    @Test
-    void expiredLogoutAllConfirmationDoesNotRevokeSessions() throws Exception {
-        UUID userId = createSessionTestUser("Expired Logout All Reader");
-        try {
-            SessionService.IssuedSession session = sessionService.create(userId).orElseThrow();
-            String csrfToken = csrfTokenService.tokenFor(session.cookieValue());
-            MvcResult confirmationResponse = mockMvc.perform(post("/api/v1/auth/logout-all/confirmation")
-                            .header("X-CSRF-Token", csrfToken)
-                            .cookie(new jakarta.servlet.http.Cookie("__Host-novel_session", session.cookieValue())))
-                    .andReturn();
-            String confirmationToken = objectMapper.readTree(confirmationResponse.getResponse().getContentAsString())
-                    .path("confirmationToken").asText();
-            try (Connection connection = dataSource.getConnection();
-                 PreparedStatement expire = connection.prepareStatement("""
+  @Test
+  void expiredLogoutAllConfirmationDoesNotRevokeSessions() throws Exception {
+    UUID userId = createSessionTestUser("Expired Logout All Reader");
+    try {
+      SessionService.IssuedSession session = sessionService.create(userId).orElseThrow();
+      String csrfToken = csrfTokenService.tokenFor(session.cookieValue());
+      MvcResult confirmationResponse =
+          mockMvc
+              .perform(
+                  post("/api/v1/auth/logout-all/confirmation")
+                      .header("X-CSRF-Token", csrfToken)
+                      .cookie(
+                          new jakarta.servlet.http.Cookie(
+                              "__Host-novel_session", session.cookieValue())))
+              .andReturn();
+      String confirmationToken =
+          objectMapper
+              .readTree(confirmationResponse.getResponse().getContentAsString())
+              .path("confirmationToken")
+              .asText();
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement expire =
+              connection.prepareStatement(
+                  """
                          UPDATE session_revoke_confirmations
                          SET created_at = clock_timestamp() - INTERVAL '2 seconds',
                              expires_at = clock_timestamp() - INTERVAL '1 second'
                          WHERE token_hash = ?
                          """)) {
-                expire.setBytes(1, sessionTokenHash(confirmationToken));
-                assertEquals(1, expire.executeUpdate());
-            }
+        expire.setBytes(1, sessionTokenHash(confirmationToken));
+        assertEquals(1, expire.executeUpdate());
+      }
 
-            MvcResult response = mockMvc.perform(post("/api/v1/auth/logout-all")
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content(objectMapper.writeValueAsString(Map.of("confirmationToken", confirmationToken)))
-                            .header("X-CSRF-Token", csrfToken)
-                            .cookie(new jakarta.servlet.http.Cookie("__Host-novel_session", session.cookieValue())))
-                    .andReturn();
-            assertEquals(403, response.getResponse().getStatus());
-            assertTrue(response.getResponse().getContentAsString().contains("LOGOUT_ALL_CONFIRMATION_INVALID"));
-            assertNull(response.getResponse().getHeader("Set-Cookie"));
-            assertEquals(1, activeSessionCount(userId));
-        } finally {
-            deleteSessionTestUser(userId);
-        }
+      MvcResult response =
+          mockMvc
+              .perform(
+                  post("/api/v1/auth/logout-all")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          objectMapper.writeValueAsString(
+                              Map.of("confirmationToken", confirmationToken)))
+                      .header("X-CSRF-Token", csrfToken)
+                      .cookie(
+                          new jakarta.servlet.http.Cookie(
+                              "__Host-novel_session", session.cookieValue())))
+              .andReturn();
+      assertEquals(403, response.getResponse().getStatus());
+      assertTrue(
+          response.getResponse().getContentAsString().contains("LOGOUT_ALL_CONFIRMATION_INVALID"));
+      assertNull(response.getResponse().getHeader("Set-Cookie"));
+      assertEquals(1, activeSessionCount(userId));
+    } finally {
+      deleteSessionTestUser(userId);
     }
+  }
 
-    @Test
-    void concurrentLogoutAllRequestsConsumeConfirmationOnlyOnce() throws Exception {
-        UUID userId = createSessionTestUser("Concurrent Logout All Reader");
-        int requestCount = 8;
-        ExecutorService executor = Executors.newFixedThreadPool(requestCount);
-        CountDownLatch ready = new CountDownLatch(requestCount);
-        CountDownLatch start = new CountDownLatch(1);
-        List<Future<Boolean>> results = new ArrayList<>();
-        try {
-            SessionService.IssuedSession current = sessionService.create(userId).orElseThrow();
-            sessionService.create(userId).orElseThrow();
-            LogoutAllConfirmationService.IssuedConfirmation confirmation = logoutAllConfirmationService
-                    .issue(userId, current.cookieValue()).orElseThrow();
-            for (int index = 0; index < requestCount; index++) {
-                results.add(executor.submit(() -> {
-                    ready.countDown();
-                    if (!start.await(10, TimeUnit.SECONDS)) {
-                        throw new IllegalStateException("Concurrent logout-all test did not start");
-                    }
-                    return logoutAllConfirmationService.consumeAndRevokeAll(
-                            userId, current.cookieValue(), confirmation.token());
+  @Test
+  void concurrentLogoutAllRequestsConsumeConfirmationOnlyOnce() throws Exception {
+    UUID userId = createSessionTestUser("Concurrent Logout All Reader");
+    int requestCount = 8;
+    ExecutorService executor = Executors.newFixedThreadPool(requestCount);
+    CountDownLatch ready = new CountDownLatch(requestCount);
+    CountDownLatch start = new CountDownLatch(1);
+    List<Future<Boolean>> results = new ArrayList<>();
+    try {
+      SessionService.IssuedSession current = sessionService.create(userId).orElseThrow();
+      sessionService.create(userId).orElseThrow();
+      LogoutAllConfirmationService.IssuedConfirmation confirmation =
+          logoutAllConfirmationService.issue(userId, current.cookieValue()).orElseThrow();
+      for (int index = 0; index < requestCount; index++) {
+        results.add(
+            executor.submit(
+                () -> {
+                  ready.countDown();
+                  if (!start.await(10, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("Concurrent logout-all test did not start");
+                  }
+                  return logoutAllConfirmationService.consumeAndRevokeAll(
+                      userId, current.cookieValue(), confirmation.token());
                 }));
-            }
+      }
 
-            assertTrue(ready.await(10, TimeUnit.SECONDS));
-            start.countDown();
-            int winners = 0;
-            for (Future<Boolean> result : results) {
-                winners += result.get(20, TimeUnit.SECONDS) ? 1 : 0;
-            }
-            assertEquals(1, winners);
-            assertEquals(0, activeSessionCount(userId));
-        } finally {
-            start.countDown();
-            executor.shutdownNow();
-            assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS));
-            deleteSessionTestUser(userId);
-        }
+      assertTrue(ready.await(10, TimeUnit.SECONDS));
+      start.countDown();
+      int winners = 0;
+      for (Future<Boolean> result : results) {
+        winners += result.get(20, TimeUnit.SECONDS) ? 1 : 0;
+      }
+      assertEquals(1, winners);
+      assertEquals(0, activeSessionCount(userId));
+    } finally {
+      start.countDown();
+      executor.shutdownNow();
+      assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS));
+      deleteSessionTestUser(userId);
     }
+  }
 
-    @Test
-    void googleBootstrapHttpEndpointStopsAtTenAttemptsPerClientAddress() throws Exception {
-        String clientAddress = bootstrapTestClientAddress();
-        List<UUID> correlationIds = new ArrayList<>();
-        try {
-            for (int index = 0; index < 11; index++) {
-                MvcResult result = mockMvc.perform(get("/api/v1/auth/google/bootstrap")
-                                .with(request -> {
-                                    request.setRemoteAddr(clientAddress);
-                                    return request;
-                                }))
-                        .andReturn();
-                UUID correlationId = UUID.fromString(result.getResponse().getHeader("X-Correlation-Id"));
-                correlationIds.add(correlationId);
+  @Test
+  void googleBootstrapHttpEndpointStopsAtTenAttemptsPerClientAddress() throws Exception {
+    String clientAddress = bootstrapTestClientAddress();
+    List<UUID> correlationIds = new ArrayList<>();
+    try {
+      for (int index = 0; index < 11; index++) {
+        MvcResult result =
+            mockMvc
+                .perform(
+                    get("/api/v1/auth/google/bootstrap")
+                        .with(
+                            request -> {
+                              request.setRemoteAddr(clientAddress);
+                              return request;
+                            }))
+                .andReturn();
+        UUID correlationId = UUID.fromString(result.getResponse().getHeader("X-Correlation-Id"));
+        correlationIds.add(correlationId);
 
-                if (index < 10) {
-                    assertEquals(200, result.getResponse().getStatus());
-                    assertEquals(1, googleAuthAttemptCount(correlationId));
-                } else {
-                    assertEquals(429, result.getResponse().getStatus());
-                    assertEquals(0, googleAuthAttemptCount(correlationId));
-                    assertTrue(objectMapper.readTree(result.getResponse().getContentAsString())
-                            .path("detail").asText().contains("wait"));
-                }
-            }
-        } finally {
-            deleteBootstrapFixtures(clientAddress, correlationIds);
+        if (index < 10) {
+          assertEquals(200, result.getResponse().getStatus());
+          assertEquals(1, googleAuthAttemptCount(correlationId));
+        } else {
+          assertEquals(429, result.getResponse().getStatus());
+          assertEquals(0, googleAuthAttemptCount(correlationId));
+          assertTrue(
+              objectMapper
+                  .readTree(result.getResponse().getContentAsString())
+                  .path("detail")
+                  .asText()
+                  .contains("wait"));
         }
+      }
+    } finally {
+      deleteBootstrapFixtures(clientAddress, correlationIds);
     }
+  }
 
-    @Test
-    void concurrentGoogleAuthBootstrapRequestsCannotExceedBucketCapacity() throws Exception {
-        byte[] rateLimitKeyHash = sha256(UUID.randomUUID().toString());
-        int requests = 20;
-        ExecutorService executor = Executors.newFixedThreadPool(requests);
-        CountDownLatch ready = new CountDownLatch(requests);
-        CountDownLatch start = new CountDownLatch(1);
-        List<Future<Boolean>> results = new ArrayList<>();
+  @Test
+  void concurrentGoogleAuthBootstrapRequestsCannotExceedBucketCapacity() throws Exception {
+    byte[] rateLimitKeyHash = sha256(UUID.randomUUID().toString());
+    int requests = 20;
+    ExecutorService executor = Executors.newFixedThreadPool(requests);
+    CountDownLatch ready = new CountDownLatch(requests);
+    CountDownLatch start = new CountDownLatch(1);
+    List<Future<Boolean>> results = new ArrayList<>();
 
-        try {
-            for (int index = 0; index < requests; index++) {
-                results.add(executor.submit(() -> {
-                    ready.countDown();
-                    if (!start.await(5, TimeUnit.SECONDS)) {
-                        throw new IllegalStateException("rate-limit consumer start signal timed out");
-                    }
-                    return googleAuthBootstrapRateLimiter.tryAcquire(rateLimitKeyHash);
+    try {
+      for (int index = 0; index < requests; index++) {
+        results.add(
+            executor.submit(
+                () -> {
+                  ready.countDown();
+                  if (!start.await(5, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("rate-limit consumer start signal timed out");
+                  }
+                  return googleAuthBootstrapRateLimiter.tryAcquire(rateLimitKeyHash);
                 }));
-            }
+      }
 
-            assertTrue(ready.await(5, TimeUnit.SECONDS), "all rate-limit requests should reach the start barrier");
-            start.countDown();
-            int winners = 0;
-            for (Future<Boolean> result : results) {
-                if (result.get(15, TimeUnit.SECONDS)) {
-                    winners++;
-                }
-            }
-            assertEquals(10, winners, "the locked PostgreSQL token bucket should admit exactly its capacity");
-        } finally {
-            start.countDown();
-            executor.shutdownNow();
-            assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
-            deleteRateLimitBucket(rateLimitKeyHash);
+      assertTrue(
+          ready.await(5, TimeUnit.SECONDS),
+          "all rate-limit requests should reach the start barrier");
+      start.countDown();
+      int winners = 0;
+      for (Future<Boolean> result : results) {
+        if (result.get(15, TimeUnit.SECONDS)) {
+          winners++;
         }
+      }
+      assertEquals(
+          10, winners, "the locked PostgreSQL token bucket should admit exactly its capacity");
+    } finally {
+      start.countDown();
+      executor.shutdownNow();
+      assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
+      deleteRateLimitBucket(rateLimitKeyHash);
     }
+  }
 
-    @Test
-    void inactiveGoogleAuthRateLimitBucketsCanBePurged() throws Exception {
-        byte[] staleKeyHash = sha256(UUID.randomUUID().toString());
-        byte[] activeKeyHash = sha256(UUID.randomUUID().toString());
-        try {
-            try (Connection connection = dataSource.getConnection();
-                 PreparedStatement insert = connection.prepareStatement("""
+  @Test
+  void inactiveGoogleAuthRateLimitBucketsCanBePurged() throws Exception {
+    byte[] staleKeyHash = sha256(UUID.randomUUID().toString());
+    byte[] activeKeyHash = sha256(UUID.randomUUID().toString());
+    try {
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement insert =
+              connection.prepareStatement(
+                  """
                          INSERT INTO google_auth_bootstrap_rate_limits (
                              rate_limit_key_hash, available_tokens, refilled_at, last_seen_at)
                          VALUES (?, 0, clock_timestamp(), clock_timestamp() - INTERVAL '25 hours'),
                                 (?, 4, clock_timestamp(), clock_timestamp())
                          """)) {
-                insert.setBytes(1, staleKeyHash);
-                insert.setBytes(2, activeKeyHash);
-                assertEquals(2, insert.executeUpdate());
-            }
+        insert.setBytes(1, staleKeyHash);
+        insert.setBytes(2, activeKeyHash);
+        assertEquals(2, insert.executeUpdate());
+      }
 
-            assertEquals(1, googleAuthBootstrapRateLimiter.purgeInactiveBuckets());
-            assertEquals(0, rateLimitBucketCount(staleKeyHash));
-            assertEquals(1, rateLimitBucketCount(activeKeyHash));
-        } finally {
-            deleteRateLimitBucket(staleKeyHash);
-            deleteRateLimitBucket(activeKeyHash);
-        }
+      assertEquals(1, googleAuthBootstrapRateLimiter.purgeInactiveBuckets());
+      assertEquals(0, rateLimitBucketCount(staleKeyHash));
+      assertEquals(1, rateLimitBucketCount(activeKeyHash));
+    } finally {
+      deleteRateLimitBucket(staleKeyHash);
+      deleteRateLimitBucket(activeKeyHash);
+    }
+  }
+
+  @Test
+  void firstGoogleSignInCreatesUserAndCanonicalProviderIdentityAtomically() throws Exception {
+    String subject = "first-" + UUID.randomUUID();
+    String email = subject + "@example.test";
+    GoogleIdTokenVerifier.VerifiedGoogleIdentity identity =
+        verifiedIdentity(subject, email, "First Reader");
+    GoogleIdentityService.IdentityAccount account = null;
+
+    try {
+      account = googleIdentityService.findOrCreate(identity);
+
+      assertTrue(account.created());
+      assertEquals("active", account.status());
+      assertEquals("First Reader", account.displayName());
+      assertEquals(email, account.contactEmail());
+      assertEquals(1, identityCount(subject));
+      assertEquals(1, userCount(account.userId()));
+      assertEquals("https://accounts.google.com", identityIssuer(subject));
+    } finally {
+      if (account != null) {
+        deleteMappedIdentity(account.userId(), subject);
+      }
+    }
+  }
+
+  @Test
+  void returningGoogleIdentityUpdatesVerifiedEmailWithoutCreatingAnotherUser() throws Exception {
+    String subject = "returning-" + UUID.randomUUID();
+    String firstEmail = subject + "@old.example.test";
+    String updatedEmail = subject + "@new.example.test";
+    GoogleIdentityService.IdentityAccount first = null;
+
+    try {
+      first = googleIdentityService.findOrCreate(verifiedIdentity(subject, firstEmail, "Old Name"));
+      GoogleIdentityService.IdentityAccount returned =
+          googleIdentityService.findOrCreate(
+              verifiedIdentity(subject, updatedEmail, "Updated Name"));
+
+      assertFalse(returned.created());
+      assertEquals(first.userId(), returned.userId());
+      assertEquals(updatedEmail, returned.contactEmail());
+      assertEquals("Updated Name", returned.displayName());
+      assertEquals(1, identityCount(subject));
+      assertEquals(1, userCount(first.userId()));
+      assertEquals(updatedEmail, storedProviderEmail(subject));
+      assertEquals(updatedEmail, storedUserEmail(first.userId()));
+      assertTrue(providerIdentityLastSeen(subject));
+    } finally {
+      if (first != null) {
+        deleteMappedIdentity(first.userId(), subject);
+      }
+    }
+  }
+
+  @Test
+  void verifiedEmailCollisionRequiresAccountLinkWithoutCreatingOrLinking() throws Exception {
+    String subject = "collision-" + UUID.randomUUID();
+    String existingEmail = subject + "@example.test";
+    try (Connection connection = dataSource.getConnection()) {
+      insertUser(connection, "Existing Reader", existingEmail, "active", false);
     }
 
-    @Test
-    void firstGoogleSignInCreatesUserAndCanonicalProviderIdentityAtomically() throws Exception {
-        String subject = "first-" + UUID.randomUUID();
-        String email = subject + "@example.test";
-        GoogleIdTokenVerifier.VerifiedGoogleIdentity identity = verifiedIdentity(subject, email, "First Reader");
-        GoogleIdentityService.IdentityAccount account = null;
+    try {
+      GoogleAccountLinkRequiredException failure =
+          assertThrows(
+              GoogleAccountLinkRequiredException.class,
+              () ->
+                  googleIdentityService.findOrCreate(
+                      verifiedIdentity(subject, existingEmail, "New Reader")));
 
-        try {
-            account = googleIdentityService.findOrCreate(identity);
+      assertEquals(GoogleAccountLinkRequiredException.CODE, failure.code());
+      assertFalse(failure.getMessage().contains(existingEmail));
+      assertEquals(0, identityCount(subject));
+      assertEquals(1, userCountByEmail(existingEmail));
+    } finally {
+      deleteUserByEmail(existingEmail);
+    }
+  }
 
-            assertTrue(account.created());
-            assertEquals("active", account.status());
-            assertEquals("First Reader", account.displayName());
-            assertEquals(email, account.contactEmail());
-            assertEquals(1, identityCount(subject));
-            assertEquals(1, userCount(account.userId()));
-            assertEquals("https://accounts.google.com", identityIssuer(subject));
-        } finally {
-            if (account != null) {
-                deleteMappedIdentity(account.userId(), subject);
-            }
-        }
+  @Test
+  void returningIdentityEmailCollisionRollsBackBothProfileAndProviderClaimUpdates()
+      throws Exception {
+    String subject = "return-collision-" + UUID.randomUUID();
+    String originalEmail = subject + "@original.example.test";
+    String collidingEmail = subject + "@claimed.example.test";
+    GoogleIdentityService.IdentityAccount account =
+        googleIdentityService.findOrCreate(
+            verifiedIdentity(subject, originalEmail, "Original Name"));
+    try (Connection connection = dataSource.getConnection()) {
+      insertUser(connection, "Other Reader", collidingEmail, "active", false);
     }
 
-    @Test
-    void returningGoogleIdentityUpdatesVerifiedEmailWithoutCreatingAnotherUser() throws Exception {
-        String subject = "returning-" + UUID.randomUUID();
-        String firstEmail = subject + "@old.example.test";
-        String updatedEmail = subject + "@new.example.test";
-        GoogleIdentityService.IdentityAccount first = null;
+    try {
+      GoogleAccountLinkRequiredException failure =
+          assertThrows(
+              GoogleAccountLinkRequiredException.class,
+              () ->
+                  googleIdentityService.findOrCreate(
+                      verifiedIdentity(subject, collidingEmail, "Changed Name")));
 
-        try {
-            first = googleIdentityService.findOrCreate(verifiedIdentity(subject, firstEmail, "Old Name"));
-            GoogleIdentityService.IdentityAccount returned = googleIdentityService.findOrCreate(
-                    verifiedIdentity(subject, updatedEmail, "Updated Name"));
-
-            assertFalse(returned.created());
-            assertEquals(first.userId(), returned.userId());
-            assertEquals(updatedEmail, returned.contactEmail());
-            assertEquals("Updated Name", returned.displayName());
-            assertEquals(1, identityCount(subject));
-            assertEquals(1, userCount(first.userId()));
-            assertEquals(updatedEmail, storedProviderEmail(subject));
-            assertEquals(updatedEmail, storedUserEmail(first.userId()));
-            assertTrue(providerIdentityLastSeen(subject));
-        } finally {
-            if (first != null) {
-                deleteMappedIdentity(first.userId(), subject);
-            }
-        }
+      assertEquals(GoogleAccountLinkRequiredException.CODE, failure.code());
+      assertEquals(originalEmail, storedUserEmail(account.userId()));
+      assertEquals("Original Name", storedUserDisplayName(account.userId()));
+      assertEquals(originalEmail, storedProviderEmail(subject));
+      assertEquals(1, identityCount(subject));
+      assertEquals(1, userCountByEmail(collidingEmail));
+    } finally {
+      deleteMappedIdentity(account.userId(), subject);
+      deleteUserByEmail(collidingEmail);
     }
+  }
 
-    @Test
-    void verifiedEmailCollisionRequiresAccountLinkWithoutCreatingOrLinking() throws Exception {
-        String subject = "collision-" + UUID.randomUUID();
-        String existingEmail = subject + "@example.test";
-        try (Connection connection = dataSource.getConnection()) {
-            insertUser(connection, "Existing Reader", existingEmail, "active", false);
-        }
+  @Test
+  void concurrentFirstSignInsForOneSubjectResolveToOneInternalUser() throws Exception {
+    String subject = "concurrent-" + UUID.randomUUID();
+    String email = subject + "@example.test";
+    GoogleIdTokenVerifier.VerifiedGoogleIdentity identity =
+        verifiedIdentity(subject, email, "Concurrent Reader");
+    int consumers = 8;
+    ExecutorService executor = Executors.newFixedThreadPool(consumers);
+    CountDownLatch ready = new CountDownLatch(consumers);
+    CountDownLatch start = new CountDownLatch(1);
+    List<Future<GoogleIdentityService.IdentityAccount>> results = new ArrayList<>();
 
-        try {
-            GoogleAccountLinkRequiredException failure = assertThrows(GoogleAccountLinkRequiredException.class,
-                    () -> googleIdentityService.findOrCreate(verifiedIdentity(subject, existingEmail, "New Reader")));
-
-            assertEquals(GoogleAccountLinkRequiredException.CODE, failure.code());
-            assertFalse(failure.getMessage().contains(existingEmail));
-            assertEquals(0, identityCount(subject));
-            assertEquals(1, userCountByEmail(existingEmail));
-        } finally {
-            deleteUserByEmail(existingEmail);
-        }
-    }
-
-    @Test
-    void returningIdentityEmailCollisionRollsBackBothProfileAndProviderClaimUpdates() throws Exception {
-        String subject = "return-collision-" + UUID.randomUUID();
-        String originalEmail = subject + "@original.example.test";
-        String collidingEmail = subject + "@claimed.example.test";
-        GoogleIdentityService.IdentityAccount account = googleIdentityService.findOrCreate(
-                verifiedIdentity(subject, originalEmail, "Original Name"));
-        try (Connection connection = dataSource.getConnection()) {
-            insertUser(connection, "Other Reader", collidingEmail, "active", false);
-        }
-
-        try {
-            GoogleAccountLinkRequiredException failure = assertThrows(GoogleAccountLinkRequiredException.class,
-                    () -> googleIdentityService.findOrCreate(
-                            verifiedIdentity(subject, collidingEmail, "Changed Name")));
-
-            assertEquals(GoogleAccountLinkRequiredException.CODE, failure.code());
-            assertEquals(originalEmail, storedUserEmail(account.userId()));
-            assertEquals("Original Name", storedUserDisplayName(account.userId()));
-            assertEquals(originalEmail, storedProviderEmail(subject));
-            assertEquals(1, identityCount(subject));
-            assertEquals(1, userCountByEmail(collidingEmail));
-        } finally {
-            deleteMappedIdentity(account.userId(), subject);
-            deleteUserByEmail(collidingEmail);
-        }
-    }
-
-    @Test
-    void concurrentFirstSignInsForOneSubjectResolveToOneInternalUser() throws Exception {
-        String subject = "concurrent-" + UUID.randomUUID();
-        String email = subject + "@example.test";
-        GoogleIdTokenVerifier.VerifiedGoogleIdentity identity = verifiedIdentity(subject, email, "Concurrent Reader");
-        int consumers = 8;
-        ExecutorService executor = Executors.newFixedThreadPool(consumers);
-        CountDownLatch ready = new CountDownLatch(consumers);
-        CountDownLatch start = new CountDownLatch(1);
-        List<Future<GoogleIdentityService.IdentityAccount>> results = new ArrayList<>();
-
-        try {
-            for (int index = 0; index < consumers; index++) {
-                results.add(executor.submit(() -> {
-                    ready.countDown();
-                    if (!start.await(5, TimeUnit.SECONDS)) {
-                        throw new IllegalStateException("identity consumers did not receive the start signal");
-                    }
-                    return googleIdentityService.findOrCreate(identity);
+    try {
+      for (int index = 0; index < consumers; index++) {
+        results.add(
+            executor.submit(
+                () -> {
+                  ready.countDown();
+                  if (!start.await(5, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException(
+                        "identity consumers did not receive the start signal");
+                  }
+                  return googleIdentityService.findOrCreate(identity);
                 }));
-            }
+      }
 
-            assertTrue(ready.await(5, TimeUnit.SECONDS));
-            start.countDown();
-            UUID userId = null;
-            int createdCount = 0;
-            for (Future<GoogleIdentityService.IdentityAccount> result : results) {
-                GoogleIdentityService.IdentityAccount account = result.get(15, TimeUnit.SECONDS);
-                userId = account.userId();
-                if (account.created()) {
-                    createdCount++;
-                }
-            }
-            assertEquals(1, createdCount);
-            assertEquals(1, identityCount(subject));
-            assertEquals(1, userCount(userId));
-        } finally {
-            start.countDown();
-            executor.shutdownNow();
-            assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
-            deleteMappedIdentityBySubject(subject);
+      assertTrue(ready.await(5, TimeUnit.SECONDS));
+      start.countDown();
+      UUID userId = null;
+      int createdCount = 0;
+      for (Future<GoogleIdentityService.IdentityAccount> result : results) {
+        GoogleIdentityService.IdentityAccount account = result.get(15, TimeUnit.SECONDS);
+        userId = account.userId();
+        if (account.created()) {
+          createdCount++;
         }
+      }
+      assertEquals(1, createdCount);
+      assertEquals(1, identityCount(subject));
+      assertEquals(1, userCount(userId));
+    } finally {
+      start.countDown();
+      executor.shutdownNow();
+      assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
+      deleteMappedIdentityBySubject(subject);
+    }
+  }
+
+  @Test
+  void suspendedGoogleAccountCannotBeReactivatedBySignIn() throws Exception {
+    String subject = "suspended-" + UUID.randomUUID();
+    String email = subject + "@example.test";
+    UUID userId = UUID.randomUUID();
+    try (Connection connection = dataSource.getConnection()) {
+      insertUser(connection, "Suspended Reader", email, "suspended", false);
+      try (PreparedStatement find =
+          connection.prepareStatement("SELECT id FROM users WHERE contact_email = ?")) {
+        find.setString(1, email);
+        try (ResultSet row = find.executeQuery()) {
+          assertTrue(row.next());
+          userId = row.getObject(1, UUID.class);
+        }
+      }
+      insertGoogleIdentity(connection, userId, subject, email);
     }
 
-    @Test
-    void suspendedGoogleAccountCannotBeReactivatedBySignIn() throws Exception {
-        String subject = "suspended-" + UUID.randomUUID();
-        String email = subject + "@example.test";
-        UUID userId = UUID.randomUUID();
-        try (Connection connection = dataSource.getConnection()) {
-            insertUser(connection, "Suspended Reader", email, "suspended", false);
-            try (PreparedStatement find = connection.prepareStatement("SELECT id FROM users WHERE contact_email = ?")) {
-                find.setString(1, email);
-                try (ResultSet row = find.executeQuery()) {
-                    assertTrue(row.next());
-                    userId = row.getObject(1, UUID.class);
-                }
-            }
-            insertGoogleIdentity(connection, userId, subject, email);
-        }
-
-        try {
-            assertThrows(UnavailableGoogleIdentityException.class,
-                    () -> googleIdentityService.findOrCreate(verifiedIdentity(subject, email, "Changed Name")));
-            assertEquals("suspended", storedUserStatus(userId));
-            assertEquals("Suspended Reader", storedUserDisplayName(userId));
-        } finally {
-            deleteMappedIdentity(userId, subject);
-        }
+    try {
+      assertThrows(
+          UnavailableGoogleIdentityException.class,
+          () ->
+              googleIdentityService.findOrCreate(verifiedIdentity(subject, email, "Changed Name")));
+      assertEquals("suspended", storedUserStatus(userId));
+      assertEquals("Suspended Reader", storedUserDisplayName(userId));
+    } finally {
+      deleteMappedIdentity(userId, subject);
     }
+  }
 
-    @Test
-    void sessionCreationPersistsOnlyTheHashAndValidatesAnActiveUser() throws Exception {
-        UUID userId = createSessionTestUser("Session Reader");
-        try {
-            SessionService.IssuedSession issued = sessionService.create(userId).orElseThrow();
-            assertEquals(userId, issued.userId());
-            assertEquals(43, issued.cookieValue().length());
-            assertTrue(sessionHashMatches(issued.cookieValue(), userId));
-            assertFalse(Arrays.equals(issued.cookieValue().getBytes(StandardCharsets.UTF_8),
-                    sessionTokenHash(issued.cookieValue())));
+  @Test
+  void sessionCreationPersistsOnlyTheHashAndValidatesAnActiveUser() throws Exception {
+    UUID userId = createSessionTestUser("Session Reader");
+    try {
+      SessionService.IssuedSession issued = sessionService.create(userId).orElseThrow();
+      assertEquals(userId, issued.userId());
+      assertEquals(43, issued.cookieValue().length());
+      assertTrue(sessionHashMatches(issued.cookieValue(), userId));
+      assertFalse(
+          Arrays.equals(
+              issued.cookieValue().getBytes(StandardCharsets.UTF_8),
+              sessionTokenHash(issued.cookieValue())));
 
-            SessionService.SessionPrincipal principal = sessionService.validateAndTouch(issued.cookieValue())
-                    .orElseThrow();
-            assertEquals(userId, principal.userId());
-            assertEquals(issued.expiresAt(), principal.expiresAt());
-        } finally {
-            deleteSessionTestUser(userId);
-        }
+      SessionService.SessionPrincipal principal =
+          sessionService.validateAndTouch(issued.cookieValue()).orElseThrow();
+      assertEquals(userId, principal.userId());
+      assertEquals(issued.expiresAt(), principal.expiresAt());
+    } finally {
+      deleteSessionTestUser(userId);
     }
+  }
 
-    @Test
-    void malformedTokensAreRejectedAndRevokeIsIdempotent() throws Exception {
-        UUID userId = createSessionTestUser("Revoke Reader");
-        try {
-            SessionService.IssuedSession issued = sessionService.create(userId).orElseThrow();
-            assertTrue(sessionService.validateAndTouch("not-a-session").isEmpty());
-            assertFalse(sessionService.revoke("not-a-session"));
+  @Test
+  void malformedTokensAreRejectedAndRevokeIsIdempotent() throws Exception {
+    UUID userId = createSessionTestUser("Revoke Reader");
+    try {
+      SessionService.IssuedSession issued = sessionService.create(userId).orElseThrow();
+      assertTrue(sessionService.validateAndTouch("not-a-session").isEmpty());
+      assertFalse(sessionService.revoke("not-a-session"));
 
-            String tampered = (issued.cookieValue().charAt(0) == 'A' ? "B" : "A")
-                    + issued.cookieValue().substring(1);
-            assertTrue(sessionService.validateAndTouch(tampered).isEmpty());
+      String tampered =
+          (issued.cookieValue().charAt(0) == 'A' ? "B" : "A") + issued.cookieValue().substring(1);
+      assertTrue(sessionService.validateAndTouch(tampered).isEmpty());
 
-            assertTrue(sessionService.revoke(issued.cookieValue()));
-            assertFalse(sessionService.revoke(issued.cookieValue()));
-            assertTrue(sessionService.validateAndTouch(issued.cookieValue()).isEmpty());
-        } finally {
-            deleteSessionTestUser(userId);
-        }
+      assertTrue(sessionService.revoke(issued.cookieValue()));
+      assertFalse(sessionService.revoke(issued.cookieValue()));
+      assertTrue(sessionService.validateAndTouch(issued.cookieValue()).isEmpty());
+    } finally {
+      deleteSessionTestUser(userId);
     }
+  }
 
-    @Test
-    void idleAndAbsoluteExpirationBothRejectTheSession() throws Exception {
-        UUID userId = createSessionTestUser("Expired Session Reader");
-        try {
-            SessionService.IssuedSession idleExpired = sessionService.create(userId).orElseThrow();
-            SessionService.IssuedSession absoluteExpired = sessionService.create(userId).orElseThrow();
-            try (Connection connection = dataSource.getConnection();
-                 PreparedStatement expire = connection.prepareStatement("""
+  @Test
+  void idleAndAbsoluteExpirationBothRejectTheSession() throws Exception {
+    UUID userId = createSessionTestUser("Expired Session Reader");
+    try {
+      SessionService.IssuedSession idleExpired = sessionService.create(userId).orElseThrow();
+      SessionService.IssuedSession absoluteExpired = sessionService.create(userId).orElseThrow();
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement expire =
+              connection.prepareStatement(
+                  """
                          UPDATE sessions
                          SET created_at = CASE WHEN id_hash = ?
                                                THEN clock_timestamp() - INTERVAL '9 days'
@@ -3613,406 +4791,454 @@ class PostgresSchemaIntegrationTests {
                                                ELSE clock_timestamp() - INTERVAL '1 second' END
                          WHERE user_id = ?
                          """)) {
-                expire.setBytes(1, sessionTokenHash(idleExpired.cookieValue()));
-                expire.setBytes(2, sessionTokenHash(idleExpired.cookieValue()));
-                expire.setBytes(3, sessionTokenHash(idleExpired.cookieValue()));
-                expire.setObject(4, userId);
-                assertEquals(2, expire.executeUpdate());
-            }
+        expire.setBytes(1, sessionTokenHash(idleExpired.cookieValue()));
+        expire.setBytes(2, sessionTokenHash(idleExpired.cookieValue()));
+        expire.setBytes(3, sessionTokenHash(idleExpired.cookieValue()));
+        expire.setObject(4, userId);
+        assertEquals(2, expire.executeUpdate());
+      }
 
-            assertTrue(sessionService.validateAndTouch(idleExpired.cookieValue()).isEmpty());
-            assertTrue(sessionService.validateAndTouch(absoluteExpired.cookieValue()).isEmpty());
-        } finally {
-            deleteSessionTestUser(userId);
-        }
+      assertTrue(sessionService.validateAndTouch(idleExpired.cookieValue()).isEmpty());
+      assertTrue(sessionService.validateAndTouch(absoluteExpired.cookieValue()).isEmpty());
+    } finally {
+      deleteSessionTestUser(userId);
     }
+  }
 
-    @Test
-    void activityTouchesAfterThrottleIntervalButDoesNotWriteOnEveryRequest() throws Exception {
-        UUID userId = createSessionTestUser("Active Session Reader");
-        try {
-            SessionService.IssuedSession issued = sessionService.create(userId).orElseThrow();
-            byte[] tokenHash = sessionTokenHash(issued.cookieValue());
-            try (Connection connection = dataSource.getConnection();
-                 PreparedStatement age = connection.prepareStatement("""
+  @Test
+  void activityTouchesAfterThrottleIntervalButDoesNotWriteOnEveryRequest() throws Exception {
+    UUID userId = createSessionTestUser("Active Session Reader");
+    try {
+      SessionService.IssuedSession issued = sessionService.create(userId).orElseThrow();
+      byte[] tokenHash = sessionTokenHash(issued.cookieValue());
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement age =
+              connection.prepareStatement(
+                  """
                          UPDATE sessions
                          SET created_at = clock_timestamp() - INTERVAL '1 day',
                              last_seen_at = clock_timestamp() - INTERVAL '10 minutes',
                              expires_at = clock_timestamp() + INTERVAL '29 days'
                          WHERE id_hash = ?
                          """)) {
-                age.setBytes(1, tokenHash);
-                assertEquals(1, age.executeUpdate());
-            }
+        age.setBytes(1, tokenHash);
+        assertEquals(1, age.executeUpdate());
+      }
 
-            Instant agedLastSeen = storedSessionLastSeen(tokenHash);
-            assertTrue(sessionService.validateAndTouch(issued.cookieValue()).isPresent());
-            Instant touchedLastSeen = storedSessionLastSeen(tokenHash);
-            assertTrue(touchedLastSeen.isAfter(agedLastSeen));
+      Instant agedLastSeen = storedSessionLastSeen(tokenHash);
+      assertTrue(sessionService.validateAndTouch(issued.cookieValue()).isPresent());
+      Instant touchedLastSeen = storedSessionLastSeen(tokenHash);
+      assertTrue(touchedLastSeen.isAfter(agedLastSeen));
 
-            assertTrue(sessionService.validateAndTouch(issued.cookieValue()).isPresent());
-            assertEquals(touchedLastSeen, storedSessionLastSeen(tokenHash));
-        } finally {
-            deleteSessionTestUser(userId);
-        }
+      assertTrue(sessionService.validateAndTouch(issued.cookieValue()).isPresent());
+      assertEquals(touchedLastSeen, storedSessionLastSeen(tokenHash));
+    } finally {
+      deleteSessionTestUser(userId);
     }
+  }
 
-    @Test
-    void rotationRevokesOldSecretAndRevokeAllInvalidatesReplacement() throws Exception {
-        UUID userId = createSessionTestUser("Rotating Session Reader");
-        try {
-            SessionService.IssuedSession original = sessionService.create(userId).orElseThrow();
-            SessionService.IssuedSession rotated = sessionService.rotate(original.cookieValue()).orElseThrow();
+  @Test
+  void rotationRevokesOldSecretAndRevokeAllInvalidatesReplacement() throws Exception {
+    UUID userId = createSessionTestUser("Rotating Session Reader");
+    try {
+      SessionService.IssuedSession original = sessionService.create(userId).orElseThrow();
+      SessionService.IssuedSession rotated =
+          sessionService.rotate(original.cookieValue()).orElseThrow();
 
-            assertNotEquals(original.cookieValue(), rotated.cookieValue());
-            assertEquals(original.expiresAt(), rotated.expiresAt(), "rotation must preserve absolute expiry");
-            assertTrue(sessionService.validateAndTouch(original.cookieValue()).isEmpty());
-            assertEquals(userId, sessionService.validateAndTouch(rotated.cookieValue()).orElseThrow().userId());
-            assertEquals(1, activeSessionCount(userId));
-            assertEquals(1, sessionService.revokeAll(userId));
-            assertEquals(0, sessionService.revokeAll(userId));
-            assertTrue(sessionService.validateAndTouch(rotated.cookieValue()).isEmpty());
-        } finally {
-            deleteSessionTestUser(userId);
-        }
+      assertNotEquals(original.cookieValue(), rotated.cookieValue());
+      assertEquals(
+          original.expiresAt(), rotated.expiresAt(), "rotation must preserve absolute expiry");
+      assertTrue(sessionService.validateAndTouch(original.cookieValue()).isEmpty());
+      assertEquals(
+          userId, sessionService.validateAndTouch(rotated.cookieValue()).orElseThrow().userId());
+      assertEquals(1, activeSessionCount(userId));
+      assertEquals(1, sessionService.revokeAll(userId));
+      assertEquals(0, sessionService.revokeAll(userId));
+      assertTrue(sessionService.validateAndTouch(rotated.cookieValue()).isEmpty());
+    } finally {
+      deleteSessionTestUser(userId);
     }
+  }
 
-    @Test
-    void concurrentRotationOfOneSecretHasExactlyOneWinner() throws Exception {
-        UUID userId = createSessionTestUser("Concurrent Session Reader");
-        int consumers = 8;
-        ExecutorService executor = Executors.newFixedThreadPool(consumers);
-        CountDownLatch ready = new CountDownLatch(consumers);
-        CountDownLatch start = new CountDownLatch(1);
-        List<Future<Optional<SessionService.IssuedSession>>> results = new ArrayList<>();
+  @Test
+  void concurrentRotationOfOneSecretHasExactlyOneWinner() throws Exception {
+    UUID userId = createSessionTestUser("Concurrent Session Reader");
+    int consumers = 8;
+    ExecutorService executor = Executors.newFixedThreadPool(consumers);
+    CountDownLatch ready = new CountDownLatch(consumers);
+    CountDownLatch start = new CountDownLatch(1);
+    List<Future<Optional<SessionService.IssuedSession>>> results = new ArrayList<>();
 
-        try {
-            SessionService.IssuedSession original = sessionService.create(userId).orElseThrow();
-            for (int index = 0; index < consumers; index++) {
-                results.add(executor.submit(() -> {
-                    ready.countDown();
-                    if (!start.await(5, TimeUnit.SECONDS)) {
-                        throw new IllegalStateException("session rotation requests did not reach the barrier");
-                    }
-                    return sessionService.rotate(original.cookieValue());
+    try {
+      SessionService.IssuedSession original = sessionService.create(userId).orElseThrow();
+      for (int index = 0; index < consumers; index++) {
+        results.add(
+            executor.submit(
+                () -> {
+                  ready.countDown();
+                  if (!start.await(5, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException(
+                        "session rotation requests did not reach the barrier");
+                  }
+                  return sessionService.rotate(original.cookieValue());
                 }));
-            }
+      }
 
-            assertTrue(ready.await(5, TimeUnit.SECONDS));
-            start.countDown();
-            SessionService.IssuedSession winner = null;
-            int winnerCount = 0;
-            for (Future<Optional<SessionService.IssuedSession>> result : results) {
-                Optional<SessionService.IssuedSession> rotated = result.get(15, TimeUnit.SECONDS);
-                if (rotated.isPresent()) {
-                    winner = rotated.orElseThrow();
-                    winnerCount++;
-                }
-            }
-            assertEquals(1, winnerCount);
-            assertTrue(sessionService.validateAndTouch(original.cookieValue()).isEmpty());
-            assertEquals(userId, sessionService.validateAndTouch(winner.cookieValue()).orElseThrow().userId());
-            assertEquals(1, activeSessionCount(userId));
-        } finally {
-            start.countDown();
-            executor.shutdownNow();
-            assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
-            deleteSessionTestUser(userId);
+      assertTrue(ready.await(5, TimeUnit.SECONDS));
+      start.countDown();
+      SessionService.IssuedSession winner = null;
+      int winnerCount = 0;
+      for (Future<Optional<SessionService.IssuedSession>> result : results) {
+        Optional<SessionService.IssuedSession> rotated = result.get(15, TimeUnit.SECONDS);
+        if (rotated.isPresent()) {
+          winner = rotated.orElseThrow();
+          winnerCount++;
         }
+      }
+      assertEquals(1, winnerCount);
+      assertTrue(sessionService.validateAndTouch(original.cookieValue()).isEmpty());
+      assertEquals(
+          userId, sessionService.validateAndTouch(winner.cookieValue()).orElseThrow().userId());
+      assertEquals(1, activeSessionCount(userId));
+    } finally {
+      start.countDown();
+      executor.shutdownNow();
+      assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
+      deleteSessionTestUser(userId);
     }
+  }
 
-    @Test
-    void suspendedUsersCannotCreateOrContinueASession() throws Exception {
-        UUID userId = createSessionTestUser("Suspended Session Reader");
-        try {
-            SessionService.IssuedSession issued = sessionService.create(userId).orElseThrow();
-            try (Connection connection = dataSource.getConnection();
-                 PreparedStatement suspend = connection.prepareStatement(
-                         "UPDATE users SET status = 'suspended' WHERE id = ?")) {
-                suspend.setObject(1, userId);
-                assertEquals(1, suspend.executeUpdate());
-            }
+  @Test
+  void suspendedUsersCannotCreateOrContinueASession() throws Exception {
+    UUID userId = createSessionTestUser("Suspended Session Reader");
+    try {
+      SessionService.IssuedSession issued = sessionService.create(userId).orElseThrow();
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement suspend =
+              connection.prepareStatement("UPDATE users SET status = 'suspended' WHERE id = ?")) {
+        suspend.setObject(1, userId);
+        assertEquals(1, suspend.executeUpdate());
+      }
 
-            assertTrue(sessionService.create(userId).isEmpty());
-            assertTrue(sessionService.validateAndTouch(issued.cookieValue()).isEmpty());
-            assertTrue(sessionService.rotate(issued.cookieValue()).isEmpty());
-        } finally {
-            deleteSessionTestUser(userId);
-        }
+      assertTrue(sessionService.create(userId).isEmpty());
+      assertTrue(sessionService.validateAndTouch(issued.cookieValue()).isEmpty());
+      assertTrue(sessionService.rotate(issued.cookieValue()).isEmpty());
+    } finally {
+      deleteSessionTestUser(userId);
     }
+  }
 
-    private UUID createSessionTestUser(String displayName) throws SQLException {
-        UUID userId = UUID.randomUUID();
-        String email = "session-" + userId + "@example.test";
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement insert = connection.prepareStatement("""
+  private UUID createSessionTestUser(String displayName) throws SQLException {
+    UUID userId = UUID.randomUUID();
+    String email = "session-" + userId + "@example.test";
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement insert =
+            connection.prepareStatement(
+                """
                      INSERT INTO users (id, display_name, contact_email, email_verified_at, status)
                      VALUES (?, ?, ?, clock_timestamp(), 'active')
                      """)) {
-            insert.setObject(1, userId);
-            insert.setString(2, displayName);
-            insert.setString(3, email);
-            assertEquals(1, insert.executeUpdate());
-        }
-        return userId;
+      insert.setObject(1, userId);
+      insert.setString(2, displayName);
+      insert.setString(3, email);
+      assertEquals(1, insert.executeUpdate());
     }
+    return userId;
+  }
 
-    private void insertTestVolume(UUID volumeId, UUID workId, int ordinal, String title) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement insert = connection.prepareStatement("""
+  private void insertTestVolume(UUID volumeId, UUID workId, int ordinal, String title)
+      throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement insert =
+            connection.prepareStatement(
+                """
                      INSERT INTO volumes (id, work_id, ordinal, title) VALUES (?, ?, ?, ?)
                      """)) {
-            insert.setObject(1, volumeId);
-            insert.setObject(2, workId);
-            insert.setInt(3, ordinal);
-            insert.setString(4, title);
-            insert.executeUpdate();
-        }
+      insert.setObject(1, volumeId);
+      insert.setObject(2, workId);
+      insert.setInt(3, ordinal);
+      insert.setString(4, title);
+      insert.executeUpdate();
     }
+  }
 
-    private void insertTestChapter(UUID chapterId, UUID workId, UUID volumeId, int ordinal, String title)
-            throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement insert = connection.prepareStatement("""
+  private void insertTestChapter(
+      UUID chapterId, UUID workId, UUID volumeId, int ordinal, String title) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement insert =
+            connection.prepareStatement(
+                """
                      INSERT INTO chapters (id, work_id, volume_id, ordinal, title, source_language)
                      VALUES (?, ?, ?, ?, ?, 'und')
                      """)) {
-            insert.setObject(1, chapterId);
-            insert.setObject(2, workId);
-            insert.setObject(3, volumeId);
-            insert.setInt(4, ordinal);
-            insert.setString(5, title);
-            insert.executeUpdate();
-        }
+      insert.setObject(1, chapterId);
+      insert.setObject(2, workId);
+      insert.setObject(3, volumeId);
+      insert.setInt(4, ordinal);
+      insert.setString(5, title);
+      insert.executeUpdate();
     }
+  }
 
-    private int segmentCount(UUID revisionId) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement select = connection.prepareStatement(
-                     "SELECT COUNT(*) FROM segments WHERE chapter_revision_id = ?")) {
-            select.setObject(1, revisionId);
-            try (ResultSet row = select.executeQuery()) {
-                row.next();
-                return row.getInt(1);
-            }
-        }
+  private int segmentCount(UUID revisionId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT COUNT(*) FROM segments WHERE chapter_revision_id = ?")) {
+      select.setObject(1, revisionId);
+      try (ResultSet row = select.executeQuery()) {
+        row.next();
+        return row.getInt(1);
+      }
     }
+  }
 
-    private int revisionCount(UUID chapterId) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement select = connection.prepareStatement(
-                     "SELECT COUNT(*) FROM chapter_revisions WHERE chapter_id = ?")) {
-            select.setObject(1, chapterId);
-            try (ResultSet row = select.executeQuery()) {
-                row.next();
-                return row.getInt(1);
-            }
-        }
+  private int revisionCount(UUID chapterId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT COUNT(*) FROM chapter_revisions WHERE chapter_id = ?")) {
+      select.setObject(1, chapterId);
+      try (ResultSet row = select.executeQuery()) {
+        row.next();
+        return row.getInt(1);
+      }
     }
+  }
 
-    private void setWorkCreatedAt(UUID workId, Instant createdAt) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement update = connection.prepareStatement(
-                     "UPDATE works SET created_at = ? WHERE id = ?")) {
-            update.setTimestamp(1, Timestamp.from(createdAt));
-            update.setObject(2, workId);
-            assertEquals(1, update.executeUpdate());
-        }
+  private void setWorkCreatedAt(UUID workId, Instant createdAt) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement update =
+            connection.prepareStatement("UPDATE works SET created_at = ? WHERE id = ?")) {
+      update.setTimestamp(1, Timestamp.from(createdAt));
+      update.setObject(2, workId);
+      assertEquals(1, update.executeUpdate());
     }
+  }
 
-    private void setWorkStatus(UUID workId, String status) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement update = connection.prepareStatement(
-                     "UPDATE works SET status = ? WHERE id = ?")) {
-            update.setString(1, status);
-            update.setObject(2, workId);
-            assertEquals(1, update.executeUpdate());
-        }
+  private void setWorkStatus(UUID workId, String status) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement update =
+            connection.prepareStatement("UPDATE works SET status = ? WHERE id = ?")) {
+      update.setString(1, status);
+      update.setObject(2, workId);
+      assertEquals(1, update.executeUpdate());
     }
+  }
 
-    private void deleteLibraryTestData(UUID ownerId) throws SQLException {
-        try (Connection connection = dataSource.getConnection()) {
-            try (PreparedStatement deleteWorkTags = connection.prepareStatement(
-                    "DELETE FROM work_tags WHERE owner_user_id = ? OR assigned_by_user_id = ?")) {
-                deleteWorkTags.setObject(1, ownerId);
-                deleteWorkTags.setObject(2, ownerId);
-                deleteWorkTags.executeUpdate();
-            }
-            try (PreparedStatement deleteSegments = connection.prepareStatement("""
+  private void deleteLibraryTestData(UUID ownerId) throws SQLException {
+    try (Connection connection = dataSource.getConnection()) {
+      try (PreparedStatement deleteWorkTags =
+          connection.prepareStatement(
+              "DELETE FROM work_tags WHERE owner_user_id = ? OR assigned_by_user_id = ?")) {
+        deleteWorkTags.setObject(1, ownerId);
+        deleteWorkTags.setObject(2, ownerId);
+        deleteWorkTags.executeUpdate();
+      }
+      try (PreparedStatement deleteSegments =
+          connection.prepareStatement(
+              """
                     DELETE FROM segments s USING chapter_revisions r, chapters c, works w
                     WHERE s.chapter_revision_id = r.id AND r.chapter_id = c.id
                       AND c.work_id = w.id AND w.owner_user_id = ?
                     """)) {
-                deleteSegments.setObject(1, ownerId);
-                deleteSegments.executeUpdate();
-            }
-            try (PreparedStatement clearCurrentRevision = connection.prepareStatement("""
+        deleteSegments.setObject(1, ownerId);
+        deleteSegments.executeUpdate();
+      }
+      try (PreparedStatement clearCurrentRevision =
+          connection.prepareStatement(
+              """
                     UPDATE chapters c SET source_revision_id = NULL FROM works w
                     WHERE c.work_id = w.id AND w.owner_user_id = ?
                     """)) {
-                clearCurrentRevision.setObject(1, ownerId);
-                clearCurrentRevision.executeUpdate();
-            }
-            try (PreparedStatement deleteRevisions = connection.prepareStatement("""
+        clearCurrentRevision.setObject(1, ownerId);
+        clearCurrentRevision.executeUpdate();
+      }
+      try (PreparedStatement deleteRevisions =
+          connection.prepareStatement(
+              """
                     DELETE FROM chapter_revisions r USING chapters c, works w
                     WHERE r.chapter_id = c.id AND c.work_id = w.id AND w.owner_user_id = ?
                     """)) {
-                deleteRevisions.setObject(1, ownerId);
-                deleteRevisions.executeUpdate();
-            }
-            try (PreparedStatement deleteChapters = connection.prepareStatement("""
+        deleteRevisions.setObject(1, ownerId);
+        deleteRevisions.executeUpdate();
+      }
+      try (PreparedStatement deleteChapters =
+          connection.prepareStatement(
+              """
                     DELETE FROM chapters c USING works w
                     WHERE c.work_id = w.id AND w.owner_user_id = ?
                     """)) {
-                deleteChapters.setObject(1, ownerId);
-                deleteChapters.executeUpdate();
-            }
-            try (PreparedStatement deleteVolumes = connection.prepareStatement("""
+        deleteChapters.setObject(1, ownerId);
+        deleteChapters.executeUpdate();
+      }
+      try (PreparedStatement deleteVolumes =
+          connection.prepareStatement(
+              """
                     DELETE FROM volumes v USING works w
                     WHERE v.work_id = w.id AND w.owner_user_id = ?
                     """)) {
-                deleteVolumes.setObject(1, ownerId);
-                deleteVolumes.executeUpdate();
-            }
-            try (PreparedStatement deleteAssets = connection.prepareStatement(
-                    "DELETE FROM assets WHERE owner_user_id = ?")) {
-                deleteAssets.setObject(1, ownerId);
-                deleteAssets.executeUpdate();
-            }
-            try (PreparedStatement deleteTags = connection.prepareStatement("DELETE FROM tags WHERE owner_user_id = ?")) {
-                deleteTags.setObject(1, ownerId);
-                deleteTags.executeUpdate();
-            }
-            try (PreparedStatement deleteWorks = connection.prepareStatement(
-                    "DELETE FROM works WHERE owner_user_id = ?")) {
-                deleteWorks.setObject(1, ownerId);
-                deleteWorks.executeUpdate();
-            }
-            try (PreparedStatement deleteLibraries = connection.prepareStatement(
-                    "DELETE FROM libraries WHERE owner_user_id = ?")) {
-                deleteLibraries.setObject(1, ownerId);
-                deleteLibraries.executeUpdate();
-            }
-        }
+        deleteVolumes.setObject(1, ownerId);
+        deleteVolumes.executeUpdate();
+      }
+      try (PreparedStatement deleteAssets =
+          connection.prepareStatement("DELETE FROM assets WHERE owner_user_id = ?")) {
+        deleteAssets.setObject(1, ownerId);
+        deleteAssets.executeUpdate();
+      }
+      try (PreparedStatement deleteTags =
+          connection.prepareStatement("DELETE FROM tags WHERE owner_user_id = ?")) {
+        deleteTags.setObject(1, ownerId);
+        deleteTags.executeUpdate();
+      }
+      try (PreparedStatement deleteWorks =
+          connection.prepareStatement("DELETE FROM works WHERE owner_user_id = ?")) {
+        deleteWorks.setObject(1, ownerId);
+        deleteWorks.executeUpdate();
+      }
+      try (PreparedStatement deleteLibraries =
+          connection.prepareStatement("DELETE FROM libraries WHERE owner_user_id = ?")) {
+        deleteLibraries.setObject(1, ownerId);
+        deleteLibraries.executeUpdate();
+      }
     }
+  }
 
-    private void deleteWorkspaceTestData(UUID workspaceId) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement deleteWorkspace = connection.prepareStatement(
-                     "DELETE FROM workspaces WHERE id = ?")) {
-            deleteWorkspace.setObject(1, workspaceId);
-            deleteWorkspace.executeUpdate();
-        }
+  private void deleteWorkspaceTestData(UUID workspaceId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement deleteWorkspace =
+            connection.prepareStatement("DELETE FROM workspaces WHERE id = ?")) {
+      deleteWorkspace.setObject(1, workspaceId);
+      deleteWorkspace.executeUpdate();
     }
+  }
 
-    private void addSessionTestGoogleIdentity(UUID userId) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement insert = connection.prepareStatement("""
+  private void addSessionTestGoogleIdentity(UUID userId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement insert =
+            connection.prepareStatement(
+                """
                      INSERT INTO external_identities (
                          id, user_id, provider, issuer, subject, provider_email, provider_email_verified)
                      VALUES (?, ?, 'google', 'https://accounts.google.com', ?, ?, TRUE)
                      """)) {
-            insert.setObject(1, UUID.randomUUID());
-            insert.setObject(2, userId);
-            insert.setString(3, "current-user-" + userId);
-            insert.setString(4, "session-" + userId + "@example.test");
-            assertEquals(1, insert.executeUpdate());
-        }
+      insert.setObject(1, UUID.randomUUID());
+      insert.setObject(2, userId);
+      insert.setString(3, "current-user-" + userId);
+      insert.setString(4, "session-" + userId + "@example.test");
+      assertEquals(1, insert.executeUpdate());
     }
+  }
 
-    private void addCurrentPolicyAcceptances(UUID userId) throws SQLException {
-        addPolicyAcceptance(userId, "TERMS", "terms-current-1", "TERMS_ACCEPTED");
-        addPolicyAcceptance(userId, "PRIVACY_NOTICE", "privacy-current-1", "PRIVACY_NOTICE_ACKNOWLEDGED");
-    }
+  private void addCurrentPolicyAcceptances(UUID userId) throws SQLException {
+    addPolicyAcceptance(userId, "TERMS", "terms-current-1", "TERMS_ACCEPTED");
+    addPolicyAcceptance(
+        userId, "PRIVACY_NOTICE", "privacy-current-1", "PRIVACY_NOTICE_ACKNOWLEDGED");
+  }
 
-    private void addPolicyAcceptance(UUID userId, String type, String version, String decision) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement insert = connection.prepareStatement("""
+  private void addPolicyAcceptance(UUID userId, String type, String version, String decision)
+      throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement insert =
+            connection.prepareStatement(
+                """
                      INSERT INTO policy_acceptances (id, user_id, policy_type, version, decision, source)
                      VALUES (?, ?, ?, ?, ?, 'web')
                      """)) {
-            insert.setObject(1, UUID.randomUUID());
-            insert.setObject(2, userId);
-            insert.setString(3, type);
-            insert.setString(4, version);
-            insert.setString(5, decision);
-            assertEquals(1, insert.executeUpdate());
-        }
+      insert.setObject(1, UUID.randomUUID());
+      insert.setObject(2, userId);
+      insert.setString(3, type);
+      insert.setString(4, version);
+      insert.setString(5, decision);
+      assertEquals(1, insert.executeUpdate());
     }
+  }
 
-    private void insertPolicyDocument(String type, String version, int effectiveDayOffset, String document)
-            throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement insert = connection.prepareStatement("""
+  private void insertPolicyDocument(
+      String type, String version, int effectiveDayOffset, String document) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement insert =
+            connection.prepareStatement(
+                """
                      INSERT INTO policy_documents (policy_type, version, effective_at, document_markdown)
                      VALUES (?, ?, clock_timestamp() + (? * INTERVAL '1 day'), ?)
                      """)) {
-            insert.setString(1, type);
-            insert.setString(2, version);
-            insert.setInt(3, effectiveDayOffset);
-            insert.setString(4, document);
-            assertEquals(1, insert.executeUpdate());
-        }
+      insert.setString(1, type);
+      insert.setString(2, version);
+      insert.setInt(3, effectiveDayOffset);
+      insert.setString(4, document);
+      assertEquals(1, insert.executeUpdate());
     }
+  }
 
-    private void insertImportRightsStatement(
-            String version, String text, UUID approverId, String status, int effectiveDayOffset) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement insert = connection.prepareStatement("""
+  private void insertImportRightsStatement(
+      String version, String text, UUID approverId, String status, int effectiveDayOffset)
+      throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement insert =
+            connection.prepareStatement(
+                """
                      INSERT INTO import_rights_statements
                          (version, effective_at, display_text, status, approved_at, approved_by)
                      VALUES (?, clock_timestamp() + (? * INTERVAL '1 day'), ?, ?,
                              CASE WHEN ? = 'APPROVED' THEN clock_timestamp() END, ?)
                      """)) {
-            insert.setString(1, version);
-            insert.setInt(2, effectiveDayOffset);
-            insert.setString(3, text);
-            insert.setString(4, status);
-            insert.setString(5, status);
-            insert.setObject(6, approverId);
-            assertEquals(1, insert.executeUpdate());
-        }
+      insert.setString(1, version);
+      insert.setInt(2, effectiveDayOffset);
+      insert.setString(3, text);
+      insert.setString(4, status);
+      insert.setString(5, status);
+      insert.setObject(6, approverId);
+      assertEquals(1, insert.executeUpdate());
     }
+  }
 
-    private void insertImportRightsAcceptance(UUID userId, UUID receiptId, String version, String text)
-            throws SQLException, NoSuchAlgorithmException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement insert = connection.prepareStatement("""
+  private void insertImportRightsAcceptance(
+      UUID userId, UUID receiptId, String version, String text)
+      throws SQLException, NoSuchAlgorithmException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement insert =
+            connection.prepareStatement(
+                """
                      INSERT INTO import_rights_acceptances
                          (id, user_id, idempotency_key, statement_version, statement_sha256, source)
                      VALUES (?, ?, ?, ?, ?, 'web-import-flow')
                      """)) {
-            insert.setObject(1, receiptId);
-            insert.setObject(2, userId);
-            insert.setObject(3, UUID.randomUUID());
-            insert.setString(4, version);
-            insert.setBytes(5, sha256(text));
-            assertEquals(1, insert.executeUpdate());
-        }
+      insert.setObject(1, receiptId);
+      insert.setObject(2, userId);
+      insert.setObject(3, UUID.randomUUID());
+      insert.setString(4, version);
+      insert.setBytes(5, sha256(text));
+      assertEquals(1, insert.executeUpdate());
     }
+  }
 
-    private void insertImportJobFixture(
-            UUID jobId,
-            UUID userId,
-            UUID libraryId,
-            UUID receiptId,
-            String version,
-            String status,
-            byte[] content,
-            int expiryDaysAgo) throws SQLException, NoSuchAlgorithmException {
-        Instant now = Instant.now();
-        Instant expiresAt = expiryDaysAgo > 0
-                ? now.minusSeconds((long) expiryDaysAgo * 86_400)
-                : now.plusSeconds(3_600);
-        Instant createdAt = expiryDaysAgo > 0 ? expiresAt.minusSeconds(172_800) : now;
-        Instant tokenExpiresAt = expiresAt.minusSeconds(1_800);
-        Instant uploadedAt = createdAt.plusSeconds(5);
-        String text = "Synthetic test-only import retention statement.";
-        insertImportRightsAcceptanceAt(
-                userId, receiptId, version, text, createdAt.minusSeconds(60), createdAt.minusSeconds(30));
+  private void insertImportJobFixture(
+      UUID jobId,
+      UUID userId,
+      UUID libraryId,
+      UUID receiptId,
+      String version,
+      String status,
+      byte[] content,
+      int expiryDaysAgo)
+      throws SQLException, NoSuchAlgorithmException {
+    Instant now = Instant.now();
+    Instant expiresAt =
+        expiryDaysAgo > 0
+            ? now.minusSeconds((long) expiryDaysAgo * 86_400)
+            : now.plusSeconds(3_600);
+    Instant createdAt = expiryDaysAgo > 0 ? expiresAt.minusSeconds(172_800) : now;
+    Instant tokenExpiresAt = expiresAt.minusSeconds(1_800);
+    Instant uploadedAt = createdAt.plusSeconds(5);
+    String text = "Synthetic test-only import retention statement.";
+    insertImportRightsAcceptanceAt(
+        userId, receiptId, version, text, createdAt.minusSeconds(60), createdAt.minusSeconds(30));
 
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement insert = connection.prepareStatement("""
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement insert =
+            connection.prepareStatement(
+                """
                      INSERT INTO import_jobs (
                          id, user_id, library_id, rights_acceptance_id, rights_statement_version,
                          original_filename, declared_content_type, declared_size_bytes, storage_key,
@@ -4020,132 +5246,185 @@ class PostgresSchemaIntegrationTests {
                          rights_confirmed_at, expires_at, uploaded_at, actual_size_bytes, content_sha256)
                      VALUES (?, ?, ?, ?, ?, 'retention-test.txt', 'text/plain', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                      """)) {
-            insert.setObject(1, jobId);
-            insert.setObject(2, userId);
-            insert.setObject(3, libraryId);
-            insert.setObject(4, receiptId);
-            insert.setString(5, version);
-            insert.setLong(6, content.length);
-            insert.setString(7, "staging/" + jobId + ".upload");
-            insert.setBytes(8, "upload_pending".equals(status)
-                    ? sha256(("cleanup-" + jobId).getBytes(StandardCharsets.US_ASCII)) : null);
-            insert.setObject(9, "upload_pending".equals(status)
-                    ? OffsetDateTime.ofInstant(tokenExpiresAt, ZoneOffset.UTC) : null);
-            insert.setString(10, status);
-            insert.setObject(11, OffsetDateTime.ofInstant(createdAt, ZoneOffset.UTC));
-            insert.setObject(12, OffsetDateTime.ofInstant(createdAt, ZoneOffset.UTC));
-            insert.setObject(13, OffsetDateTime.ofInstant(expiresAt, ZoneOffset.UTC));
-            insert.setObject(14, "uploaded".equals(status)
-                    ? OffsetDateTime.ofInstant(uploadedAt, ZoneOffset.UTC) : null);
-            insert.setObject(15, "uploaded".equals(status) ? (long) content.length : null);
-            insert.setBytes(16, "uploaded".equals(status) ? sha256(content) : null);
-            assertEquals(1, insert.executeUpdate());
-        }
+      insert.setObject(1, jobId);
+      insert.setObject(2, userId);
+      insert.setObject(3, libraryId);
+      insert.setObject(4, receiptId);
+      insert.setString(5, version);
+      insert.setLong(6, content.length);
+      insert.setString(7, "staging/" + jobId + ".upload");
+      insert.setBytes(
+          8,
+          "upload_pending".equals(status)
+              ? sha256(("cleanup-" + jobId).getBytes(StandardCharsets.US_ASCII))
+              : null);
+      insert.setObject(
+          9,
+          "upload_pending".equals(status)
+              ? OffsetDateTime.ofInstant(tokenExpiresAt, ZoneOffset.UTC)
+              : null);
+      insert.setString(10, status);
+      insert.setObject(11, OffsetDateTime.ofInstant(createdAt, ZoneOffset.UTC));
+      insert.setObject(12, OffsetDateTime.ofInstant(createdAt, ZoneOffset.UTC));
+      insert.setObject(13, OffsetDateTime.ofInstant(expiresAt, ZoneOffset.UTC));
+      insert.setObject(
+          14,
+          "uploaded".equals(status) ? OffsetDateTime.ofInstant(uploadedAt, ZoneOffset.UTC) : null);
+      insert.setObject(15, "uploaded".equals(status) ? (long) content.length : null);
+      insert.setBytes(16, "uploaded".equals(status) ? sha256(content) : null);
+      assertEquals(1, insert.executeUpdate());
     }
+  }
 
-    private void insertImportRightsAcceptanceAt(
-            UUID userId, UUID receiptId, String version, String text, Instant acceptedAt, Instant consumedAt)
-            throws SQLException, NoSuchAlgorithmException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement insert = connection.prepareStatement("""
+  private void insertImportRightsAcceptanceAt(
+      UUID userId,
+      UUID receiptId,
+      String version,
+      String text,
+      Instant acceptedAt,
+      Instant consumedAt)
+      throws SQLException, NoSuchAlgorithmException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement insert =
+            connection.prepareStatement(
+                """
                      INSERT INTO import_rights_acceptances (
                          id, user_id, idempotency_key, statement_version, statement_sha256,
                          accepted_at, consumed_at, source)
                      VALUES (?, ?, ?, ?, ?, ?, ?, 'web-import-flow')
                      """)) {
-            insert.setObject(1, receiptId);
-            insert.setObject(2, userId);
-            insert.setObject(3, UUID.randomUUID());
-            insert.setString(4, version);
-            insert.setBytes(5, sha256(text));
-            insert.setObject(6, OffsetDateTime.ofInstant(acceptedAt, ZoneOffset.UTC));
-            insert.setObject(7, OffsetDateTime.ofInstant(consumedAt, ZoneOffset.UTC));
-            assertEquals(1, insert.executeUpdate());
+      insert.setObject(1, receiptId);
+      insert.setObject(2, userId);
+      insert.setObject(3, UUID.randomUUID());
+      insert.setString(4, version);
+      insert.setBytes(5, sha256(text));
+      insert.setObject(6, OffsetDateTime.ofInstant(acceptedAt, ZoneOffset.UTC));
+      insert.setObject(7, OffsetDateTime.ofInstant(consumedAt, ZoneOffset.UTC));
+      assertEquals(1, insert.executeUpdate());
+    }
+  }
+
+  private void deleteImportRightsTestStatement(String version) throws SQLException {
+    try (Connection connection = dataSource.getConnection()) {
+      connection.setAutoCommit(false);
+      try {
+        // The disposable integration database removes only synthetic approved content during
+        // teardown.
+        try (PreparedStatement disable =
+            connection.prepareStatement(
+                "ALTER TABLE import_rights_statements DISABLE TRIGGER trg_import_rights_statement_immutable")) {
+          disable.execute();
         }
-    }
-
-    private void deleteImportRightsTestStatement(String version) throws SQLException {
-        try (Connection connection = dataSource.getConnection()) {
-            connection.setAutoCommit(false);
-            try {
-                // The disposable integration database removes only synthetic approved content during teardown.
-                try (PreparedStatement disable = connection.prepareStatement(
-                        "ALTER TABLE import_rights_statements DISABLE TRIGGER trg_import_rights_statement_immutable")) {
-                    disable.execute();
-                }
-                try (PreparedStatement delete = connection.prepareStatement(
-                        "DELETE FROM import_rights_statements WHERE version = ?")) {
-                    delete.setString(1, version);
-                    delete.executeUpdate();
-                }
-                try (PreparedStatement enable = connection.prepareStatement(
-                        "ALTER TABLE import_rights_statements ENABLE TRIGGER trg_import_rights_statement_immutable")) {
-                    enable.execute();
-                }
-                connection.commit();
-            } catch (SQLException exception) {
-                connection.rollback();
-                throw exception;
-            }
+        try (PreparedStatement delete =
+            connection.prepareStatement("DELETE FROM import_rights_statements WHERE version = ?")) {
+          delete.setString(1, version);
+          delete.executeUpdate();
         }
-    }
-
-    private void deleteImportRightsTestAcceptances(UUID userId) throws SQLException {
-        try (Connection connection = dataSource.getConnection()) {
-            connection.setAutoCommit(false);
-            try {
-                try (PreparedStatement disable = connection.prepareStatement(
-                        "ALTER TABLE import_rights_acceptances DISABLE TRIGGER trg_import_rights_acceptance_immutable")) {
-                    disable.execute();
-                }
-                try (PreparedStatement delete = connection.prepareStatement(
-                        "DELETE FROM import_rights_acceptances WHERE user_id = ?")) {
-                    delete.setObject(1, userId);
-                    delete.executeUpdate();
-                }
-                try (PreparedStatement enable = connection.prepareStatement(
-                        "ALTER TABLE import_rights_acceptances ENABLE TRIGGER trg_import_rights_acceptance_immutable")) {
-                    enable.execute();
-                }
-                connection.commit();
-            } catch (SQLException exception) {
-                connection.rollback();
-                throw exception;
-            }
+        try (PreparedStatement enable =
+            connection.prepareStatement(
+                "ALTER TABLE import_rights_statements ENABLE TRIGGER trg_import_rights_statement_immutable")) {
+          enable.execute();
         }
+        connection.commit();
+      } catch (SQLException exception) {
+        connection.rollback();
+        throw exception;
+      }
     }
+  }
 
-    private String importCreateJson(
-            UUID libraryId, UUID receiptId, String version, String filename, String contentType,
-            int sizeBytes, Boolean rightsConfirmed) throws Exception {
-        return importCreateJson(libraryId, receiptId, version, filename, contentType, sizeBytes,
-                rightsConfirmed, Map.of());
+  private void deleteImportRightsTestAcceptances(UUID userId) throws SQLException {
+    try (Connection connection = dataSource.getConnection()) {
+      connection.setAutoCommit(false);
+      try {
+        try (PreparedStatement disable =
+            connection.prepareStatement(
+                "ALTER TABLE import_rights_acceptances DISABLE TRIGGER trg_import_rights_acceptance_immutable")) {
+          disable.execute();
+        }
+        try (PreparedStatement delete =
+            connection.prepareStatement(
+                "DELETE FROM import_rights_acceptances WHERE user_id = ?")) {
+          delete.setObject(1, userId);
+          delete.executeUpdate();
+        }
+        try (PreparedStatement enable =
+            connection.prepareStatement(
+                "ALTER TABLE import_rights_acceptances ENABLE TRIGGER trg_import_rights_acceptance_immutable")) {
+          enable.execute();
+        }
+        connection.commit();
+      } catch (SQLException exception) {
+        connection.rollback();
+        throw exception;
+      }
     }
+  }
 
-    private String importCreateJson(
-            UUID libraryId, UUID receiptId, String version, String filename, String contentType,
-            int sizeBytes, Boolean rightsConfirmed, Map<String, Object> extraFields) throws Exception {
-        Map<String, Object> requestBody = new LinkedHashMap<>();
-        requestBody.put("libraryId", libraryId);
-        requestBody.put("source", Map.of(
-                "kind", "upload", "filename", filename, "contentType", contentType, "sizeBytes", sizeBytes));
-        requestBody.put("rightsAcceptanceId", receiptId);
-        requestBody.put("rightsStatementVersion", version);
-        requestBody.put("rightsConfirmed", rightsConfirmed);
-        requestBody.putAll(extraFields);
-        return objectMapper.writeValueAsString(requestBody);
-    }
+  private String importCreateJson(
+      UUID libraryId,
+      UUID receiptId,
+      String version,
+      String filename,
+      String contentType,
+      int sizeBytes,
+      Boolean rightsConfirmed)
+      throws Exception {
+    return importCreateJson(
+        libraryId, receiptId, version, filename, contentType, sizeBytes, rightsConfirmed, Map.of());
+  }
 
-    private void insertUploadedEpubImportFixture(
-            UUID jobId, UUID userId, UUID libraryId, UUID receiptId, String version,
-            String statementText, byte[] content, int expiryDaysAgo) throws SQLException, NoSuchAlgorithmException {
-        Instant now = Instant.now();
-        Instant expiresAt = expiryDaysAgo > 0 ? now.minusSeconds((long) expiryDaysAgo * 86_400) : now.plusSeconds(3600);
-        Instant createdAt = expiresAt.minusSeconds(expiryDaysAgo > 0 ? 86_400 : 60);
-        Instant acceptedAt = createdAt.minusSeconds(60);
-        insertImportRightsAcceptanceAt(userId, receiptId, version, statementText, acceptedAt, acceptedAt.plusSeconds(10));
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement insert = connection.prepareStatement("""
+  private String importCreateJson(
+      UUID libraryId,
+      UUID receiptId,
+      String version,
+      String filename,
+      String contentType,
+      int sizeBytes,
+      Boolean rightsConfirmed,
+      Map<String, Object> extraFields)
+      throws Exception {
+    Map<String, Object> requestBody = new LinkedHashMap<>();
+    requestBody.put("libraryId", libraryId);
+    requestBody.put(
+        "source",
+        Map.of(
+            "kind",
+            "upload",
+            "filename",
+            filename,
+            "contentType",
+            contentType,
+            "sizeBytes",
+            sizeBytes));
+    requestBody.put("rightsAcceptanceId", receiptId);
+    requestBody.put("rightsStatementVersion", version);
+    requestBody.put("rightsConfirmed", rightsConfirmed);
+    requestBody.putAll(extraFields);
+    return objectMapper.writeValueAsString(requestBody);
+  }
+
+  private void insertUploadedEpubImportFixture(
+      UUID jobId,
+      UUID userId,
+      UUID libraryId,
+      UUID receiptId,
+      String version,
+      String statementText,
+      byte[] content,
+      int expiryDaysAgo)
+      throws SQLException, NoSuchAlgorithmException {
+    Instant now = Instant.now();
+    Instant expiresAt =
+        expiryDaysAgo > 0 ? now.minusSeconds((long) expiryDaysAgo * 86_400) : now.plusSeconds(3600);
+    Instant createdAt = expiresAt.minusSeconds(expiryDaysAgo > 0 ? 86_400 : 60);
+    Instant acceptedAt = createdAt.minusSeconds(60);
+    insertImportRightsAcceptanceAt(
+        userId, receiptId, version, statementText, acceptedAt, acceptedAt.plusSeconds(10));
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement insert =
+            connection.prepareStatement(
+                """
                      INSERT INTO import_jobs (
                          id, user_id, library_id, rights_acceptance_id, rights_statement_version,
                          original_filename, declared_content_type, declared_size_bytes, storage_key,
@@ -4154,1060 +5433,1166 @@ class PostgresSchemaIntegrationTests {
                      VALUES (?, ?, ?, ?, ?, 'private-parse-test.epub', 'application/epub+zip', ?, ?,
                              'uploaded', ?, ?, ?, ?, ?, ?)
                      """)) {
-            insert.setObject(1, jobId);
-            insert.setObject(2, userId);
-            insert.setObject(3, libraryId);
-            insert.setObject(4, receiptId);
-            insert.setString(5, version);
-            insert.setLong(6, content.length);
-            insert.setString(7, "staging/" + jobId + ".upload");
-            insert.setObject(8, OffsetDateTime.ofInstant(createdAt, ZoneOffset.UTC));
-            insert.setObject(9, OffsetDateTime.ofInstant(createdAt, ZoneOffset.UTC));
-            insert.setObject(10, OffsetDateTime.ofInstant(expiresAt, ZoneOffset.UTC));
-            insert.setObject(11, OffsetDateTime.ofInstant(createdAt.plusSeconds(5), ZoneOffset.UTC));
-            insert.setLong(12, content.length);
-            insert.setBytes(13, sha256(content));
-            assertEquals(1, insert.executeUpdate());
-        }
+      insert.setObject(1, jobId);
+      insert.setObject(2, userId);
+      insert.setObject(3, libraryId);
+      insert.setObject(4, receiptId);
+      insert.setString(5, version);
+      insert.setLong(6, content.length);
+      insert.setString(7, "staging/" + jobId + ".upload");
+      insert.setObject(8, OffsetDateTime.ofInstant(createdAt, ZoneOffset.UTC));
+      insert.setObject(9, OffsetDateTime.ofInstant(createdAt, ZoneOffset.UTC));
+      insert.setObject(10, OffsetDateTime.ofInstant(expiresAt, ZoneOffset.UTC));
+      insert.setObject(11, OffsetDateTime.ofInstant(createdAt.plusSeconds(5), ZoneOffset.UTC));
+      insert.setLong(12, content.length);
+      insert.setBytes(13, sha256(content));
+      assertEquals(1, insert.executeUpdate());
     }
+  }
 
-    private void insertQueuedParseJobFixture(UUID importId) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement insert = connection.prepareStatement("""
+  private void insertQueuedParseJobFixture(UUID importId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement insert =
+            connection.prepareStatement(
+                """
                      INSERT INTO import_parse_jobs (import_id, status, attempt, parser_version)
                      VALUES (?, 'queued', 0, 'epub3-v1')
                      """)) {
-            insert.setObject(1, importId);
-            assertEquals(1, insert.executeUpdate());
-        }
+      insert.setObject(1, importId);
+      assertEquals(1, insert.executeUpdate());
     }
+  }
 
-    private static byte[] tinyEpub(String title, String... chapterTitleAndBodies) throws IOException {
-        if (chapterTitleAndBodies.length == 0 || chapterTitleAndBodies.length % 2 != 0) {
-            throw new IllegalArgumentException("Provide title/body pairs for the EPUB spine");
-        }
-        String container = "<container><rootfiles><rootfile full-path=\"package.opf\" "
-                + "media-type=\"application/oebps-package+xml\"/></rootfiles></container>";
-        String packageDocument = "<package xmlns=\"http://www.idpf.org/2007/opf\" version=\"3.0\" "
-                + "unique-identifier=\"uid\"><metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\"><dc:title>"
-                + title + "</dc:title><dc:identifier id=\"uid\">urn:test</dc:identifier>"
-                + "<dc:creator>An Author</dc:creator></metadata><manifest>";
-        StringBuilder spine = new StringBuilder("<spine>");
-        List<String> chapterDocuments = new ArrayList<>();
-        Map<String, String> chapterPathsByContent = new HashMap<>();
-        for (int index = 0; index < chapterTitleAndBodies.length; index += 2) {
-            String chapterTitle = chapterTitleAndBodies[index];
-            String chapterBody = chapterTitleAndBodies[index + 1];
-            String key = chapterTitle + "\u0000" + chapterBody;
-            String id = chapterPathsByContent.get(key);
-            if (id == null) {
-                id = "chapter" + (index / 2);
-                String path = id + ".xhtml";
-                chapterPathsByContent.put(key, id);
-                packageDocument += "<item id=\"" + id + "\" href=\"" + path
-                        + "\" media-type=\"application/xhtml+xml\"/>";
-                chapterDocuments.add(path + "\u0000<html xmlns=\"http://www.w3.org/1999/xhtml\"><head><title>"
-                        + chapterTitle + "</title></head><body><h1>" + chapterTitle + "</h1><p>"
-                        + chapterBody + "</p></body></html>");
-            }
-            spine.append("<itemref idref=\"").append(id).append("\"/>");
-        }
-        packageDocument += "</manifest>" + spine + "</spine></package>";
-        try (ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-             ZipOutputStream archive = new ZipOutputStream(bytes, StandardCharsets.UTF_8)) {
-            writeStoredZipEntry(archive, "mimetype", "application/epub+zip".getBytes(StandardCharsets.US_ASCII));
-            writeDeflatedZipEntry(archive, "META-INF/container.xml", container);
-            writeDeflatedZipEntry(archive, "package.opf", packageDocument);
-            for (String chapterDocument : chapterDocuments) {
-                int separator = chapterDocument.indexOf('\u0000');
-                writeDeflatedZipEntry(archive, chapterDocument.substring(0, separator),
-                        chapterDocument.substring(separator + 1));
-            }
-            archive.finish();
-            return bytes.toByteArray();
-        }
+  private static byte[] tinyEpub(String title, String... chapterTitleAndBodies) throws IOException {
+    if (chapterTitleAndBodies.length == 0 || chapterTitleAndBodies.length % 2 != 0) {
+      throw new IllegalArgumentException("Provide title/body pairs for the EPUB spine");
     }
-
-    private static void writeStoredZipEntry(ZipOutputStream archive, String name, byte[] value) throws IOException {
-        CRC32 crc = new CRC32();
-        crc.update(value);
-        ZipEntry entry = new ZipEntry(name);
-        entry.setMethod(ZipEntry.STORED);
-        entry.setSize(value.length);
-        entry.setCompressedSize(value.length);
-        entry.setCrc(crc.getValue());
-        archive.putNextEntry(entry);
-        archive.write(value);
-        archive.closeEntry();
+    String container =
+        "<container><rootfiles><rootfile full-path=\"package.opf\" "
+            + "media-type=\"application/oebps-package+xml\"/></rootfiles></container>";
+    String packageDocument =
+        "<package xmlns=\"http://www.idpf.org/2007/opf\" version=\"3.0\" "
+            + "unique-identifier=\"uid\"><metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\"><dc:title>"
+            + title
+            + "</dc:title><dc:identifier id=\"uid\">urn:test</dc:identifier>"
+            + "<dc:creator>An Author</dc:creator></metadata><manifest>";
+    StringBuilder spine = new StringBuilder("<spine>");
+    List<String> chapterDocuments = new ArrayList<>();
+    Map<String, String> chapterPathsByContent = new HashMap<>();
+    for (int index = 0; index < chapterTitleAndBodies.length; index += 2) {
+      String chapterTitle = chapterTitleAndBodies[index];
+      String chapterBody = chapterTitleAndBodies[index + 1];
+      String key = chapterTitle + "\u0000" + chapterBody;
+      String id = chapterPathsByContent.get(key);
+      if (id == null) {
+        id = "chapter" + (index / 2);
+        String path = id + ".xhtml";
+        chapterPathsByContent.put(key, id);
+        packageDocument +=
+            "<item id=\"" + id + "\" href=\"" + path + "\" media-type=\"application/xhtml+xml\"/>";
+        chapterDocuments.add(
+            path
+                + "\u0000<html xmlns=\"http://www.w3.org/1999/xhtml\"><head><title>"
+                + chapterTitle
+                + "</title></head><body><h1>"
+                + chapterTitle
+                + "</h1><p>"
+                + chapterBody
+                + "</p></body></html>");
+      }
+      spine.append("<itemref idref=\"").append(id).append("\"/>");
     }
-
-    private static void writeDeflatedZipEntry(ZipOutputStream archive, String name, String value) throws IOException {
-        archive.putNextEntry(new ZipEntry(name));
-        archive.write(value.getBytes(StandardCharsets.UTF_8));
-        archive.closeEntry();
+    packageDocument += "</manifest>" + spine + "</spine></package>";
+    try (ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        ZipOutputStream archive = new ZipOutputStream(bytes, StandardCharsets.UTF_8)) {
+      writeStoredZipEntry(
+          archive, "mimetype", "application/epub+zip".getBytes(StandardCharsets.US_ASCII));
+      writeDeflatedZipEntry(archive, "META-INF/container.xml", container);
+      writeDeflatedZipEntry(archive, "package.opf", packageDocument);
+      for (String chapterDocument : chapterDocuments) {
+        int separator = chapterDocument.indexOf('\u0000');
+        writeDeflatedZipEntry(
+            archive,
+            chapterDocument.substring(0, separator),
+            chapterDocument.substring(separator + 1));
+      }
+      archive.finish();
+      return bytes.toByteArray();
     }
+  }
 
-    private JsonNode awaitImportStatus(jakarta.servlet.http.Cookie cookie, UUID importId, String expectedStatus)
-            throws Exception {
-        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
-        JsonNode latest = null;
-        while (System.nanoTime() < deadline) {
-            MvcResult result = mockMvc.perform(get("/api/v1/imports/{id}", importId).cookie(cookie)).andReturn();
-            assertEquals(200, result.getResponse().getStatus());
-            latest = objectMapper.readTree(result.getResponse().getContentAsString());
-            if (expectedStatus.equals(latest.path("status").asText())) return latest;
-            Thread.sleep(50);
-        }
-        throw new AssertionError("Import did not reach status " + expectedStatus + "; latest=" + latest);
+  private static void writeStoredZipEntry(ZipOutputStream archive, String name, byte[] value)
+      throws IOException {
+    CRC32 crc = new CRC32();
+    crc.update(value);
+    ZipEntry entry = new ZipEntry(name);
+    entry.setMethod(ZipEntry.STORED);
+    entry.setSize(value.length);
+    entry.setCompressedSize(value.length);
+    entry.setCrc(crc.getValue());
+    archive.putNextEntry(entry);
+    archive.write(value);
+    archive.closeEntry();
+  }
+
+  private static void writeDeflatedZipEntry(ZipOutputStream archive, String name, String value)
+      throws IOException {
+    archive.putNextEntry(new ZipEntry(name));
+    archive.write(value.getBytes(StandardCharsets.UTF_8));
+    archive.closeEntry();
+  }
+
+  private JsonNode awaitImportStatus(
+      jakarta.servlet.http.Cookie cookie, UUID importId, String expectedStatus) throws Exception {
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+    JsonNode latest = null;
+    while (System.nanoTime() < deadline) {
+      MvcResult result =
+          mockMvc.perform(get("/api/v1/imports/{id}", importId).cookie(cookie)).andReturn();
+      assertEquals(200, result.getResponse().getStatus());
+      latest = objectMapper.readTree(result.getResponse().getContentAsString());
+      if (expectedStatus.equals(latest.path("status").asText())) return latest;
+      Thread.sleep(50);
     }
+    throw new AssertionError(
+        "Import did not reach status " + expectedStatus + "; latest=" + latest);
+  }
 
-    private int importParseJobCount(UUID importId) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement select = connection.prepareStatement(
-                     "SELECT COUNT(*) FROM import_parse_jobs WHERE import_id = ?")) {
-            select.setObject(1, importId);
-            try (ResultSet row = select.executeQuery()) {
-                row.next();
-                return row.getInt(1);
-            }
-        }
+  private int importParseJobCount(UUID importId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT COUNT(*) FROM import_parse_jobs WHERE import_id = ?")) {
+      select.setObject(1, importId);
+      try (ResultSet row = select.executeQuery()) {
+        row.next();
+        return row.getInt(1);
+      }
     }
+  }
 
-    private int importParseAttempt(UUID importId) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement select = connection.prepareStatement(
-                     "SELECT attempt FROM import_parse_jobs WHERE import_id = ?")) {
-            select.setObject(1, importId);
-            try (ResultSet row = select.executeQuery()) {
-                assertTrue(row.next());
-                return row.getInt(1);
-            }
-        }
+  private int importParseAttempt(UUID importId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT attempt FROM import_parse_jobs WHERE import_id = ?")) {
+      select.setObject(1, importId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getInt(1);
+      }
     }
+  }
 
-    private String importParseParserVersion(UUID importId) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement select = connection.prepareStatement(
-                     "SELECT parser_version FROM import_parse_jobs WHERE import_id = ?")) {
-            select.setObject(1, importId);
-            try (ResultSet row = select.executeQuery()) {
-                assertTrue(row.next());
-                return row.getString(1);
-            }
-        }
+  private String importParseParserVersion(UUID importId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT parser_version FROM import_parse_jobs WHERE import_id = ?")) {
+      select.setObject(1, importId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getString(1);
+      }
     }
+  }
 
-    private String importParsePreviewJson(UUID importId) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement select = connection.prepareStatement(
-                     "SELECT preview_data::text FROM import_parse_jobs WHERE import_id = ?")) {
-            select.setObject(1, importId);
-            try (ResultSet row = select.executeQuery()) {
-                assertTrue(row.next());
-                return row.getString(1);
-            }
-        }
+  private String importParsePreviewJson(UUID importId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT preview_data::text FROM import_parse_jobs WHERE import_id = ?")) {
+      select.setObject(1, importId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getString(1);
+      }
     }
+  }
 
-    private int importPreviewVersion(UUID importId) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement select = connection.prepareStatement(
-                     "SELECT preview_version FROM import_parse_jobs WHERE import_id = ?")) {
-            select.setObject(1, importId);
-            try (ResultSet row = select.executeQuery()) {
-                assertTrue(row.next());
-                return row.getInt(1);
-            }
-        }
+  private int importPreviewVersion(UUID importId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT preview_version FROM import_parse_jobs WHERE import_id = ?")) {
+      select.setObject(1, importId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getInt(1);
+      }
     }
+  }
 
-    private String importParseJobStatus(UUID importId) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement select = connection.prepareStatement(
-                     "SELECT status FROM import_parse_jobs WHERE import_id = ?")) {
-            select.setObject(1, importId);
-            try (ResultSet row = select.executeQuery()) {
-                assertTrue(row.next());
-                return row.getString(1);
-            }
-        }
+  private String importParseJobStatus(UUID importId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT status FROM import_parse_jobs WHERE import_id = ?")) {
+      select.setObject(1, importId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getString(1);
+      }
     }
+  }
 
-    private int importParsePreviewByteCount(UUID importId) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement select = connection.prepareStatement("""
+  private int importParsePreviewByteCount(UUID importId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                """
                      SELECT COALESCE(octet_length(preview_data::text), 0)
                      FROM import_parse_jobs WHERE import_id = ?
                      """)) {
-            select.setObject(1, importId);
-            try (ResultSet row = select.executeQuery()) {
-                assertTrue(row.next());
-                return row.getInt(1);
-            }
-        }
+      select.setObject(1, importId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getInt(1);
+      }
     }
+  }
 
-    private int importParseEtagBytes(UUID importId) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement select = connection.prepareStatement(
-                     "SELECT octet_length(preview_etag) FROM import_parse_jobs WHERE import_id = ?")) {
-            select.setObject(1, importId);
-            try (ResultSet row = select.executeQuery()) {
-                assertTrue(row.next());
-                return row.getInt(1);
-            }
-        }
+  private int importParseEtagBytes(UUID importId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT octet_length(preview_etag) FROM import_parse_jobs WHERE import_id = ?")) {
+      select.setObject(1, importId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getInt(1);
+      }
     }
+  }
 
-    private int workCountForLibrary(UUID libraryId) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement select = connection.prepareStatement("SELECT COUNT(*) FROM works WHERE library_id = ?")) {
-            select.setObject(1, libraryId);
-            try (ResultSet row = select.executeQuery()) {
-                row.next();
-                return row.getInt(1);
-            }
-        }
+  private int workCountForLibrary(UUID libraryId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement("SELECT COUNT(*) FROM works WHERE library_id = ?")) {
+      select.setObject(1, libraryId);
+      try (ResultSet row = select.executeQuery()) {
+        row.next();
+        return row.getInt(1);
+      }
     }
+  }
 
-    private int chapterCountForLibrary(UUID libraryId) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement select = connection.prepareStatement("""
+  private int chapterCountForLibrary(UUID libraryId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                """
                      SELECT COUNT(*) FROM chapters WHERE work_id IN
                          (SELECT id FROM works WHERE library_id = ?)
                      """)) {
-            select.setObject(1, libraryId);
-            try (ResultSet row = select.executeQuery()) {
-                row.next();
-                return row.getInt(1);
-            }
-        }
+      select.setObject(1, libraryId);
+      try (ResultSet row = select.executeQuery()) {
+        row.next();
+        return row.getInt(1);
+      }
     }
+  }
 
-    private int revisionCountForWork(UUID workId) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement select = connection.prepareStatement("""
+  private int revisionCountForWork(UUID workId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                """
                      SELECT COUNT(*) FROM chapter_revisions r
                      JOIN chapters c ON c.id = r.chapter_id
                      WHERE c.work_id = ?
                      """)) {
-            select.setObject(1, workId);
-            try (ResultSet row = select.executeQuery()) {
-                assertTrue(row.next());
-                return row.getInt(1);
-            }
-        }
+      select.setObject(1, workId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getInt(1);
+      }
     }
+  }
 
-    private int segmentCountForWork(UUID workId) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement select = connection.prepareStatement("""
+  private int segmentCountForWork(UUID workId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                """
                      SELECT COUNT(*) FROM segments s
                      JOIN chapter_revisions r ON r.id = s.chapter_revision_id
                      JOIN chapters c ON c.id = r.chapter_id
                      WHERE c.work_id = ?
                      """)) {
-            select.setObject(1, workId);
-            try (ResultSet row = select.executeQuery()) {
-                assertTrue(row.next());
-                return row.getInt(1);
-            }
-        }
+      select.setObject(1, workId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getInt(1);
+      }
     }
+  }
 
-    private String revisionContentForWork(UUID workId) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement select = connection.prepareStatement("""
+  private String revisionContentForWork(UUID workId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                """
                      SELECT r.normalized_content FROM chapter_revisions r
                      JOIN chapters c ON c.id = r.chapter_id
                      WHERE c.work_id = ?
                      ORDER BY c.ordinal
                      """)) {
-            select.setObject(1, workId);
-            try (ResultSet rows = select.executeQuery()) {
-                StringBuilder content = new StringBuilder();
-                while (rows.next()) content.append(rows.getString(1)).append('\n');
-                return content.toString();
-            }
-        }
+      select.setObject(1, workId);
+      try (ResultSet rows = select.executeQuery()) {
+        StringBuilder content = new StringBuilder();
+        while (rows.next()) content.append(rows.getString(1)).append('\n');
+        return content.toString();
+      }
     }
+  }
 
-    private void createFailImportCommitSegmentsTrigger() throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             var statement = connection.createStatement()) {
-            statement.execute("""
+  private void createFailImportCommitSegmentsTrigger() throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        var statement = connection.createStatement()) {
+      statement.execute(
+          """
                     CREATE FUNCTION test_fail_import_commit_segment_insert() RETURNS trigger
                     LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'synthetic import commit rollback'; END; $$
                     """);
-            statement.execute("""
+      statement.execute(
+          """
                     CREATE TRIGGER test_fail_import_commit_segment_insert
                     BEFORE INSERT ON segments FOR EACH ROW
                     EXECUTE FUNCTION test_fail_import_commit_segment_insert()
                     """);
-        }
     }
+  }
 
-    private void dropFailImportCommitSegmentsTrigger() throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             var statement = connection.createStatement()) {
-            statement.execute("DROP TRIGGER IF EXISTS test_fail_import_commit_segment_insert ON segments");
-            statement.execute("DROP FUNCTION IF EXISTS test_fail_import_commit_segment_insert()");
-        }
+  private void dropFailImportCommitSegmentsTrigger() throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        var statement = connection.createStatement()) {
+      statement.execute(
+          "DROP TRIGGER IF EXISTS test_fail_import_commit_segment_insert ON segments");
+      statement.execute("DROP FUNCTION IF EXISTS test_fail_import_commit_segment_insert()");
     }
+  }
 
-    private void deleteImportedWorksForLibrary(UUID libraryId) throws SQLException {
-        try (Connection connection = dataSource.getConnection()) {
-            connection.setAutoCommit(false);
-            try {
-                String workIds = "SELECT id FROM works WHERE library_id = ?";
-                try (PreparedStatement deleteSegments = connection.prepareStatement("""
+  private void deleteImportedWorksForLibrary(UUID libraryId) throws SQLException {
+    try (Connection connection = dataSource.getConnection()) {
+      connection.setAutoCommit(false);
+      try {
+        String workIds = "SELECT id FROM works WHERE library_id = ?";
+        try (PreparedStatement deleteSegments =
+            connection.prepareStatement(
+                """
                         DELETE FROM segments WHERE chapter_revision_id IN (
                             SELECT r.id FROM chapter_revisions r
                             JOIN chapters c ON c.id = r.chapter_id
                             JOIN works w ON w.id = c.work_id
                             WHERE w.library_id = ?)
                         """)) {
-                    deleteSegments.setObject(1, libraryId);
-                    deleteSegments.executeUpdate();
-                }
-                try (PreparedStatement clearCurrentRevision = connection.prepareStatement("""
+          deleteSegments.setObject(1, libraryId);
+          deleteSegments.executeUpdate();
+        }
+        try (PreparedStatement clearCurrentRevision =
+            connection.prepareStatement(
+                """
                         UPDATE chapters SET source_revision_id = NULL
-                        WHERE work_id IN (""" + workIds + ")")) {
-                    clearCurrentRevision.setObject(1, libraryId);
-                    clearCurrentRevision.executeUpdate();
-                }
-                try (PreparedStatement deleteRevisions = connection.prepareStatement("""
+                        WHERE work_id IN ("""
+                    + workIds
+                    + ")")) {
+          clearCurrentRevision.setObject(1, libraryId);
+          clearCurrentRevision.executeUpdate();
+        }
+        try (PreparedStatement deleteRevisions =
+            connection.prepareStatement(
+                """
                         DELETE FROM chapter_revisions WHERE chapter_id IN (
                             SELECT c.id FROM chapters c JOIN works w ON w.id = c.work_id
                             WHERE w.library_id = ?)
                         """)) {
-                    deleteRevisions.setObject(1, libraryId);
-                    deleteRevisions.executeUpdate();
-                }
-                try (PreparedStatement deleteChapters = connection.prepareStatement("""
-                        DELETE FROM chapters WHERE work_id IN (""" + workIds + ")")) {
-                    deleteChapters.setObject(1, libraryId);
-                    deleteChapters.executeUpdate();
-                }
-                try (PreparedStatement deleteWorks = connection.prepareStatement("DELETE FROM works WHERE library_id = ?")) {
-                    deleteWorks.setObject(1, libraryId);
-                    deleteWorks.executeUpdate();
-                }
-                connection.commit();
-            } catch (SQLException exception) {
-                connection.rollback();
-                throw exception;
-            }
+          deleteRevisions.setObject(1, libraryId);
+          deleteRevisions.executeUpdate();
         }
-    }
-
-    private int importJobCount() throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement select = connection.prepareStatement("SELECT COUNT(*) FROM import_jobs");
-             ResultSet row = select.executeQuery()) {
-            assertTrue(row.next());
-            return row.getInt(1);
+        try (PreparedStatement deleteChapters =
+            connection.prepareStatement(
+                """
+                        DELETE FROM chapters WHERE work_id IN ("""
+                    + workIds
+                    + ")")) {
+          deleteChapters.setObject(1, libraryId);
+          deleteChapters.executeUpdate();
         }
-    }
-
-    private int importJobCount(UUID userId) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement select = connection.prepareStatement(
-                     "SELECT COUNT(*) FROM import_jobs WHERE user_id = ?")) {
-            select.setObject(1, userId);
-            try (ResultSet row = select.executeQuery()) {
-                assertTrue(row.next());
-                return row.getInt(1);
-            }
+        try (PreparedStatement deleteWorks =
+            connection.prepareStatement("DELETE FROM works WHERE library_id = ?")) {
+          deleteWorks.setObject(1, libraryId);
+          deleteWorks.executeUpdate();
         }
+        connection.commit();
+      } catch (SQLException exception) {
+        connection.rollback();
+        throw exception;
+      }
     }
+  }
 
-    private UUID importJobOwner(UUID jobId) throws SQLException {
-        return importJobUuid(jobId, "user_id");
+  private int importJobCount() throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select = connection.prepareStatement("SELECT COUNT(*) FROM import_jobs");
+        ResultSet row = select.executeQuery()) {
+      assertTrue(row.next());
+      return row.getInt(1);
     }
+  }
 
-    private UUID importJobLibrary(UUID jobId) throws SQLException {
-        return importJobUuid(jobId, "library_id");
+  private int importJobCount(UUID userId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement("SELECT COUNT(*) FROM import_jobs WHERE user_id = ?")) {
+      select.setObject(1, userId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getInt(1);
+      }
     }
+  }
 
-    private UUID importJobUuid(UUID jobId, String column) throws SQLException {
-        if (!Set.of("user_id", "library_id").contains(column)) throw new IllegalArgumentException("column");
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement select = connection.prepareStatement(
-                     "SELECT " + column + " FROM import_jobs WHERE id = ?")) {
-            select.setObject(1, jobId);
-            try (ResultSet row = select.executeQuery()) {
-                assertTrue(row.next());
-                return row.getObject(1, UUID.class);
-            }
+  private UUID importJobOwner(UUID jobId) throws SQLException {
+    return importJobUuid(jobId, "user_id");
+  }
+
+  private UUID importJobLibrary(UUID jobId) throws SQLException {
+    return importJobUuid(jobId, "library_id");
+  }
+
+  private UUID importJobUuid(UUID jobId, String column) throws SQLException {
+    if (!Set.of("user_id", "library_id").contains(column))
+      throw new IllegalArgumentException("column");
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement("SELECT " + column + " FROM import_jobs WHERE id = ?")) {
+      select.setObject(1, jobId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getObject(1, UUID.class);
+      }
+    }
+  }
+
+  private String importJobFilename(UUID jobId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement("SELECT original_filename FROM import_jobs WHERE id = ?")) {
+      select.setObject(1, jobId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getString(1);
+      }
+    }
+  }
+
+  private String importJobStorageKey(UUID jobId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement("SELECT storage_key FROM import_jobs WHERE id = ?")) {
+      select.setObject(1, jobId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getString(1);
+      }
+    }
+  }
+
+  private byte[] importJobTokenHash(UUID jobId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT upload_token_sha256 FROM import_jobs WHERE id = ?")) {
+      select.setObject(1, jobId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getBytes(1);
+      }
+    }
+  }
+
+  private String importJobStatus(UUID jobId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement("SELECT status FROM import_jobs WHERE id = ?")) {
+      select.setObject(1, jobId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getString(1);
+      }
+    }
+  }
+
+  private OffsetDateTime importJobStagingFileDeletedAt(UUID jobId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT staging_file_deleted_at FROM import_jobs WHERE id = ?")) {
+      select.setObject(1, jobId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getObject(1, OffsetDateTime.class);
+      }
+    }
+  }
+
+  private byte[] importJobContentHash(UUID jobId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement("SELECT content_sha256 FROM import_jobs WHERE id = ?")) {
+      select.setObject(1, jobId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getBytes(1);
+      }
+    }
+  }
+
+  private long importJobActualSize(UUID jobId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement("SELECT actual_size_bytes FROM import_jobs WHERE id = ?")) {
+      select.setObject(1, jobId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getLong(1);
+      }
+    }
+  }
+
+  private Optional<Instant> importRightsAcceptanceConsumedAt(UUID receiptId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT consumed_at FROM import_rights_acceptances WHERE id = ?")) {
+      select.setObject(1, receiptId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        OffsetDateTime consumedAt = row.getObject(1, OffsetDateTime.class);
+        return consumedAt == null ? Optional.empty() : Optional.of(consumedAt.toInstant());
+      }
+    }
+  }
+
+  private long stagedUploadCount() throws java.io.IOException {
+    Path root = Path.of(System.getProperty("java.io.tmpdir"), "novel-web-import-postgres-tests");
+    if (!Files.isDirectory(root)) return 0;
+    try (var files = Files.list(root)) {
+      return files.filter(path -> path.getFileName().toString().endsWith(".upload")).count();
+    }
+  }
+
+  private void deleteImportJobs(UUID userId) throws SQLException {
+    List<UUID> jobs = new ArrayList<>();
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement("SELECT id FROM import_jobs WHERE user_id = ?")) {
+      select.setObject(1, userId);
+      try (ResultSet rows = select.executeQuery()) {
+        while (rows.next()) jobs.add(rows.getObject(1, UUID.class));
+      }
+    }
+    for (UUID jobId : jobs) {
+      try {
+        importStagingFileStore.delete(jobId);
+      } catch (java.io.IOException exception) {
+        throw new SQLException("Unable to clean import integration fixture", exception);
+      }
+    }
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement delete =
+            connection.prepareStatement("DELETE FROM import_jobs WHERE user_id = ?")) {
+      delete.setObject(1, userId);
+      delete.executeUpdate();
+    }
+  }
+
+  private void deleteLibrary(UUID libraryId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement delete =
+            connection.prepareStatement("DELETE FROM libraries WHERE id = ?")) {
+      delete.setObject(1, libraryId);
+      delete.executeUpdate();
+    }
+  }
+
+  private int importRightsAcceptanceCount(UUID userId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT COUNT(*) FROM import_rights_acceptances WHERE user_id = ?")) {
+      select.setObject(1, userId);
+      try (ResultSet rows = select.executeQuery()) {
+        assertTrue(rows.next());
+        return rows.getInt(1);
+      }
+    }
+  }
+
+  private int policyAcceptanceCount(UUID userId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT COUNT(*) FROM policy_acceptances WHERE user_id = ?")) {
+      select.setObject(1, userId);
+      try (ResultSet rows = select.executeQuery()) {
+        assertTrue(rows.next());
+        return rows.getInt(1);
+      }
+    }
+  }
+
+  private int policyAcceptanceCountBySource(UUID userId, String source) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT COUNT(*) FROM policy_acceptances WHERE user_id = ? AND source = ?")) {
+      select.setObject(1, userId);
+      select.setString(2, source);
+      try (ResultSet rows = select.executeQuery()) {
+        assertTrue(rows.next());
+        return rows.getInt(1);
+      }
+    }
+  }
+
+  private boolean sessionHashMatches(String token, UUID userId) throws Exception {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement("SELECT id_hash FROM sessions WHERE user_id = ?")) {
+      select.setObject(1, userId);
+      try (ResultSet row = select.executeQuery()) {
+        byte[] expectedHash = sessionTokenHash(token);
+        byte[] rawToken = token.getBytes(StandardCharsets.US_ASCII);
+        boolean hashMatches = false;
+        while (row.next()) {
+          byte[] storedHash = row.getBytes(1);
+          hashMatches |= MessageDigest.isEqual(expectedHash, storedHash);
+          assertFalse(
+              MessageDigest.isEqual(rawToken, storedHash),
+              "the database must never store the raw cookie token");
         }
+        return hashMatches;
+      }
     }
+  }
 
-    private String importJobFilename(UUID jobId) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement select = connection.prepareStatement(
-                     "SELECT original_filename FROM import_jobs WHERE id = ?")) {
-            select.setObject(1, jobId);
-            try (ResultSet row = select.executeQuery()) {
-                assertTrue(row.next());
-                return row.getString(1);
-            }
-        }
-    }
-
-    private String importJobStorageKey(UUID jobId) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement select = connection.prepareStatement(
-                     "SELECT storage_key FROM import_jobs WHERE id = ?")) {
-            select.setObject(1, jobId);
-            try (ResultSet row = select.executeQuery()) {
-                assertTrue(row.next());
-                return row.getString(1);
-            }
-        }
-    }
-
-    private byte[] importJobTokenHash(UUID jobId) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement select = connection.prepareStatement(
-                     "SELECT upload_token_sha256 FROM import_jobs WHERE id = ?")) {
-            select.setObject(1, jobId);
-            try (ResultSet row = select.executeQuery()) {
-                assertTrue(row.next());
-                return row.getBytes(1);
-            }
-        }
-    }
-
-    private String importJobStatus(UUID jobId) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement select = connection.prepareStatement("SELECT status FROM import_jobs WHERE id = ?")) {
-            select.setObject(1, jobId);
-            try (ResultSet row = select.executeQuery()) {
-                assertTrue(row.next());
-                return row.getString(1);
-            }
-        }
-    }
-
-    private OffsetDateTime importJobStagingFileDeletedAt(UUID jobId) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement select = connection.prepareStatement(
-                     "SELECT staging_file_deleted_at FROM import_jobs WHERE id = ?")) {
-            select.setObject(1, jobId);
-            try (ResultSet row = select.executeQuery()) {
-                assertTrue(row.next());
-                return row.getObject(1, OffsetDateTime.class);
-            }
-        }
-    }
-
-    private byte[] importJobContentHash(UUID jobId) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement select = connection.prepareStatement(
-                     "SELECT content_sha256 FROM import_jobs WHERE id = ?")) {
-            select.setObject(1, jobId);
-            try (ResultSet row = select.executeQuery()) {
-                assertTrue(row.next());
-                return row.getBytes(1);
-            }
-        }
-    }
-
-    private long importJobActualSize(UUID jobId) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement select = connection.prepareStatement(
-                     "SELECT actual_size_bytes FROM import_jobs WHERE id = ?")) {
-            select.setObject(1, jobId);
-            try (ResultSet row = select.executeQuery()) {
-                assertTrue(row.next());
-                return row.getLong(1);
-            }
-        }
-    }
-
-    private Optional<Instant> importRightsAcceptanceConsumedAt(UUID receiptId) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement select = connection.prepareStatement(
-                     "SELECT consumed_at FROM import_rights_acceptances WHERE id = ?")) {
-            select.setObject(1, receiptId);
-            try (ResultSet row = select.executeQuery()) {
-                assertTrue(row.next());
-                OffsetDateTime consumedAt = row.getObject(1, OffsetDateTime.class);
-                return consumedAt == null ? Optional.empty() : Optional.of(consumedAt.toInstant());
-            }
-        }
-    }
-
-    private long stagedUploadCount() throws java.io.IOException {
-        Path root = Path.of(System.getProperty("java.io.tmpdir"), "novel-web-import-postgres-tests");
-        if (!Files.isDirectory(root)) return 0;
-        try (var files = Files.list(root)) {
-            return files.filter(path -> path.getFileName().toString().endsWith(".upload")).count();
-        }
-    }
-
-    private void deleteImportJobs(UUID userId) throws SQLException {
-        List<UUID> jobs = new ArrayList<>();
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement select = connection.prepareStatement("SELECT id FROM import_jobs WHERE user_id = ?")) {
-            select.setObject(1, userId);
-            try (ResultSet rows = select.executeQuery()) {
-                while (rows.next()) jobs.add(rows.getObject(1, UUID.class));
-            }
-        }
-        for (UUID jobId : jobs) {
-            try {
-                importStagingFileStore.delete(jobId);
-            } catch (java.io.IOException exception) {
-                throw new SQLException("Unable to clean import integration fixture", exception);
-            }
-        }
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement delete = connection.prepareStatement("DELETE FROM import_jobs WHERE user_id = ?")) {
-            delete.setObject(1, userId);
-            delete.executeUpdate();
-        }
-    }
-
-    private void deleteLibrary(UUID libraryId) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement delete = connection.prepareStatement("DELETE FROM libraries WHERE id = ?")) {
-            delete.setObject(1, libraryId);
-            delete.executeUpdate();
-        }
-    }
-
-    private int importRightsAcceptanceCount(UUID userId) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement select = connection.prepareStatement(
-                     "SELECT COUNT(*) FROM import_rights_acceptances WHERE user_id = ?")) {
-            select.setObject(1, userId);
-            try (ResultSet rows = select.executeQuery()) {
-                assertTrue(rows.next());
-                return rows.getInt(1);
-            }
-        }
-    }
-
-    private int policyAcceptanceCount(UUID userId) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement select = connection.prepareStatement(
-                     "SELECT COUNT(*) FROM policy_acceptances WHERE user_id = ?")) {
-            select.setObject(1, userId);
-            try (ResultSet rows = select.executeQuery()) {
-                assertTrue(rows.next());
-                return rows.getInt(1);
-            }
-        }
-    }
-
-    private int policyAcceptanceCountBySource(UUID userId, String source) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement select = connection.prepareStatement(
-                     "SELECT COUNT(*) FROM policy_acceptances WHERE user_id = ? AND source = ?")) {
-            select.setObject(1, userId);
-            select.setString(2, source);
-            try (ResultSet rows = select.executeQuery()) {
-                assertTrue(rows.next());
-                return rows.getInt(1);
-            }
-        }
-    }
-
-    private boolean sessionHashMatches(String token, UUID userId) throws Exception {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement select = connection.prepareStatement(
-                     "SELECT id_hash FROM sessions WHERE user_id = ?")) {
-            select.setObject(1, userId);
-            try (ResultSet row = select.executeQuery()) {
-                byte[] expectedHash = sessionTokenHash(token);
-                byte[] rawToken = token.getBytes(StandardCharsets.US_ASCII);
-                boolean hashMatches = false;
-                while (row.next()) {
-                    byte[] storedHash = row.getBytes(1);
-                    hashMatches |= MessageDigest.isEqual(expectedHash, storedHash);
-                    assertFalse(MessageDigest.isEqual(rawToken, storedHash),
-                            "the database must never store the raw cookie token");
-                }
-                return hashMatches;
-            }
-        }
-    }
-
-    private boolean confirmationHashStoredForUser(String token, UUID userId, String sessionToken) throws Exception {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement select = connection.prepareStatement("""
+  private boolean confirmationHashStoredForUser(String token, UUID userId, String sessionToken)
+      throws Exception {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                """
                      SELECT token_hash, user_id, session_id_hash
                      FROM session_revoke_confirmations
                      WHERE token_hash = ?
                      """)) {
-            byte[] expectedConfirmationHash = sessionTokenHash(token);
-            byte[] expectedSessionHash = sessionTokenHash(sessionToken);
-            select.setBytes(1, expectedConfirmationHash);
-            try (ResultSet row = select.executeQuery()) {
-                if (!row.next()) {
-                    return false;
-                }
-                assertEquals(userId, row.getObject("user_id", UUID.class));
-                assertTrue(MessageDigest.isEqual(expectedConfirmationHash, row.getBytes("token_hash")));
-                assertTrue(MessageDigest.isEqual(expectedSessionHash, row.getBytes("session_id_hash")));
-                assertFalse(MessageDigest.isEqual(token.getBytes(StandardCharsets.US_ASCII), row.getBytes("token_hash")),
-                        "the database must never store the raw confirmation token");
-                return true;
-            }
+      byte[] expectedConfirmationHash = sessionTokenHash(token);
+      byte[] expectedSessionHash = sessionTokenHash(sessionToken);
+      select.setBytes(1, expectedConfirmationHash);
+      try (ResultSet row = select.executeQuery()) {
+        if (!row.next()) {
+          return false;
         }
+        assertEquals(userId, row.getObject("user_id", UUID.class));
+        assertTrue(MessageDigest.isEqual(expectedConfirmationHash, row.getBytes("token_hash")));
+        assertTrue(MessageDigest.isEqual(expectedSessionHash, row.getBytes("session_id_hash")));
+        assertFalse(
+            MessageDigest.isEqual(
+                token.getBytes(StandardCharsets.US_ASCII), row.getBytes("token_hash")),
+            "the database must never store the raw confirmation token");
+        return true;
+      }
     }
+  }
 
-    private boolean confirmationHashExists(String token) throws Exception {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement select = connection.prepareStatement(
-                     "SELECT COUNT(*) FROM session_revoke_confirmations WHERE token_hash = ?")) {
-            select.setBytes(1, sessionTokenHash(token));
-            try (ResultSet row = select.executeQuery()) {
-                assertTrue(row.next());
-                return row.getInt(1) == 1;
-            }
+  private boolean confirmationHashExists(String token) throws Exception {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT COUNT(*) FROM session_revoke_confirmations WHERE token_hash = ?")) {
+      select.setBytes(1, sessionTokenHash(token));
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getInt(1) == 1;
+      }
+    }
+  }
+
+  private static byte[] sessionTokenHash(String token) throws Exception {
+    byte[] secret = Base64.getUrlDecoder().decode(token);
+    return MessageDigest.getInstance("SHA-256").digest(secret);
+  }
+
+  private Instant storedSessionLastSeen(byte[] tokenHash) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement("SELECT last_seen_at FROM sessions WHERE id_hash = ?")) {
+      select.setBytes(1, tokenHash);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getObject(1, java.time.OffsetDateTime.class).toInstant();
+      }
+    }
+  }
+
+  private int activeSessionCount(UUID userId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT COUNT(*) FROM sessions WHERE user_id = ? AND revoked_at IS NULL")) {
+      select.setObject(1, userId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getInt(1);
+      }
+    }
+  }
+
+  private void deleteSessionTestUser(UUID userId) throws SQLException {
+    try (Connection connection = dataSource.getConnection()) {
+      try (PreparedStatement deleteConfirmations =
+          connection.prepareStatement(
+              "DELETE FROM session_revoke_confirmations WHERE user_id = ?")) {
+        deleteConfirmations.setObject(1, userId);
+        deleteConfirmations.executeUpdate();
+      }
+      try (PreparedStatement deletePolicyAcceptances =
+          connection.prepareStatement("DELETE FROM policy_acceptances WHERE user_id = ?")) {
+        deletePolicyAcceptances.setObject(1, userId);
+        deletePolicyAcceptances.executeUpdate();
+      }
+      try (PreparedStatement deleteRightsAcceptances =
+          connection.prepareStatement("DELETE FROM import_rights_acceptances WHERE user_id = ?")) {
+        deleteRightsAcceptances.setObject(1, userId);
+        deleteRightsAcceptances.executeUpdate();
+      }
+      try (PreparedStatement deleteIdentities =
+          connection.prepareStatement("DELETE FROM external_identities WHERE user_id = ?")) {
+        deleteIdentities.setObject(1, userId);
+        deleteIdentities.executeUpdate();
+      }
+      try (PreparedStatement deleteSessions =
+          connection.prepareStatement("DELETE FROM sessions WHERE user_id = ?")) {
+        deleteSessions.setObject(1, userId);
+        deleteSessions.executeUpdate();
+      }
+      try (PreparedStatement deleteUser =
+          connection.prepareStatement("DELETE FROM users WHERE id = ?")) {
+        deleteUser.setObject(1, userId);
+        deleteUser.executeUpdate();
+      }
+    }
+  }
+
+  private void deleteLibraryUserData(UUID userId, UUID workId) throws SQLException {
+    try (Connection connection = dataSource.getConnection()) {
+      try (PreparedStatement deleteAssignments =
+          connection.prepareStatement(
+              "DELETE FROM library_collection_works WHERE owner_user_id = ?")) {
+        deleteAssignments.setObject(1, userId);
+        deleteAssignments.executeUpdate();
+      }
+      try (PreparedStatement deleteStates =
+          connection.prepareStatement("DELETE FROM library_reading_states WHERE user_id = ?")) {
+        deleteStates.setObject(1, userId);
+        deleteStates.executeUpdate();
+      }
+      try (PreparedStatement deleteCollections =
+          connection.prepareStatement("DELETE FROM library_collections WHERE owner_user_id = ?")) {
+        deleteCollections.setObject(1, userId);
+        deleteCollections.executeUpdate();
+      }
+      if (workId != null) {
+        try (PreparedStatement deleteWork =
+            connection.prepareStatement("DELETE FROM works WHERE id = ? AND owner_user_id = ?")) {
+          deleteWork.setObject(1, workId);
+          deleteWork.setObject(2, userId);
+          deleteWork.executeUpdate();
         }
+      }
+      try (PreparedStatement deleteLibraries =
+          connection.prepareStatement("DELETE FROM libraries WHERE owner_user_id = ?")) {
+        deleteLibraries.setObject(1, userId);
+        deleteLibraries.executeUpdate();
+      }
     }
+  }
 
-    private static byte[] sessionTokenHash(String token) throws Exception {
-        byte[] secret = Base64.getUrlDecoder().decode(token);
-        return MessageDigest.getInstance("SHA-256").digest(secret);
+  private String storedBootstrapReturnPath(String nonce)
+      throws SQLException, NoSuchAlgorithmException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT safe_return_path FROM google_auth_attempts WHERE nonce_hash = ?")) {
+      select.setBytes(1, sha256(nonce));
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getString(1);
+      }
     }
+  }
 
-    private Instant storedSessionLastSeen(byte[] tokenHash) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement select = connection.prepareStatement(
-                     "SELECT last_seen_at FROM sessions WHERE id_hash = ?")) {
-            select.setBytes(1, tokenHash);
-            try (ResultSet row = select.executeQuery()) {
-                assertTrue(row.next());
-                return row.getObject(1, java.time.OffsetDateTime.class).toInstant();
-            }
+  private int googleAuthAttemptCount(UUID correlationId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT COUNT(*) FROM google_auth_attempts WHERE correlation_id = ?")) {
+      select.setObject(1, correlationId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getInt(1);
+      }
+    }
+  }
+
+  private void deleteBootstrapFixtures(String clientAddress, List<UUID> correlationIds)
+      throws Exception {
+    byte[] keyHash = bootstrapRateLimitKeyHash(clientAddress);
+    try (Connection connection = dataSource.getConnection()) {
+      try (PreparedStatement deleteAttempt =
+          connection.prepareStatement(
+              "DELETE FROM google_auth_attempts WHERE correlation_id = ?")) {
+        for (UUID correlationId : correlationIds) {
+          deleteAttempt.setObject(1, correlationId);
+          deleteAttempt.addBatch();
         }
+        deleteAttempt.executeBatch();
+      }
+      try (PreparedStatement deleteBucket =
+          connection.prepareStatement(
+              "DELETE FROM google_auth_bootstrap_rate_limits WHERE rate_limit_key_hash = ?")) {
+        deleteBucket.setBytes(1, keyHash);
+        deleteBucket.executeUpdate();
+      }
     }
+  }
 
-    private int activeSessionCount(UUID userId) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement select = connection.prepareStatement(
-                     "SELECT COUNT(*) FROM sessions WHERE user_id = ? AND revoked_at IS NULL")) {
-            select.setObject(1, userId);
-            try (ResultSet row = select.executeQuery()) {
-                assertTrue(row.next());
-                return row.getInt(1);
-            }
-        }
+  private static String bootstrapTestClientAddress() {
+    return "203.0.113." + (1 + Math.floorMod(UUID.randomUUID().hashCode(), 254));
+  }
+
+  private static byte[] bootstrapRateLimitKeyHash(String clientAddress) throws Exception {
+    Mac mac = Mac.getInstance("HmacSHA256");
+    mac.init(
+        new SecretKeySpec(
+            Base64.getUrlDecoder().decode(BOOTSTRAP_RATE_LIMIT_HMAC_KEY), "HmacSHA256"));
+    return mac.doFinal(InetAddress.getByName(clientAddress).getAddress());
+  }
+
+  private static GoogleIdTokenVerifier.VerifiedGoogleIdentity verifiedIdentity(
+      String subject, String email, String name) {
+    return GoogleIdentityTestFixtures.verifiedIdentity(subject, email, name);
+  }
+
+  private static Jwt googleJwt(String nonce, String subject, String email) {
+    Instant now = Instant.now();
+    return Jwt.withTokenValue("synthetic-google-id-token")
+        .header("alg", "RS256")
+        .claim("iss", "https://accounts.google.com")
+        .claim("aud", List.of("novel-web-integration-test.apps.googleusercontent.com"))
+        .claim("sub", subject)
+        .claim("email", email)
+        .claim("email_verified", true)
+        .claim("name", "Integration Reader")
+        .claim("nonce", nonce)
+        .issuedAt(now.minusSeconds(10))
+        .expiresAt(now.plusSeconds(300))
+        .build();
+  }
+
+  private static byte[] sha256(String value) throws NoSuchAlgorithmException {
+    return MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8));
+  }
+
+  private static byte[] sha256(byte[] value) throws NoSuchAlgorithmException {
+    return MessageDigest.getInstance("SHA-256").digest(value);
+  }
+
+  private void deleteAuthAttempt(byte[] nonceHash) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement delete =
+            connection.prepareStatement("DELETE FROM google_auth_attempts WHERE nonce_hash = ?")) {
+      delete.setBytes(1, nonceHash);
+      delete.executeUpdate();
     }
+  }
 
-    private void deleteSessionTestUser(UUID userId) throws SQLException {
-        try (Connection connection = dataSource.getConnection()) {
-            try (PreparedStatement deleteConfirmations = connection.prepareStatement(
-                    "DELETE FROM session_revoke_confirmations WHERE user_id = ?")) {
-                deleteConfirmations.setObject(1, userId);
-                deleteConfirmations.executeUpdate();
-            }
-            try (PreparedStatement deletePolicyAcceptances = connection.prepareStatement(
-                    "DELETE FROM policy_acceptances WHERE user_id = ?")) {
-                deletePolicyAcceptances.setObject(1, userId);
-                deletePolicyAcceptances.executeUpdate();
-            }
-            try (PreparedStatement deleteRightsAcceptances = connection.prepareStatement(
-                    "DELETE FROM import_rights_acceptances WHERE user_id = ?")) {
-                deleteRightsAcceptances.setObject(1, userId);
-                deleteRightsAcceptances.executeUpdate();
-            }
-            try (PreparedStatement deleteIdentities = connection.prepareStatement(
-                    "DELETE FROM external_identities WHERE user_id = ?")) {
-                deleteIdentities.setObject(1, userId);
-                deleteIdentities.executeUpdate();
-            }
-            try (PreparedStatement deleteSessions = connection.prepareStatement(
-                    "DELETE FROM sessions WHERE user_id = ?")) {
-                deleteSessions.setObject(1, userId);
-                deleteSessions.executeUpdate();
-            }
-            try (PreparedStatement deleteUser = connection.prepareStatement("DELETE FROM users WHERE id = ?")) {
-                deleteUser.setObject(1, userId);
-                deleteUser.executeUpdate();
-            }
-        }
+  private void deleteRateLimitBucket(byte[] keyHash) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement delete =
+            connection.prepareStatement(
+                "DELETE FROM google_auth_bootstrap_rate_limits WHERE rate_limit_key_hash = ?")) {
+      delete.setBytes(1, keyHash);
+      delete.executeUpdate();
     }
+  }
 
-    private void deleteLibraryUserData(UUID userId, UUID workId) throws SQLException {
-        try (Connection connection = dataSource.getConnection()) {
-            try (PreparedStatement deleteAssignments = connection.prepareStatement(
-                    "DELETE FROM library_collection_works WHERE owner_user_id = ?")) {
-                deleteAssignments.setObject(1, userId);
-                deleteAssignments.executeUpdate();
-            }
-            try (PreparedStatement deleteStates = connection.prepareStatement(
-                    "DELETE FROM library_reading_states WHERE user_id = ?")) {
-                deleteStates.setObject(1, userId);
-                deleteStates.executeUpdate();
-            }
-            try (PreparedStatement deleteCollections = connection.prepareStatement(
-                    "DELETE FROM library_collections WHERE owner_user_id = ?")) {
-                deleteCollections.setObject(1, userId);
-                deleteCollections.executeUpdate();
-            }
-            if (workId != null) {
-                try (PreparedStatement deleteWork = connection.prepareStatement(
-                        "DELETE FROM works WHERE id = ? AND owner_user_id = ?")) {
-                    deleteWork.setObject(1, workId);
-                    deleteWork.setObject(2, userId);
-                    deleteWork.executeUpdate();
-                }
-            }
-            try (PreparedStatement deleteLibraries = connection.prepareStatement(
-                    "DELETE FROM libraries WHERE owner_user_id = ?")) {
-                deleteLibraries.setObject(1, userId);
-                deleteLibraries.executeUpdate();
-            }
-        }
+  private int rateLimitBucketCount(byte[] keyHash) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT COUNT(*) FROM google_auth_bootstrap_rate_limits WHERE rate_limit_key_hash = ?")) {
+      select.setBytes(1, keyHash);
+      try (ResultSet result = select.executeQuery()) {
+        result.next();
+        return result.getInt(1);
+      }
     }
+  }
 
-    private String storedBootstrapReturnPath(String nonce) throws SQLException, NoSuchAlgorithmException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement select = connection.prepareStatement(
-                     "SELECT safe_return_path FROM google_auth_attempts WHERE nonce_hash = ?")) {
-            select.setBytes(1, sha256(nonce));
-            try (ResultSet row = select.executeQuery()) {
-                assertTrue(row.next());
-                return row.getString(1);
-            }
-        }
+  private int identityCount(String subject) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT COUNT(*) FROM external_identities WHERE issuer = 'https://accounts.google.com' AND subject = ?")) {
+      select.setString(1, subject);
+      try (ResultSet row = select.executeQuery()) {
+        row.next();
+        return row.getInt(1);
+      }
     }
+  }
 
-    private int googleAuthAttemptCount(UUID correlationId) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement select = connection.prepareStatement(
-                     "SELECT COUNT(*) FROM google_auth_attempts WHERE correlation_id = ?")) {
-            select.setObject(1, correlationId);
-            try (ResultSet row = select.executeQuery()) {
-                assertTrue(row.next());
-                return row.getInt(1);
-            }
-        }
-    }
-
-    private void deleteBootstrapFixtures(String clientAddress, List<UUID> correlationIds) throws Exception {
-        byte[] keyHash = bootstrapRateLimitKeyHash(clientAddress);
-        try (Connection connection = dataSource.getConnection()) {
-            try (PreparedStatement deleteAttempt = connection.prepareStatement(
-                    "DELETE FROM google_auth_attempts WHERE correlation_id = ?")) {
-                for (UUID correlationId : correlationIds) {
-                    deleteAttempt.setObject(1, correlationId);
-                    deleteAttempt.addBatch();
-                }
-                deleteAttempt.executeBatch();
-            }
-            try (PreparedStatement deleteBucket = connection.prepareStatement(
-                    "DELETE FROM google_auth_bootstrap_rate_limits WHERE rate_limit_key_hash = ?")) {
-                deleteBucket.setBytes(1, keyHash);
-                deleteBucket.executeUpdate();
-            }
-        }
-    }
-
-    private static String bootstrapTestClientAddress() {
-        return "203.0.113." + (1 + Math.floorMod(UUID.randomUUID().hashCode(), 254));
-    }
-
-    private static byte[] bootstrapRateLimitKeyHash(String clientAddress) throws Exception {
-        Mac mac = Mac.getInstance("HmacSHA256");
-        mac.init(new SecretKeySpec(Base64.getUrlDecoder().decode(BOOTSTRAP_RATE_LIMIT_HMAC_KEY), "HmacSHA256"));
-        return mac.doFinal(InetAddress.getByName(clientAddress).getAddress());
-    }
-
-    private static GoogleIdTokenVerifier.VerifiedGoogleIdentity verifiedIdentity(
-            String subject, String email, String name) {
-        return GoogleIdentityTestFixtures.verifiedIdentity(subject, email, name);
-    }
-
-    private static Jwt googleJwt(String nonce, String subject, String email) {
-        Instant now = Instant.now();
-        return Jwt.withTokenValue("synthetic-google-id-token")
-                .header("alg", "RS256")
-                .claim("iss", "https://accounts.google.com")
-                .claim("aud", List.of("novel-web-integration-test.apps.googleusercontent.com"))
-                .claim("sub", subject)
-                .claim("email", email)
-                .claim("email_verified", true)
-                .claim("name", "Integration Reader")
-                .claim("nonce", nonce)
-                .issuedAt(now.minusSeconds(10))
-                .expiresAt(now.plusSeconds(300))
-                .build();
-    }
-
-    private static byte[] sha256(String value) throws NoSuchAlgorithmException {
-        return MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8));
-    }
-
-    private static byte[] sha256(byte[] value) throws NoSuchAlgorithmException {
-        return MessageDigest.getInstance("SHA-256").digest(value);
-    }
-
-    private void deleteAuthAttempt(byte[] nonceHash) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement delete = connection.prepareStatement(
-                     "DELETE FROM google_auth_attempts WHERE nonce_hash = ?")) {
-            delete.setBytes(1, nonceHash);
-            delete.executeUpdate();
-        }
-    }
-
-    private void deleteRateLimitBucket(byte[] keyHash) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement delete = connection.prepareStatement(
-                     "DELETE FROM google_auth_bootstrap_rate_limits WHERE rate_limit_key_hash = ?")) {
-            delete.setBytes(1, keyHash);
-            delete.executeUpdate();
-        }
-    }
-
-    private int rateLimitBucketCount(byte[] keyHash) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement select = connection.prepareStatement(
-                     "SELECT COUNT(*) FROM google_auth_bootstrap_rate_limits WHERE rate_limit_key_hash = ?")) {
-            select.setBytes(1, keyHash);
-            try (ResultSet result = select.executeQuery()) {
-                result.next();
-                return result.getInt(1);
-            }
-        }
-    }
-
-    private int identityCount(String subject) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement select = connection.prepareStatement(
-                     "SELECT COUNT(*) FROM external_identities WHERE issuer = 'https://accounts.google.com' AND subject = ?")) {
-            select.setString(1, subject);
-            try (ResultSet row = select.executeQuery()) {
-                row.next();
-                return row.getInt(1);
-            }
-        }
-    }
-
-    private UUID userIdForGoogleSubject(String subject) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement select = connection.prepareStatement("""
+  private UUID userIdForGoogleSubject(String subject) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                """
                      SELECT user_id FROM external_identities
                      WHERE issuer = 'https://accounts.google.com' AND subject = ?
                      """)) {
-            select.setString(1, subject);
-            try (ResultSet row = select.executeQuery()) {
-                assertTrue(row.next());
-                return row.getObject(1, UUID.class);
-            }
-        }
+      select.setString(1, subject);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getObject(1, UUID.class);
+      }
     }
+  }
 
-    private void deleteGoogleSignInFixtures(String subject) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement select = connection.prepareStatement("""
+  private void deleteGoogleSignInFixtures(String subject) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                """
                      SELECT user_id FROM external_identities
                      WHERE issuer = 'https://accounts.google.com' AND subject = ?
                      """)) {
-            select.setString(1, subject);
-            UUID userId = null;
-            try (ResultSet row = select.executeQuery()) {
-                if (row.next()) {
-                    userId = row.getObject(1, UUID.class);
-                }
-            }
-            if (userId == null) {
-                return;
-            }
-            for (String table : List.of("sessions", "policy_acceptances", "auth_events", "external_identities")) {
-                try (PreparedStatement delete = connection.prepareStatement(
-                        "DELETE FROM " + table + " WHERE user_id = ?")) {
-                    delete.setObject(1, userId);
-                    delete.executeUpdate();
-                }
-            }
-            try (PreparedStatement deleteUser = connection.prepareStatement("DELETE FROM users WHERE id = ?")) {
-                deleteUser.setObject(1, userId);
-                deleteUser.executeUpdate();
-            }
+      select.setString(1, subject);
+      UUID userId = null;
+      try (ResultSet row = select.executeQuery()) {
+        if (row.next()) {
+          userId = row.getObject(1, UUID.class);
         }
-    }
-
-    private int userCount(UUID userId) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement select = connection.prepareStatement("SELECT COUNT(*) FROM users WHERE id = ?")) {
-            select.setObject(1, userId);
-            try (ResultSet row = select.executeQuery()) {
-                row.next();
-                return row.getInt(1);
-            }
+      }
+      if (userId == null) {
+        return;
+      }
+      for (String table :
+          List.of("sessions", "policy_acceptances", "auth_events", "external_identities")) {
+        try (PreparedStatement delete =
+            connection.prepareStatement("DELETE FROM " + table + " WHERE user_id = ?")) {
+          delete.setObject(1, userId);
+          delete.executeUpdate();
         }
+      }
+      try (PreparedStatement deleteUser =
+          connection.prepareStatement("DELETE FROM users WHERE id = ?")) {
+        deleteUser.setObject(1, userId);
+        deleteUser.executeUpdate();
+      }
     }
+  }
 
-    private int userCountByEmail(String email) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement select = connection.prepareStatement("SELECT COUNT(*) FROM users WHERE contact_email = ?")) {
-            select.setString(1, email);
-            try (ResultSet row = select.executeQuery()) {
-                row.next();
-                return row.getInt(1);
-            }
-        }
+  private int userCount(UUID userId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement("SELECT COUNT(*) FROM users WHERE id = ?")) {
+      select.setObject(1, userId);
+      try (ResultSet row = select.executeQuery()) {
+        row.next();
+        return row.getInt(1);
+      }
     }
+  }
 
-    private String identityIssuer(String subject) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement select = connection.prepareStatement(
-                     "SELECT issuer FROM external_identities WHERE subject = ?")) {
-            select.setString(1, subject);
-            try (ResultSet row = select.executeQuery()) {
-                assertTrue(row.next());
-                return row.getString(1);
-            }
-        }
+  private int userCountByEmail(String email) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement("SELECT COUNT(*) FROM users WHERE contact_email = ?")) {
+      select.setString(1, email);
+      try (ResultSet row = select.executeQuery()) {
+        row.next();
+        return row.getInt(1);
+      }
     }
+  }
 
-    private String storedProviderEmail(String subject) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement select = connection.prepareStatement(
-                     "SELECT provider_email FROM external_identities WHERE subject = ?")) {
-            select.setString(1, subject);
-            try (ResultSet row = select.executeQuery()) {
-                assertTrue(row.next());
-                return row.getString(1);
-            }
-        }
+  private String identityIssuer(String subject) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT issuer FROM external_identities WHERE subject = ?")) {
+      select.setString(1, subject);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getString(1);
+      }
     }
+  }
 
-    private boolean providerIdentityLastSeen(String subject) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement select = connection.prepareStatement(
-                     "SELECT last_seen_at IS NOT NULL FROM external_identities WHERE subject = ?")) {
-            select.setString(1, subject);
-            try (ResultSet row = select.executeQuery()) {
-                assertTrue(row.next());
-                return row.getBoolean(1);
-            }
-        }
+  private String storedProviderEmail(String subject) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT provider_email FROM external_identities WHERE subject = ?")) {
+      select.setString(1, subject);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getString(1);
+      }
     }
+  }
 
-    private String storedUserEmail(UUID userId) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement select = connection.prepareStatement("SELECT contact_email FROM users WHERE id = ?")) {
-            select.setObject(1, userId);
-            try (ResultSet row = select.executeQuery()) {
-                assertTrue(row.next());
-                return row.getString(1);
-            }
-        }
+  private boolean providerIdentityLastSeen(String subject) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT last_seen_at IS NOT NULL FROM external_identities WHERE subject = ?")) {
+      select.setString(1, subject);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getBoolean(1);
+      }
     }
+  }
 
-    private String storedUserStatus(UUID userId) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement select = connection.prepareStatement("SELECT status FROM users WHERE id = ?")) {
-            select.setObject(1, userId);
-            try (ResultSet row = select.executeQuery()) {
-                assertTrue(row.next());
-                return row.getString(1);
-            }
-        }
+  private String storedUserEmail(UUID userId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement("SELECT contact_email FROM users WHERE id = ?")) {
+      select.setObject(1, userId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getString(1);
+      }
     }
+  }
 
-    private String storedUserDisplayName(UUID userId) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement select = connection.prepareStatement("SELECT display_name FROM users WHERE id = ?")) {
-            select.setObject(1, userId);
-            try (ResultSet row = select.executeQuery()) {
-                assertTrue(row.next());
-                return row.getString(1);
-            }
-        }
+  private String storedUserStatus(UUID userId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement("SELECT status FROM users WHERE id = ?")) {
+      select.setObject(1, userId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getString(1);
+      }
     }
+  }
 
-    private void deleteMappedIdentity(UUID userId, String subject) throws SQLException {
-        try (Connection connection = dataSource.getConnection()) {
-            try (PreparedStatement deleteIdentity = connection.prepareStatement(
-                    "DELETE FROM external_identities WHERE user_id = ? AND subject = ?")) {
-                deleteIdentity.setObject(1, userId);
-                deleteIdentity.setString(2, subject);
-                deleteIdentity.executeUpdate();
-            }
-            try (PreparedStatement deleteUser = connection.prepareStatement("DELETE FROM users WHERE id = ?")) {
-                deleteUser.setObject(1, userId);
-                deleteUser.executeUpdate();
-            }
-        }
+  private String storedUserDisplayName(UUID userId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement("SELECT display_name FROM users WHERE id = ?")) {
+      select.setObject(1, userId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getString(1);
+      }
     }
+  }
 
-    private void deleteMappedIdentityBySubject(String subject) throws SQLException {
-        try (Connection connection = dataSource.getConnection()) {
-            UUID userId = null;
-            try (PreparedStatement deleteIdentity = connection.prepareStatement("""
+  private void deleteMappedIdentity(UUID userId, String subject) throws SQLException {
+    try (Connection connection = dataSource.getConnection()) {
+      try (PreparedStatement deleteIdentity =
+          connection.prepareStatement(
+              "DELETE FROM external_identities WHERE user_id = ? AND subject = ?")) {
+        deleteIdentity.setObject(1, userId);
+        deleteIdentity.setString(2, subject);
+        deleteIdentity.executeUpdate();
+      }
+      try (PreparedStatement deleteUser =
+          connection.prepareStatement("DELETE FROM users WHERE id = ?")) {
+        deleteUser.setObject(1, userId);
+        deleteUser.executeUpdate();
+      }
+    }
+  }
+
+  private void deleteMappedIdentityBySubject(String subject) throws SQLException {
+    try (Connection connection = dataSource.getConnection()) {
+      UUID userId = null;
+      try (PreparedStatement deleteIdentity =
+          connection.prepareStatement(
+              """
                     DELETE FROM external_identities
                     WHERE issuer = 'https://accounts.google.com' AND subject = ?
                     RETURNING user_id
                     """)) {
-                deleteIdentity.setString(1, subject);
-                try (ResultSet row = deleteIdentity.executeQuery()) {
-                    if (row.next()) {
-                        userId = row.getObject(1, UUID.class);
-                    }
-                }
-            }
-            if (userId != null) {
-                try (PreparedStatement deleteUser = connection.prepareStatement("DELETE FROM users WHERE id = ?")) {
-                    deleteUser.setObject(1, userId);
-                    deleteUser.executeUpdate();
-                }
-            }
+        deleteIdentity.setString(1, subject);
+        try (ResultSet row = deleteIdentity.executeQuery()) {
+          if (row.next()) {
+            userId = row.getObject(1, UUID.class);
+          }
         }
-    }
-
-    private void deleteUserByEmail(String email) throws SQLException {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement delete = connection.prepareStatement("DELETE FROM users WHERE contact_email = ?")) {
-            delete.setString(1, email);
-            delete.executeUpdate();
+      }
+      if (userId != null) {
+        try (PreparedStatement deleteUser =
+            connection.prepareStatement("DELETE FROM users WHERE id = ?")) {
+          deleteUser.setObject(1, userId);
+          deleteUser.executeUpdate();
         }
+      }
     }
+  }
 
-    private static void insertGoogleIdentity(
-            Connection connection, UUID userId, String subject, String email) throws SQLException {
-        try (PreparedStatement insert = connection.prepareStatement("""
+  private void deleteUserByEmail(String email) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement delete =
+            connection.prepareStatement("DELETE FROM users WHERE contact_email = ?")) {
+      delete.setString(1, email);
+      delete.executeUpdate();
+    }
+  }
+
+  private static void insertGoogleIdentity(
+      Connection connection, UUID userId, String subject, String email) throws SQLException {
+    try (PreparedStatement insert =
+        connection.prepareStatement(
+            """
                 INSERT INTO external_identities (
                     id, user_id, provider, issuer, subject, provider_email, provider_email_verified, last_seen_at)
                 VALUES (?, ?, 'google', 'https://accounts.google.com', ?, ?, TRUE, clock_timestamp())
                 """)) {
-            insert.setObject(1, UUID.randomUUID());
-            insert.setObject(2, userId);
-            insert.setString(3, subject);
-            insert.setString(4, email);
-            insert.executeUpdate();
-        }
+      insert.setObject(1, UUID.randomUUID());
+      insert.setObject(2, userId);
+      insert.setString(3, subject);
+      insert.setString(4, email);
+      insert.executeUpdate();
     }
+  }
 
-    private static void insertUser(
-            Connection connection,
-            String displayName,
-            String email,
-            String status,
-            boolean deleted) throws SQLException {
-        try (PreparedStatement insert = connection.prepareStatement("""
+  private static void insertUser(
+      Connection connection, String displayName, String email, String status, boolean deleted)
+      throws SQLException {
+    try (PreparedStatement insert =
+        connection.prepareStatement(
+            """
                 INSERT INTO users (id, display_name, contact_email, email_verified_at, status, deleted_at)
                 VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?, ?)
                 """)) {
-            insert.setObject(1, UUID.randomUUID());
-            insert.setString(2, displayName);
-            insert.setString(3, email);
-            insert.setString(4, status);
-            if (deleted) {
-                insert.setTimestamp(5, Timestamp.from(Instant.now()));
-            } else {
-                insert.setTimestamp(5, null);
-            }
-            insert.executeUpdate();
-        }
+      insert.setObject(1, UUID.randomUUID());
+      insert.setString(2, displayName);
+      insert.setString(3, email);
+      insert.setString(4, status);
+      if (deleted) {
+        insert.setTimestamp(5, Timestamp.from(Instant.now()));
+      } else {
+        insert.setTimestamp(5, null);
+      }
+      insert.executeUpdate();
     }
+  }
 }
