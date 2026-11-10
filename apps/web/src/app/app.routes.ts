@@ -12,6 +12,7 @@ import { SettingsPageComponent } from './pages/settings-page.component';
 import { SetupPageComponent } from './pages/setup-page.component';
 import { SignInPageComponent } from './pages/sign-in-page.component';
 import { WorkDetailPageComponent } from './pages/work-detail-page.component';
+import { policyConsentGuard } from './core/policy-consent.guard';
 
 export const routes: Routes = [
   { path: '', component: LandingPageComponent, title: 'Novel — Đọc theo cách của bạn' },
@@ -21,6 +22,7 @@ export const routes: Routes = [
   {
     path: 'app',
     component: AppShellComponent,
+    canActivateChild: [policyConsentGuard],
     children: [
       { path: '', pathMatch: 'full', redirectTo: 'home' },
       { path: 'setup', component: SetupPageComponent, title: 'Thiết lập tài khoản — Novel' },
