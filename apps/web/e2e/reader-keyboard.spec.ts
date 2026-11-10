@@ -1,20 +1,4 @@
-import { expect, test as base } from '@playwright/test';
-
-type Fixtures = {
-  pageErrors: string[];
-};
-
-const test = base.extend<Fixtures>({
-  pageErrors: [
-    async ({ page }, use) => {
-      const errors: string[] = [];
-      page.on('pageerror', (error) => errors.push(error.message));
-      await use(errors);
-      expect(errors).toEqual([]);
-    },
-    { auto: true },
-  ],
-});
+import { expect, test } from './support';
 
 test.beforeEach(async ({ page }) => {
   await page.goto('/read/demo-story/chapter-1');

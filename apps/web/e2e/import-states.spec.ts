@@ -1,25 +1,11 @@
-import AxeBuilder from '@axe-core/playwright';
-import { expect, test as base, type Page } from '@playwright/test';
-
-const test = base.extend({
-  pageErrors: [
-    async ({ page }, use) => {
-      const errors: string[] = [];
-      page.on('pageerror', (error) => errors.push(error.message));
-      await use(errors);
-      expect(errors).toEqual([]);
-    },
-    { auto: true },
-  ],
-});
+import { expect, expectNoAxeViolations, test } from './support';
+import type { Page } from '@playwright/test';
 
 const viewports = [
   { name: 'mobile 360px', width: 360, height: 800 },
   { name: 'tablet 768px', width: 768, height: 1024 },
   { name: 'desktop 1280px', width: 1280, height: 900 },
 ] as const;
-
-const wcagTags = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa', 'best-practice'];
 
 async function openImportPage(page: Page, viewport: (typeof viewports)[number]): Promise<void> {
   await page.setViewportSize({ width: viewport.width, height: viewport.height });
@@ -46,18 +32,6 @@ async function selectFile(page: Page, name = 'sample.txt'): Promise<void> {
     mimeType: name.toLowerCase().endsWith('.txt') ? 'text/plain' : 'application/pdf',
     buffer: Buffer.from('small local test fixture'),
   });
-}
-
-async function expectNoAxeViolations(page: Page): Promise<void> {
-  const results = await new AxeBuilder({ page }).withTags(wcagTags).analyze();
-  const violations = results.violations.map(({ id, impact, help, nodes }) => ({
-    id,
-    impact,
-    help,
-    nodes: nodes.map(({ target, failureSummary }) => ({ target, failureSummary })),
-  }));
-
-  expect(violations, JSON.stringify(violations, null, 2)).toEqual([]);
 }
 
 for (const viewport of viewports) {
