@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DemoStateService } from './demo-state.service';
-import { PrivateWork } from './models';
+import { ImportFileMetadata, PrivateWork } from './models';
 
 const storageKey = 'novel.demo.library.v1';
 const work: PrivateWork = {
@@ -10,6 +10,12 @@ const work: PrivateWork = {
   sourceName: 'quyen-truyen-rieng.txt',
   importedAt: '2026-11-10T00:00:00.000Z',
   visibility: 'private',
+};
+const selectedFile: ImportFileMetadata = {
+  name: 'truyen-rieng.epub',
+  size: 1024,
+  type: 'application/epub+zip',
+  extension: '.epub',
 };
 
 afterEach(() => {
@@ -94,5 +100,44 @@ describe('DemoStateService library persistence', () => {
 
     expect(service.importedWork()).toBeNull();
     expect(service.libraryStorageMessage()).toContain('không cho phép đọc');
+  });
+});
+
+describe('DemoStateService private import rights', () => {
+  it('clears a rights affirmation whenever the selected file changes or is removed', () => {
+    const service = new DemoStateService();
+    const replacementFile = { ...selectedFile, name: 'truyen-khac.epub' };
+
+    service.selectFile(selectedFile);
+    service.confirmImportRights(true);
+    expect(service.canReviewImport).toBe(true);
+
+    service.selectFile(replacementFile);
+    expect(service.selectedFile()).toEqual(replacementFile);
+    expect(service.rightsConfirmed()).toBe(false);
+    expect(service.canReviewImport).toBe(false);
+
+    service.confirmImportRights(true);
+    service.selectFile(null);
+    expect(service.rightsConfirmed()).toBe(false);
+    expect(service.canReviewImport).toBe(false);
+  });
+
+  it('does not commit without confirmation and keeps confirmed metadata private', () => {
+    const service = new DemoStateService();
+    service.selectFile(selectedFile);
+    service.confirmImportRights(false);
+    service.commitDemoImport('Tên truyện', 'Tác giả');
+    expect(service.importedWork()).toBeNull();
+
+    service.confirmImportRights(true);
+    service.commitDemoImport('   ', '  ');
+
+    expect(service.importedWork()).toMatchObject({
+      title: 'truyen-rieng',
+      author: 'Chưa có thông tin tác giả',
+      sourceName: selectedFile.name,
+      visibility: 'private',
+    });
   });
 });
