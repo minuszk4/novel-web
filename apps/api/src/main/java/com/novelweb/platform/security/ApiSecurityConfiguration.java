@@ -5,36 +5,48 @@ import java.util.List;
 
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.core.env.Environment;
 import org.springframework.core.env.Profiles;
 import org.springframework.http.HttpMethod;
 import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
+import org.springframework.security.web.authentication.AnonymousAuthenticationFilter;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
+
+import com.novelweb.identity.session.SessionAuthenticationFilter;
+import com.novelweb.identity.session.SessionBoundCsrfFilter;
+import com.novelweb.identity.session.SessionCsrfTokenService;
 
 @Configuration(proxyBeanMethods = false)
 public class ApiSecurityConfiguration {
 
     @Bean
     SecurityFilterChain apiSecurityFilterChain(
-            HttpSecurity http, ApiProblemWriter problemWriter, Environment environment) throws Exception {
+            HttpSecurity http,
+            ApiProblemWriter problemWriter,
+            Environment environment,
+            ObjectProvider<SessionAuthenticationFilter> sessionAuthenticationFilter,
+            ObjectProvider<SessionBoundCsrfFilter> sessionBoundCsrfFilter) throws Exception {
+        http.cors(Customizer.withDefaults());
+        if (environment.acceptsProfiles(Profiles.of("postgres"))) {
+            http.csrf(AbstractHttpConfigurer::disable);
+            http.addFilterBefore(sessionAuthenticationFilter.getObject(), AnonymousAuthenticationFilter.class);
+            http.addFilterBefore(sessionBoundCsrfFilter.getObject(), SessionAuthenticationFilter.class);
+        }
+
         return http
-                .cors(Customizer.withDefaults())
-                .csrf(csrf -> {
-                    if (environment.acceptsProfiles(Profiles.of("postgres"))) {
-                        csrf.ignoringRequestMatchers("/api/v1/auth/google/credential");
-                    }
-                })
                 .authorizeHttpRequests(authorize -> {
                     authorize.requestMatchers(HttpMethod.GET, "/api/v1/system/status", "/actuator/health",
                             "/actuator/health/**").permitAll();
                     if (environment.acceptsProfiles(Profiles.of("postgres"))) {
                         authorize.requestMatchers(HttpMethod.GET, "/api/v1/auth/google/bootstrap").permitAll();
                         authorize.requestMatchers(HttpMethod.POST, "/api/v1/auth/google/credential").permitAll();
+                        authorize.requestMatchers(HttpMethod.GET, "/api/v1/auth/csrf").permitAll();
                     }
                     authorize.anyRequest().denyAll();
                 })
@@ -53,17 +65,25 @@ public class ApiSecurityConfiguration {
 
     @Bean
     CorsConfigurationSource corsConfigurationSource(CorsProperties properties) {
-        CorsConfiguration configuration = new CorsConfiguration();
-        configuration.setAllowedOrigins(properties.allowedOrigins());
-        configuration.setAllowedMethods(List.of("GET", "POST", "OPTIONS"));
-        configuration.setAllowedHeaders(List.of("Accept", "Content-Type"));
-        configuration.setExposedHeaders(List.of("X-Correlation-Id"));
-        configuration.setAllowCredentials(false);
-        configuration.setMaxAge(Duration.ofMinutes(30));
+        CorsConfiguration apiConfiguration = new CorsConfiguration();
+        apiConfiguration.setAllowedOrigins(properties.allowedOrigins());
+        apiConfiguration.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
+        apiConfiguration.setAllowedHeaders(List.of("Accept", "Content-Type", SessionCsrfTokenService.TOKEN_HEADER_NAME));
+        apiConfiguration.setExposedHeaders(List.of("X-Correlation-Id"));
+        apiConfiguration.setAllowCredentials(true);
+        apiConfiguration.setMaxAge(Duration.ofMinutes(30));
+
+        CorsConfiguration actuatorConfiguration = new CorsConfiguration();
+        actuatorConfiguration.setAllowedOrigins(properties.allowedOrigins());
+        actuatorConfiguration.setAllowedMethods(List.of("GET", "OPTIONS"));
+        actuatorConfiguration.setAllowedHeaders(List.of("Accept"));
+        actuatorConfiguration.setExposedHeaders(List.of("X-Correlation-Id"));
+        actuatorConfiguration.setAllowCredentials(false);
+        actuatorConfiguration.setMaxAge(Duration.ofMinutes(30));
 
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
-        source.registerCorsConfiguration("/api/**", configuration);
-        source.registerCorsConfiguration("/actuator/**", configuration);
+        source.registerCorsConfiguration("/api/**", apiConfiguration);
+        source.registerCorsConfiguration("/actuator/**", actuatorConfiguration);
         return source;
     }
 }

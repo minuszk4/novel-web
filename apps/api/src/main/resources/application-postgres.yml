@@ -27,3 +27,6 @@ novel:
       absolute-ttl: ${NOVEL_SESSION_ABSOLUTE_TTL:30d}
       idle-ttl: ${NOVEL_SESSION_IDLE_TTL:7d}
       touch-interval: ${NOVEL_SESSION_TOUCH_INTERVAL:5m}
+  security:
+    csrf:
+      hmac-key: ${NOVEL_CSRF_HMAC_KEY:}

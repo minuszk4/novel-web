@@ -186,12 +186,14 @@ paths:
     get:
       operationId: getCsrfToken
       tags: [Auth]
-      x-implementation-status: planned
-      summary: Get an in-memory CSRF token for the current session
+      x-implementation-status: implemented-postgres-profile
+      summary: Get the CSRF token bound to the current session
       description: >-
-        Returns a short-lived synchronizer token bound to the current application session. The client
-        keeps it in memory and sends it as X-CSRF-Token on cookie-authenticated mutations. This endpoint
-        does not expose the session cookie and must not be cached.
+        Returns a session-bound HMAC token. The API derives it from the opaque session cookie and a
+        separate server HMAC key; it does not persist or expose the session cookie. The client keeps the
+        token in memory and sends it as X-CSRF-Token on cookie-authenticated mutations. It changes when
+        the app session rotates. expiresAt is the absolute session-expiry upper bound; idle expiry can
+        occur earlier. This response must not be cached.
       security:
         - appSession: []
       responses:
@@ -207,6 +209,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/CsrfToken'
         '401':
+          $ref: '#/components/responses/Problem'
+        '503':
           $ref: '#/components/responses/Problem'
   /api/v1/auth/me:
     get:
@@ -1290,11 +1294,14 @@ components:
       properties:
         token:
           type: string
-          minLength: 32
-          description: Opaque synchronizer token bound to the current application session.
+          minLength: 43
+          maxLength: 43
+          pattern: '^[A-Za-z0-9_-]{43}$'
+          description: HMAC-derived token bound to the current opaque app session; keep in memory only.
         expiresAt:
           type: string
           format: date-time
+          description: Absolute session-expiry upper bound; idle session expiry can occur earlier.
     CurrentUserResponse:
       type: object
       additionalProperties: false

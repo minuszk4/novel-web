@@ -39,6 +39,7 @@ import com.novelweb.identity.auth.GoogleIdentityTestFixtures;
 import com.novelweb.identity.auth.UnavailableGoogleIdentityException;
 import com.novelweb.identity.auth.GoogleIdTokenVerifier;
 import com.novelweb.identity.session.SessionService;
+import com.novelweb.identity.session.SessionCsrfTokenService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -74,6 +75,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
         "novel.auth.google.rate-limit-hmac-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
         "novel.auth.google.web-client-id=novel-web-integration-test.apps.googleusercontent.com",
         "novel.auth.google.credential-callback-uri=https://api.example.test/api/v1/auth/google/credential",
+        "novel.security.csrf.hmac-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
         "novel.web.cors.allowed-origins=https://app.example.test"
 })
 class PostgresSchemaIntegrationTests {
@@ -104,6 +106,9 @@ class PostgresSchemaIntegrationTests {
 
     @Autowired
     private SessionService sessionService;
+
+    @Autowired
+    private SessionCsrfTokenService csrfTokenService;
 
     @Autowired
     private MockMvc mockMvc;
@@ -556,6 +561,83 @@ class PostgresSchemaIntegrationTests {
             deleteAuthAttempt(sha256(attempt.nonce()));
             deleteGoogleSignInFixtures(previousSubject);
             deleteGoogleSignInFixtures(nextSubject);
+        }
+    }
+
+    @Test
+    void csrfTokenRouteRequiresSessionAndChangesWhenSessionRotates() throws Exception {
+        MvcResult unauthenticated = mockMvc.perform(get("/api/v1/auth/csrf")).andReturn();
+        assertEquals(401, unauthenticated.getResponse().getStatus());
+        assertTrue(unauthenticated.getResponse().getContentAsString().contains("UNAUTHENTICATED"));
+
+        UUID userId = createSessionTestUser("CSRF Route Reader");
+        try {
+            SessionService.IssuedSession original = sessionService.create(userId).orElseThrow();
+            MvcResult first = mockMvc.perform(get("/api/v1/auth/csrf")
+                            .cookie(new jakarta.servlet.http.Cookie("__Host-novel_session", original.cookieValue())))
+                    .andReturn();
+
+            assertEquals(200, first.getResponse().getStatus());
+            assertTrue(first.getResponse().getHeader("Cache-Control").contains("no-store"));
+            assertEquals("no-cache", first.getResponse().getHeader("Pragma"));
+            assertNull(first.getResponse().getHeader("Set-Cookie"));
+            JsonNode firstBody = objectMapper.readTree(first.getResponse().getContentAsString());
+            String firstToken = firstBody.path("token").asText();
+            assertTrue(firstToken.matches("[A-Za-z0-9_-]{43}"));
+            assertTrue(csrfTokenService.matches(original.cookieValue(), firstToken));
+            assertEquals(original.expiresAt(), Instant.parse(firstBody.path("expiresAt").asText()));
+
+            SessionService.IssuedSession rotated = sessionService.rotate(original.cookieValue()).orElseThrow();
+            MvcResult second = mockMvc.perform(get("/api/v1/auth/csrf")
+                            .cookie(new jakarta.servlet.http.Cookie("__Host-novel_session", rotated.cookieValue())))
+                    .andReturn();
+            JsonNode secondBody = objectMapper.readTree(second.getResponse().getContentAsString());
+            String secondToken = secondBody.path("token").asText();
+            assertEquals(200, second.getResponse().getStatus());
+            assertNotEquals(firstToken, secondToken);
+            assertTrue(csrfTokenService.matches(rotated.cookieValue(), secondToken));
+
+            MvcResult revokedMutation = mockMvc.perform(post("/api/v1/auth/policies/accept")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{}")
+                            .header("X-CSRF-Token", firstToken)
+                            .cookie(new jakarta.servlet.http.Cookie("__Host-novel_session", original.cookieValue())))
+                    .andReturn();
+            assertEquals(403, revokedMutation.getResponse().getStatus());
+            assertTrue(revokedMutation.getResponse().getContentAsString().contains("FORBIDDEN"));
+            assertFalse(revokedMutation.getResponse().getContentAsString().contains("CSRF_FAILED"));
+        } finally {
+            deleteSessionTestUser(userId);
+        }
+    }
+
+    @Test
+    void cookieAuthenticatedMutationRequiresTheSessionBoundCsrfHeader() throws Exception {
+        UUID userId = createSessionTestUser("CSRF Mutation Reader");
+        try {
+            SessionService.IssuedSession session = sessionService.create(userId).orElseThrow();
+            String csrfToken = csrfTokenService.tokenFor(session.cookieValue());
+
+            MvcResult invalid = mockMvc.perform(post("/api/v1/auth/policies/accept")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{}")
+                            .header("X-CSRF-Token", "invalid-token")
+                            .cookie(new jakarta.servlet.http.Cookie("__Host-novel_session", session.cookieValue())))
+                    .andReturn();
+            assertEquals(403, invalid.getResponse().getStatus());
+            assertTrue(invalid.getResponse().getContentAsString().contains("CSRF_FAILED"));
+
+            MvcResult validCsrf = mockMvc.perform(post("/api/v1/auth/policies/accept")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{}")
+                            .header("X-CSRF-Token", csrfToken)
+                            .cookie(new jakarta.servlet.http.Cookie("__Host-novel_session", session.cookieValue())))
+                    .andReturn();
+            assertEquals(403, validCsrf.getResponse().getStatus());
+            assertTrue(validCsrf.getResponse().getContentAsString().contains("FORBIDDEN"));
+            assertFalse(validCsrf.getResponse().getContentAsString().contains("CSRF_FAILED"));
+        } finally {
+            deleteSessionTestUser(userId);
         }
     }
 
