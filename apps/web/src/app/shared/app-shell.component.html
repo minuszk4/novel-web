@@ -29,8 +29,8 @@
     </nav>
 
     <div class="sidebar-bottom">
-      <div class="sidebar-note"><span class="status-dot"></span><span>Không gian riêng tư<br /><small>Chỉ bạn xem được nội dung</small></span></div>
-      <div class="demo-user"><span class="avatar" aria-hidden="true">D</span><span><strong>Độc giả demo</strong><small>Chưa đăng nhập</small></span><span class="more-mark" aria-hidden="true">···</span></div>
+      <div class="sidebar-note"><span class="status-dot"></span><span>Quyền truy cập theo tài khoản<br /><small>Nội dung theo phạm vi được cấp</small></span></div>
+      <div class="demo-user"><span class="avatar" aria-hidden="true">{{ accountInitial() }}</span><span><strong>{{ accountLabel() }}</strong><small>{{ accountContext() }}</small></span><span class="more-mark" aria-hidden="true">···</span></div>
     </div>
   </aside>
 
@@ -39,7 +39,7 @@
       <div class="topbar-context"><span class="context-mark" aria-hidden="true">✦</span><span>Góc đọc của bạn</span></div>
       <div class="topbar-actions">
         <a class="quiet-link" routerLink="/app/import">+ Thêm truyện</a>
-        <span class="topbar-avatar" aria-hidden="true">D</span>
+        <span class="topbar-avatar" aria-hidden="true">{{ accountInitial() }}</span>
       </div>
     </header>
     <div class="demo-banner" role="status">
@@ -51,7 +51,7 @@
         <button class="status-retry" type="button" (click)="systemStatus.refresh()">Thử lại</button>
       } @else {
         @if (systemStatus.status(); as status) {
-          <p><strong>API {{ status.apiVersion }} đang phản hồi.</strong> Google {{ status.integrations.googleOidcEnabled ? 'đã bật' : 'chưa kết nối' }} · MoMo {{ status.integrations.momoTestEnabled ? status.integrations.momoEnvironment : 'Test chưa bật' }} · Import {{ status.features.importProcessingEnabled ? 'sẵn sàng' : 'chưa bật' }}. Dữ liệu demo vẫn chỉ nằm trong bộ nhớ trình duyệt.</p>
+          <p><strong>API {{ status.apiVersion }} đang phản hồi.</strong> Google {{ status.integrations.googleOidcEnabled ? 'đã bật' : 'chưa kết nối' }} · MoMo {{ status.integrations.momoTestEnabled ? status.integrations.momoEnvironment : 'Test chưa bật' }} · Import {{ status.features.importProcessingEnabled ? 'sẵn sàng' : 'chưa bật' }}. @if (policy.accountIdentity()) { Thư viện tài khoản được tải qua API; tác phẩm demo chỉ nằm ở trình duyệt. } @else { Dữ liệu demo chỉ nằm trong bộ nhớ trình duyệt. }</p>
         } @else {
           <p><strong>API trả trạng thái không hợp lệ.</strong> Các tích hợp vẫn bị xem là chưa khả dụng.</p>
           <button class="status-retry" type="button" (click)="systemStatus.refresh()">Thử lại</button>

@@ -11,7 +11,7 @@ cd apps/api
 .\mvnw.cmd spring-boot:run
 ```
 
-The starter exposes `/api/v1/system/status` and `/actuator/health`; integration flags remain disabled. It has no database-backed modules yet.
+The default profile exposes `/api/v1/system/status` and `/actuator/health`. The optional PostgreSQL profile also provides server sessions, versioned policy, library/work catalogs and personal reading-state/collection routes. Start PostgreSQL and the API using the disposable/local project steps in `apps/api/README.md`; Google sign-in and product policy content still need owner-approved setup.
 
 ## Run the web demo
 
@@ -51,6 +51,8 @@ Playwright starts the Angular dev server on `127.0.0.1:4300`. The suite covers r
 
 The Reader's mobile header keeps a visible arrow to return to Work Detail while hiding the longer text label. The link has the accessible name “Quay lại chi tiết tác phẩm” and a minimum 40×40 px hit area; the browser regression verifies it is visible and navigates back at 360, 768 and 1280 px.
 
+Run the live account-library journey from the repository root with `.\tools\e2e\run-library-postgres.ps1`. It starts a randomly named disposable PostgreSQL 17 project and the real API, creates a test-only session/policy/library fixture, then drives the Angular app through its dev-server proxy in Chromium. The test checks account identity in the shell, current policy/document loading, libraries, works and per-work reading state with no API route mocks. The script removes only its own container/network/volume and saves logs plus a screenshot under `.ai/evidence/library-live-postgres-<date>/`. It does not exercise Google GIS, real policy approval or production data.
+
 Mobile import regressions also verify that unsupported-format feedback and the selected filename stay above the fixed action bar, the selected-file “Đổi tệp” control is usable and clears the previous rights affirmation, and Review keeps its submit action above bottom navigation. The metadata-only demo still does not parse or upload bytes.
 
 ## Reader keyboard controls
@@ -76,6 +78,6 @@ Reader table-of-contents and settings drawers use modal keyboard behavior: focus
 
 ## Integration boundary
 
-Google Identity Services, a backend session, policy documents, file parsing/storage, content synchronization and MoMo Test checkout are not connected. File selection reads only filename, declared MIME type and size; it does not read or upload bytes. The story text and the `620 XP` / `34 XP` cultivation example are original illustrative demo data, not imported content or a user's progression. Settings, bookmarks and reading progress remain in memory only.
+Google Identity Services is not connected. When a valid server session is present, the client reads `/auth/me`, current policy documents and account library/work/reading-state APIs; the shell displays the server account identity. The live integration harness uses only a synthetic test session. File parsing/storage, account import, multi-device content sync and MoMo Test checkout are not connected. File selection reads only filename, declared MIME type and size; it does not read or upload bytes. The story text and the `620 XP` / `34 XP` cultivation example are original illustrative demo data, not imported content or a user's progression. Settings, bookmarks and reading progress remain in memory only.
 
 The full implementation boundary and remaining work are recorded in the local `.ai` planning documents. Those files are intentionally ignored by Git per the workspace setup.

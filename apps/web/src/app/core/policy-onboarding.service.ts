@@ -23,6 +23,11 @@ export interface CurrentPolicies {
   privacyNotice: PolicyDocumentMetadata;
 }
 
+export interface AccountIdentitySummary {
+  displayName: string | null;
+  contactEmail: string | null;
+}
+
 interface CurrentUserResponse {
   user: { id: string; displayName: string | null; contactEmail: string | null };
   policy: {
@@ -49,6 +54,7 @@ export class PolicyOnboardingService {
   private loadPromise?: Promise<void>;
 
   readonly status = signal<PolicyOnboardingStatus>('idle');
+  readonly accountIdentity = signal<AccountIdentitySummary | null>(null);
   readonly currentPolicies = signal<CurrentPolicies | null>(null);
   readonly termsDocument = signal<string | null>(null);
   readonly privacyDocument = signal<string | null>(null);
@@ -144,6 +150,11 @@ export class PolicyOnboardingService {
       return;
     }
 
+    this.accountIdentity.set({
+      displayName: account.user.displayName,
+      contactEmail: account.user.contactEmail,
+    });
+
     this.termsAcceptedVersion.set(account.policy.termsAcceptedVersion);
     this.privacyAcknowledgedVersion.set(account.policy.privacyNoticeAcknowledgedVersion);
 
@@ -195,6 +206,7 @@ export class PolicyOnboardingService {
   }
 
   private enterDemoMode(httpStatus: number): void {
+    this.accountIdentity.set(null);
     this.status.set('demo');
     if (httpStatus === 401) {
       this.demoNotice.set('Chưa có phiên đăng nhập server. Lựa chọn dưới đây chỉ dùng trong demo và sẽ mất khi tải lại trang.');
