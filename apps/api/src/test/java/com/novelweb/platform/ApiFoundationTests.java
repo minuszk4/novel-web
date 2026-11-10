@@ -59,6 +59,14 @@ class ApiFoundationTests {
     }
 
     @Test
+    void plannedGoogleBootstrapRouteRemainsUnavailableUntilTheAuthFlowIsComplete() throws Exception {
+        mockMvc.perform(get("/api/v1/auth/google/bootstrap"))
+                .andExpect(status().isForbidden())
+                .andExpect(content().contentTypeCompatibleWith("application/problem+json"))
+                .andExpect(jsonPath("$.code").value("FORBIDDEN"));
+    }
+
+    @Test
     void corsAllowsConfiguredFrontendOriginForReadOnlyApi() throws Exception {
         mockMvc.perform(options("/api/v1/system/status")
                         .header("Origin", ALLOWED_ORIGIN)

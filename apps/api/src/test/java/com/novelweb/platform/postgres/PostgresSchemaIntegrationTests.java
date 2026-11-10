@@ -6,6 +6,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
 
+import com.novelweb.identity.auth.GoogleAuthAttemptService;
+
 import javax.sql.DataSource;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -13,13 +15,18 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Savepoint;
 import java.sql.Timestamp;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @SpringBootTest
 @ActiveProfiles("postgres")
@@ -36,6 +43,9 @@ class PostgresSchemaIntegrationTests {
 
     @Autowired
     private DataSource dataSource;
+
+    @Autowired
+    private GoogleAuthAttemptService googleAuthAttemptService;
 
     @Test
     void liquibaseAppliesTheBaselineAndCreatesExpectedTables() throws SQLException {
@@ -103,6 +113,75 @@ class PostgresSchemaIntegrationTests {
             } finally {
                 connection.rollback();
             }
+        }
+    }
+
+    @Test
+    void googleAuthAttemptStoresOnlyHashedNonceAndCorrelatesTheSafePath() throws Exception {
+        Instant beforeCreate = Instant.now();
+        UUID correlationId = UUID.randomUUID();
+
+        GoogleAuthAttemptService.CreatedAttempt attempt = googleAuthAttemptService.create(
+                "/app/reader?work=private-123", correlationId);
+        byte[] nonceHash = sha256(attempt.nonce());
+        try {
+            assertEquals(43, attempt.nonce().length(), "32 random bytes should use unpadded base64url encoding");
+            assertEquals("/app/reader?work=private-123", attempt.returnTo());
+            assertEquals(correlationId, attempt.correlationId());
+            long secondsUntilExpiry = java.time.Duration.between(beforeCreate, attempt.expiresAt()).toSeconds();
+            assertTrue(secondsUntilExpiry >= 290 && secondsUntilExpiry <= 300,
+                    "new attempts should expire in approximately five minutes");
+
+            try (Connection connection = dataSource.getConnection();
+                 PreparedStatement query = connection.prepareStatement("""
+                         SELECT nonce_hash, safe_return_path, correlation_id,
+                                expires_at > created_at AS expires_after_creation
+                         FROM google_auth_attempts
+                         WHERE nonce_hash = ?
+                         """)) {
+                query.setBytes(1, nonceHash);
+                try (ResultSet storedAttempt = query.executeQuery()) {
+                    assertTrue(storedAttempt.next(), "the auth attempt must be persisted");
+                    byte[] storedHash = storedAttempt.getBytes("nonce_hash");
+                    assertEquals(32, storedHash.length);
+                    assertEquals("/app/reader?work=private-123", storedAttempt.getString("safe_return_path"));
+                    assertEquals(correlationId, storedAttempt.getObject("correlation_id", UUID.class));
+                    assertTrue(storedAttempt.getBoolean("expires_after_creation"));
+                    assertFalse(java.util.Arrays.equals(attempt.nonce().getBytes(StandardCharsets.UTF_8), storedHash));
+                }
+            }
+        } finally {
+            deleteAuthAttempt(nonceHash);
+        }
+    }
+
+    @Test
+    void googleAuthAttemptNoncesAreUniqueAndUnsafeReturnPathsFallBackToHome() throws Exception {
+        Set<String> nonces = new HashSet<>();
+        try {
+            for (int index = 0; index < 16; index++) {
+                GoogleAuthAttemptService.CreatedAttempt attempt = googleAuthAttemptService.create(
+                        "//attacker.example/collect", UUID.randomUUID());
+                assertTrue(nonces.add(attempt.nonce()), "generated auth attempt nonces must be unique");
+                assertEquals("/app/home", attempt.returnTo());
+            }
+        } finally {
+            for (String nonce : nonces) {
+                deleteAuthAttempt(sha256(nonce));
+            }
+        }
+    }
+
+    private static byte[] sha256(String value) throws NoSuchAlgorithmException {
+        return MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private void deleteAuthAttempt(byte[] nonceHash) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement delete = connection.prepareStatement(
+                     "DELETE FROM google_auth_attempts WHERE nonce_hash = ?")) {
+            delete.setBytes(1, nonceHash);
+            delete.executeUpdate();
         }
     }
 
