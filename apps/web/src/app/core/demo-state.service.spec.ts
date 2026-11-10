@@ -68,6 +68,22 @@ describe('DemoStateService library persistence', () => {
     expect(service.libraryStorageMessage()).toContain('Không lưu được');
   });
 
+  it('deletes a collection and clears its work assignments', () => {
+    const service = new DemoStateService();
+    service.importedWork.set(work);
+    expect(service.createLibraryCollection('Đọc cuối tuần')).toBe(true);
+    const collection = service.libraryCollections()[0];
+    service.toggleWorkCollection(work.id, collection.id);
+
+    service.deleteLibraryCollection(collection.id);
+
+    expect(service.libraryCollections()).toEqual([]);
+    expect(service.isWorkInCollection(work.id, collection.id)).toBe(false);
+    const reloadedService = new DemoStateService();
+    expect(reloadedService.libraryCollections()).toEqual([]);
+    expect(reloadedService.collectionIdsByWork()[work.id]).toEqual([]);
+  });
+
   it('does not load malformed or unsupported saved data', () => {
     localStorage.setItem(storageKey, '{not-json');
 

@@ -128,6 +128,18 @@ export class DemoStateService {
     return true;
   }
 
+  deleteLibraryCollection(collectionId: string): void {
+    if (!this.libraryCollections().some((collection) => collection.id === collectionId)) return;
+    this.libraryCollections.update((collections) => collections.filter((collection) => collection.id !== collectionId));
+    this.collectionIdsByWork.update((assignments) => Object.fromEntries(
+      Object.entries(assignments).map(([workId, collectionIds]) => [
+        workId,
+        collectionIds.filter((id) => id !== collectionId),
+      ]),
+    ));
+    this.persistLibraryState();
+  }
+
   toggleWorkCollection(workId: string, collectionId: string): void {
     if (!this.libraryCollections().some((collection) => collection.id === collectionId)) return;
     this.collectionIdsByWork.update((current) => {

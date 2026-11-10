@@ -10,10 +10,29 @@
 
   @if (!isOnline()) {
     <p class="library-status-message library-offline-message" role="status" aria-live="polite">
-      <span aria-hidden="true">⌁</span> Bạn đang ngoại tuyến. Thư viện demo vẫn mở được; thay đổi chưa đồng bộ với tài khoản.
+      <span aria-hidden="true">⌁</span>
+      @if (isAccountMode()) {
+        Mất kết nối. Thay đổi thư viện tài khoản chỉ được xác nhận sau khi máy chủ phản hồi.
+      } @else {
+        Bạn đang ngoại tuyến. Thư viện demo vẫn mở được; thay đổi chưa đồng bộ với tài khoản.
+      }
     </p>
   }
-  @if (demo.libraryStorageMessage(); as storageMessage) {
+
+  @if (isAccountMode()) {
+    @if (collectionSync() === 'idle' || collectionSync() === 'loading') {
+      <p class="library-status-message library-sync-message" role="status" aria-live="polite">Đang tải bộ sưu tập từ tài khoản…</p>
+    } @else if (collectionSync() === 'saving') {
+      <p class="library-status-message library-sync-message" role="status" aria-live="polite">Đang lưu thay đổi bộ sưu tập…</p>
+    } @else if (collectionSync() === 'ready') {
+      <p class="library-status-message library-sync-message" role="status" aria-live="polite">Bộ sưu tập đã được tải từ tài khoản.</p>
+    } @else {
+      <div class="library-status-message library-sync-error" role="alert">
+        <span>{{ collectionSyncError() }}</span>
+        <button class="text-button" type="button" (click)="retryCollections()">Thử tải lại</button>
+      </div>
+    }
+  } @else if (demo.libraryStorageMessage(); as storageMessage) {
     <p class="library-status-message library-storage-message" role="status" aria-live="polite">{{ storageMessage }}</p>
   }
 
@@ -39,7 +58,13 @@
       <article class="library-work-row">
         <div class="mini-cover" aria-hidden="true">✧</div>
         <div class="library-work-copy">
-          <span class="private-tag">RIÊNG TƯ · DEMO</span>
+          @if (isAccountMode() && isAccountWork(work.id) && workSync() === 'ready') {
+            <span class="private-tag">RIÊNG TƯ · TÀI KHOẢN</span>
+          } @else if (isAccountMode() && isAccountWork(work.id)) {
+            <span class="private-tag">RIÊNG TƯ · ĐANG ĐỒNG BỘ</span>
+          } @else {
+            <span class="private-tag">RIÊNG TƯ · DEMO</span>
+          }
           <h2>{{ work.title }}</h2>
           <p>{{ work.author }} <span>·</span> Tệp {{ work.sourceName }}</p>
           <small>Metadata · thêm ngày <time [attr.datetime]="work.importedAt">{{ work.importedAt | date: 'dd/MM/yyyy' }}</time> · chưa có chương để đọc</small>
@@ -48,79 +73,140 @@
           <span>Trạng thái đọc</span>
           <select
             [attr.aria-label]="'Trạng thái đọc: ' + work.title"
+            [disabled]="isAccountMode() && isAccountWork(work.id) && workSync() !== 'ready'"
+            [value]="readingStatusFor(work.id)"
             (change)="setReadingStatus($event, work.id)"
           >
             @for (status of readingStatuses; track status.value) {
-              <option [value]="status.value" [selected]="demo.readingStatusFor(work.id) === status.value">
-                {{ status.label }}
-              </option>
+              <option [value]="status.value" [selected]="readingStatusFor(work.id) === status.value">{{ status.label }}</option>
             }
           </select>
         </label>
       </article>
 
-      <section class="library-collections" aria-labelledby="collections-title">
-        <div class="library-section-heading">
-          <div>
-            <p class="eyebrow">SẮP XẾP THEO CÁCH CỦA BẠN</p>
-            <h2 id="collections-title">Bộ sưu tập</h2>
+      @if (isAccountMode() && isAccountWork(work.id)) {
+        @if (workSync() === 'loading') {
+          <p class="library-status-message library-sync-message" role="status" aria-live="polite">Đang tải trạng thái đọc từ tài khoản…</p>
+        } @else if (workSync() === 'error') {
+          <div class="library-status-message library-sync-error" role="alert">
+            <span>{{ workError() }}</span>
+            <button class="text-button" type="button" (click)="retryWorkState()">Tải lại trạng thái</button>
           </div>
-          <span>{{ demo.libraryCollections().length }} bộ sưu tập</span>
-        </div>
-
-        <form class="library-collection-form" (submit)="$event.preventDefault(); createCollection()">
-          <label class="visually-hidden" for="new-library-collection">Tên bộ sưu tập mới</label>
-          <input
-            id="new-library-collection"
-            type="text"
-            maxlength="40"
-            autocomplete="off"
-            placeholder="Ví dụ: Đọc cuối tuần"
-            [value]="collectionName()"
-            [attr.aria-describedby]="collectionError() ? 'collection-error' : null"
-            (input)="updateCollectionName($event)"
-          />
-          <button class="button button-outline" type="submit">Tạo bộ sưu tập</button>
-        </form>
-        @if (collectionError(); as error) {
-          <p id="collection-error" class="library-inline-error" role="alert">{{ error }}</p>
+        } @else if (workError(); as error) {
+          <p class="library-status-message library-sync-error" role="alert">{{ error }}</p>
+        } @else if (workSync() === 'saving') {
+          <p class="library-status-message library-sync-message" role="status" aria-live="polite">Đang lưu trạng thái đọc…</p>
         }
-
-        @if (demo.libraryCollections().length) {
-          <div class="library-collection-list" aria-label="Gắn tác phẩm vào bộ sưu tập">
-            @for (collection of demo.libraryCollections(); track collection.id) {
-              <button
-                class="library-collection-chip"
-                [class.selected]="demo.isWorkInCollection(work.id, collection.id)"
-                type="button"
-                [attr.aria-pressed]="demo.isWorkInCollection(work.id, collection.id)"
-                (click)="toggleCollection(work.id, collection.id)"
-              >
-                {{ collection.name }}
-                <span>{{ demo.isWorkInCollection(work.id, collection.id) ? 'Đã thêm' : '+ Thêm' }}</span>
-              </button>
-            }
-          </div>
-        } @else {
-          <p class="library-collection-empty">Chưa có bộ sưu tập. Tạo một bộ để gom những truyện bạn muốn đọc cùng nhau.</p>
-        }
-      </section>
+      } @else if (isAccountMode()) {
+        <p class="library-status-message library-demo-warning" role="status">
+          Tác phẩm này được tạo trong bản demo và chỉ lưu trên trình duyệt. Trạng thái đọc ở đây chưa được đồng bộ; API hiện chưa cung cấp luồng import tác phẩm vào tài khoản.
+        </p>
+      }
     } @else {
       <div class="empty-state-panel library-filter-empty">
         <h2>Không có truyện trong mục này</h2>
-        <p>Tác phẩm hiện tại đang ở trạng thái “{{ statusLabel(demo.readingStatusFor(work.id)) }}”.</p>
+        <p>Tác phẩm hiện tại đang ở trạng thái “{{ statusLabel(readingStatusFor(work.id)) }}”.</p>
         <button class="button button-outline" type="button" (click)="activeFilter.set('all')">Xem tất cả</button>
       </div>
     }
   } @else {
     <div class="empty-state-panel">
       <div class="empty-illustration small-empty" aria-hidden="true"><span class="empty-book empty-book-one"></span><span class="empty-book empty-book-two"></span><span class="empty-star">✧</span></div>
-      <h2>Chưa có gì trên kệ</h2>
-      <p>Thêm tác phẩm từ tệp của bạn. Bản demo không tải lên hoặc phân tích nội dung tệp.</p>
+      @if (isAccountMode()) {
+        <h2>Chưa có tác phẩm được tải từ tài khoản</h2>
+        <p>Máy chủ đã đồng bộ bộ sưu tập, nhưng API liệt kê và import tác phẩm chưa được tích hợp vào giao diện.</p>
+      } @else {
+        <h2>Chưa có gì trên kệ</h2>
+        <p>Thêm tác phẩm từ tệp của bạn. Bản demo không tải lên hoặc phân tích nội dung tệp.</p>
+      }
       <a class="button button-outline" routerLink="/app/import">Thêm tác phẩm</a>
       <a class="text-link" routerLink="/works/demo-story">Hoặc đọc thử tác phẩm mẫu →</a>
     </div>
   }
 
-  <p class="privacy-footnote"><span aria-hidden="true">◉</span> Bản demo chỉ lưu metadata, trạng thái và bộ sưu tập trong trình duyệt này. Chưa có đồng bộ tài khoản hoặc tải nội dung truyện lên máy chủ.</p>
+  <section class="library-collections" aria-labelledby="collections-title">
+    <div class="library-section-heading">
+      <div>
+        <p class="eyebrow">SẮP XẾP THEO CÁCH CỦA BẠN</p>
+        <h2 id="collections-title">Bộ sưu tập</h2>
+      </div>
+      <span>{{ collections().length }} / 12 bộ sưu tập</span>
+    </div>
+
+    <form class="library-collection-form" (submit)="$event.preventDefault(); createCollection()">
+      <label class="visually-hidden" for="new-library-collection">Tên bộ sưu tập mới</label>
+      <input
+        id="new-library-collection"
+        type="text"
+        maxlength="40"
+        autocomplete="off"
+        placeholder="Ví dụ: Đọc cuối tuần"
+        [value]="collectionName()"
+        [disabled]="!canCreateCollection() || collectionSync() === 'saving'"
+        [attr.aria-describedby]="collectionError() ? 'collection-error' : null"
+        (input)="updateCollectionName($event)"
+      />
+      <button class="button button-outline" type="submit" [disabled]="!canCreateCollection() || collectionSync() === 'saving'">Tạo bộ sưu tập</button>
+    </form>
+    @if (isAccountMode() && collectionSync() === 'ready' && accountCollections().length >= 12) {
+      <p class="library-collection-empty">Bạn đã đạt giới hạn 12 bộ sưu tập. Xóa một bộ trước khi tạo bộ mới.</p>
+    }
+    @if (collectionError(); as error) {
+      <p id="collection-error" class="library-inline-error" role="alert">{{ error }}</p>
+    }
+
+    @if (collections().length) {
+      <div class="library-collection-list" aria-label="Bộ sưu tập của bạn">
+        @for (collection of collections(); track collection.id) {
+          <div class="library-collection-item">
+            @if (demo.importedWork(); as work) {
+              @if (canToggleCollection(work.id)) {
+                <button
+                  class="library-collection-chip"
+                  [class.selected]="isWorkInCollection(work.id, collection.id)"
+                  type="button"
+                  [disabled]="isSavingWorkState() || collectionSync() === 'saving'"
+                  [attr.aria-pressed]="isWorkInCollection(work.id, collection.id)"
+                  (click)="toggleCollection(work.id, collection.id)"
+                >
+                  {{ collection.name }}
+                  <span>{{ isWorkInCollection(work.id, collection.id) ? 'Đã thêm' : '+ Thêm' }}</span>
+                </button>
+              } @else {
+                <span class="library-collection-chip library-collection-static">
+                  {{ collection.name }} <span>{{ collection.workCount }} tác phẩm</span>
+                </span>
+              }
+            } @else {
+              <span class="library-collection-chip library-collection-static">
+                {{ collection.name }} <span>{{ collection.workCount }} tác phẩm</span>
+              </span>
+            }
+            <button
+              class="library-collection-delete"
+              type="button"
+              [disabled]="collectionSync() === 'saving'"
+              [attr.aria-label]="'Xóa bộ sưu tập ' + collection.name"
+              (click)="requestDeleteCollection(collection.id)"
+            ><span aria-hidden="true">×</span></button>
+          </div>
+          @if (pendingDeleteCollectionId() === collection.id) {
+            <div class="library-delete-confirm" role="group" [attr.aria-label]="'Xác nhận xóa ' + collection.name">
+              <p>Xóa “{{ collection.name }}”? Tác phẩm đang gắn sẽ được bỏ gắn; trạng thái đọc không đổi.</p>
+              <button class="text-button" type="button" (click)="cancelDeleteCollection()">Giữ lại</button>
+              <button class="text-button text-button-danger" type="button" [disabled]="collectionSync() === 'saving'" (click)="confirmDeleteCollection(collection)">Xác nhận xóa</button>
+            </div>
+          }
+        }
+      </div>
+    } @else if (collectionSync() !== 'loading' && collectionSync() !== 'error') {
+      <p class="library-collection-empty">Chưa có bộ sưu tập. Tạo một bộ để gom những truyện bạn muốn đọc cùng nhau.</p>
+    }
+  </section>
+
+  @if (isAccountMode()) {
+    <p class="privacy-footnote"><span aria-hidden="true">◉</span> Bộ sưu tập được lưu trong tài khoản. Metadata import demo và trạng thái của tác phẩm không có ID trên máy chủ vẫn chỉ lưu trong trình duyệt; chưa có API import hoặc liệt kê tác phẩm để đồng bộ chúng.</p>
+  } @else {
+    <p class="privacy-footnote"><span aria-hidden="true">◉</span> Bản demo chỉ lưu metadata, trạng thái và bộ sưu tập trong trình duyệt này. Chưa có đồng bộ tài khoản hoặc tải nội dung truyện lên máy chủ.</p>
+  }
 </section>
