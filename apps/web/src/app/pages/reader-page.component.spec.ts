@@ -1,7 +1,11 @@
 import { signal } from '@angular/core';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { demoChapters } from '../core/demo-story';
 import { ReaderPageComponent } from './reader-page.component';
+
+afterEach(() => {
+  document.querySelectorAll('[data-reader-shortcut-test]').forEach((element) => element.remove());
+});
 
 function createReaderHarness() {
   const router = { navigate: vi.fn() };
@@ -10,6 +14,7 @@ function createReaderHarness() {
     chapters: demoChapters,
     tocOpen: signal(false),
     settingsOpen: signal(false),
+    panelReturnFocus: null,
     router,
   }) as ReaderPageComponent;
 
@@ -81,5 +86,54 @@ describe('ReaderPageComponent keyboard shortcuts', () => {
     expect(component['tocOpen']()).toBe(false);
     expect(controlShortcut.defaultPrevented).toBe(false);
     expect(metaShortcut.defaultPrevented).toBe(false);
+  });
+});
+
+describe('ReaderPageComponent modal panel focus', () => {
+  function appendPanel(id: string) {
+    const panel = document.createElement('aside');
+    panel.id = id;
+    panel.dataset['readerShortcutTest'] = 'true';
+    const first = document.createElement('button');
+    const last = document.createElement('button');
+    panel.append(first, last);
+    document.body.append(panel);
+    return { panel, first, last };
+  }
+
+  it('wraps Tab and Shift+Tab inside an open panel', () => {
+    const { component } = createReaderHarness();
+    const { first, last } = appendPanel('reader-toc-panel');
+    component['tocOpen'].set(true);
+
+    first.focus();
+    const reverseTab = keydown('Tab', { shiftKey: true });
+    component.onKeydown(reverseTab);
+    expect(reverseTab.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(last);
+
+    last.focus();
+    const forwardTab = keydown('Tab');
+    component.onKeydown(forwardTab);
+    expect(forwardTab.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(first);
+  });
+
+  it('restores focus to the opener when Escape closes a panel', () => {
+    const { component } = createReaderHarness();
+    const opener = document.createElement('button');
+    opener.dataset['readerShortcutTest'] = 'true';
+    document.body.append(opener);
+    appendPanel('reader-toc-panel');
+    component['tocOpen'].set(true);
+    component['panelReturnFocus'] = opener;
+
+    const escape = keydown('Escape');
+    component.onKeydown(escape);
+
+    expect(component['tocOpen']()).toBe(false);
+    expect(component['settingsOpen']()).toBe(false);
+    expect(escape.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(opener);
   });
 });

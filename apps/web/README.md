@@ -41,6 +41,8 @@ npm audit --audit-level=high
 
 The shortcuts do not run while focus is in a text-entry control and are ignored when Control or Meta is also held. The visible Reader controls remain available as alternatives. These interactions are demo-only and do not persist across reloads.
 
+Reader table-of-contents and settings drawers use modal keyboard behavior: focus enters the drawer, Tab stays inside it, and Escape or the close action returns focus to the control that opened it. Choosing a chapter moves focus to the new chapter heading.
+
 ## Routes in this slice
 
 - `/` — product introduction.
