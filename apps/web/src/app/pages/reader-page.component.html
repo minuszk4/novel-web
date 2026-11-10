@@ -1,6 +1,6 @@
 <div class="reader-app" [class.reader-sepia]="demo.readerTheme() === 'sepia'" [class.reader-dark]="demo.readerTheme() === 'dark'">
   <header class="reader-topbar">
-    <a class="reader-back" routerLink="/works/demo-story"><span aria-hidden="true">←</span> <span>Chi tiết tác phẩm</span></a>
+    <a class="reader-back" routerLink="/works/demo-story" aria-label="Quay lại chi tiết tác phẩm"><span aria-hidden="true">←</span> <span>Chi tiết tác phẩm</span></a>
     <div class="reader-chapter-context"><strong>{{ chapter.title }}</strong><span>{{ chapter.publishedLabel }} · TÁC PHẨM MẪU</span></div>
     <div class="reader-tools"><button class="reader-tool" type="button" (click)="toggleToc()" aria-label="Mở mục lục" title="Mục lục · Alt+Shift+T" [attr.aria-expanded]="tocOpen()"><span aria-hidden="true">☷</span> <span>Mục lục</span></button><button class="reader-tool" type="button" (click)="toggleSettings()" title="Cài đặt đọc" [attr.aria-expanded]="settingsOpen()"><span aria-hidden="true">Aa</span><span class="visually-hidden">Cài đặt trình đọc</span></button></div>
   </header>
