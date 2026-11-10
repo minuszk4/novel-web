@@ -1,11 +1,11 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 1.2.0
+  version: 1.3.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
-    Google sign-in/session and policy-document/acceptance routes are implemented only in the configured
-    PostgreSQL profile. Remaining Auth, Library and Reader operations tagged planned describe the G2 target.
+    Google sign-in/session, policy-document/acceptance and personal library-state routes are implemented only in
+    the configured PostgreSQL profile. Remaining Auth, Library and Reader operations tagged planned describe the G2 target.
 servers:
   - url: http://127.0.0.1:8080
 tags:
@@ -15,8 +15,8 @@ tags:
     description: Google GIS, session and required policy routes are available only in the PostgreSQL profile; other Auth operations remain planned.
     x-implementation-status: partial
   - name: Library
-    description: Planned owner-scoped private library and import operations for G2.
-    x-implementation-status: planned
+    description: Personal reading-state and collection operations are available in the PostgreSQL profile; other library/import operations remain planned for G2.
+    x-implementation-status: partial
   - name: Reader
     description: Planned source-only reader, preferences, progress and bookmark operations for G2.
     x-implementation-status: planned
@@ -209,6 +209,8 @@ paths:
                 $ref: '#/components/schemas/CsrfToken'
         '401':
           $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
         '503':
           $ref: '#/components/responses/Problem'
   /api/v1/auth/me:
@@ -243,6 +245,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/CurrentUserResponse'
         '401':
+          $ref: '#/components/responses/Problem'
+        '403':
           $ref: '#/components/responses/Problem'
         '503':
           $ref: '#/components/responses/Problem'
@@ -634,6 +638,213 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+  /api/v1/me/library/collections:
+    get:
+      operationId: listMyLibraryCollections
+      tags: [Library]
+      x-implementation-status: implemented-postgres-profile
+      summary: List the current user's personal library collections
+      description: Returns only collections owned by the authenticated user, with counts limited to currently accessible works.
+      security:
+        - appSession: []
+      responses:
+        '200':
+          description: Personal collections, at most 12
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LibraryCollectionListResponse'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+    post:
+      operationId: createMyLibraryCollection
+      tags: [Library]
+      x-implementation-status: implemented-postgres-profile
+      summary: Create a personal library collection
+      description: Collection names are unique case-insensitively for each user. The transaction enforces a maximum of 12 active collections.
+      security:
+        - appSession: []
+          csrfToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateLibraryCollectionRequest'
+      responses:
+        '201':
+          description: Collection created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LibraryCollectionSummary'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '409':
+          description: Duplicate name or the user already has 12 active collections.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/me/library/collections/{collectionId}:
+    delete:
+      operationId: deleteMyLibraryCollection
+      tags: [Library]
+      x-implementation-status: implemented-postgres-profile
+      summary: Delete a personal library collection
+      description: Soft-deletes the actor's collection, removes its work memberships and advances affected reading-state versions.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - name: collectionId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Collection deleted
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/me/works/{workId}/library-state:
+    get:
+      operationId: getMyWorkLibraryState
+      tags: [Library]
+      x-implementation-status: implemented-postgres-profile
+      summary: Get the current user's reading status and personal collections for a work
+      description: >-
+        The reading status is per actor and independent of the work publishing/lifecycle status. The actor must
+        currently be able to read the personal or workspace work. A missing saved state is returned as
+        want-to-read with version 0 and is not written until the first update.
+      security:
+        - appSession: []
+      parameters:
+        - name: workId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Current actor-scoped reading state
+          headers:
+            ETag:
+              required: true
+              schema:
+                type: string
+                pattern: '^"v(0|[1-9][0-9]*)"$'
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LibraryWorkState'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+    put:
+      operationId: replaceMyWorkLibraryState
+      tags: [Library]
+      x-implementation-status: implemented-postgres-profile
+      summary: Replace the current user's reading status and collection membership for a work
+      description: >-
+        This atomic, actor-scoped replacement advances the ETag version when state changes. The work must currently
+        be readable by the actor and every collection ID must belong to that actor. A retried request with stale
+        If-Match but a body identical to the current state returns the current representation; divergent stale
+        writes return 409 with the latest safe state. No actor or owner ID is accepted from the request body.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - name: workId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: If-Match
+          in: header
+          required: true
+          description: Strong ETag returned by GET; the initial unsaved state uses "v0".
+          schema:
+            type: string
+            pattern: '^"v(0|[1-9][0-9]*)"$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReplaceLibraryWorkStateRequest'
+      responses:
+        '200':
+          description: Updated authoritative reading state
+          headers:
+            ETag:
+              required: true
+              schema:
+                type: string
+                pattern: '^"v[1-9][0-9]*"$'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LibraryWorkState'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          description: Work is inaccessible or at least one collection is missing, deleted or owned by another user.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: ETag is stale; the latest state is included for safe reconciliation.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/LibraryStateVersionConflictProblem'
+        '428':
+          description: If-Match is required.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
   /api/v1/works/{workId}:
     get:
       operationId: getOwnedWork
@@ -1758,6 +1969,95 @@ components:
           type: [string, 'null']
           maxLength: 2048
           description: Opaque HMAC-signed cursor bound to owner, library, q, tag, status and stable sort; null when no next page exists.
+    LibraryCollectionSummary:
+      type: object
+      additionalProperties: false
+      required: [id, name, workCount, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          minLength: 1
+          maxLength: 40
+        workCount:
+          type: integer
+          minimum: 0
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    LibraryCollectionListResponse:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          maxItems: 12
+          items:
+            $ref: '#/components/schemas/LibraryCollectionSummary'
+    CreateLibraryCollectionRequest:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 40
+          pattern: '^.*\S.*$'
+    LibraryWorkState:
+      type: object
+      additionalProperties: false
+      required: [workId, readingStatus, collectionIds, version, updatedAt]
+      properties:
+        workId:
+          type: string
+          format: uuid
+        readingStatus:
+          type: string
+          enum: [reading, want-to-read, paused, completed, dropped]
+        collectionIds:
+          type: array
+          maxItems: 12
+          uniqueItems: true
+          items:
+            type: string
+            format: uuid
+        version:
+          type: integer
+          minimum: 0
+        updatedAt:
+          type: [string, 'null']
+          format: date-time
+          description: Null until the first state update is saved.
+    ReplaceLibraryWorkStateRequest:
+      type: object
+      additionalProperties: false
+      required: [readingStatus, collectionIds]
+      properties:
+        readingStatus:
+          type: string
+          enum: [reading, want-to-read, paused, completed, dropped]
+        collectionIds:
+          type: array
+          maxItems: 12
+          uniqueItems: true
+          items:
+            type: string
+            format: uuid
+    LibraryStateVersionConflictProblem:
+      allOf:
+        - $ref: '#/components/schemas/Problem'
+        - type: object
+          required: [latest]
+          properties:
+            latest:
+              $ref: '#/components/schemas/LibraryWorkState'
     ReaderManifest:
       type: object
       additionalProperties: false

@@ -39,6 +39,39 @@ public class PolicyService {
         }
     }
 
+    public RequiredAcceptance requiredAcceptance(UUID userId) {
+        Objects.requireNonNull(userId, "user id is required");
+        try (Connection connection = dataSource.getConnection()) {
+            Optional<Map<PolicyType, PolicyVersion>> active = currentPolicies(connection);
+            if (active.isEmpty()) return RequiredAcceptance.NOT_CONFIGURED;
+            PolicyVersion terms = active.orElseThrow().get(PolicyType.TERMS);
+            PolicyVersion privacy = active.orElseThrow().get(PolicyType.PRIVACY_NOTICE);
+            if (terms == null || privacy == null) return RequiredAcceptance.NOT_CONFIGURED;
+            try (PreparedStatement select = connection.prepareStatement("""
+                    SELECT
+                      EXISTS (SELECT 1 FROM policy_acceptances
+                              WHERE user_id = ? AND policy_type = 'TERMS' AND version = ?
+                                AND decision = 'TERMS_ACCEPTED') AS terms_accepted,
+                      EXISTS (SELECT 1 FROM policy_acceptances
+                              WHERE user_id = ? AND policy_type = 'PRIVACY_NOTICE' AND version = ?
+                                AND decision = 'PRIVACY_NOTICE_ACKNOWLEDGED') AS privacy_acknowledged
+                    """)) {
+                select.setObject(1, userId);
+                select.setString(2, terms.version());
+                select.setObject(3, userId);
+                select.setString(4, privacy.version());
+                try (ResultSet row = select.executeQuery()) {
+                    row.next();
+                    return row.getBoolean("terms_accepted") && row.getBoolean("privacy_acknowledged")
+                            ? RequiredAcceptance.COMPLETE
+                            : RequiredAcceptance.REQUIRED;
+                }
+            }
+        } catch (SQLException exception) {
+            throw new IllegalStateException("Unable to check current policy acceptance", exception);
+        }
+    }
+
     public Optional<PolicyDocumentContent> document(PolicyType policyType, String version) {
         Objects.requireNonNull(policyType, "policy type is required");
         if (!isValidVersion(version)) {
@@ -218,6 +251,12 @@ public class PolicyService {
     public enum AcceptanceOutcome {
         ACCEPTED,
         STALE,
+        NOT_CONFIGURED
+    }
+
+    public enum RequiredAcceptance {
+        COMPLETE,
+        REQUIRED,
         NOT_CONFIGURED
     }
 

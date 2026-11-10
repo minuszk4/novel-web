@@ -46,6 +46,8 @@ import com.novelweb.identity.session.LogoutAllConfirmationService;
 import com.novelweb.library.LibraryCursorCodec;
 import com.novelweb.library.LibraryRepository;
 import com.novelweb.library.LibraryService;
+import com.novelweb.library.LibraryUserStateRepository;
+import com.novelweb.library.LibraryUserStateService;
 import com.novelweb.library.WorkspaceRepository;
 import com.novelweb.library.WorkspaceService;
 import org.junit.jupiter.api.AfterAll;
@@ -74,7 +76,9 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -115,7 +119,10 @@ class PostgresSchemaIntegrationTests {
             "tags",
             "work_tags",
             "workspaces",
-            "workspace_members");
+            "workspace_members",
+            "library_reading_states",
+            "library_collections",
+            "library_collection_works");
 
     @Autowired
     private DataSource dataSource;
@@ -143,6 +150,9 @@ class PostgresSchemaIntegrationTests {
 
     @Autowired
     private WorkspaceService workspaceService;
+
+    @Autowired
+    private LibraryUserStateService libraryUserStateService;
 
     @Autowired
     private MockMvc mockMvc;
@@ -178,7 +188,7 @@ class PostgresSchemaIntegrationTests {
                      "SELECT COUNT(*) FROM databasechangelog");
              ResultSet changesets = changesetCount.executeQuery()) {
             changesets.next();
-            assertEquals(40, changesets.getInt(1), "unexpected number of applied changesets");
+            assertEquals(43, changesets.getInt(1), "unexpected number of applied changesets");
         }
 
         Set<String> actualTables = new HashSet<>();
@@ -196,6 +206,215 @@ class PostgresSchemaIntegrationTests {
             }
         }
         assertEquals(EXPECTED_APPLICATION_TABLES, actualTables);
+    }
+
+    @Test
+    void personalLibraryStateIsActorScopedVersionedAndIndependentOfWorkLifecycle() throws Exception {
+        UUID ownerId = createSessionTestUser("Library State Owner");
+        UUID otherUserId = createSessionTestUser("Other Library State Owner");
+        UUID workId = null;
+        try {
+            LibraryRepository.LibraryRecord library = libraryService.createLibrary(ownerId, "State Shelf");
+            LibraryRepository.WorkRecord work = libraryService.createPrivateImportedWork(
+                    ownerId, library.id(), "State Test Novel", "Author", "vi", sha256("library-state-work"));
+            workId = work.id();
+            setWorkStatus(workId, "archived");
+
+            MvcResult unauthenticated = mockMvc.perform(get("/api/v1/me/works/{workId}/library-state", workId))
+                    .andReturn();
+            assertEquals(401, unauthenticated.getResponse().getStatus());
+            assertTrue(unauthenticated.getResponse().getContentAsString().contains("UNAUTHENTICATED"));
+
+            SessionService.IssuedSession ownerSession = sessionService.create(ownerId).orElseThrow();
+            SessionService.IssuedSession otherSession = sessionService.create(otherUserId).orElseThrow();
+            jakarta.servlet.http.Cookie ownerCookie = new jakarta.servlet.http.Cookie(
+                    "__Host-novel_session", ownerSession.cookieValue());
+            String ownerCsrf = csrfTokenService.tokenFor(ownerSession.cookieValue());
+
+            MvcResult policyBlocked = mockMvc.perform(get("/api/v1/me/library/collections")
+                            .cookie(ownerCookie))
+                    .andReturn();
+            assertEquals(403, policyBlocked.getResponse().getStatus());
+            assertTrue(policyBlocked.getResponse().getContentAsString().contains("POLICY_ACCEPTANCE_REQUIRED"));
+
+            addCurrentPolicyAcceptances(ownerId);
+            addCurrentPolicyAcceptances(otherUserId);
+
+            MvcResult missingCsrf = mockMvc.perform(post("/api/v1/me/library/collections")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"name\":\"Must Not Be Stored\"}")
+                            .cookie(ownerCookie))
+                    .andReturn();
+            assertEquals(403, missingCsrf.getResponse().getStatus());
+            assertTrue(missingCsrf.getResponse().getContentAsString().contains("CSRF_FAILED"));
+            assertTrue(libraryUserStateService.listCollections(ownerId).isEmpty());
+
+            MvcResult created = mockMvc.perform(post("/api/v1/me/library/collections")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"name\":\"  Weekend Reads  \"}")
+                            .header("X-CSRF-Token", ownerCsrf)
+                            .cookie(ownerCookie))
+                    .andReturn();
+            assertEquals(201, created.getResponse().getStatus());
+            assertTrue(created.getResponse().getHeader("Cache-Control").contains("no-store"));
+            JsonNode collectionBody = objectMapper.readTree(created.getResponse().getContentAsString());
+            UUID collectionId = UUID.fromString(collectionBody.path("id").asText());
+            assertEquals("Weekend Reads", collectionBody.path("name").asText());
+            assertEquals(0, collectionBody.path("workCount").asInt());
+
+            MvcResult initialState = mockMvc.perform(get("/api/v1/me/works/{workId}/library-state", workId)
+                            .cookie(ownerCookie))
+                    .andReturn();
+            assertEquals(200, initialState.getResponse().getStatus());
+            assertEquals("\"v0\"", initialState.getResponse().getHeader("ETag"));
+            JsonNode initialBody = objectMapper.readTree(initialState.getResponse().getContentAsString());
+            assertEquals("want-to-read", initialBody.path("readingStatus").asText());
+            assertEquals(0, initialBody.path("version").asLong());
+            assertTrue(initialBody.path("collectionIds").isEmpty());
+            assertTrue(initialBody.path("updatedAt").isNull());
+
+            MvcResult saved = mockMvc.perform(put("/api/v1/me/works/{workId}/library-state", workId)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"readingStatus\":\"reading\",\"collectionIds\":[\""
+                                    + collectionId + "\"]}")
+                            .header("If-Match", "\"v0\"")
+                            .header("X-CSRF-Token", ownerCsrf)
+                            .cookie(ownerCookie))
+                    .andReturn();
+            assertEquals(200, saved.getResponse().getStatus());
+            assertEquals("\"v1\"", saved.getResponse().getHeader("ETag"));
+            JsonNode savedBody = objectMapper.readTree(saved.getResponse().getContentAsString());
+            assertEquals("reading", savedBody.path("readingStatus").asText());
+            assertEquals(1, savedBody.path("version").asLong());
+            assertEquals(collectionId.toString(), savedBody.path("collectionIds").get(0).asText());
+            assertEquals("archived", libraryService.findOwnedWork(ownerId, workId).orElseThrow().status(),
+                    "personal reading state must not change work lifecycle status");
+
+            MvcResult retryAfterLostResponse = mockMvc.perform(put(
+                            "/api/v1/me/works/{workId}/library-state", workId)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"readingStatus\":\"reading\",\"collectionIds\":[\""
+                                    + collectionId + "\"]}")
+                            .header("If-Match", "\"v0\"")
+                            .header("X-CSRF-Token", ownerCsrf)
+                            .cookie(ownerCookie))
+                    .andReturn();
+            assertEquals(200, retryAfterLostResponse.getResponse().getStatus());
+            assertEquals("\"v1\"", retryAfterLostResponse.getResponse().getHeader("ETag"));
+
+            MvcResult stale = mockMvc.perform(put("/api/v1/me/works/{workId}/library-state", workId)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"readingStatus\":\"completed\",\"collectionIds\":[]}")
+                            .header("If-Match", "\"v0\"")
+                            .header("X-CSRF-Token", ownerCsrf)
+                            .cookie(ownerCookie))
+                    .andReturn();
+            assertEquals(409, stale.getResponse().getStatus());
+            assertTrue(stale.getResponse().getContentAsString().contains("LIBRARY_STATE_VERSION_STALE"));
+            assertEquals(1, objectMapper.readTree(stale.getResponse().getContentAsString())
+                    .path("latest").path("version").asLong());
+
+            MvcResult otherUserRead = mockMvc.perform(get("/api/v1/me/works/{workId}/library-state", workId)
+                            .cookie(new jakarta.servlet.http.Cookie(
+                                    "__Host-novel_session", otherSession.cookieValue())))
+                    .andReturn();
+            assertEquals(404, otherUserRead.getResponse().getStatus());
+
+            LibraryUserStateRepository.CollectionRecord sameNameForOtherActor =
+                    libraryUserStateService.createCollection(otherUserId, "Weekend Reads");
+            assertEquals("Weekend Reads", sameNameForOtherActor.name());
+            assertEquals(1, libraryUserStateService.listCollections(otherUserId).size());
+            assertThrows(LibraryUserStateRepository.CollectionNameConflictException.class,
+                    () -> libraryUserStateService.createCollection(ownerId, "weekend reads"));
+
+            for (int index = 1; index < LibraryUserStateService.MAX_COLLECTIONS; index++) {
+                libraryUserStateService.createCollection(ownerId, "Reading List " + index);
+            }
+            assertEquals(12, libraryUserStateService.listCollections(ownerId).size());
+            assertThrows(LibraryUserStateRepository.CollectionLimitReachedException.class,
+                    () -> libraryUserStateService.createCollection(ownerId, "Thirteenth List"));
+
+            MvcResult deleted = mockMvc.perform(delete("/api/v1/me/library/collections/{collectionId}", collectionId)
+                            .header("X-CSRF-Token", ownerCsrf)
+                            .cookie(ownerCookie))
+                    .andReturn();
+            assertEquals(204, deleted.getResponse().getStatus());
+            MvcResult stateAfterCollectionDelete = mockMvc.perform(
+                            get("/api/v1/me/works/{workId}/library-state", workId).cookie(ownerCookie))
+                    .andReturn();
+            assertEquals(200, stateAfterCollectionDelete.getResponse().getStatus());
+            assertEquals("\"v2\"", stateAfterCollectionDelete.getResponse().getHeader("ETag"));
+            JsonNode afterDelete = objectMapper.readTree(stateAfterCollectionDelete.getResponse().getContentAsString());
+            assertEquals("reading", afterDelete.path("readingStatus").asText());
+            assertTrue(afterDelete.path("collectionIds").isEmpty());
+        } finally {
+            if (workId != null) deleteLibraryUserData(ownerId, workId);
+            deleteLibraryUserData(otherUserId, null);
+            deleteSessionTestUser(otherUserId);
+            deleteSessionTestUser(ownerId);
+        }
+    }
+
+    @Test
+    void workspaceReaderCanChangeOnlyTheirOwnReadingStateWhileMembershipIsActive() throws Exception {
+        UUID ownerId = createSessionTestUser("Workspace State Owner");
+        UUID readerId = createSessionTestUser("Workspace State Reader");
+        UUID workspaceId = null;
+        UUID workId = null;
+        try {
+            WorkspaceRepository.WorkspaceRecord workspace =
+                    workspaceService.createWorkspace(ownerId, "Reading State Workspace");
+            workspaceId = workspace.id();
+            workspaceService.addMember(ownerId, workspaceId, readerId, WorkspaceRepository.Role.READER);
+            LibraryRepository.LibraryRecord library =
+                    libraryService.createWorkspaceLibrary(ownerId, workspaceId, "Shared Works");
+            LibraryRepository.WorkRecord work = libraryService.createPrivateImportedWork(
+                    ownerId, library.id(), "Shared State Novel", "Author", "vi", sha256("shared-state-work"));
+            workId = work.id();
+            addCurrentPolicyAcceptances(ownerId);
+            addCurrentPolicyAcceptances(readerId);
+
+            LibraryUserStateRepository.WorkStateRecord ownerState = libraryUserStateService.replaceWorkState(
+                    ownerId, workId, 0, "reading", List.of());
+            assertEquals(1, ownerState.version());
+
+            SessionService.IssuedSession readerSession = sessionService.create(readerId).orElseThrow();
+            jakarta.servlet.http.Cookie readerCookie = new jakarta.servlet.http.Cookie(
+                    "__Host-novel_session", readerSession.cookieValue());
+            String readerCsrf = csrfTokenService.tokenFor(readerSession.cookieValue());
+            MvcResult readerInitial = mockMvc.perform(get("/api/v1/me/works/{workId}/library-state", workId)
+                            .cookie(readerCookie))
+                    .andReturn();
+            assertEquals(200, readerInitial.getResponse().getStatus());
+            assertEquals("\"v0\"", readerInitial.getResponse().getHeader("ETag"));
+            assertEquals("want-to-read", objectMapper.readTree(readerInitial.getResponse().getContentAsString())
+                    .path("readingStatus").asText());
+
+            MvcResult readerSaved = mockMvc.perform(put("/api/v1/me/works/{workId}/library-state", workId)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"readingStatus\":\"completed\",\"collectionIds\":[]}")
+                            .header("If-Match", "\"v0\"")
+                            .header("X-CSRF-Token", readerCsrf)
+                            .cookie(readerCookie))
+                    .andReturn();
+            assertEquals(200, readerSaved.getResponse().getStatus());
+            assertEquals("completed", objectMapper.readTree(readerSaved.getResponse().getContentAsString())
+                    .path("readingStatus").asText());
+            assertEquals("reading", libraryUserStateService.getWorkState(ownerId, workId).readingStatus());
+            assertEquals("completed", libraryUserStateService.getWorkState(readerId, workId).readingStatus());
+
+            workspaceService.revokeMember(ownerId, workspaceId, readerId);
+            MvcResult revokedReader = mockMvc.perform(get("/api/v1/me/works/{workId}/library-state", workId)
+                            .cookie(readerCookie))
+                    .andReturn();
+            assertEquals(404, revokedReader.getResponse().getStatus());
+        } finally {
+            deleteLibraryUserData(readerId, null);
+            deleteLibraryUserData(ownerId, workId);
+            if (workspaceId != null) deleteWorkspaceTestData(workspaceId);
+            deleteSessionTestUser(readerId);
+            deleteSessionTestUser(ownerId);
+        }
     }
 
     @Test
@@ -824,6 +1043,9 @@ class PostgresSchemaIntegrationTests {
                 "session_revoke_confirmations",
                 "workspace_members",
                 "workspaces",
+                "library_collection_works",
+                "library_reading_states",
+                "library_collections",
                 "libraries",
                 "works",
                 "volumes",
@@ -2310,6 +2532,11 @@ class PostgresSchemaIntegrationTests {
         }
     }
 
+    private void addCurrentPolicyAcceptances(UUID userId) throws SQLException {
+        addPolicyAcceptance(userId, "TERMS", "terms-current-1", "TERMS_ACCEPTED");
+        addPolicyAcceptance(userId, "PRIVACY_NOTICE", "privacy-current-1", "PRIVACY_NOTICE_ACKNOWLEDGED");
+    }
+
     private void addPolicyAcceptance(UUID userId, String type, String version, String decision) throws SQLException {
         try (Connection connection = dataSource.getConnection();
              PreparedStatement insert = connection.prepareStatement("""
@@ -2475,6 +2702,39 @@ class PostgresSchemaIntegrationTests {
             try (PreparedStatement deleteUser = connection.prepareStatement("DELETE FROM users WHERE id = ?")) {
                 deleteUser.setObject(1, userId);
                 deleteUser.executeUpdate();
+            }
+        }
+    }
+
+    private void deleteLibraryUserData(UUID userId, UUID workId) throws SQLException {
+        try (Connection connection = dataSource.getConnection()) {
+            try (PreparedStatement deleteAssignments = connection.prepareStatement(
+                    "DELETE FROM library_collection_works WHERE owner_user_id = ?")) {
+                deleteAssignments.setObject(1, userId);
+                deleteAssignments.executeUpdate();
+            }
+            try (PreparedStatement deleteStates = connection.prepareStatement(
+                    "DELETE FROM library_reading_states WHERE user_id = ?")) {
+                deleteStates.setObject(1, userId);
+                deleteStates.executeUpdate();
+            }
+            try (PreparedStatement deleteCollections = connection.prepareStatement(
+                    "DELETE FROM library_collections WHERE owner_user_id = ?")) {
+                deleteCollections.setObject(1, userId);
+                deleteCollections.executeUpdate();
+            }
+            if (workId != null) {
+                try (PreparedStatement deleteWork = connection.prepareStatement(
+                        "DELETE FROM works WHERE id = ? AND owner_user_id = ?")) {
+                    deleteWork.setObject(1, workId);
+                    deleteWork.setObject(2, userId);
+                    deleteWork.executeUpdate();
+                }
+            }
+            try (PreparedStatement deleteLibraries = connection.prepareStatement(
+                    "DELETE FROM libraries WHERE owner_user_id = ?")) {
+                deleteLibraries.setObject(1, userId);
+                deleteLibraries.executeUpdate();
             }
         }
     }

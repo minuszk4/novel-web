@@ -51,6 +51,9 @@ public class ApiSecurityConfiguration {
                         authorize.requestMatchers(HttpMethod.POST, "/api/v1/auth/logout").permitAll();
                         authorize.requestMatchers(HttpMethod.POST,
                                 "/api/v1/auth/logout-all/confirmation", "/api/v1/auth/logout-all").permitAll();
+                        authorize.requestMatchers("/api/v1/me/library/collections",
+                                "/api/v1/me/library/collections/*",
+                                "/api/v1/me/works/*/library-state").permitAll();
                         authorize.requestMatchers(HttpMethod.GET, "/api/v1/auth/policies/current",
                                 "/api/v1/auth/policies/terms/*",
                                 "/api/v1/auth/policies/privacy-notice/*").permitAll();

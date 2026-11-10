@@ -1,6 +1,6 @@
 # OpenAPI contract checks
 
-This tooling lints the implemented read-only endpoints (`GET /api/v1/system/status` and `GET /actuator/health`), the PostgreSQL-profile Google bootstrap/callback, session-bound CSRF token, current-user and logout routes, logout-all confirmation/revocation, and current/versioned policy-document retrieval and acceptance. Planned G2 Auth/session, private library/import and source-only Reader operations remain tagged `planned`. Lint verifies OpenAPI structure; it does not prove that an endpoint exists in Spring Boot or that a deployment has provider credentials. Progression, translation, publishing and commerce contracts are not yet included.
+This tooling lints the implemented read-only endpoints (`GET /api/v1/system/status` and `GET /actuator/health`), PostgreSQL-profile Google bootstrap/callback, session and policy routes, and personal library-state/collection routes. Planned operations for other G2 Auth/session management, private library listing/import and source-only Reader remain tagged `planned`. Lint verifies OpenAPI structure; it does not prove that an endpoint exists in Spring Boot or that a deployment has provider credentials. Progression, translation, publishing and commerce contracts are not yet included.
 
 ## Run locally
 
