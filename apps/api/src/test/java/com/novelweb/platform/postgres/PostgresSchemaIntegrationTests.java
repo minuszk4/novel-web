@@ -369,10 +369,14 @@ class PostgresSchemaIntegrationTests {
             workspaceService.addMember(ownerId, workspaceId, readerId, WorkspaceRepository.Role.READER);
             LibraryRepository.LibraryRecord sharedLibrary =
                     libraryService.createWorkspaceLibrary(ownerId, workspaceId, "Shared Shelf");
-            for (String title : List.of("Cursor Novel One", "Cursor Novel Two")) {
-                libraryService.createPrivateImportedWork(
-                        ownerId, sharedLibrary.id(), title, "Query Author", "vi", sha256(title));
-            }
+            LibraryRepository.WorkRecord firstWork = libraryService.createPrivateImportedWork(
+                    ownerId, sharedLibrary.id(), "Cursor Novel One", "Query Author", "vi",
+                    sha256("Cursor Novel One"));
+            LibraryRepository.WorkRecord secondWork = libraryService.createPrivateImportedWork(
+                    ownerId, sharedLibrary.id(), "Cursor Novel Two", "Query Author", "vi",
+                    sha256("Cursor Novel Two"));
+            libraryService.addTagToWork(ownerId, firstWork.id(), "Shared Story");
+            setWorkStatus(firstWork.id(), "archived");
             addCurrentPolicyAcceptances(ownerId);
             addCurrentPolicyAcceptances(readerId);
             addCurrentPolicyAcceptances(outsiderId);
@@ -452,6 +456,38 @@ class PostgresSchemaIntegrationTests {
             assertEquals(1, objectMapper.readTree(secondWorks.getResponse().getContentAsString())
                     .path("items").size());
 
+            MvcResult filteredWorks = mockMvc.perform(get("/api/v1/works")
+                            .param("libraryId", sharedLibrary.id().toString())
+                            .param("q", "Cursor Novel One")
+                            .param("tag", "shared story")
+                            .param("status", "archived")
+                            .cookie(readerCookie))
+                    .andReturn();
+            assertEquals(200, filteredWorks.getResponse().getStatus());
+            JsonNode filteredWorkPage = objectMapper.readTree(filteredWorks.getResponse().getContentAsString());
+            assertEquals(1, filteredWorkPage.path("items").size());
+            assertEquals(firstWork.id().toString(), filteredWorkPage.path("items").get(0).path("id").asText());
+
+            MvcResult titleFilteredWorks = mockMvc.perform(get("/api/v1/works")
+                            .param("libraryId", sharedLibrary.id().toString())
+                            .param("q", "Two")
+                            .param("status", "active")
+                            .cookie(readerCookie))
+                    .andReturn();
+            assertEquals(200, titleFilteredWorks.getResponse().getStatus());
+            JsonNode titleFilteredPage = objectMapper.readTree(titleFilteredWorks.getResponse().getContentAsString());
+            assertEquals(1, titleFilteredPage.path("items").size());
+            assertEquals(secondWork.id().toString(), titleFilteredPage.path("items").get(0).path("id").asText());
+
+            MvcResult mismatchedFilterCursor = mockMvc.perform(get("/api/v1/works")
+                            .param("libraryId", sharedLibrary.id().toString())
+                            .param("cursor", workCursor)
+                            .param("status", "active")
+                            .cookie(readerCookie))
+                    .andReturn();
+            assertEquals(400, mismatchedFilterCursor.getResponse().getStatus());
+            assertTrue(mismatchedFilterCursor.getResponse().getContentAsString().contains("INVALID_CURSOR"));
+
             MvcResult tamperedCursor = mockMvc.perform(get("/api/v1/works")
                             .param("libraryId", sharedLibrary.id().toString())
                             .param("cursor", workCursor + "x").cookie(readerCookie))
@@ -480,12 +516,7 @@ class PostgresSchemaIntegrationTests {
                     .andReturn();
             assertEquals(404, revokedReader.getResponse().getStatus());
         } finally {
-            try (Connection connection = dataSource.getConnection();
-                 PreparedStatement deleteWorks = connection.prepareStatement(
-                         "DELETE FROM works WHERE owner_user_id = ?")) {
-                deleteWorks.setObject(1, ownerId);
-                deleteWorks.executeUpdate();
-            }
+            deleteLibraryTestData(ownerId);
             deleteLibraryUserData(ownerId, null);
             deleteLibraryUserData(readerId, null);
             deleteLibraryUserData(outsiderId, null);
