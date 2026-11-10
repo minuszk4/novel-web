@@ -24,11 +24,17 @@ public class ApiSecurityConfiguration {
             HttpSecurity http, ApiProblemWriter problemWriter, Environment environment) throws Exception {
         return http
                 .cors(Customizer.withDefaults())
+                .csrf(csrf -> {
+                    if (environment.acceptsProfiles(Profiles.of("postgres"))) {
+                        csrf.ignoringRequestMatchers("/api/v1/auth/google/credential");
+                    }
+                })
                 .authorizeHttpRequests(authorize -> {
                     authorize.requestMatchers(HttpMethod.GET, "/api/v1/system/status", "/actuator/health",
                             "/actuator/health/**").permitAll();
                     if (environment.acceptsProfiles(Profiles.of("postgres"))) {
                         authorize.requestMatchers(HttpMethod.GET, "/api/v1/auth/google/bootstrap").permitAll();
+                        authorize.requestMatchers(HttpMethod.POST, "/api/v1/auth/google/credential").permitAll();
                     }
                     authorize.anyRequest().denyAll();
                 })
@@ -49,7 +55,7 @@ public class ApiSecurityConfiguration {
     CorsConfigurationSource corsConfigurationSource(CorsProperties properties) {
         CorsConfiguration configuration = new CorsConfiguration();
         configuration.setAllowedOrigins(properties.allowedOrigins());
-        configuration.setAllowedMethods(List.of("GET", "OPTIONS"));
+        configuration.setAllowedMethods(List.of("GET", "POST", "OPTIONS"));
         configuration.setAllowedHeaders(List.of("Accept", "Content-Type"));
         configuration.setExposedHeaders(List.of("X-Correlation-Id"));
         configuration.setAllowCredentials(false);

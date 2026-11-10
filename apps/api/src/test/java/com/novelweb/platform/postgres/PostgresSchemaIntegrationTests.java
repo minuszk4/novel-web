@@ -44,7 +44,10 @@ import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.http.MediaType;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
@@ -55,6 +58,10 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 
@@ -66,7 +73,8 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
         "novel.auth.google.rate-limit-refill-interval=24h",
         "novel.auth.google.rate-limit-hmac-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
         "novel.auth.google.web-client-id=novel-web-integration-test.apps.googleusercontent.com",
-        "novel.auth.google.credential-callback-uri=https://api.example.test/api/v1/auth/google/credential"
+        "novel.auth.google.credential-callback-uri=https://api.example.test/api/v1/auth/google/credential",
+        "novel.web.cors.allowed-origins=https://app.example.test"
 })
 class PostgresSchemaIntegrationTests {
 
@@ -102,6 +110,9 @@ class PostgresSchemaIntegrationTests {
 
     @Autowired
     private ObjectMapper objectMapper;
+
+    @MockitoBean
+    private JwtDecoder jwtDecoder;
 
     @Test
     void liquibaseAppliesTheBaselineAndCreatesExpectedTables() throws SQLException {
@@ -376,16 +387,176 @@ class PostgresSchemaIntegrationTests {
     }
 
     @Test
-    void googleCredentialCallbackRemainsDeniedUntilTheFullFlowIsWired() throws Exception {
+    void googleCredentialCallbackRejectsMissingCsrfCookieBeforeDecodingCredential() throws Exception {
         MvcResult result = mockMvc.perform(post("/api/v1/auth/google/credential")
+                        .header("Origin", "https://app.example.test")
                         .contentType(MediaType.APPLICATION_FORM_URLENCODED)
-                        .param("credential", "synthetic-invalid-token")
-                        .param("g_csrf_token", "synthetic-csrf-token"))
+                        .content("credential=synthetic-invalid-token&g_csrf_token=synthetic-csrf-token"))
                 .andReturn();
 
-        assertEquals(403, result.getResponse().getStatus());
+        assertEquals(401, result.getResponse().getStatus());
         assertTrue(result.getResponse().getContentType().startsWith("application/problem+json"));
-        assertTrue(result.getResponse().getContentAsString().contains("FORBIDDEN"));
+        assertTrue(result.getResponse().getContentAsString().contains("SIGN_IN_FAILED"));
+        assertTrue(result.getResponse().getHeader("Cache-Control").contains("no-store"));
+        verify(jwtDecoder, never()).decode(anyString());
+    }
+
+    @Test
+    void googleCredentialCallbackRejectsMissingOriginAndUnsupportedMediaType() throws Exception {
+        MvcResult missingOrigin = mockMvc.perform(post("/api/v1/auth/google/credential")
+                        .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                        .content("credential=synthetic-invalid-token&g_csrf_token=synthetic-csrf-token"))
+                .andReturn();
+        assertEquals(403, missingOrigin.getResponse().getStatus());
+        assertTrue(missingOrigin.getResponse().getContentAsString().contains("INVALID_ORIGIN"));
+
+        MvcResult wrongContentType = mockMvc.perform(post("/api/v1/auth/google/credential")
+                        .header("Origin", "https://app.example.test")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andReturn();
+        assertEquals(415, wrongContentType.getResponse().getStatus());
+        assertTrue(wrongContentType.getResponse().getContentAsString().contains("UNSUPPORTED_MEDIA_TYPE"));
+        verify(jwtDecoder, never()).decode(anyString());
+    }
+
+    @Test
+    void googleCredentialCallbackRejectsOversizedAndDuplicateCredentialForms() throws Exception {
+        String oversized = "x".repeat(24 * 1024 + 1);
+        MvcResult tooLarge = mockMvc.perform(post("/api/v1/auth/google/credential")
+                        .header("Origin", "https://app.example.test")
+                        .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                        .content(oversized))
+                .andReturn();
+        assertEquals(413, tooLarge.getResponse().getStatus());
+
+        MvcResult duplicate = mockMvc.perform(post("/api/v1/auth/google/credential")
+                        .header("Origin", "https://app.example.test")
+                        .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                        .content("credential=first&credential=second&g_csrf_token=csrf-token")
+                        .cookie(new jakarta.servlet.http.Cookie("g_csrf_token", "csrf-token")))
+                .andReturn();
+        assertEquals(400, duplicate.getResponse().getStatus());
+        verify(jwtDecoder, never()).decode(anyString());
+    }
+
+    @Test
+    void googleCredentialCallbackCreatesIdentitySessionAndRedirectsToStoredPath() throws Exception {
+        String subject = "callback-" + UUID.randomUUID();
+        String email = subject + "@example.test";
+        GoogleAuthAttemptService.CreatedAttempt attempt = googleAuthAttemptService.create(
+                "/library/recent?sort=updated", UUID.randomUUID());
+        when(jwtDecoder.decode("synthetic-google-id-token"))
+                .thenReturn(googleJwt(attempt.nonce(), subject, email));
+
+        try {
+            MvcResult result = mockMvc.perform(post("/api/v1/auth/google/credential")
+                            .header("Origin", "https://app.example.test")
+                            .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                            .content("credential=synthetic-google-id-token&g_csrf_token=csrf-token")
+                            .cookie(new jakarta.servlet.http.Cookie("g_csrf_token", "csrf-token")))
+                    .andReturn();
+
+            assertEquals(303, result.getResponse().getStatus());
+            assertEquals("/library/recent?sort=updated", result.getResponse().getHeader("Location"));
+            assertTrue(result.getResponse().getHeader("Cache-Control").contains("no-store"));
+            assertEquals("no-cache", result.getResponse().getHeader("Pragma"));
+            assertEquals("no-referrer", result.getResponse().getHeader("Referrer-Policy"));
+            assertEquals("", result.getResponse().getContentAsString());
+
+            String setCookie = result.getResponse().getHeader("Set-Cookie");
+            assertTrue(setCookie.startsWith("__Host-novel_session="));
+            assertTrue(setCookie.contains("Path=/"));
+            assertTrue(setCookie.contains("Secure"));
+            assertTrue(setCookie.contains("HttpOnly"));
+            assertTrue(setCookie.contains("SameSite=Lax"));
+            String sessionToken = setCookie.substring("__Host-novel_session=".length(), setCookie.indexOf(';'));
+            assertTrue(sessionToken.matches("[A-Za-z0-9_-]{43}"));
+
+            UUID userId = userIdForGoogleSubject(subject);
+            assertEquals(1, identityCount(subject));
+            assertTrue(sessionHashMatches(sessionToken, userId), "only the cookie-token hash is stored");
+            assertEquals(userId, sessionService.validateAndTouch(sessionToken).orElseThrow().userId());
+        } finally {
+            deleteAuthAttempt(sha256(attempt.nonce()));
+            deleteGoogleSignInFixtures(subject);
+        }
+    }
+
+    @Test
+    void googleCredentialCallbackRotatesAnExistingSessionForTheSameAccount() throws Exception {
+        String subject = "rotate-callback-" + UUID.randomUUID();
+        String email = subject + "@example.test";
+        GoogleIdentityService.IdentityAccount account = googleIdentityService.findOrCreate(
+                verifiedIdentity(subject, email, "Callback Reader"));
+        SessionService.IssuedSession previous = sessionService.create(account.userId()).orElseThrow();
+        GoogleAuthAttemptService.CreatedAttempt attempt = googleAuthAttemptService.create(
+                "/app/home", UUID.randomUUID());
+        when(jwtDecoder.decode("synthetic-google-id-token"))
+                .thenReturn(googleJwt(attempt.nonce(), subject, email));
+
+        try {
+            MvcResult result = mockMvc.perform(post("/api/v1/auth/google/credential")
+                            .header("Origin", "https://app.example.test")
+                            .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                            .content("credential=synthetic-google-id-token&g_csrf_token=csrf-token")
+                            .cookie(
+                                    new jakarta.servlet.http.Cookie("g_csrf_token", "csrf-token"),
+                                    new jakarta.servlet.http.Cookie("__Host-novel_session", previous.cookieValue())))
+                    .andReturn();
+
+            assertEquals(303, result.getResponse().getStatus());
+            String setCookie = result.getResponse().getHeader("Set-Cookie");
+            String rotatedToken = setCookie.substring("__Host-novel_session=".length(), setCookie.indexOf(';'));
+            assertNotEquals(previous.cookieValue(), rotatedToken);
+            assertTrue(sessionService.validateAndTouch(previous.cookieValue()).isEmpty());
+            assertEquals(account.userId(), sessionService.validateAndTouch(rotatedToken).orElseThrow().userId());
+            assertTrue(sessionHashMatches(rotatedToken, account.userId()));
+            assertEquals(1, activeSessionCount(account.userId()));
+        } finally {
+            deleteAuthAttempt(sha256(attempt.nonce()));
+            deleteGoogleSignInFixtures(subject);
+        }
+    }
+
+    @Test
+    void googleCredentialCallbackRevokesThePreviousAccountSessionOnAccountSwitch() throws Exception {
+        String previousSubject = "previous-callback-" + UUID.randomUUID();
+        String previousEmail = previousSubject + "@example.test";
+        GoogleIdentityService.IdentityAccount previousAccount = googleIdentityService.findOrCreate(
+                verifiedIdentity(previousSubject, previousEmail, "Previous Reader"));
+        SessionService.IssuedSession previous = sessionService.create(previousAccount.userId()).orElseThrow();
+
+        String nextSubject = "next-callback-" + UUID.randomUUID();
+        String nextEmail = nextSubject + "@example.test";
+        GoogleAuthAttemptService.CreatedAttempt attempt = googleAuthAttemptService.create(
+                "/app/home", UUID.randomUUID());
+        when(jwtDecoder.decode("synthetic-google-id-token"))
+                .thenReturn(googleJwt(attempt.nonce(), nextSubject, nextEmail));
+
+        try {
+            MvcResult result = mockMvc.perform(post("/api/v1/auth/google/credential")
+                            .header("Origin", "https://app.example.test")
+                            .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                            .content("credential=synthetic-google-id-token&g_csrf_token=csrf-token")
+                            .cookie(
+                                    new jakarta.servlet.http.Cookie("g_csrf_token", "csrf-token"),
+                                    new jakarta.servlet.http.Cookie("__Host-novel_session", previous.cookieValue())))
+                    .andReturn();
+
+            assertEquals(303, result.getResponse().getStatus());
+            String setCookie = result.getResponse().getHeader("Set-Cookie");
+            String nextToken = setCookie.substring("__Host-novel_session=".length(), setCookie.indexOf(';'));
+            UUID nextUserId = userIdForGoogleSubject(nextSubject);
+            assertTrue(sessionService.validateAndTouch(previous.cookieValue()).isEmpty());
+            assertEquals(nextUserId, sessionService.validateAndTouch(nextToken).orElseThrow().userId());
+            assertEquals(0, activeSessionCount(previousAccount.userId()));
+            assertEquals(1, activeSessionCount(nextUserId));
+        } finally {
+            deleteAuthAttempt(sha256(attempt.nonce()));
+            deleteGoogleSignInFixtures(previousSubject);
+            deleteGoogleSignInFixtures(nextSubject);
+        }
     }
 
     @Test
@@ -863,10 +1034,16 @@ class PostgresSchemaIntegrationTests {
                      "SELECT id_hash FROM sessions WHERE user_id = ?")) {
             select.setObject(1, userId);
             try (ResultSet row = select.executeQuery()) {
-                assertTrue(row.next());
-                boolean matches = MessageDigest.isEqual(sessionTokenHash(token), row.getBytes(1));
-                assertFalse(row.next(), "the test user should have exactly one session");
-                return matches;
+                byte[] expectedHash = sessionTokenHash(token);
+                byte[] rawToken = token.getBytes(StandardCharsets.US_ASCII);
+                boolean hashMatches = false;
+                while (row.next()) {
+                    byte[] storedHash = row.getBytes(1);
+                    hashMatches |= MessageDigest.isEqual(expectedHash, storedHash);
+                    assertFalse(MessageDigest.isEqual(rawToken, storedHash),
+                            "the database must never store the raw cookie token");
+                }
+                return hashMatches;
             }
         }
     }
@@ -972,6 +1149,22 @@ class PostgresSchemaIntegrationTests {
         return GoogleIdentityTestFixtures.verifiedIdentity(subject, email, name);
     }
 
+    private static Jwt googleJwt(String nonce, String subject, String email) {
+        Instant now = Instant.now();
+        return Jwt.withTokenValue("synthetic-google-id-token")
+                .header("alg", "RS256")
+                .claim("iss", "https://accounts.google.com")
+                .claim("aud", List.of("novel-web-integration-test.apps.googleusercontent.com"))
+                .claim("sub", subject)
+                .claim("email", email)
+                .claim("email_verified", true)
+                .claim("name", "Integration Reader")
+                .claim("nonce", nonce)
+                .issuedAt(now.minusSeconds(10))
+                .expiresAt(now.plusSeconds(300))
+                .build();
+    }
+
     private static byte[] sha256(String value) throws NoSuchAlgorithmException {
         return MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8));
     }
@@ -1014,6 +1207,50 @@ class PostgresSchemaIntegrationTests {
             try (ResultSet row = select.executeQuery()) {
                 row.next();
                 return row.getInt(1);
+            }
+        }
+    }
+
+    private UUID userIdForGoogleSubject(String subject) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement("""
+                     SELECT user_id FROM external_identities
+                     WHERE issuer = 'https://accounts.google.com' AND subject = ?
+                     """)) {
+            select.setString(1, subject);
+            try (ResultSet row = select.executeQuery()) {
+                assertTrue(row.next());
+                return row.getObject(1, UUID.class);
+            }
+        }
+    }
+
+    private void deleteGoogleSignInFixtures(String subject) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement("""
+                     SELECT user_id FROM external_identities
+                     WHERE issuer = 'https://accounts.google.com' AND subject = ?
+                     """)) {
+            select.setString(1, subject);
+            UUID userId = null;
+            try (ResultSet row = select.executeQuery()) {
+                if (row.next()) {
+                    userId = row.getObject(1, UUID.class);
+                }
+            }
+            if (userId == null) {
+                return;
+            }
+            for (String table : List.of("sessions", "policy_acceptances", "auth_events", "external_identities")) {
+                try (PreparedStatement delete = connection.prepareStatement(
+                        "DELETE FROM " + table + " WHERE user_id = ?")) {
+                    delete.setObject(1, userId);
+                    delete.executeUpdate();
+                }
+            }
+            try (PreparedStatement deleteUser = connection.prepareStatement("DELETE FROM users WHERE id = ?")) {
+                deleteUser.setObject(1, userId);
+                deleteUser.executeUpdate();
             }
         }
     }

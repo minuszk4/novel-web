@@ -109,15 +109,24 @@ paths:
     post:
       operationId: submitGoogleCredential
       tags: [Auth]
-      x-implementation-status: planned
+      x-implementation-status: implemented-postgres-profile
       summary: Validate GIS credential and establish an application session
       description: >-
         Fixed GIS redirect callback. This is the only unauthenticated mutation exempt from the
         application CSRF header: it requires the GIS double-submit `g_csrf_token` cookie and matching
-        form field, a live one-use nonce attempt, valid Google claims/signature and an allowed origin.
-        Google posts the credential directly to the API; Angular must not receive or store it.
+        form field, a live one-use nonce attempt, valid Google claims/signature and an exact Origin in
+        the configured CORS allowlist. It accepts only UTF-8 form-urlencoded bodies up to 24 KiB.
+        Google posts the credential directly to the API; Angular must not receive or store it. Success
+        creates or rotates an opaque app session and redirects only to the path stored at bootstrap.
       security: []
       parameters:
+        - name: Origin
+          in: header
+          required: true
+          description: Browser origin; must exactly match a configured frontend CORS origin.
+          schema:
+            type: string
+            format: uri
         - name: g_csrf_token
           in: cookie
           required: true
@@ -125,7 +134,7 @@ paths:
           schema:
             type: string
             minLength: 1
-            maxLength: 4096
+            maxLength: 512
       requestBody:
         required: true
         content:
@@ -136,6 +145,18 @@ paths:
         '303':
           description: Credential accepted; browser is redirected to the server-stored safe return path.
           headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
+            Referrer-Policy:
+              schema:
+                type: string
+                const: no-referrer
             Location:
               required: true
               description: Same-origin relative application path only.
@@ -145,7 +166,7 @@ paths:
             Set-Cookie:
               required: true
               description: >-
-                Rotated opaque session cookie with Secure, HttpOnly, SameSite=Lax, Path=/ and no Domain.
+                Issued or rotated opaque session cookie with Secure, HttpOnly, SameSite=Lax, Path=/ and no Domain.
                 The cookie value is never returned in JSON or logged.
               schema:
                 type: string
@@ -153,13 +174,13 @@ paths:
           $ref: '#/components/responses/Problem'
         '401':
           $ref: '#/components/responses/Problem'
-        '409':
-          description: Generic account-link or identity conflict; does not disclose account existence.
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/Problem'
-        '429':
+        '403':
+          $ref: '#/components/responses/Problem'
+        '413':
+          $ref: '#/components/responses/Problem'
+        '415':
+          $ref: '#/components/responses/Problem'
+        '503':
           $ref: '#/components/responses/Problem'
   /api/v1/auth/csrf:
     get:
@@ -1249,7 +1270,7 @@ components:
           format: date-time
     GoogleCredentialForm:
       type: object
-      additionalProperties: false
+      additionalProperties: true
       required: [credential, g_csrf_token]
       properties:
         credential:
@@ -1260,7 +1281,7 @@ components:
         g_csrf_token:
           type: string
           minLength: 1
-          maxLength: 4096
+          maxLength: 512
           description: Must exactly match the g_csrf_token cookie.
     CsrfToken:
       type: object
