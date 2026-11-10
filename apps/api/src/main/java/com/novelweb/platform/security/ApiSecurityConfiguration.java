@@ -59,6 +59,10 @@ public class ApiSecurityConfiguration {
                                 "/api/v1/auth/policies/terms/*",
                                 "/api/v1/auth/policies/privacy-notice/*").permitAll();
                         authorize.requestMatchers(HttpMethod.POST, "/api/v1/auth/policies/accept").permitAll();
+                        authorize.requestMatchers(HttpMethod.GET,
+                                "/api/v1/imports/rights-statement/current").permitAll();
+                        authorize.requestMatchers(HttpMethod.POST,
+                                "/api/v1/imports/rights-statement/acceptance").permitAll();
                     }
                     authorize.anyRequest().denyAll();
                 })
@@ -80,7 +84,8 @@ public class ApiSecurityConfiguration {
         CorsConfiguration apiConfiguration = new CorsConfiguration();
         apiConfiguration.setAllowedOrigins(properties.allowedOrigins());
         apiConfiguration.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
-        apiConfiguration.setAllowedHeaders(List.of("Accept", "Content-Type", SessionCsrfTokenService.TOKEN_HEADER_NAME));
+        apiConfiguration.setAllowedHeaders(List.of(
+                "Accept", "Content-Type", "Idempotency-Key", SessionCsrfTokenService.TOKEN_HEADER_NAME));
         apiConfiguration.setExposedHeaders(List.of("X-Correlation-Id"));
         apiConfiguration.setAllowCredentials(true);
         apiConfiguration.setMaxAge(Duration.ofMinutes(30));

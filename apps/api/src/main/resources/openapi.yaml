@@ -1,12 +1,13 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 1.4.0
+  version: 2.0.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
-    implemented only in the configured PostgreSQL profile. Remaining Auth, Library and Reader operations tagged
-    planned describe the G2 target.
+    implemented only in the configured PostgreSQL profile. The import-rights statement read and acceptance routes
+    are also implemented in that profile; upload/staging and remaining Library and Reader operations tagged planned
+    describe the G2 target.
 servers:
   - url: http://127.0.0.1:8080
 tags:
@@ -16,7 +17,7 @@ tags:
     description: Google GIS, session and required policy routes are available only in the PostgreSQL profile; other Auth operations remain planned.
     x-implementation-status: partial
   - name: Library
-    description: Library/work listing and personal reading-state/collection operations are available in the PostgreSQL profile; import and other operations remain planned for G2.
+    description: Library/work listing, personal reading-state/collection and import-rights statement/receipt operations are available in the PostgreSQL profile; upload/staging and other operations remain planned for G2.
     x-implementation-status: partial
   - name: Reader
     description: Planned source-only reader, preferences, progress and bookmark operations for G2.
@@ -1010,17 +1011,96 @@ paths:
     get:
       operationId: getCurrentImportRightsStatement
       tags: [Library]
-      x-implementation-status: planned
+      x-implementation-status: implemented
       summary: Get the exact current private-import rights statement
-      description: Returns display copy and version only; this route creates no import job, storage key or upload target.
+      description: Returns exact display copy and version only; returns 503 until owner-approved content is provisioned. This route creates no import job, storage key or upload target.
       security: []
       responses:
         '200':
           description: Current import-rights statement
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ImportRightsStatement'
+        '503':
+          description: No effective owner-approved statement is configured, or its store is unavailable.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+  /api/v1/imports/rights-statement/acceptance:
+    post:
+      operationId: acceptCurrentImportRightsStatement
+      tags: [Library]
+      x-implementation-status: implemented
+      summary: Record the caller's explicit private-import rights confirmation
+      description: >-
+        Requires a valid session, session-bound CSRF token, current Terms and Privacy acceptance, the exact current
+        approved statement version, confirmed=true and a canonical Idempotency-Key. Stores append-only attestation
+        fields containing the actor, approved version, server timestamp and SHA-256 of the exact statement text; a
+        later import may set only the receipt's one-time consumed marker. Each new key represents one confirmation
+        intent; a retry with the same actor/key returns the original receipt. This operation creates no import job,
+        object key or upload target.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: Canonical UUID reused only for retrying this exact confirmation request.
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImportRightsAcceptanceRequest'
+      responses:
+        '200':
+          description: Existing or newly recorded acceptance receipt
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportRightsAcceptance'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          description: Current Terms or Privacy Notice acceptance is required, or session-bound CSRF validation failed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: The submitted rights statement version is stale or the idempotency key was reused for another version; no new acceptance is recorded.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Explicit confirmation or a valid statement version is missing.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '503':
+          description: The approved rights statement or required policy catalog is unavailable.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
   /api/v1/imports:
     post:
       operationId: createPrivateImport
@@ -1028,9 +1108,10 @@ paths:
       x-implementation-status: planned
       summary: Create an owned staging import after rights and policy checks
       description: >-
-        The server derives the owner from the session and validates the current statement version, explicit
-        rights confirmation, file limits and account policy consent before creating a job, object key or
-        short-lived upload target. Browser filename, MIME type and declared size are untrusted hints.
+        The server derives the owner from the session and validates/consumes the actor-bound one-time rights
+        acceptance receipt, current statement version, explicit rights confirmation, file limits and account policy
+        consent in the same transaction that creates a job. Only after that transaction succeeds may a short-lived
+        upload target be returned. Browser filename, MIME type and declared size are untrusted hints.
       security:
         - appSession: []
           csrfToken: []
@@ -2189,14 +2270,48 @@ components:
           minLength: 1
           maxLength: 8000
           description: Exact approved statement shown before any file bytes are uploaded or processed.
+    ImportRightsAcceptanceRequest:
+      type: object
+      additionalProperties: false
+      required: [statementVersion, confirmed]
+      properties:
+        statementVersion:
+          type: string
+          pattern: '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
+          maxLength: 64
+        confirmed:
+          type: boolean
+          const: true
+    ImportRightsAcceptance:
+      type: object
+      additionalProperties: false
+      required: [id, statementVersion, acceptedAt, statementSha256]
+      properties:
+        id:
+          type: string
+          format: uuid
+        statementVersion:
+          type: string
+          maxLength: 64
+        acceptedAt:
+          type: string
+          format: date-time
+        statementSha256:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+          description: SHA-256 of the exact UTF-8 display text acknowledged by the caller.
     CreateImportRequest:
       type: object
       additionalProperties: false
-      required: [libraryId, source, rightsStatementVersion, rightsConfirmed]
+      required: [libraryId, source, rightsAcceptanceId, rightsStatementVersion, rightsConfirmed]
       properties:
         libraryId:
           type: string
           format: uuid
+        rightsAcceptanceId:
+          type: string
+          format: uuid
+          description: One-time actor-bound receipt from POST /imports/rights-statement/acceptance; consumed atomically when the import job is created.
         source:
           $ref: '#/components/schemas/ImportSourceDescriptor'
         rightsStatementVersion:

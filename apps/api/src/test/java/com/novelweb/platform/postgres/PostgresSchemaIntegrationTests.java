@@ -15,6 +15,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.HashSet;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -122,7 +123,9 @@ class PostgresSchemaIntegrationTests {
             "workspace_members",
             "library_reading_states",
             "library_collections",
-            "library_collection_works");
+            "library_collection_works",
+            "import_rights_statements",
+            "import_rights_acceptances");
 
     @Autowired
     private DataSource dataSource;
@@ -188,7 +191,7 @@ class PostgresSchemaIntegrationTests {
                      "SELECT COUNT(*) FROM databasechangelog");
              ResultSet changesets = changesetCount.executeQuery()) {
             changesets.next();
-            assertEquals(43, changesets.getInt(1), "unexpected number of applied changesets");
+            assertEquals(51, changesets.getInt(1), "unexpected number of applied changesets");
         }
 
         Set<String> actualTables = new HashSet<>();
@@ -206,6 +209,164 @@ class PostgresSchemaIntegrationTests {
             }
         }
         assertEquals(EXPECTED_APPLICATION_TABLES, actualTables);
+    }
+
+    @Test
+    void importRightsStatementIsApprovedVersionedFailClosedAndAudited() throws Exception {
+        UUID actorId = createSessionTestUser("Import Rights Reader");
+        UUID blockedActorId = createSessionTestUser("Policy Blocked Import Reader");
+        UUID approverId = createSessionTestUser("Import Rights Approver");
+        String statementVersion = "private-import-test-v1";
+        String statementText = "# Synthetic import rights\n\nFor private test import only.";
+        try {
+            MvcResult unconfigured = mockMvc.perform(get("/api/v1/imports/rights-statement/current")).andReturn();
+            assertEquals(503, unconfigured.getResponse().getStatus());
+            assertTrue(unconfigured.getResponse().getContentAsString()
+                    .contains("IMPORT_RIGHTS_STATEMENT_NOT_CONFIGURED"));
+
+            insertImportRightsStatement(statementVersion, statementText, approverId, "APPROVED", -1);
+            insertImportRightsStatement("private-import-draft-v2", "Draft copy", null, "DRAFT", 3);
+            MvcResult current = mockMvc.perform(get("/api/v1/imports/rights-statement/current")).andReturn();
+            assertEquals(200, current.getResponse().getStatus());
+            assertTrue(current.getResponse().getHeader("Cache-Control").contains("no-store"));
+            JsonNode currentBody = objectMapper.readTree(current.getResponse().getContentAsString());
+            assertEquals(statementVersion, currentBody.path("version").asText());
+            assertEquals(statementText, currentBody.path("displayText").asText());
+
+            SQLException immutable = assertThrows(SQLException.class, () -> {
+                try (Connection connection = dataSource.getConnection();
+                     PreparedStatement update = connection.prepareStatement(
+                             "UPDATE import_rights_statements SET display_text = 'tampered' WHERE version = ?")) {
+                    update.setString(1, statementVersion);
+                    update.executeUpdate();
+                }
+            });
+            assertEquals("55000", immutable.getSQLState());
+
+            SessionService.IssuedSession blockedSession = sessionService.create(blockedActorId).orElseThrow();
+            jakarta.servlet.http.Cookie blockedCookie = new jakarta.servlet.http.Cookie(
+                    "__Host-novel_session", blockedSession.cookieValue());
+            String blockedCsrf = csrfTokenService.tokenFor(blockedSession.cookieValue());
+            MvcResult missingConfirmation = mockMvc.perform(post("/api/v1/imports/rights-statement/acceptance")
+                            .cookie(blockedCookie)
+                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, blockedCsrf)
+                            .header("Idempotency-Key", UUID.randomUUID().toString())
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"statementVersion\":\"" + statementVersion
+                                    + "\",\"confirmed\":false}"))
+                    .andReturn();
+            assertEquals(422, missingConfirmation.getResponse().getStatus());
+            assertEquals(0, importRightsAcceptanceCount(blockedActorId));
+
+            MvcResult policyBlocked = mockMvc.perform(post("/api/v1/imports/rights-statement/acceptance")
+                            .cookie(blockedCookie)
+                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, blockedCsrf)
+                            .header("Idempotency-Key", UUID.randomUUID().toString())
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"statementVersion\":\"" + statementVersion
+                                    + "\",\"confirmed\":true}"))
+                    .andReturn();
+            assertEquals(403, policyBlocked.getResponse().getStatus());
+            assertTrue(policyBlocked.getResponse().getContentAsString().contains("POLICY_ACCEPTANCE_REQUIRED"));
+            assertEquals(0, importRightsAcceptanceCount(blockedActorId));
+
+            addCurrentPolicyAcceptances(actorId);
+            SessionService.IssuedSession actorSession = sessionService.create(actorId).orElseThrow();
+            jakarta.servlet.http.Cookie actorCookie = new jakarta.servlet.http.Cookie(
+                    "__Host-novel_session", actorSession.cookieValue());
+            String actorCsrf = csrfTokenService.tokenFor(actorSession.cookieValue());
+            String acceptanceKey = UUID.randomUUID().toString();
+
+            MvcResult stale = mockMvc.perform(post("/api/v1/imports/rights-statement/acceptance")
+                            .cookie(actorCookie)
+                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                            .header("Idempotency-Key", UUID.randomUUID().toString())
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"statementVersion\":\"old-version\",\"confirmed\":true}"))
+                    .andReturn();
+            assertEquals(409, stale.getResponse().getStatus());
+            assertTrue(stale.getResponse().getContentAsString().contains(statementVersion));
+            assertEquals(0, importRightsAcceptanceCount(actorId));
+
+            String acceptedBody = "{\"statementVersion\":\"" + statementVersion + "\",\"confirmed\":true}";
+            MvcResult accepted = mockMvc.perform(post("/api/v1/imports/rights-statement/acceptance")
+                            .cookie(actorCookie)
+                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                            .header("Idempotency-Key", acceptanceKey)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(acceptedBody))
+                    .andReturn();
+            assertEquals(200, accepted.getResponse().getStatus());
+            JsonNode receipt = objectMapper.readTree(accepted.getResponse().getContentAsString());
+            assertEquals(statementVersion, receipt.path("statementVersion").asText());
+            assertEquals(HexFormat.of().formatHex(sha256(statementText)), receipt.path("statementSha256").asText());
+            assertEquals(1, importRightsAcceptanceCount(actorId));
+            SQLException immutableAudit = assertThrows(SQLException.class, () -> {
+                try (Connection connection = dataSource.getConnection();
+                     PreparedStatement update = connection.prepareStatement(
+                             "UPDATE import_rights_acceptances SET source = 'tampered' WHERE id = ?")) {
+                    update.setObject(1, UUID.fromString(receipt.path("id").asText()));
+                    update.executeUpdate();
+                }
+            });
+            assertEquals("55000", immutableAudit.getSQLState());
+
+            MvcResult retry = mockMvc.perform(post("/api/v1/imports/rights-statement/acceptance")
+                            .cookie(actorCookie)
+                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                            .header("Idempotency-Key", acceptanceKey)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(acceptedBody))
+                    .andReturn();
+            JsonNode retryReceipt = objectMapper.readTree(retry.getResponse().getContentAsString());
+            assertEquals(200, retry.getResponse().getStatus());
+            assertEquals(receipt.path("id").asText(), retryReceipt.path("id").asText());
+            assertEquals(receipt.path("acceptedAt").asText(), retryReceipt.path("acceptedAt").asText());
+            assertEquals(1, importRightsAcceptanceCount(actorId));
+
+            insertImportRightsStatement("private-import-test-v2", "Second approved copy", approverId,
+                    "APPROVED", -1);
+            MvcResult lateRetry = mockMvc.perform(post("/api/v1/imports/rights-statement/acceptance")
+                            .cookie(actorCookie)
+                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                            .header("Idempotency-Key", acceptanceKey)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(acceptedBody))
+                    .andReturn();
+            JsonNode lateRetryReceipt = objectMapper.readTree(lateRetry.getResponse().getContentAsString());
+            assertEquals(200, lateRetry.getResponse().getStatus());
+            assertEquals(receipt.path("id").asText(), lateRetryReceipt.path("id").asText());
+
+            MvcResult reusedKey = mockMvc.perform(post("/api/v1/imports/rights-statement/acceptance")
+                            .cookie(actorCookie)
+                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                            .header("Idempotency-Key", acceptanceKey)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"statementVersion\":\"private-import-test-v2\",\"confirmed\":true}"))
+                    .andReturn();
+            assertEquals(409, reusedKey.getResponse().getStatus());
+            assertTrue(reusedKey.getResponse().getContentAsString().contains("IDEMPOTENCY_KEY_REUSED"));
+            assertEquals(1, importRightsAcceptanceCount(actorId));
+
+            MvcResult secondAcceptance = mockMvc.perform(post("/api/v1/imports/rights-statement/acceptance")
+                            .cookie(actorCookie)
+                            .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                            .header("Idempotency-Key", UUID.randomUUID().toString())
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"statementVersion\":\"private-import-test-v2\",\"confirmed\":true}"))
+                    .andReturn();
+            assertEquals(200, secondAcceptance.getResponse().getStatus());
+            assertEquals(2, importRightsAcceptanceCount(actorId));
+        } finally {
+            deleteImportRightsTestAcceptances(actorId);
+            deleteImportRightsTestAcceptances(blockedActorId);
+            deleteSessionTestUser(actorId);
+            deleteSessionTestUser(blockedActorId);
+            deleteImportRightsTestStatement(statementVersion);
+            deleteImportRightsTestStatement("private-import-test-v2");
+            deleteImportRightsTestStatement("private-import-draft-v2");
+            deleteSessionTestUser(approverId);
+        }
     }
 
     @Test
@@ -1211,6 +1372,8 @@ class PostgresSchemaIntegrationTests {
                 "google_auth_attempts",
                 "google_auth_bootstrap_rate_limits",
                 "policy_acceptances",
+                "import_rights_acceptances",
+                "import_rights_statements",
                 "auth_events",
                 "session_revoke_confirmations",
                 "workspace_members",
@@ -2739,6 +2902,88 @@ class PostgresSchemaIntegrationTests {
         }
     }
 
+    private void insertImportRightsStatement(
+            String version, String text, UUID approverId, String status, int effectiveDayOffset) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement insert = connection.prepareStatement("""
+                     INSERT INTO import_rights_statements
+                         (version, effective_at, display_text, status, approved_at, approved_by)
+                     VALUES (?, clock_timestamp() + (? * INTERVAL '1 day'), ?, ?,
+                             CASE WHEN ? = 'APPROVED' THEN clock_timestamp() END, ?)
+                     """)) {
+            insert.setString(1, version);
+            insert.setInt(2, effectiveDayOffset);
+            insert.setString(3, text);
+            insert.setString(4, status);
+            insert.setString(5, status);
+            insert.setObject(6, approverId);
+            assertEquals(1, insert.executeUpdate());
+        }
+    }
+
+    private void deleteImportRightsTestStatement(String version) throws SQLException {
+        try (Connection connection = dataSource.getConnection()) {
+            connection.setAutoCommit(false);
+            try {
+                // The disposable integration database removes only synthetic approved content during teardown.
+                try (PreparedStatement disable = connection.prepareStatement(
+                        "ALTER TABLE import_rights_statements DISABLE TRIGGER trg_import_rights_statement_immutable")) {
+                    disable.execute();
+                }
+                try (PreparedStatement delete = connection.prepareStatement(
+                        "DELETE FROM import_rights_statements WHERE version = ?")) {
+                    delete.setString(1, version);
+                    delete.executeUpdate();
+                }
+                try (PreparedStatement enable = connection.prepareStatement(
+                        "ALTER TABLE import_rights_statements ENABLE TRIGGER trg_import_rights_statement_immutable")) {
+                    enable.execute();
+                }
+                connection.commit();
+            } catch (SQLException exception) {
+                connection.rollback();
+                throw exception;
+            }
+        }
+    }
+
+    private void deleteImportRightsTestAcceptances(UUID userId) throws SQLException {
+        try (Connection connection = dataSource.getConnection()) {
+            connection.setAutoCommit(false);
+            try {
+                try (PreparedStatement disable = connection.prepareStatement(
+                        "ALTER TABLE import_rights_acceptances DISABLE TRIGGER trg_import_rights_acceptance_immutable")) {
+                    disable.execute();
+                }
+                try (PreparedStatement delete = connection.prepareStatement(
+                        "DELETE FROM import_rights_acceptances WHERE user_id = ?")) {
+                    delete.setObject(1, userId);
+                    delete.executeUpdate();
+                }
+                try (PreparedStatement enable = connection.prepareStatement(
+                        "ALTER TABLE import_rights_acceptances ENABLE TRIGGER trg_import_rights_acceptance_immutable")) {
+                    enable.execute();
+                }
+                connection.commit();
+            } catch (SQLException exception) {
+                connection.rollback();
+                throw exception;
+            }
+        }
+    }
+
+    private int importRightsAcceptanceCount(UUID userId) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement(
+                     "SELECT COUNT(*) FROM import_rights_acceptances WHERE user_id = ?")) {
+            select.setObject(1, userId);
+            try (ResultSet rows = select.executeQuery()) {
+                assertTrue(rows.next());
+                return rows.getInt(1);
+            }
+        }
+    }
+
     private int policyAcceptanceCount(UUID userId) throws SQLException {
         try (Connection connection = dataSource.getConnection();
              PreparedStatement select = connection.prepareStatement(
@@ -2860,6 +3105,11 @@ class PostgresSchemaIntegrationTests {
                     "DELETE FROM policy_acceptances WHERE user_id = ?")) {
                 deletePolicyAcceptances.setObject(1, userId);
                 deletePolicyAcceptances.executeUpdate();
+            }
+            try (PreparedStatement deleteRightsAcceptances = connection.prepareStatement(
+                    "DELETE FROM import_rights_acceptances WHERE user_id = ?")) {
+                deleteRightsAcceptances.setObject(1, userId);
+                deleteRightsAcceptances.executeUpdate();
             }
             try (PreparedStatement deleteIdentities = connection.prepareStatement(
                     "DELETE FROM external_identities WHERE user_id = ?")) {
