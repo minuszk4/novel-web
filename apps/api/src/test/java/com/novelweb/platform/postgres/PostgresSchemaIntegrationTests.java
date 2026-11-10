@@ -1,5 +1,6 @@
 package com.novelweb.platform.postgres;
 
+import java.io.ByteArrayInputStream;
 import java.net.InetAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -14,6 +15,7 @@ import java.sql.Savepoint;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
@@ -56,6 +58,7 @@ import com.novelweb.library.LibraryUserStateRepository;
 import com.novelweb.library.LibraryUserStateService;
 import com.novelweb.library.WorkspaceRepository;
 import com.novelweb.library.WorkspaceService;
+import com.novelweb.library.imports.ImportStagingCleanupService;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
@@ -102,6 +105,8 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
         "novel.imports.staging.max-upload-bytes=1024",
         "novel.imports.staging.upload-target-ttl=10m",
         "novel.imports.staging.job-ttl=1h",
+        "novel.imports.staging.cleanup-delay=1h",
+        "novel.imports.staging.cleanup-batch-size=100",
         "novel.web.cors.allowed-origins=https://app.example.test"
 })
 class PostgresSchemaIntegrationTests {
@@ -171,6 +176,9 @@ class PostgresSchemaIntegrationTests {
     private com.novelweb.library.imports.ImportStagingFileStore importStagingFileStore;
 
     @Autowired
+    private ImportStagingCleanupService importStagingCleanupService;
+
+    @Autowired
     private MockMvc mockMvc;
 
     @Autowired
@@ -204,7 +212,7 @@ class PostgresSchemaIntegrationTests {
                      "SELECT COUNT(*) FROM databasechangelog");
              ResultSet changesets = changesetCount.executeQuery()) {
             changesets.next();
-            assertEquals(55, changesets.getInt(1), "unexpected number of applied changesets");
+            assertEquals(59, changesets.getInt(1), "unexpected number of applied changesets");
         }
 
         Set<String> actualTables = new HashSet<>();
@@ -697,6 +705,70 @@ class PostgresSchemaIntegrationTests {
             deleteSessionTestUser(otherActorId);
             deleteSessionTestUser(blockedActorId);
             deleteImportRightsTestStatement(version);
+            deleteSessionTestUser(approverId);
+        }
+    }
+
+    @Test
+    void expiredImportStagingIsDeletedAndFailedCleanupCanRetry() throws Exception {
+        UUID actorId = createSessionTestUser("Import Retention Owner");
+        UUID approverId = createSessionTestUser("Import Retention Approver");
+        var library = libraryService.createLibrary(actorId, "Retention test shelf");
+        String version = "private-import-retention-v1";
+        String statementText = "Synthetic test-only import retention statement.";
+        UUID blockedJobId = UUID.randomUUID();
+        UUID expiredUploadedId = UUID.randomUUID();
+        UUID expiredPendingId = UUID.randomUUID();
+        UUID activeUploadedId = UUID.randomUUID();
+        Path blockedTarget = importStagingFileStore.targetPath(blockedJobId);
+        byte[] content = "temporary private import bytes".getBytes(StandardCharsets.UTF_8);
+        try {
+            insertImportRightsStatement(version, statementText, approverId, "APPROVED", -10);
+            insertImportJobFixture(blockedJobId, actorId, library.id(), UUID.randomUUID(), version,
+                    "uploaded", content, 4);
+            insertImportJobFixture(expiredUploadedId, actorId, library.id(), UUID.randomUUID(), version,
+                    "uploaded", content, 1);
+            insertImportJobFixture(expiredPendingId, actorId, library.id(), UUID.randomUUID(), version,
+                    "upload_pending", content, 1);
+            insertImportJobFixture(activeUploadedId, actorId, library.id(), UUID.randomUUID(), version,
+                    "uploaded", content, 0);
+
+            importStagingFileStore.store(expiredUploadedId, new ByteArrayInputStream(content), content.length);
+            importStagingFileStore.store(activeUploadedId, new ByteArrayInputStream(content), content.length);
+            Files.createDirectories(blockedTarget);
+            Files.write(blockedTarget.resolve("keep.bin"), content);
+
+            assertThrows(IllegalStateException.class, importStagingCleanupService::cleanupExpiredStaging);
+            assertEquals("expired", importJobStatus(blockedJobId));
+            assertNull(importJobStagingFileDeletedAt(blockedJobId));
+            assertTrue(Files.exists(blockedTarget.resolve("keep.bin")));
+            assertEquals("expired", importJobStatus(expiredUploadedId));
+            assertEquals("expired", importJobStatus(expiredPendingId));
+
+            Files.delete(blockedTarget.resolve("keep.bin"));
+            Files.delete(blockedTarget);
+            assertEquals(3, importStagingCleanupService.cleanupExpiredStaging());
+
+            assertFalse(Files.exists(importStagingFileStore.targetPath(expiredUploadedId)));
+            assertFalse(Files.exists(importStagingFileStore.targetPath(expiredPendingId)));
+            assertEquals("expired", importJobStatus(expiredUploadedId));
+            assertEquals("expired", importJobStatus(expiredPendingId));
+            assertTrue(importJobStagingFileDeletedAt(blockedJobId) != null);
+            assertTrue(importJobStagingFileDeletedAt(expiredUploadedId) != null);
+            assertTrue(importJobStagingFileDeletedAt(expiredPendingId) != null);
+            assertEquals(0, importStagingCleanupService.cleanupExpiredStaging());
+
+            assertEquals("uploaded", importJobStatus(activeUploadedId));
+            assertNull(importJobStagingFileDeletedAt(activeUploadedId));
+            assertTrue(Files.exists(importStagingFileStore.targetPath(activeUploadedId)));
+        } finally {
+            if (Files.exists(blockedTarget.resolve("keep.bin"))) Files.delete(blockedTarget.resolve("keep.bin"));
+            Files.deleteIfExists(blockedTarget);
+            deleteImportJobs(actorId);
+            deleteImportRightsTestAcceptances(actorId);
+            deleteLibrary(library.id());
+            deleteImportRightsTestStatement(version);
+            deleteSessionTestUser(actorId);
             deleteSessionTestUser(approverId);
         }
     }
@@ -3272,6 +3344,79 @@ class PostgresSchemaIntegrationTests {
         }
     }
 
+    private void insertImportJobFixture(
+            UUID jobId,
+            UUID userId,
+            UUID libraryId,
+            UUID receiptId,
+            String version,
+            String status,
+            byte[] content,
+            int expiryDaysAgo) throws SQLException, NoSuchAlgorithmException {
+        Instant now = Instant.now();
+        Instant expiresAt = expiryDaysAgo > 0
+                ? now.minusSeconds((long) expiryDaysAgo * 86_400)
+                : now.plusSeconds(3_600);
+        Instant createdAt = expiryDaysAgo > 0 ? expiresAt.minusSeconds(172_800) : now;
+        Instant tokenExpiresAt = expiresAt.minusSeconds(1_800);
+        Instant uploadedAt = createdAt.plusSeconds(5);
+        String text = "Synthetic test-only import retention statement.";
+        insertImportRightsAcceptanceAt(
+                userId, receiptId, version, text, createdAt.minusSeconds(60), createdAt.minusSeconds(30));
+
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement insert = connection.prepareStatement("""
+                     INSERT INTO import_jobs (
+                         id, user_id, library_id, rights_acceptance_id, rights_statement_version,
+                         original_filename, declared_content_type, declared_size_bytes, storage_key,
+                         upload_token_sha256, upload_token_expires_at, status, created_at,
+                         rights_confirmed_at, expires_at, uploaded_at, actual_size_bytes, content_sha256)
+                     VALUES (?, ?, ?, ?, ?, 'retention-test.txt', 'text/plain', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     """)) {
+            insert.setObject(1, jobId);
+            insert.setObject(2, userId);
+            insert.setObject(3, libraryId);
+            insert.setObject(4, receiptId);
+            insert.setString(5, version);
+            insert.setLong(6, content.length);
+            insert.setString(7, "staging/" + jobId + ".upload");
+            insert.setBytes(8, "upload_pending".equals(status)
+                    ? sha256(("cleanup-" + jobId).getBytes(StandardCharsets.US_ASCII)) : null);
+            insert.setObject(9, "upload_pending".equals(status)
+                    ? OffsetDateTime.ofInstant(tokenExpiresAt, ZoneOffset.UTC) : null);
+            insert.setString(10, status);
+            insert.setObject(11, OffsetDateTime.ofInstant(createdAt, ZoneOffset.UTC));
+            insert.setObject(12, OffsetDateTime.ofInstant(createdAt, ZoneOffset.UTC));
+            insert.setObject(13, OffsetDateTime.ofInstant(expiresAt, ZoneOffset.UTC));
+            insert.setObject(14, "uploaded".equals(status)
+                    ? OffsetDateTime.ofInstant(uploadedAt, ZoneOffset.UTC) : null);
+            insert.setObject(15, "uploaded".equals(status) ? (long) content.length : null);
+            insert.setBytes(16, "uploaded".equals(status) ? sha256(content) : null);
+            assertEquals(1, insert.executeUpdate());
+        }
+    }
+
+    private void insertImportRightsAcceptanceAt(
+            UUID userId, UUID receiptId, String version, String text, Instant acceptedAt, Instant consumedAt)
+            throws SQLException, NoSuchAlgorithmException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement insert = connection.prepareStatement("""
+                     INSERT INTO import_rights_acceptances (
+                         id, user_id, idempotency_key, statement_version, statement_sha256,
+                         accepted_at, consumed_at, source)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, 'web-import-flow')
+                     """)) {
+            insert.setObject(1, receiptId);
+            insert.setObject(2, userId);
+            insert.setObject(3, UUID.randomUUID());
+            insert.setString(4, version);
+            insert.setBytes(5, sha256(text));
+            insert.setObject(6, OffsetDateTime.ofInstant(acceptedAt, ZoneOffset.UTC));
+            insert.setObject(7, OffsetDateTime.ofInstant(consumedAt, ZoneOffset.UTC));
+            assertEquals(1, insert.executeUpdate());
+        }
+    }
+
     private void deleteImportRightsTestStatement(String version) throws SQLException {
         try (Connection connection = dataSource.getConnection()) {
             connection.setAutoCommit(false);
@@ -3429,6 +3574,18 @@ class PostgresSchemaIntegrationTests {
             try (ResultSet row = select.executeQuery()) {
                 assertTrue(row.next());
                 return row.getString(1);
+            }
+        }
+    }
+
+    private OffsetDateTime importJobStagingFileDeletedAt(UUID jobId) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement select = connection.prepareStatement(
+                     "SELECT staging_file_deleted_at FROM import_jobs WHERE id = ?")) {
+            select.setObject(1, jobId);
+            try (ResultSet row = select.executeQuery()) {
+                assertTrue(row.next());
+                return row.getObject(1, OffsetDateTime.class);
             }
         }
     }

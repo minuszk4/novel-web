@@ -16,7 +16,9 @@ public record ImportStagingProperties(
         long maxArchiveExpandedBytes,
         double maxArchiveCompressionRatio,
         int maxArchiveDepth,
-        Duration validationTimeout) {
+        Duration validationTimeout,
+        int cleanupBatchSize,
+        Duration cleanupDelay) {
 
     public ImportStagingProperties {
         if (root == null) throw new IllegalArgumentException("Import staging root is required");
@@ -39,6 +41,13 @@ public record ImportStagingProperties(
         }
         if (validationTimeout.compareTo(Duration.ofHours(1)) > 0) {
             throw new IllegalArgumentException("Import content validation timeout must not exceed one hour");
+        }
+        if (cleanupBatchSize < 1 || cleanupBatchSize > 1000) {
+            throw new IllegalArgumentException("Import staging cleanup batch size must be between 1 and 1000");
+        }
+        if (cleanupDelay == null || cleanupDelay.isNegative() || cleanupDelay.isZero()
+                || cleanupDelay.compareTo(Duration.ofDays(1)) > 0) {
+            throw new IllegalArgumentException("Import staging cleanup delay must be positive and at most one day");
         }
     }
 }

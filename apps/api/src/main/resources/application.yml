@@ -42,3 +42,5 @@ novel:
       max-archive-compression-ratio: ${NOVEL_IMPORT_MAX_ARCHIVE_COMPRESSION_RATIO:100.0}
       max-archive-depth: ${NOVEL_IMPORT_MAX_ARCHIVE_DEPTH:32}
       validation-timeout: ${NOVEL_IMPORT_VALIDATION_TIMEOUT:15s}
+      cleanup-delay: ${NOVEL_IMPORT_CLEANUP_DELAY:1m}
+      cleanup-batch-size: ${NOVEL_IMPORT_CLEANUP_BATCH_SIZE:100}

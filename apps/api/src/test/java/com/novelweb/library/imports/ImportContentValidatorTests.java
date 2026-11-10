@@ -180,7 +180,9 @@ class ImportContentValidatorTests {
                 expandedBytes,
                 ratio,
                 depth,
-                timeout);
+                timeout,
+                100,
+                Duration.ofMinutes(1));
         return new ImportContentValidator(properties);
     }
 
