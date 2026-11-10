@@ -41,6 +41,22 @@ Per-user staging defaults are five active jobs and 100 MiB of declared bytes (`N
 
 The parser worker polls the durable queue every `NOVEL_IMPORT_PARSER_POLL_DELAY` (default `1s`). It parses EPUB 3 outside database transactions, then stores the complete preview, warnings and SHA-256 ETag together in PostgreSQL; the preview JSON limit is 1 MiB. `POST /api/v1/imports/{id}/parse` returns `202` with `Location` and `Retry-After`; poll `GET /api/v1/imports/{id}` for `queued`, `parsing`, `ready_to_commit` or `failed`. The status API returns a title/author/chapter-count summary, not chapter bodies. `GET /api/v1/imports/{id}/preview` returns owner-only metadata and chapter titles in pages of up to 100; signed cursors bind to the actor, import and current ETag. `PATCH /api/v1/imports/{id}/preview` uses the strong ETag in `If-Match` to update title, author, language or a complete chapter-order permutation. A stale ETag returns `412`; invalid mappings return `422`; edits update only private staging and never create library rows. Configure `NOVEL_LIBRARY_CURSOR_HMAC_KEY` (32-byte canonical Base64URL) to sign preview and library cursors. Preview ETags also identify the current edit revision. Expiry cleanup deletes the private parse result with the staged file. TXT/HTML/Markdown may pass upload validation but are not parseable by this EPUB-only worker yet.
 
+## Run Java quality checks
+
+From `apps/api`, run the default verification lifecycle:
+
+```powershell
+.\mvnw.cmd -B -ntp verify
+```
+
+`verify` runs the Maven compile/test/package lifecycle and executes Checkstyle at the `verify` phase against both main and test Java sources using [`config/checkstyle.xml`](./config/checkstyle.xml). The pinned Maven Checkstyle Plugin and Checkstyle engine versions are `3.6.0` and `14.4.0`. The current rules catch tabs, missing final newlines, lines over 160 characters (excluding package/import/URL lines), wildcard or unused imports, redundant modifiers, whitespace/padding defects and common Java naming errors. To run only the style gate:
+
+```powershell
+.\mvnw.cmd -B -ntp checkstyle:check
+```
+
+The default profile skips PostgreSQL integration tests; use the documented PostgreSQL profile when validating database-backed behavior.
+
 ## Run PostgreSQL and apply the baseline migration
 
 From `apps/api`:

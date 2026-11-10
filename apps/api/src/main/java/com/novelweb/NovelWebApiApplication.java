@@ -9,8 +9,8 @@ import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
 @ConfigurationPropertiesScan
 public class NovelWebApiApplication {
 
-	public static void main(String[] args) {
-		SpringApplication.run(NovelWebApiApplication.class, args);
-	}
+    public static void main(String[] args) {
+        SpringApplication.run(NovelWebApiApplication.class, args);
+    }
 
 }
