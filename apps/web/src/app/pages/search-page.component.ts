@@ -15,6 +15,11 @@ export class SearchPageComponent {
     this.query.set((event.target as HTMLInputElement).value.trim().toLocaleLowerCase('vi'));
   }
 
+  clearQuery(input: HTMLInputElement): void {
+    this.query.set('');
+    input.focus();
+  }
+
   get hasMatch(): boolean {
     const work = this.demo.importedWork();
     if (!work) return false;
