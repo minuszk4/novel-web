@@ -30,6 +30,7 @@ const pages = [
 
 const viewports = [
   { name: 'mobile 360px', width: 360, height: 800 },
+  { name: 'tablet 768px', width: 768, height: 1024 },
   { name: 'desktop 1280px', width: 1280, height: 900 },
 ] as const;
 
@@ -59,7 +60,7 @@ for (const viewport of viewports) {
   }
 }
 
-for (const viewport of [viewports[0], viewports[1]]) {
+for (const viewport of viewports) {
   for (const panel of [
     { name: 'table of contents', trigger: 'Mở mục lục', dialog: 'Chương mẫu' },
     { name: 'reader settings', trigger: 'Cài đặt trình đọc', dialog: 'Cài đặt đọc' },

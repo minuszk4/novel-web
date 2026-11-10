@@ -47,7 +47,7 @@ Run the reader browser checks from this directory:
 npm run test:e2e
 ```
 
-Playwright starts the Angular dev server on `127.0.0.1:4300`. The suite covers reader keyboard shortcuts, chapter route and heading focus, modal focus containment/restoration, backdrop close, a 360px layout check, and axe-core WCAG 2.2 A/AA plus best-practice scans for all 12 demo routes and both Reader dialogs at 360px and 1280px. Automated scans catch common DOM-level accessibility defects; keyboard, screen-reader, contrast-on-complex-background and usability review remain manual work. It writes JUnit output to `reports/e2e-junit.xml` and failure traces/screenshots to `reports/e2e-results/`; CI installs Chromium with system dependencies and retains these reports for 14 days.
+Playwright starts the Angular dev server on `127.0.0.1:4300`. The suite covers reader keyboard shortcuts, chapter route and heading focus, modal focus containment/restoration, backdrop close, a 360px layout check, and axe-core WCAG 2.2 A/AA plus best-practice scans for all 12 demo routes and both Reader dialogs at 360px, 768px and 1280px. Automated scans catch common DOM-level accessibility defects; keyboard, screen-reader, contrast-on-complex-background and usability review remain manual work. It writes JUnit output to `reports/e2e-junit.xml` and failure traces/screenshots to `reports/e2e-results/`; CI installs Chromium with system dependencies and retains these reports for 14 days.
 
 ## Reader keyboard controls
 
