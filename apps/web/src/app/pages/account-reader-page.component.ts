@@ -15,6 +15,7 @@ import {
   ReaderChapter,
   ReaderContentPage,
   ReaderManifestPage,
+  ReaderPreferences,
   ReaderProgress,
   ReaderSourceSegment,
   SaveReaderProgressRequest,
@@ -26,6 +27,14 @@ const contentPageSize = 1000;
 const maxManifestPages = 25;
 const maxContentPages = 20;
 const maxSegmentsPerChapter = 20_000;
+const defaultReaderPreferences: ReaderPreferences = {
+  schemaVersion: 1,
+  theme: 'light',
+  fontFamily: 'serif',
+  fontSize: 20,
+  lineHeight: 1.8,
+  contentWidth: 720,
+};
 
 type PendingReaderProgress = Omit<SaveReaderProgressRequest, 'expectedVersion'> & {
   workId: string;
@@ -38,7 +47,10 @@ type PendingReaderProgress = Omit<SaveReaderProgressRequest, 'expectedVersion'> 
 })
 export class AccountReaderPageComponent {
   protected readonly theme = signal<'light' | 'sepia' | 'dark'>('light');
+  protected readonly fontFamily = signal<'serif' | 'sans'>('serif');
   protected readonly fontSize = signal(20);
+  protected readonly lineHeight = signal(1.8);
+  protected readonly contentWidth = signal(720);
   protected readonly work = signal<ReaderWork | null>(null);
   protected readonly chapters = signal<ReaderChapter[]>([]);
   protected readonly activeChapter = signal<ReaderChapter | null>(null);
@@ -57,6 +69,9 @@ export class AccountReaderPageComponent {
   protected readonly progressSyncState = signal<
     'loading' | 'saved' | 'saving' | 'pending' | 'conflict'
   >('loading');
+  protected readonly preferencesSyncState = signal<'loading' | 'saved' | 'saving' | 'pending'>(
+    'loading',
+  );
 
   private readonly api = inject(ReaderApiService);
   private readonly route = inject(ActivatedRoute);
@@ -71,6 +86,9 @@ export class AccountReaderPageComponent {
   private progressTimer: number | null = null;
   private pendingProgress: PendingReaderProgress | null = null;
   private savingProgress = false;
+  private preferencesTimer: number | null = null;
+  private pendingPreferences: ReaderPreferences | null = null;
+  private savingPreferences = false;
 
   @ViewChild('tocPanel') private set tocPanel(panel: ElementRef<HTMLElement> | undefined) {
     if (panel) this.focusPanel(panel.nativeElement);
@@ -107,7 +125,9 @@ export class AccountReaderPageComponent {
     });
     this.destroyRef.onDestroy(() => {
       if (this.progressTimer !== null) window.clearTimeout(this.progressTimer);
+      if (this.preferencesTimer !== null) window.clearTimeout(this.preferencesTimer);
       if (this.activeChapter()) void this.flushProgress();
+      void this.flushPreferences();
     });
   }
 
@@ -126,6 +146,19 @@ export class AccountReaderPageComponent {
     }
   }
 
+  protected preferencesStatusLabel(): string {
+    switch (this.preferencesSyncState()) {
+      case 'loading':
+        return 'Đang tải cài đặt…';
+      case 'saving':
+        return 'Đang lưu cài đặt…';
+      case 'pending':
+        return 'Cài đặt chưa đồng bộ';
+      default:
+        return 'Cài đặt đã đồng bộ';
+    }
+  }
+
   protected onReaderScroll(): void {
     if (this.progressTimer !== null) window.clearTimeout(this.progressTimer);
     this.progressTimer = window.setTimeout(() => {
@@ -136,12 +169,16 @@ export class AccountReaderPageComponent {
 
   @HostListener('document:visibilitychange')
   protected onVisibilityChange(): void {
-    if (document.visibilityState === 'hidden') void this.flushProgress();
+    if (document.visibilityState === 'hidden') {
+      void this.flushProgress();
+      void this.flushPreferences();
+    }
   }
 
   @HostListener('window:pagehide')
   protected onPageHide(): void {
     void this.flushProgress();
+    void this.flushPreferences();
   }
 
   protected get previousChapter(): ReaderChapter | null {
@@ -269,11 +306,40 @@ export class AccountReaderPageComponent {
 
   protected changeFont(amount: number): void {
     this.fontSize.update((current) => Math.max(16, Math.min(28, current + amount)));
+    this.queuePreferencesSave();
+  }
+
+  protected setTheme(value: 'light' | 'sepia' | 'dark'): void {
+    this.theme.set(value);
+    this.queuePreferencesSave();
+  }
+
+  protected setFontFamily(value: 'serif' | 'sans'): void {
+    this.fontFamily.set(value);
+    this.queuePreferencesSave();
+  }
+
+  protected setLineHeight(value: string): void {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed < 1.2 || parsed > 2.2) return;
+    this.lineHeight.set(Math.round(parsed * 10) / 10);
+    this.queuePreferencesSave();
+  }
+
+  protected setContentWidth(value: string): void {
+    const parsed = Number(value);
+    if (!Number.isInteger(parsed) || parsed < 560 || parsed > 900) return;
+    this.contentWidth.set(parsed);
+    this.queuePreferencesSave();
   }
 
   protected resetPreferences(): void {
-    this.fontSize.set(20);
-    this.theme.set('light');
+    this.applyReaderPreferences(defaultReaderPreferences);
+    this.queuePreferencesSave();
+  }
+
+  protected retryPreferencesSave(): void {
+    if (this.preferencesSyncState() === 'pending') void this.flushPreferences();
   }
 
   protected statusMessage(error: ReaderApiError | null): string {
@@ -352,6 +418,8 @@ export class AccountReaderPageComponent {
     this.manifestState.set('loading');
     this.contentState.set('idle');
     this.progressSyncState.set('loading');
+    this.preferencesSyncState.set('loading');
+    this.applyReaderPreferences(defaultReaderPreferences);
     if (!isUuid(workId)) {
       this.setManifestError(
         new ReaderApiError('INVALID_READER_QUERY', 400, 'INVALID_READER_QUERY'),
@@ -359,16 +427,27 @@ export class AccountReaderPageComponent {
       return;
     }
 
+    const [progressResult, preferencesResult] = await Promise.allSettled([
+      this.api.getProgress(workId),
+      this.api.getReaderPreferences(),
+    ]);
+    if (token !== this.loadToken) return;
     let restoredProgress: ReaderProgress | null = null;
-    try {
-      restoredProgress = await this.api.getProgress(workId);
-      if (token !== this.loadToken) return;
+    if (progressResult.status === 'fulfilled') {
+      restoredProgress = progressResult.value;
       this.progressVersions.set(workId, restoredProgress.version);
       this.progressSyncState.set('saved');
-    } catch {
+    } else {
       // The chapter remains readable if progress storage is temporarily unavailable.
       this.progressVersions.set(workId, 0);
       this.progressSyncState.set('pending');
+    }
+    if (preferencesResult.status === 'fulfilled') {
+      this.applyReaderPreferences(preferencesResult.value);
+      this.preferencesSyncState.set('saved');
+    } else {
+      // Keep defaults available if per-account display settings cannot be loaded.
+      this.preferencesSyncState.set('pending');
     }
 
     let cursor: string | undefined;
@@ -612,6 +691,61 @@ export class AccountReaderPageComponent {
       }
       document.getElementById('account-reader-title')?.focus({ preventScroll: true });
     });
+  }
+
+  private applyReaderPreferences(preferences: ReaderPreferences): void {
+    this.theme.set(preferences.theme);
+    this.fontFamily.set(preferences.fontFamily);
+    this.fontSize.set(preferences.fontSize);
+    this.lineHeight.set(preferences.lineHeight);
+    this.contentWidth.set(preferences.contentWidth);
+  }
+
+  private currentReaderPreferences(): ReaderPreferences {
+    return {
+      schemaVersion: 1,
+      theme: this.theme(),
+      fontFamily: this.fontFamily(),
+      fontSize: this.fontSize(),
+      lineHeight: this.lineHeight(),
+      contentWidth: this.contentWidth(),
+    };
+  }
+
+  private queuePreferencesSave(): void {
+    if (this.preferencesSyncState() === 'loading') return;
+    this.pendingPreferences = this.currentReaderPreferences();
+    this.preferencesSyncState.set('pending');
+    if (this.preferencesTimer !== null) window.clearTimeout(this.preferencesTimer);
+    this.preferencesTimer = window.setTimeout(() => {
+      this.preferencesTimer = null;
+      void this.flushPreferences();
+    }, 500);
+  }
+
+  private async flushPreferences(): Promise<void> {
+    if (this.preferencesTimer !== null) {
+      window.clearTimeout(this.preferencesTimer);
+      this.preferencesTimer = null;
+    }
+    if (this.savingPreferences || !this.pendingPreferences) return;
+    const preferences = this.pendingPreferences;
+    this.pendingPreferences = null;
+    this.savingPreferences = true;
+    this.preferencesSyncState.set('saving');
+    let saved = false;
+    try {
+      const response = await this.api.saveReaderPreferences(preferences);
+      if (!this.pendingPreferences) this.applyReaderPreferences(response);
+      this.preferencesSyncState.set('saved');
+      saved = true;
+    } catch {
+      this.pendingPreferences ??= preferences;
+      this.preferencesSyncState.set('pending');
+    } finally {
+      this.savingPreferences = false;
+    }
+    if (saved && this.pendingPreferences) void this.flushPreferences();
   }
 
   private async flushProgress(): Promise<void> {

@@ -154,6 +154,7 @@ class PostgresSchemaIntegrationTests {
           "workspace_members",
           "library_reading_states",
           "reader_progress",
+          "reader_preferences",
           "library_collections",
           "library_collection_works",
           "import_rights_statements",
@@ -234,7 +235,7 @@ class PostgresSchemaIntegrationTests {
             connection.prepareStatement("SELECT COUNT(*) FROM databasechangelog");
         ResultSet changesets = changesetCount.executeQuery()) {
       changesets.next();
-      assertEquals(70, changesets.getInt(1), "unexpected number of applied changesets");
+      assertEquals(71, changesets.getInt(1), "unexpected number of applied changesets");
     }
 
     Set<String> actualTables = new HashSet<>();
@@ -3129,6 +3130,125 @@ class PostgresSchemaIntegrationTests {
   }
 
   @Test
+  void readerPreferencesArePrivateValidatedAndDurable() throws Exception {
+    UUID ownerId = createSessionTestUser("Reader Preferences Owner");
+    UUID otherId = createSessionTestUser("Reader Preferences Other");
+    UUID pendingPolicyId = createSessionTestUser("Reader Preferences Pending Policy");
+    try {
+      addCurrentPolicyAcceptances(ownerId);
+      addCurrentPolicyAcceptances(otherId);
+      SessionService.IssuedSession ownerSession = sessionService.create(ownerId).orElseThrow();
+      var ownerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", ownerSession.cookieValue());
+      String ownerCsrf = csrfTokenService.tokenFor(ownerSession.cookieValue());
+      SessionService.IssuedSession otherSession = sessionService.create(otherId).orElseThrow();
+      var otherCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", otherSession.cookieValue());
+      SessionService.IssuedSession pendingPolicySession =
+          sessionService.create(pendingPolicyId).orElseThrow();
+      var pendingPolicyCookie =
+          new jakarta.servlet.http.Cookie(
+              "__Host-novel_session", pendingPolicySession.cookieValue());
+
+      MvcResult unauthenticated = mockMvc.perform(get("/api/v1/me/reader-preferences")).andReturn();
+      assertEquals(401, unauthenticated.getResponse().getStatus());
+
+      MvcResult defaults =
+          mockMvc.perform(get("/api/v1/me/reader-preferences").cookie(ownerCookie)).andReturn();
+      assertEquals(200, defaults.getResponse().getStatus());
+      assertTrue(defaults.getResponse().getHeader("Cache-Control").contains("no-store"));
+      JsonNode defaultPreferences =
+          objectMapper.readTree(defaults.getResponse().getContentAsString());
+      assertEquals(1, defaultPreferences.path("schemaVersion").asInt());
+      assertEquals("light", defaultPreferences.path("theme").asText());
+      assertEquals("serif", defaultPreferences.path("fontFamily").asText());
+      assertEquals(20, defaultPreferences.path("fontSize").asInt());
+      assertEquals(1.8, defaultPreferences.path("lineHeight").asDouble());
+      assertEquals(720, defaultPreferences.path("contentWidth").asInt());
+
+      String requested =
+          "{\"schemaVersion\":1,\"theme\":\"sepia\",\"fontFamily\":\"sans\","
+              + "\"fontSize\":24,\"lineHeight\":1.9,\"contentWidth\":840}";
+      MvcResult missingCsrf =
+          mockMvc
+              .perform(
+                  put("/api/v1/me/reader-preferences")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(requested)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(403, missingCsrf.getResponse().getStatus());
+
+      MvcResult saved =
+          mockMvc
+              .perform(
+                  put("/api/v1/me/reader-preferences")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(requested)
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(200, saved.getResponse().getStatus());
+      JsonNode savedPreferences = objectMapper.readTree(saved.getResponse().getContentAsString());
+      assertEquals("sepia", savedPreferences.path("theme").asText());
+      assertEquals("sans", savedPreferences.path("fontFamily").asText());
+      assertEquals(24, savedPreferences.path("fontSize").asInt());
+      assertEquals(1.9, savedPreferences.path("lineHeight").asDouble());
+      assertEquals(840, savedPreferences.path("contentWidth").asInt());
+
+      MvcResult invalid =
+          mockMvc
+              .perform(
+                  put("/api/v1/me/reader-preferences")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          "{\"schemaVersion\":1,\"theme\":\"sepia\",\"fontFamily\":\"sans\","
+                              + "\"fontSize\":99,\"lineHeight\":1.9,\"contentWidth\":840}")
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(422, invalid.getResponse().getStatus());
+
+      MvcResult unknownField =
+          mockMvc
+              .perform(
+                  put("/api/v1/me/reader-preferences")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          "{\"schemaVersion\":1,\"theme\":\"sepia\",\"fontFamily\":\"sans\","
+                              + "\"fontSize\":24,\"lineHeight\":1.9,\"contentWidth\":840,"
+                              + "\"trackingId\":\"must-be-rejected\"}")
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(422, unknownField.getResponse().getStatus());
+
+      MvcResult ownerReload =
+          mockMvc.perform(get("/api/v1/me/reader-preferences").cookie(ownerCookie)).andReturn();
+      assertEquals(
+          savedPreferences, objectMapper.readTree(ownerReload.getResponse().getContentAsString()));
+      MvcResult otherUser =
+          mockMvc.perform(get("/api/v1/me/reader-preferences").cookie(otherCookie)).andReturn();
+      JsonNode otherPreferences =
+          objectMapper.readTree(otherUser.getResponse().getContentAsString());
+      assertEquals(200, otherUser.getResponse().getStatus());
+      assertEquals("light", otherPreferences.path("theme").asText());
+      assertEquals(20, otherPreferences.path("fontSize").asInt());
+      MvcResult pendingPolicy =
+          mockMvc
+              .perform(get("/api/v1/me/reader-preferences").cookie(pendingPolicyCookie))
+              .andReturn();
+      assertEquals(403, pendingPolicy.getResponse().getStatus());
+      assertTrue(
+          pendingPolicy.getResponse().getContentAsString().contains("POLICY_ACCEPTANCE_REQUIRED"));
+    } finally {
+      deleteSessionTestUser(pendingPolicyId);
+      deleteSessionTestUser(otherId);
+      deleteSessionTestUser(ownerId);
+    }
+  }
+
+  @Test
   void sourceOnlyReaderRechecksOwnerPaginatesAndNeverPutsBodyInManifest() throws Exception {
     UUID ownerId = createSessionTestUser("Reader API Owner");
     UUID outsiderId = createSessionTestUser("Reader API Outsider");
@@ -4097,6 +4217,7 @@ class PostgresSchemaIntegrationTests {
             "workspace_members",
             "workspaces",
             "library_collection_works",
+            "reader_preferences",
             "reader_progress",
             "library_reading_states",
             "library_collections",

@@ -30,14 +30,17 @@ public class ReaderController {
 
   private final ReaderService readerService;
   private final ReaderProgressService progressService;
+  private final ReaderPreferencesService preferencesService;
   private final PolicyService policyService;
 
   public ReaderController(
       ReaderService readerService,
       ReaderProgressService progressService,
+      ReaderPreferencesService preferencesService,
       PolicyService policyService) {
     this.readerService = readerService;
     this.progressService = progressService;
+    this.preferencesService = preferencesService;
     this.policyService = policyService;
   }
 
@@ -111,6 +114,40 @@ public class ReaderController {
     return progressResponse(progressService.save(actor.orElseThrow(), workId, body));
   }
 
+  @GetMapping("/me/reader-preferences")
+  public ResponseEntity<?> readerPreferences(
+      Authentication authentication, HttpServletRequest request) {
+    Optional<UUID> actor = actorUserId(authentication);
+    if (actor.isEmpty()) {
+      return problem(
+          HttpStatus.UNAUTHORIZED,
+          "UNAUTHENTICATED",
+          "Sign in to load Reader preferences.",
+          request);
+    }
+    ResponseEntity<?> policyGate = policyGate(actor.orElseThrow(), request);
+    if (policyGate != null) return policyGate;
+    return ok(preferencesService.get(actor.orElseThrow()));
+  }
+
+  @PutMapping("/me/reader-preferences")
+  public ResponseEntity<?> saveReaderPreferences(
+      Authentication authentication,
+      @RequestBody(required = false) ReaderPreferencesService.SavePreferencesRequest body,
+      HttpServletRequest request) {
+    Optional<UUID> actor = actorUserId(authentication);
+    if (actor.isEmpty()) {
+      return problem(
+          HttpStatus.UNAUTHORIZED,
+          "UNAUTHENTICATED",
+          "Sign in to save Reader preferences.",
+          request);
+    }
+    ResponseEntity<?> policyGate = policyGate(actor.orElseThrow(), request);
+    if (policyGate != null) return policyGate;
+    return ok(preferencesService.save(actor.orElseThrow(), body));
+  }
+
   @ExceptionHandler(ReaderService.ReaderNotFoundException.class)
   public ResponseEntity<ProblemDetail> notFound(HttpServletRequest request) {
     return problem(
@@ -135,6 +172,25 @@ public class ReaderController {
         HttpStatus.NOT_FOUND,
         "NOT_FOUND",
         "The requested work or reading progress is unavailable.",
+        request);
+  }
+
+  @ExceptionHandler(ReaderPreferencesRepository.PreferencesNotFoundException.class)
+  public ResponseEntity<ProblemDetail> unavailablePreferences(HttpServletRequest request) {
+    return problem(
+        HttpStatus.NOT_FOUND,
+        "NOT_FOUND",
+        "Reader preferences are unavailable for this account.",
+        request);
+  }
+
+  @ExceptionHandler(ReaderPreferencesService.InvalidPreferencesException.class)
+  public ResponseEntity<ProblemDetail> invalidPreferences(
+      ReaderPreferencesService.InvalidPreferencesException exception, HttpServletRequest request) {
+    return problem(
+        HttpStatus.UNPROCESSABLE_ENTITY,
+        "INVALID_READER_PREFERENCES",
+        exception.getMessage(),
         request);
   }
 

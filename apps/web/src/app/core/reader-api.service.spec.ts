@@ -131,6 +131,57 @@ describe('ReaderApiService', () => {
     await expect(saved).resolves.toEqual(progress);
   });
 
+  it('loads and saves bounded per-account reader preferences', async () => {
+    const preferences = {
+      schemaVersion: 1 as const,
+      theme: 'sepia' as const,
+      fontFamily: 'sans' as const,
+      fontSize: 24,
+      lineHeight: 1.9,
+      contentWidth: 840,
+    };
+    const loaded = service.getReaderPreferences();
+    http.expectOne({ method: 'GET', url: '/api/v1/me/reader-preferences' }).flush(preferences);
+    await expect(loaded).resolves.toEqual(preferences);
+
+    const saved = service.saveReaderPreferences(preferences);
+    const request = http.expectOne({ method: 'PUT', url: '/api/v1/me/reader-preferences' });
+    expect(request.request.body).toEqual(preferences);
+    request.flush(preferences);
+    await expect(saved).resolves.toEqual(preferences);
+  });
+
+  it('rejects preferences outside the server contract', async () => {
+    const loaded = service.getReaderPreferences();
+    http.expectOne({ method: 'GET', url: '/api/v1/me/reader-preferences' }).flush({
+      schemaVersion: 1,
+      theme: 'sepia',
+      fontFamily: 'sans',
+      fontSize: 40,
+      lineHeight: 1.8,
+      contentWidth: 720,
+    });
+    await expect(loaded).rejects.toMatchObject({
+      status: 502,
+      code: 'INVALID_READER_PREFERENCES',
+    });
+
+    const unknownField = service.getReaderPreferences();
+    http.expectOne({ method: 'GET', url: '/api/v1/me/reader-preferences' }).flush({
+      schemaVersion: 1,
+      theme: 'light',
+      fontFamily: 'serif',
+      fontSize: 20,
+      lineHeight: 1.8,
+      contentWidth: 720,
+      trackingId: 'must-be-rejected',
+    });
+    await expect(unknownField).rejects.toMatchObject({
+      status: 502,
+      code: 'INVALID_READER_PREFERENCES',
+    });
+  });
+
   it('exposes a validated latest progress snapshot for stale-device reconciliation', async () => {
     const staleSave = service.saveProgress(workId, {
       expectedVersion: 2,

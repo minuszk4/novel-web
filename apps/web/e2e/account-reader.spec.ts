@@ -66,6 +66,15 @@ interface MockProgress {
   updatedAt: string | null;
 }
 
+interface MockReaderPreferences {
+  schemaVersion: 1;
+  theme: 'light' | 'sepia' | 'dark';
+  fontFamily: 'serif' | 'sans';
+  fontSize: number;
+  lineHeight: number;
+  contentWidth: number;
+}
+
 interface MockProgressWrite extends Omit<MockProgress, 'version' | 'updatedAt' | 'workId'> {
   expectedVersion: number;
 }
@@ -98,6 +107,14 @@ async function installReaderRoutes(
     version: 0,
     updatedAt: null,
   };
+  const readerPreferences: MockReaderPreferences = {
+    schemaVersion: 1,
+    theme: 'light',
+    fontFamily: 'serif',
+    fontSize: 20,
+    lineHeight: 1.8,
+    contentWidth: 720,
+  };
   await page.route('**/api/v1/system/status', (route) =>
     json(route, {
       apiVersion: '4.2.1',
@@ -115,6 +132,11 @@ async function installReaderRoutes(
     }),
   );
   await page.route('**/api/v1/auth/me', (route) => json(route, currentUser));
+  await page.route('**/api/v1/me/reader-preferences', async (route) => {
+    if (route.request().method() === 'GET') return json(route, readerPreferences);
+    Object.assign(readerPreferences, route.request().postDataJSON());
+    return json(route, readerPreferences);
+  });
   await page.route(`**/api/v1/works/${workId}/progress`, async (route) => {
     if (route.request().method() === 'GET') return json(route, progress);
     const request = route.request().postDataJSON() as MockProgressWrite;
@@ -311,6 +333,75 @@ for (const viewport of viewports) {
     expect(dimensions.document).toBeLessThanOrEqual(dimensions.viewport);
   });
 }
+
+test('restores and syncs Reader typography preferences across reloads', async ({ page }) => {
+  await page.setViewportSize({ width: 360, height: 800 });
+  const preferences: MockReaderPreferences = {
+    schemaVersion: 1,
+    theme: 'dark',
+    fontFamily: 'serif',
+    fontSize: 22,
+    lineHeight: 1.7,
+    contentWidth: 760,
+  };
+  const writes: MockReaderPreferences[] = [];
+  await installReaderRoutes(page, 200, false);
+  await page.route('**/api/v1/me/reader-preferences', async (route) => {
+    if (route.request().method() === 'GET') return json(route, preferences);
+    const saved = route.request().postDataJSON() as MockReaderPreferences;
+    writes.push(saved);
+    Object.assign(preferences, saved);
+    return json(route, preferences);
+  });
+  await page.goto(`/app/reader/${workId}`);
+
+  const root = page.locator('.account-reader-app');
+  await expect(page.getByRole('heading', { name: 'Cánh cửa mở' })).toBeVisible();
+  await expect(root).toHaveClass(/reader-dark/);
+  await expect(root.locator('.reader-article')).toHaveCSS('font-size', '22px');
+  await page.getByRole('button', { name: 'Cài đặt trình đọc' }).click();
+  const settings = page.getByRole('dialog', { name: 'Cài đặt đọc' });
+  await expect(settings.locator('#account-reader-line-height')).toHaveValue('1.7');
+  await expect(settings.locator('#account-reader-content-width')).toHaveValue('760');
+
+  await settings.getByRole('button', { name: 'Sepia' }).click();
+  await settings.getByRole('button', { name: /A\+.*tăng cỡ chữ/i }).click();
+  await settings.locator('#account-reader-line-height').evaluate((element) => {
+    const input = element as HTMLInputElement;
+    input.value = '1.9';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await settings.locator('#account-reader-content-width').evaluate((element) => {
+    const input = element as HTMLInputElement;
+    input.value = '840';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await expect.poll(() => writes.at(-1)?.contentWidth).toBe(840);
+  await expect(settings.getByRole('status')).toContainText('Cài đặt đã đồng bộ');
+  expect(writes.at(-1)).toEqual({
+    schemaVersion: 1,
+    theme: 'sepia',
+    fontFamily: 'serif',
+    fontSize: 23,
+    lineHeight: 1.9,
+    contentWidth: 840,
+  });
+
+  await page.reload();
+  await expect(page.getByRole('heading', { name: 'Cánh cửa mở' })).toBeVisible();
+  await expect(root).toHaveClass(/reader-sepia/);
+  await expect(root.locator('.reader-article')).toHaveCSS('font-size', '23px');
+  await page.getByRole('button', { name: 'Cài đặt trình đọc' }).click();
+  const reloadedSettings = page.getByRole('dialog', { name: 'Cài đặt đọc' });
+  await expect(reloadedSettings.locator('#account-reader-line-height')).toHaveValue('1.9');
+  await expect(reloadedSettings.locator('#account-reader-content-width')).toHaveValue('840');
+  await expectNoAxeViolations(page);
+  const dimensions = await page.evaluate(() => ({
+    document: document.documentElement.scrollWidth,
+    viewport: document.documentElement.clientWidth,
+  }));
+  expect(dimensions.document).toBeLessThanOrEqual(dimensions.viewport);
+});
 
 test('resumes the saved chapter anchor and debounces Reader progress writes', async ({ page }) => {
   await page.setViewportSize({ width: 360, height: 800 });

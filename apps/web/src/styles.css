@@ -3127,6 +3127,20 @@ label:has(input:focus-visible) {
 .account-reader-app {
   position: relative;
 }
+.account-reader-app .reader-article {
+  max-width: min(var(--account-reader-content-width, 720px), 100%);
+  font-family: var(--account-reader-font-family, var(--font-display));
+  font-size: var(--account-reader-font-size, 20px);
+}
+.account-reader-app .reader-article h1 {
+  font-family: inherit;
+}
+.account-reader-app .account-reader-body {
+  line-height: var(--account-reader-line-height, 1.8);
+}
+.account-reader-app .account-reader-body blockquote {
+  line-height: var(--account-reader-line-height, 1.8);
+}
 .reader-topbar {
   min-height: 64px;
   display: grid;
@@ -3666,6 +3680,27 @@ label:has(input:focus-visible) {
   margin-left: 5px;
   color: var(--muted);
   font-weight: 500;
+}
+.account-reader-range-setting {
+  display: grid;
+  gap: 6px;
+  margin: 16px 0;
+  color: var(--text);
+  font-size: 10px;
+}
+.account-reader-range-setting span {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+.account-reader-range-setting input {
+  width: 100%;
+  min-height: 44px;
+  margin: 0;
+  accent-color: var(--primary);
+}
+.account-reader-preference-retry {
+  min-height: 44px;
 }
 .font-buttons {
   display: flex;

@@ -2,6 +2,12 @@
   class="reader-app account-reader-app"
   [class.reader-sepia]="theme() === 'sepia'"
   [class.reader-dark]="theme() === 'dark'"
+  [style.--account-reader-font-size]="fontSize() + 'px'"
+  [style.--account-reader-font-family]="
+    fontFamily() === 'serif' ? 'var(--font-display)' : 'var(--font-ui)'
+  "
+  [style.--account-reader-line-height]="lineHeight()"
+  [style.--account-reader-content-width]="contentWidth() + 'px'"
 >
   <header class="reader-topbar">
     <a class="reader-back" routerLink="/app/library" aria-label="Quay lại thư viện tài khoản"
@@ -34,6 +40,7 @@
         aria-haspopup="dialog"
         title="Cài đặt đọc"
         [attr.aria-expanded]="settingsOpen()"
+        [disabled]="preferencesSyncState() === 'loading'"
       >
         <span aria-hidden="true">Aa</span>
       </button>
@@ -171,35 +178,95 @@
           </div>
         </div>
         <fieldset class="theme-picker">
+          <legend>Phông chữ</legend>
+          <div>
+            <button
+              type="button"
+              [class.theme-selected]="fontFamily() === 'serif'"
+              [attr.aria-pressed]="fontFamily() === 'serif'"
+              (click)="setFontFamily('serif')"
+            >
+              Có chân
+            </button>
+            <button
+              type="button"
+              [class.theme-selected]="fontFamily() === 'sans'"
+              [attr.aria-pressed]="fontFamily() === 'sans'"
+              (click)="setFontFamily('sans')"
+            >
+              Không chân
+            </button>
+          </div>
+        </fieldset>
+        <label class="account-reader-range-setting" for="account-reader-line-height">
+          <span
+            >Khoảng cách dòng <strong>{{ lineHeight() }}</strong></span
+          >
+          <input
+            id="account-reader-line-height"
+            type="range"
+            min="1.2"
+            max="2.2"
+            step="0.1"
+            [value]="lineHeight()"
+            [attr.aria-valuetext]="lineHeight() + ' lần cỡ chữ'"
+            (input)="setLineHeight($any($event.target).value)"
+          />
+        </label>
+        <label class="account-reader-range-setting" for="account-reader-content-width">
+          <span
+            >Độ rộng trang <strong>{{ contentWidth() }} px</strong></span
+          >
+          <input
+            id="account-reader-content-width"
+            type="range"
+            min="560"
+            max="900"
+            step="20"
+            [value]="contentWidth()"
+            [attr.aria-valuetext]="contentWidth() + ' pixel'"
+            (input)="setContentWidth($any($event.target).value)"
+          />
+        </label>
+        <fieldset class="theme-picker">
           <legend>Màu nền</legend>
           <div>
             <button
               type="button"
               [class.theme-selected]="theme() === 'light'"
               [attr.aria-pressed]="theme() === 'light'"
-              (click)="theme.set('light')"
+              (click)="setTheme('light')"
             >
               Sáng</button
             ><button
               type="button"
               [class.theme-selected]="theme() === 'sepia'"
               [attr.aria-pressed]="theme() === 'sepia'"
-              (click)="theme.set('sepia')"
+              (click)="setTheme('sepia')"
             >
               Sepia</button
             ><button
               type="button"
               [class.theme-selected]="theme() === 'dark'"
               [attr.aria-pressed]="theme() === 'dark'"
-              (click)="theme.set('dark')"
+              (click)="setTheme('dark')"
             >
               Tối
             </button>
           </div>
         </fieldset>
-        <p class="account-reader-preference-note">
-          Cài đặt chỉ áp dụng trong phiên này; chưa được lưu vào tài khoản.
+        <p class="account-reader-preference-note" role="status" aria-live="polite">
+          {{ preferencesStatusLabel() }}
         </p>
+        @if (preferencesSyncState() === 'pending') {
+          <button
+            class="text-button account-reader-preference-retry"
+            type="button"
+            (click)="retryPreferencesSave()"
+          >
+            Thử đồng bộ lại cài đặt
+          </button>
+        }
         <button class="reset-reader-button" type="button" (click)="resetPreferences()">
           Đặt lại mặc định
         </button>

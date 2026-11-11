@@ -61,6 +61,15 @@ export interface SaveReaderProgressRequest {
   scrollRatio: number;
 }
 
+export interface ReaderPreferences {
+  schemaVersion: 1;
+  theme: 'light' | 'sepia' | 'dark';
+  fontFamily: 'serif' | 'sans';
+  fontSize: number;
+  lineHeight: number;
+  contentWidth: number;
+}
+
 export class ReaderApiError extends Error {
   constructor(
     message: string,
@@ -76,11 +85,35 @@ export class ReaderApiError extends Error {
 const manifestUrl = (workId: string) => `/api/v1/works/${workId}/reader-manifest`;
 const contentUrl = (chapterId: string) => `/api/v1/chapters/${chapterId}/content`;
 const progressUrl = (workId: string) => `/api/v1/works/${workId}/progress`;
+const readerPreferencesUrl = '/api/v1/me/reader-preferences';
 const requestTimeoutMs = 10_000;
 
 @Injectable({ providedIn: 'root' })
 export class ReaderApiService {
   private readonly http = inject(HttpClient);
+
+  async getReaderPreferences(): Promise<ReaderPreferences> {
+    try {
+      const response: unknown = await firstValueFrom(
+        this.http.get<unknown>(readerPreferencesUrl).pipe(timeout(requestTimeoutMs)),
+      );
+      return parseReaderPreferences(response);
+    } catch (error) {
+      throw toReaderApiError(error);
+    }
+  }
+
+  async saveReaderPreferences(preferences: ReaderPreferences): Promise<ReaderPreferences> {
+    const validated = parseReaderPreferences(preferences);
+    try {
+      const response: unknown = await firstValueFrom(
+        this.http.put<unknown>(readerPreferencesUrl, validated).pipe(timeout(requestTimeoutMs)),
+      );
+      return parseReaderPreferences(response);
+    } catch (error) {
+      throw toReaderApiError(error);
+    }
+  }
 
   async getManifestPage(workId: string, cursor?: string, limit = 100): Promise<ReaderManifestPage> {
     if (!isUuid(workId) || !isValidPageRequest(cursor, limit, 100)) {
@@ -185,6 +218,37 @@ function parseProgress(value: unknown, expectedWorkId: string): ReaderProgress {
     scrollRatio: value['scrollRatio'],
     version: value['version'] as number,
     updatedAt: value['updatedAt'] as string | null,
+  };
+}
+
+function parseReaderPreferences(value: unknown): ReaderPreferences {
+  if (
+    !isRecord(value) ||
+    Object.keys(value).sort().join(',') !==
+      'contentWidth,fontFamily,fontSize,lineHeight,schemaVersion,theme' ||
+    value['schemaVersion'] !== 1 ||
+    (value['theme'] !== 'light' && value['theme'] !== 'sepia' && value['theme'] !== 'dark') ||
+    (value['fontFamily'] !== 'serif' && value['fontFamily'] !== 'sans') ||
+    !Number.isSafeInteger(value['fontSize']) ||
+    (value['fontSize'] as number) < 16 ||
+    (value['fontSize'] as number) > 28 ||
+    typeof value['lineHeight'] !== 'number' ||
+    !Number.isFinite(value['lineHeight']) ||
+    value['lineHeight'] < 1.2 ||
+    value['lineHeight'] > 2.2 ||
+    !Number.isSafeInteger(value['contentWidth']) ||
+    (value['contentWidth'] as number) < 560 ||
+    (value['contentWidth'] as number) > 900
+  ) {
+    throw invalidResponse('INVALID_READER_PREFERENCES');
+  }
+  return {
+    schemaVersion: 1,
+    theme: value['theme'],
+    fontFamily: value['fontFamily'],
+    fontSize: value['fontSize'] as number,
+    lineHeight: value['lineHeight'],
+    contentWidth: value['contentWidth'] as number,
   };
 }
 
