@@ -4229,13 +4229,16 @@ label:has(input:focus-visible) {
     padding-top: 14px;
   }
   .mobile-form-page > .stepper {
-    margin-top: 16px;
+    margin-top: 8px;
   }
   .mobile-form-page > .page-heading {
-    margin: 14px 0 12px;
+    margin: 10px 0 4px;
   }
   .mobile-form-page > .page-heading h1 {
     font-size: 27px;
+  }
+  .mobile-form-page > .prototype-notice {
+    padding-block: 7px;
   }
   .mobile-form-page > .demo-callout {
     font-size: 11px;

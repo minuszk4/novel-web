@@ -34,3 +34,26 @@ for (const viewport of viewports) {
     await expect(page).toHaveURL(/\/app\/home$/);
   });
 }
+
+test('mobile setup keeps both demo consent rows above the sticky action', async ({ page }) => {
+  await page.setViewportSize({ width: 360, height: 800 });
+  await page.goto('/app/setup');
+  await expect(page.locator('.prototype-notice')).toContainText('không có hiệu lực pháp lý');
+
+  const layout = await page.evaluate(() => {
+    const rows = [...document.querySelectorAll('.consent-row')];
+    const actions = document.querySelector('.mobile-form-actions');
+    if (rows.length !== 2 || !actions) throw new Error('Setup consent layout is incomplete');
+    return {
+      viewportWidth: innerWidth,
+      documentWidth: document.documentElement.scrollWidth,
+      lastConsentBottom: rows[1].getBoundingClientRect().bottom,
+      actionTop: actions.getBoundingClientRect().top,
+    };
+  });
+
+  expect(layout.documentWidth).toBe(layout.viewportWidth);
+  expect(layout.lastConsentBottom).toBeLessThanOrEqual(layout.actionTop);
+  expect(layout.actionTop - layout.lastConsentBottom).toBeGreaterThanOrEqual(8);
+  await expectNoAxeViolations(page);
+});

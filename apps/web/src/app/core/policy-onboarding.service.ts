@@ -215,13 +215,9 @@ export class PolicyOnboardingService {
     this.accountIdentity.set(null);
     this.status.set('demo');
     if (httpStatus === 401) {
-      this.demoNotice.set(
-        'Chưa có phiên đăng nhập server. Lựa chọn dưới đây chỉ dùng trong demo và sẽ mất khi tải lại trang.',
-      );
+      this.demoNotice.set('Chưa có phiên đăng nhập trên máy chủ. Lựa chọn demo mất khi tải lại.');
     } else {
-      this.demoNotice.set(
-        'API local chưa phản hồi hoặc chưa bật session. Chỉ có chức năng demo cục bộ; lựa chọn không được gửi lên máy chủ.',
-      );
+      this.demoNotice.set('API local chưa sẵn sàng. Lựa chọn demo mất khi tải lại.');
     }
   }
 
