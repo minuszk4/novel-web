@@ -1526,6 +1526,98 @@ class PostgresSchemaIntegrationTests {
   }
 
   @Test
+  void privateTxtImportParsesReviewsAndCommitsAsPlainText() throws Exception {
+    UUID actorId = createSessionTestUser("Plain-text import owner");
+    UUID approverId = createSessionTestUser("Plain-text import approver");
+    var library = libraryService.createLibrary(actorId, "Private TXT shelf");
+    String version = "private-import-txt-integration-v1";
+    String statementText = "Synthetic rights copy for private TXT parser integration coverage.";
+    UUID jobId = UUID.randomUUID();
+    UUID receiptId = UUID.randomUUID();
+    var actorSession = sessionService.create(actorId).orElseThrow();
+    jakarta.servlet.http.Cookie actorCookie =
+        new jakarta.servlet.http.Cookie("__Host-novel_session", actorSession.cookieValue());
+    String actorCsrf = csrfTokenService.tokenFor(actorSession.cookieValue());
+    byte[] sourceText =
+        "First paragraph.\r\n\r\nSecond paragraph with Vietnamese text: câu chuyện riêng tư.\n"
+            .getBytes(StandardCharsets.UTF_8);
+
+    try {
+      insertImportRightsStatement(version, statementText, approverId, "APPROVED", -1);
+      addCurrentPolicyAcceptances(actorId);
+      insertUploadedTextImportFixture(
+          jobId, actorId, library.id(), receiptId, version, statementText, sourceText);
+      importStagingFileStore.store(jobId, new ByteArrayInputStream(sourceText), sourceText.length);
+
+      MvcResult accepted =
+          mockMvc
+              .perform(
+                  post("/api/v1/imports/{id}/parse", jobId)
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf))
+              .andReturn();
+      assertEquals(202, accepted.getResponse().getStatus());
+
+      JsonNode readyStatus = awaitImportStatus(actorCookie, jobId, "ready_to_commit");
+      assertEquals("Private Text Novel", readyStatus.path("previewSummary").path("title").asText());
+      assertEquals(1, readyStatus.path("previewSummary").path("chapterCount").asInt());
+      assertEquals("txt-v1", importParseParserVersion(jobId));
+      JsonNode stagedPreview = objectMapper.readTree(importParsePreviewJson(jobId));
+      assertEquals("txt-v1", stagedPreview.path("parserVersion").asText());
+      assertEquals("und", stagedPreview.path("metadata").path("language").asText());
+      assertEquals(2, stagedPreview.path("chapters").get(0).path("segments").size());
+      assertTrue(
+          stagedPreview
+              .path("chapters")
+              .get(0)
+              .path("segments")
+              .get(1)
+              .path("text")
+              .asText()
+              .contains("câu chuyện riêng tư"));
+      assertEquals(
+          "TXT_SINGLE_CHAPTER", stagedPreview.path("warnings").get(0).path("code").asText());
+
+      MvcResult preview =
+          mockMvc
+              .perform(get("/api/v1/imports/{id}/preview", jobId).cookie(actorCookie))
+              .andReturn();
+      assertEquals(200, preview.getResponse().getStatus());
+      String etag = preview.getResponse().getHeader("ETag");
+      MvcResult committed =
+          mockMvc
+              .perform(
+                  post("/api/v1/imports/{id}/commit", jobId)
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                      .header("If-Match", etag)
+                      .header("Idempotency-Key", "plain-text-import-commit-0001"))
+              .andReturn();
+      assertEquals(201, committed.getResponse().getStatus());
+      JsonNode work = objectMapper.readTree(committed.getResponse().getContentAsString());
+      assertEquals("Private Text Novel", work.path("title").asText());
+      assertEquals("und", work.path("language").asText());
+      assertEquals(1, work.path("chapterCount").asInt());
+      UUID workId = UUID.fromString(work.path("id").asText());
+      assertEquals(1, revisionCountForWork(workId));
+      assertEquals(2, segmentCountForWork(workId));
+      assertEquals("plain_text", revisionSourceFormatForWork(workId));
+      assertTrue(revisionContentForWork(workId).contains("Second paragraph with Vietnamese text"));
+      assertEquals("committed", importJobStatus(jobId));
+      assertEquals("committed", importParseJobStatus(jobId));
+    } finally {
+      importStagingFileStore.delete(jobId);
+      deleteImportJobs(actorId);
+      deleteImportRightsTestAcceptances(actorId);
+      deleteImportedWorksForLibrary(library.id());
+      deleteLibrary(library.id());
+      deleteImportRightsTestStatement(version);
+      deleteSessionTestUser(actorId);
+      deleteSessionTestUser(approverId);
+    }
+  }
+
+  @Test
   void expiredImportStagingIsDeletedAndFailedCleanupCanRetry() throws Exception {
     UUID actorId = createSessionTestUser("Import Retention Owner");
     UUID approverId = createSessionTestUser("Import Retention Approver");
@@ -5718,6 +5810,49 @@ class PostgresSchemaIntegrationTests {
     }
   }
 
+  private void insertUploadedTextImportFixture(
+      UUID jobId,
+      UUID userId,
+      UUID libraryId,
+      UUID receiptId,
+      String version,
+      String statementText,
+      byte[] content)
+      throws SQLException, NoSuchAlgorithmException {
+    Instant createdAt = Instant.now().minusSeconds(60);
+    Instant expiresAt = Instant.now().plusSeconds(3_600);
+    Instant acceptedAt = createdAt.minusSeconds(60);
+    insertImportRightsAcceptanceAt(
+        userId, receiptId, version, statementText, acceptedAt, acceptedAt.plusSeconds(10));
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement insert =
+            connection.prepareStatement(
+                """
+                     INSERT INTO import_jobs (
+                         id, user_id, library_id, rights_acceptance_id, rights_statement_version,
+                         original_filename, declared_content_type, declared_size_bytes, storage_key,
+                         status, created_at, rights_confirmed_at, expires_at, uploaded_at,
+                         actual_size_bytes, content_sha256)
+                     VALUES (?, ?, ?, ?, ?, 'Private Text Novel.txt', 'text/plain', ?, ?,
+                             'uploaded', ?, ?, ?, ?, ?, ?)
+                     """)) {
+      insert.setObject(1, jobId);
+      insert.setObject(2, userId);
+      insert.setObject(3, libraryId);
+      insert.setObject(4, receiptId);
+      insert.setString(5, version);
+      insert.setLong(6, content.length);
+      insert.setString(7, "staging/" + jobId + ".upload");
+      insert.setObject(8, OffsetDateTime.ofInstant(createdAt, ZoneOffset.UTC));
+      insert.setObject(9, OffsetDateTime.ofInstant(createdAt, ZoneOffset.UTC));
+      insert.setObject(10, OffsetDateTime.ofInstant(expiresAt, ZoneOffset.UTC));
+      insert.setObject(11, OffsetDateTime.ofInstant(createdAt.plusSeconds(5), ZoneOffset.UTC));
+      insert.setLong(12, content.length);
+      insert.setBytes(13, sha256(content));
+      assertEquals(1, insert.executeUpdate());
+    }
+  }
+
   private static byte[] tinyEpub(String title, String... chapterTitleAndBodies) throws IOException {
     if (chapterTitleAndBodies.length == 0 || chapterTitleAndBodies.length % 2 != 0) {
       throw new IllegalArgumentException("Provide title/body pairs for the EPUB spine");
@@ -5979,6 +6114,25 @@ class PostgresSchemaIntegrationTests {
       try (ResultSet row = select.executeQuery()) {
         assertTrue(row.next());
         return row.getInt(1);
+      }
+    }
+  }
+
+  private String revisionSourceFormatForWork(UUID workId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                """
+                     SELECT r.source_format FROM chapter_revisions r
+                     JOIN chapters c ON c.id = r.chapter_id
+                     WHERE c.work_id = ?
+                     ORDER BY c.ordinal
+                     LIMIT 1
+                     """)) {
+      select.setObject(1, workId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getString(1);
       }
     }
   }

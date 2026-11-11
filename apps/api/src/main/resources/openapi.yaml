@@ -1,15 +1,15 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 4.2.1
+  version: 4.3.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
     implemented only in the configured PostgreSQL profile. The import-rights statement read and acceptance routes
     are also implemented in that profile; private job creation and local staging upload are now implemented too.
     Import staging applies actor-scoped active-job/declared-byte quotas and persistent create/upload token buckets.
-    EPUB 3 parse queue/status, bounded private-preview persistence/edit and atomic private import commit are
-    implemented. Source-only Reader manifest and chapter-content routes are implemented in the PostgreSQL profile;
+    EPUB 3 and bounded UTF-8 TXT parse queue/status, private-preview persistence/edit and atomic private import
+    commit are implemented. Source-only Reader manifest and chapter-content routes are implemented in the PostgreSQL profile;
     progress, bookmarks, preferences and history operations tagged planned describe the remaining G2 target.
 servers:
   - url: http://127.0.0.1:8080
@@ -1323,7 +1323,9 @@ paths:
       description: >-
         Verifies owner access, staged-object availability and the accepted size/SHA-256 before queuing a durable
         PostgreSQL parser job. A separate worker rechecks the digest and content safety bounds, parses outside the
-        request transaction and atomically stores a bounded private EPUB 3 preview. Repeated calls for one import
+        request transaction and atomically stores a bounded private EPUB 3 or UTF-8 TXT preview, based on the
+        uploaded extension and immutable parser version. TXT becomes one chapter and emits TXT_SINGLE_CHAPTER.
+        Repeated calls for one import
         return the same parse state. Does not publish or commit a work. Preview data is deleted when the staging
         import expires.
       security:
@@ -1499,8 +1501,9 @@ paths:
       summary: Atomically commit a ready import as a private work
       description: >-
         Requires an owned, successfully parsed job, the unchanged strong preview ETag and an Idempotency-Key.
-        The commit path currently accepts only normalized source content from parser schema epub3-v2; older
-        parser results must be imported again.
+        The commit path accepts normalized source content from parser schemas epub3-v2 and txt-v1; older or
+        unsupported parser results must be imported again. TXT revisions use source_format plain_text and stable
+        txt-* segment anchors; EPUB revisions use epub_xhtml and epub-* anchors.
         In one PostgreSQL transaction, rechecks current policy, rights receipt/version and library write access;
         copies normalized source segments into private work/chapter/revision rows; records the idempotency result;
         and clears private preview staging JSON. Replaying the same user/key/request returns the same work with

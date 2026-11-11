@@ -16,7 +16,7 @@
 
     @if (accountImport.fileMetadata(); as file) {
       <div class="review-source">
-        <span class="file-type large-file-type">EPUB</span>
+        <span class="file-type large-file-type">{{ fileType() }}</span>
         <div>
           <small>TỆP ĐÃ PHÂN TÍCH</small><strong>{{ file.name }}</strong
           ><span>{{ file.size | number }} byte · Lưu riêng tư</span>
@@ -57,7 +57,7 @@
           [disabled]="accountImport.isBusy() || accountImport.state() === 'committed'"
           (input)="updateTitle($event)"
         />
-        <small class="field-hint">Được đọc từ metadata EPUB; tối đa 300 ký tự.</small>
+        <small class="field-hint">Được điền từ metadata tệp nếu có; tối đa 300 ký tự.</small>
 
         <label for="work-author">Tác giả <span class="optional-label">Không bắt buộc</span></label>
         <input
@@ -124,39 +124,41 @@
               <li>
                 <span class="chapter-ordinal">{{ absoluteIndex + 1 }}</span>
                 <span class="chapter-title">{{ chapter.title }}</span>
-                <span class="chapter-order-actions">
-                  <button
-                    class="chapter-move"
-                    type="button"
-                    [disabled]="
-                      absoluteIndex === 0 ||
-                      accountImport.isBusy() ||
-                      accountImport.state() === 'committed'
-                    "
-                    [attr.aria-label]="'Chuyển chương ' + (absoluteIndex + 1) + ' lên'"
-                    (click)="moveChapter(absoluteIndex, -1)"
-                  >
-                    ↑
-                  </button>
-                  <button
-                    class="chapter-move"
-                    type="button"
-                    [disabled]="
-                      absoluteIndex === chapters().length - 1 ||
-                      accountImport.isBusy() ||
-                      accountImport.state() === 'committed'
-                    "
-                    [attr.aria-label]="'Chuyển chương ' + (absoluteIndex + 1) + ' xuống'"
-                    (click)="moveChapter(absoluteIndex, 1)"
-                  >
-                    ↓
-                  </button>
-                </span>
+                @if (chapters().length > 1) {
+                  <span class="chapter-order-actions">
+                    <button
+                      class="chapter-move"
+                      type="button"
+                      [disabled]="
+                        absoluteIndex === 0 ||
+                        accountImport.isBusy() ||
+                        accountImport.state() === 'committed'
+                      "
+                      [attr.aria-label]="'Chuyển chương ' + (absoluteIndex + 1) + ' lên'"
+                      (click)="moveChapter(absoluteIndex, -1)"
+                    >
+                      ↑
+                    </button>
+                    <button
+                      class="chapter-move"
+                      type="button"
+                      [disabled]="
+                        absoluteIndex === chapters().length - 1 ||
+                        accountImport.isBusy() ||
+                        accountImport.state() === 'committed'
+                      "
+                      [attr.aria-label]="'Chuyển chương ' + (absoluteIndex + 1) + ' xuống'"
+                      (click)="moveChapter(absoluteIndex, 1)"
+                    >
+                      ↓
+                    </button>
+                  </span>
+                }
               </li>
             }
           </ol>
         } @else {
-          <p class="empty-chapter-preview">EPUB không có chương đọc được để hiển thị.</p>
+          <p class="empty-chapter-preview">Tệp không có chương đọc được để hiển thị.</p>
         }
       </section>
 

@@ -90,7 +90,7 @@ public class ImportCommitService {
         if (!MessageDigest.isEqual(parse.previewEtag(), expectedEtag)) {
           return finish(connection, CommitResult.outcome(Outcome.STALE_ETAG));
         }
-        if (!"epub3-v2".equals(parse.parserVersion())) {
+        if (!supportedParser(parse.parserVersion())) {
           return finish(connection, CommitResult.outcome(Outcome.CONTENT_UNAVAILABLE));
         }
 
@@ -114,7 +114,8 @@ public class ImportCommitService {
         }
 
         Preview preview = readPreview(parse.previewJson());
-        if (!"epub3-v2".equals(preview.parserVersion())
+        if (!supportedParser(preview.parserVersion())
+            || !parse.parserVersion().equals(preview.parserVersion())
             || preview.chapters().isEmpty()
             || preview.chapters().size() > 2_000) {
           return finish(connection, CommitResult.outcome(Outcome.CONTENT_UNAVAILABLE));
@@ -133,6 +134,7 @@ public class ImportCommitService {
               index + 1,
               chapter,
               preview.metadata().language(),
+              preview.parserVersion(),
               budget);
           persistedChapters++;
         }
@@ -328,6 +330,7 @@ public class ImportCommitService {
       int ordinal,
       Chapter chapter,
       String workLanguage,
+      String parserVersion,
       CommitBudget budget)
       throws SQLException {
     UUID chapterId = UUID.randomUUID();
@@ -358,18 +361,20 @@ public class ImportCommitService {
         String.join("\n\n", segments.stream().map(NormalizedSegment::text).toList());
     byte[] contentHash = sha256(normalizedContent.getBytes(StandardCharsets.UTF_8));
     UUID revisionId = UUID.randomUUID();
+    String sourceFormat = "txt-v1".equals(parserVersion) ? "plain_text" : "epub_xhtml";
     try (PreparedStatement insert =
         connection.prepareStatement(
             """
                 INSERT INTO chapter_revisions
                     (id, chapter_id, revision_no, source_format, normalized_content, content_hash, created_by_user_id)
-                VALUES (?, ?, 1, 'epub_xhtml', ?, ?, ?)
+                VALUES (?, ?, 1, ?, ?, ?, ?)
                 """)) {
       insert.setObject(1, revisionId);
       insert.setObject(2, chapterId);
-      insert.setString(3, normalizedContent);
-      insert.setBytes(4, contentHash);
-      insert.setObject(5, actorUserId);
+      insert.setString(3, sourceFormat);
+      insert.setString(4, normalizedContent);
+      insert.setBytes(5, contentHash);
+      insert.setObject(6, actorUserId);
       insert.executeUpdate();
     }
     try (PreparedStatement insert =
@@ -386,7 +391,9 @@ public class ImportCommitService {
         insert.setInt(3, index + 1);
         insert.setString(4, segment.type());
         insert.setString(5, segment.text());
-        insert.setString(6, "epub-c" + Math.max(0, chapter.index()) + "-s" + (index + 1));
+        String anchorPrefix = "txt-v1".equals(parserVersion) ? "txt" : "epub";
+        insert.setString(
+            6, anchorPrefix + "-c" + Math.max(0, chapter.index()) + "-s" + (index + 1));
         insert.setBytes(7, sha256(segment.text().getBytes(StandardCharsets.UTF_8)));
         insert.addBatch();
       }
@@ -404,6 +411,10 @@ public class ImportCommitService {
       update.setObject(3, workId);
       if (update.executeUpdate() != 1) throw new SQLException("The imported chapter disappeared");
     }
+  }
+
+  private static boolean supportedParser(String parserVersion) {
+    return "epub3-v2".equals(parserVersion) || "txt-v1".equals(parserVersion);
   }
 
   private static List<NormalizedSegment> normalizeSegments(

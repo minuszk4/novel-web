@@ -55,11 +55,11 @@ export class ImportPageComponent implements AfterViewInit {
     if (!file) return;
 
     const extension = file.name.split('.').pop()?.toLowerCase() ?? '';
-    const allowedExtensions = this.accountMode() ? ['epub'] : supportedExtensions;
+    const allowedExtensions = this.accountMode() ? ['epub', 'txt'] : supportedExtensions;
     if (!allowedExtensions.includes(extension)) {
       this.clearSelectedFile();
       this.errorMessage = this.accountMode()
-        ? 'Tài khoản hiện chỉ nhận EPUB 3. TXT, HTML và Markdown chưa có bộ phân tích trên máy chủ.'
+        ? 'Tài khoản hiện nhận EPUB 3 và TXT UTF-8. HTML và Markdown chưa được bật.'
         : 'Định dạng này chưa được hỗ trợ. Hãy chọn EPUB, TXT, HTML hoặc Markdown.';
       input.value = '';
       return;
@@ -67,7 +67,7 @@ export class ImportPageComponent implements AfterViewInit {
 
     if (this.accountMode() && (file.size < 1 || file.size > maxAccountImportBytes)) {
       this.clearSelectedFile();
-      this.errorMessage = 'Tệp EPUB phải lớn hơn 0 byte và không vượt quá 50 MB.';
+      this.errorMessage = 'Tệp phải lớn hơn 0 byte và không vượt quá 50 MB.';
       input.value = '';
       return;
     }

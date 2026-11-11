@@ -475,7 +475,7 @@ export class AccountImportService {
     const libraryId = this.selectedLibraryId();
     if (!file || !statement || !libraryId || !this.receiptId) {
       throw new AccountImportError(
-        'Chọn một tệp EPUB, thư viện và xác nhận quyền nhập trước.',
+        'Chọn một tệp được hỗ trợ, thư viện và xác nhận quyền nhập trước.',
         400,
         null,
         false,
@@ -573,7 +573,7 @@ export class AccountImportService {
     const job = this.job();
     if (!job) throw invalidResponse();
     this.state.set('parsing');
-    this.stageMessage.set('Đang xếp tệp vào hàng chờ phân tích EPUB…');
+    this.stageMessage.set('Đang xếp tệp vào hàng chờ phân tích…');
     try {
       const response = await firstValueFrom(
         this.http
@@ -614,7 +614,7 @@ export class AccountImportService {
       if (current.status === 'ready_to_commit') return;
       if (current.status === 'failed') {
         throw new AccountImportError(
-          'Không thể phân tích tệp EPUB này. Hãy chọn một EPUB hợp lệ khác; tệp chưa được thêm vào thư viện.',
+          'Không thể phân tích tệp này. Hãy kiểm tra định dạng UTF-8 hoặc chọn tệp khác; tệp chưa được thêm vào thư viện.',
           422,
           current.failureCode ?? 'IMPORT_PARSE_FAILED',
           false,
@@ -633,7 +633,7 @@ export class AccountImportService {
           ? 'Tệp đang chờ worker phân tích…'
           : current.status === 'scanning'
             ? 'Đang kiểm tra an toàn tệp trước khi phân tích…'
-            : 'Đang phân tích cấu trúc và mục lục EPUB…',
+            : 'Đang phân tích cấu trúc và nội dung tệp…',
       );
     }
     throw new AccountImportError(
@@ -999,11 +999,11 @@ function toImportError(error: unknown): AccountImportError {
     IMPORT_UPLOAD_RATE_LIMITED: `Bạn vừa tải lên quá nhanh.${retryText}`,
     IMPORT_FILE_TOO_LARGE: 'Tệp vượt giới hạn 50 MB của máy chủ. Chọn một tệp nhỏ hơn.',
     IMPORT_FILE_METADATA_INVALID:
-      'Máy chủ chỉ chấp nhận tệp EPUB hợp lệ trong luồng nhập tài khoản hiện tại.',
-    IMPORT_CONTENT_INVALID: 'Tệp không vượt qua kiểm tra an toàn EPUB. Hãy chọn tệp EPUB khác.',
+      'Máy chủ chỉ chấp nhận EPUB 3 hoặc TXT UTF-8 trong luồng nhập tài khoản hiện tại.',
+    IMPORT_CONTENT_INVALID: 'Tệp không vượt qua kiểm tra định dạng và nội dung an toàn.',
     IMPORT_FILE_SIZE_MISMATCH: 'Kích thước tệp thay đổi trong lúc tải lên. Hãy chọn lại tệp.',
     IMPORT_PARSE_FAILED:
-      'Không thể phân tích tệp EPUB. Tệp chưa được thêm vào thư viện; hãy chọn một tệp khác.',
+      'Không thể phân tích tệp. Tệp chưa được thêm vào thư viện; hãy kiểm tra định dạng rồi thử lại.',
     IMPORT_PREVIEW_STALE: 'Bản xem trước đã thay đổi trên máy chủ. Hãy tải lại trước khi lưu.',
     IMPORT_PREVIEW_EDIT_INVALID:
       'Metadata hoặc thứ tự chương chưa hợp lệ. Kiểm tra các trường rồi thử lại.',

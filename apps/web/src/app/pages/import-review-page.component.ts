@@ -36,6 +36,9 @@ export class ImportReviewPageComponent implements AfterViewInit {
   protected readonly chapterPageCount = computed(() =>
     Math.max(1, Math.ceil(this.chapters().length / this.chapterPageSize)),
   );
+  protected readonly fileType = computed(
+    () => this.accountImport.fileMetadata()?.extension.toUpperCase() ?? 'TỆP',
+  );
   protected readonly visibleChapters = computed(() => {
     const start = this.chapterPage() * this.chapterPageSize;
     return this.chapters().slice(start, start + this.chapterPageSize);

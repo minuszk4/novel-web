@@ -37,18 +37,22 @@ async function json(route: Route, body: unknown, status = 200, headers: Record<s
   await route.fulfill({ status, contentType: 'application/json', headers, body: JSON.stringify(body) });
 }
 
-function preview(title = 'Sơn Hà', chapterOrder = chapterIds) {
+function preview(title = 'Sơn Hà', chapterOrder = chapterIds, singleChapter = false) {
   const chapterNames = new Map([[chapterIds[0], 'Khởi đầu'], [chapterIds[1], 'Vào núi']]);
   return {
     importId,
     version: title === 'Sơn Hà' ? 1 : 2,
     title,
     author: 'Minh An',
-    chapterCount: 2,
+    chapterCount: singleChapter ? 1 : 2,
     language: 'vi',
-    chapters: chapterOrder.map((id, index) => ({ id, ordinal: index + 1, title: chapterNames.get(id) ?? 'Chương' })),
+    chapters: singleChapter
+      ? [{ id: chapterIds[0], ordinal: 1, title: 'Nội dung' }]
+      : chapterOrder.map((id, index) => ({ id, ordinal: index + 1, title: chapterNames.get(id) ?? 'Chương' })),
     nextCursor: null,
-    warnings: [],
+    warnings: singleChapter
+      ? [{ code: 'TXT_SINGLE_CHAPTER', message: 'Tệp TXT được giữ thành một chương vì không có cấu trúc chương đáng tin cậy.' }]
+      : [],
   };
 }
 
@@ -57,6 +61,7 @@ async function installAccountRoutes(page: Page, options: {
   libraryFailures?: number;
   rightsVersionChangeOnRetry?: boolean;
   parseFailure?: boolean;
+  singleChapter?: boolean;
 } = {}): Promise<{
   events: string[];
   createBodies: Record<string, unknown>[];
@@ -190,7 +195,7 @@ async function installAccountRoutes(page: Page, options: {
     const isUpdated = patchBodies.length > 0;
     const order = isUpdated ? patchBodies.at(-1)?.['chapterOrder'] as string[] : chapterIds;
     const title = isUpdated ? String(patchBodies.at(-1)?.['title']) : 'Sơn Hà';
-    await json(route, preview(title, order), 200, { ETag: isUpdated ? secondEtag : firstEtag });
+    await json(route, preview(title, order, options.singleChapter), 200, { ETag: isUpdated ? secondEtag : firstEtag });
   });
   await page.route(`**/api/v1/imports/${importId}/commit`, async (route) => {
     events.push('commit');
@@ -467,9 +472,41 @@ test('an EPUB parse failure stays on the import step and never previews or commi
   await page.getByRole('button', { name: 'Tải lên và phân tích' }).click();
 
   await expect(page).toHaveURL(/\/app\/import$/);
-  await expect(page.locator('.import-inline-error')).toContainText('Không thể phân tích tệp EPUB');
+  await expect(page.locator('.import-inline-error')).toContainText('Không thể phân tích tệp');
   await expect(page.locator('.mobile-form-actions .button-primary')).toBeDisabled();
   expect(api.events).toEqual(['rights', 'accept', 'create', 'upload', 'parse']);
   expect(api.createBodies).toHaveLength(1);
+  await expectNoAxeViolations(page);
+});
+
+test('account import accepts a UTF-8 TXT file and hands it to the private parser flow', async ({ page }) => {
+  const api = await installAccountRoutes(page, { singleChapter: true });
+  await page.setViewportSize({ width: 360, height: 800 });
+  await page.goto('/app/import');
+  await expect(page.getByText('Chọn EPUB 3 hoặc TXT UTF-8.', { exact: false })).toBeVisible();
+  await expect(page.locator('#work-file')).toHaveAttribute('accept', /\.txt/);
+
+  await page.locator('#work-file').setInputFiles({
+    name: 'chuong-dau.txt',
+    mimeType: 'text/plain',
+    buffer: Buffer.from('Chương đầu\n\nNội dung riêng tư.', 'utf8'),
+  });
+  await expect(page.locator('.selected-file')).toContainText('chuong-dau.txt');
+  const startButton = page.getByRole('button', { name: 'Tải lên và phân tích' });
+  await expect(startButton).toBeDisabled();
+  await page.locator('.account-rights-check').click();
+  await startButton.click();
+  await expect(page).toHaveURL(/\/app\/import\/review$/);
+  await expect(page.locator('.large-file-type')).toHaveText('TXT');
+  await expect(page.getByRole('heading', { name: 'Kiểm tra metadata và mục lục' })).toBeVisible();
+  await expect(page.locator('.import-chapter-list')).toContainText('Nội dung');
+  await expect(page.locator('.chapter-order-actions')).toHaveCount(0);
+  await expect(page.locator('.import-warning-list')).toContainText('một chương');
+  expect(api.createBodies[0]?.['source']).toMatchObject({
+    kind: 'upload',
+    filename: 'chuong-dau.txt',
+    contentType: 'text/plain',
+  });
+  expect(api.events).toEqual(['rights', 'accept', 'create', 'upload', 'parse']);
   await expectNoAxeViolations(page);
 });

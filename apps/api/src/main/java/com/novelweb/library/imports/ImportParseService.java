@@ -2,6 +2,7 @@ package com.novelweb.library.imports;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
@@ -19,23 +20,25 @@ import tools.jackson.databind.ObjectMapper;
 @Profile("postgres")
 public class ImportParseService {
 
-  private static final String PARSER_VERSION = EpubPackageParser.PARSER_VERSION;
   private static final int MAX_PREVIEW_BYTES = 1_048_576;
   private static final int MAX_WARNINGS = 100;
 
   private final ImportParseJobRepository repository;
   private final ImportStagingFileStore fileStore;
   private final EpubPackageParser epubPackageParser;
+  private final PlainTextParser plainTextParser;
   private final ObjectMapper objectMapper;
 
   public ImportParseService(
       ImportParseJobRepository repository,
       ImportStagingFileStore fileStore,
       EpubPackageParser epubPackageParser,
+      PlainTextParser plainTextParser,
       ObjectMapper objectMapper) {
     this.repository = repository;
     this.fileStore = fileStore;
     this.epubPackageParser = epubPackageParser;
+    this.plainTextParser = plainTextParser;
     this.objectMapper = objectMapper;
   }
 
@@ -68,7 +71,7 @@ public class ImportParseService {
     }
 
     ImportParseJobRepository.QueueResult queued =
-        repository.enqueue(userId, importId, PARSER_VERSION);
+        repository.enqueue(userId, importId, parserVersionFor(upload.filename()));
     return switch (queued.outcome()) {
       case NOT_FOUND -> ParseRequestResult.notFound();
       case EXPIRED -> ParseRequestResult.expired();
@@ -101,21 +104,12 @@ public class ImportParseService {
     if (maybeClaim.isEmpty()) return false;
     ImportParseJobRepository.ParseClaim claim = maybeClaim.orElseThrow();
     try {
-      if (!claim.filename().toLowerCase(java.util.Locale.ROOT).endsWith(".epub")) {
-        throw new EpubPackageParser.EpubParseException(
-            "IMPORT_FORMAT_UNSUPPORTED", "Only EPUB 3 parsing is enabled in this worker.");
-      }
       if (!fileStore.matchesUploadedDigest(claim.importId(), claim.sizeBytes(), claim.sha256())) {
         throw new EpubPackageParser.EpubParseException(
             "IMPORT_SOURCE_CHECKSUM_MISMATCH",
             "Staged upload no longer matches its accepted digest.");
       }
-      EpubPackageParser.Preview parsed =
-          epubPackageParser.parse(
-              fileStore.targetPath(claim.importId()),
-              claim.filename(),
-              claim.contentType(),
-              claim.parserVersion());
+      EpubPackageParser.Preview parsed = parse(claim);
       EpubPackageParser.Preview bounded = withBoundedWarnings(parsed);
       byte[] previewBytes = objectMapper.writeValueAsBytes(bounded);
       if (previewBytes.length > MAX_PREVIEW_BYTES) {
@@ -128,6 +122,8 @@ public class ImportParseService {
           claim, new String(previewBytes, StandardCharsets.UTF_8), etag, writeJson(warnings));
     } catch (EpubPackageParser.EpubParseException exception) {
       fail(claim, exception.code());
+    } catch (PlainTextParser.TextParseException exception) {
+      fail(claim, exception.code());
     } catch (ImportContentValidator.InvalidContentException exception) {
       fail(claim, "IMPORT_CONTENT_INVALID");
     } catch (IOException exception) {
@@ -136,6 +132,30 @@ public class ImportParseService {
       fail(claim, "IMPORT_PARSE_FAILED");
     }
     return true;
+  }
+
+  private EpubPackageParser.Preview parse(ImportParseJobRepository.ParseClaim claim)
+      throws IOException {
+    Path source = fileStore.targetPath(claim.importId());
+    String filename = claim.filename().toLowerCase(java.util.Locale.ROOT);
+    if (filename.endsWith(".epub")) {
+      return epubPackageParser.parse(
+          source, claim.filename(), claim.contentType(), claim.parserVersion());
+    }
+    if (filename.endsWith(".txt")) {
+      return plainTextParser.parse(
+          source, claim.filename(), claim.contentType(), claim.parserVersion());
+    }
+    throw new EpubPackageParser.EpubParseException(
+        "IMPORT_FORMAT_UNSUPPORTED", "The uploaded file format is not enabled for parsing.");
+  }
+
+  private static String parserVersionFor(String filename) {
+    if (filename == null) return "unsupported-v1";
+    String normalized = filename.toLowerCase(java.util.Locale.ROOT);
+    if (normalized.endsWith(".epub")) return EpubPackageParser.PARSER_VERSION;
+    if (normalized.endsWith(".txt")) return PlainTextParser.PARSER_VERSION;
+    return "unsupported-v1";
   }
 
   private void fail(ImportParseJobRepository.ParseClaim claim, String failureCode) {

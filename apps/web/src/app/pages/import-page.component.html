@@ -8,7 +8,10 @@
     <p class="eyebrow">NHẬP TÁC PHẨM</p>
     <h1 #importHeading class="route-heading" tabindex="-1">Mang câu chuyện của bạn về đây</h1>
     @if (accountMode()) {
-      <p>Chọn EPUB 3. Tệp chỉ được gửi sau khi bạn đọc hướng dẫn quyền, xác nhận và bấm bắt đầu.</p>
+      <p>
+        Chọn EPUB 3 hoặc TXT UTF-8. Tệp chỉ được gửi sau khi bạn đọc hướng dẫn quyền, xác nhận và
+        bấm bắt đầu.
+      </p>
     } @else {
       <p>Chọn một tệp bạn có quyền sử dụng. Trong bản demo, tệp không được đọc hay tải lên.</p>
     }
@@ -46,7 +49,9 @@
     class="visually-hidden"
     type="file"
     [attr.accept]="
-      accountMode() ? '.epub,application/epub+zip' : '.epub,.txt,.html,.htm,.md,.markdown'
+      accountMode()
+        ? '.epub,.txt,application/epub+zip,text/plain'
+        : '.epub,.txt,.html,.htm,.md,.markdown'
     "
     [attr.aria-label]="selectedFile() ? 'Chọn tệp khác' : 'Chọn tệp từ thiết bị'"
     [attr.aria-describedby]="
@@ -78,7 +83,7 @@
       <strong>Chọn tệp từ thiết bị</strong>
       <span class="upload-instruction">Nhấn để duyệt tệp trên thiết bị</span>
       @if (accountMode()) {
-        <small id="file-help">EPUB 3 · tối đa 50 MB</small>
+        <small id="file-help">EPUB 3 hoặc TXT UTF-8 · tối đa 50 MB</small>
       } @else {
         <small id="file-help">EPUB · TXT · HTML · Markdown</small>
       }
