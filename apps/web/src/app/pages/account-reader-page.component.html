@@ -44,6 +44,18 @@
       >
         <span aria-hidden="true">Aa</span>
       </button>
+      <button
+        class="reader-tool"
+        type="button"
+        (click)="toggleBookmarks($event)"
+        aria-label="Mở dấu trang"
+        aria-haspopup="dialog"
+        title="Dấu trang của tác phẩm"
+        [attr.aria-expanded]="bookmarksOpen()"
+        [disabled]="!work()"
+      >
+        <span aria-hidden="true">♧</span><span>Dấu trang</span>
+      </button>
     </div>
   </header>
 
@@ -53,8 +65,17 @@
       <span class="reader-account-source">Nguyên tác · {{ currentWork.language }}</span>
     }
     <span class="reader-account-sync" role="status" aria-live="polite"
-      >{{ progressStatusLabel() }} · Dấu trang chưa đồng bộ</span
+      >{{ progressStatusLabel() }} · {{ bookmarkStatusLabel() }}</span
     >
+    @if (bookmarkMessage()) {
+      <span
+        class="reader-account-sync account-reader-bookmark-global-message"
+        role="status"
+        aria-live="polite"
+      >
+        {{ bookmarkMessage() }}
+      </span>
+    }
   </div>
 
   <div class="reader-main account-reader-main" role="region" aria-label="Reader tài khoản">
@@ -271,6 +292,119 @@
           Đặt lại mặc định
         </button>
       </div>
+    }
+
+    @if (bookmarksOpen()) {
+      <div class="reader-panel-backdrop" aria-hidden="true" (click)="closePanel()"></div>
+      <section
+        #bookmarksPanel
+        id="account-reader-bookmarks-panel"
+        class="reader-side-panel reader-bookmarks-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="account-reader-bookmarks-title"
+        tabindex="-1"
+      >
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">DẤU TRANG RIÊNG TƯ</p>
+            <h2 id="account-reader-bookmarks-title">Vị trí đã lưu</h2>
+          </div>
+          <button class="icon-button" type="button" data-panel-initial-focus (click)="closePanel()">
+            <span aria-hidden="true">×</span><span class="visually-hidden">Đóng dấu trang</span>
+          </button>
+        </div>
+
+        <button
+          class="button button-primary button-full account-reader-save-bookmark"
+          type="button"
+          [disabled]="contentState() !== 'ready' || bookmarkSyncState() === 'saving'"
+          (click)="saveCurrentBookmark()"
+        >
+          {{ bookmarkSyncState() === 'saving' ? 'Đang lưu…' : 'Lưu vị trí đang đọc' }}
+        </button>
+        <p class="account-reader-bookmark-hint">
+          Lưu chương và đoạn đang ở gần đầu vùng đọc để quay lại từ thiết bị này hoặc thiết bị khác.
+        </p>
+
+        @if (bookmarkPanelState() === 'loading') {
+          <p class="account-reader-bookmark-state" role="status" aria-live="polite">
+            Đang tải dấu trang…
+          </p>
+        } @else if (bookmarkPanelState() === 'error' && bookmarkError(); as error) {
+          <div class="account-reader-bookmark-state" role="alert">
+            <p>{{ statusMessage(error) }}</p>
+            @if (error.status === 401 || error.status === 403) {
+              <a class="text-link" [routerLink]="recoveryUrl" [queryParams]="recoveryQueryParams">{{
+                recoveryLabel
+              }}</a>
+            } @else {
+              <button class="text-button" type="button" (click)="retryBookmarks()">
+                Thử tải lại dấu trang
+              </button>
+            }
+          </div>
+        } @else if (bookmarks().length === 0) {
+          <div class="account-reader-bookmark-empty">
+            <span aria-hidden="true">♧</span>
+            <h3>Chưa có dấu trang</h3>
+            <p>Lưu vị trí đang đọc để quay lại đúng chương và đoạn này sau.</p>
+          </div>
+        } @else {
+          <ol class="account-reader-bookmark-list" aria-label="Các vị trí đã lưu">
+            @for (bookmark of bookmarks(); track bookmark.id) {
+              <li class="account-reader-bookmark-item">
+                <button
+                  class="account-reader-bookmark-open"
+                  type="button"
+                  (click)="openBookmark(bookmark)"
+                >
+                  <span class="account-reader-bookmark-icon" aria-hidden="true">↗</span>
+                  <span class="account-reader-bookmark-copy">
+                    <strong>{{ bookmark.label }}</strong>
+                  </span>
+                </button>
+                <button
+                  class="account-reader-bookmark-delete"
+                  type="button"
+                  [disabled]="deletingBookmarkIds().has(bookmark.id)"
+                  [attr.aria-label]="'Xóa ' + bookmark.label"
+                  (click)="deleteBookmark(bookmark)"
+                >
+                  {{ deletingBookmarkIds().has(bookmark.id) ? 'Đang xóa…' : 'Xóa' }}
+                </button>
+              </li>
+            }
+          </ol>
+          @if (bookmarkError(); as error) {
+            <div class="account-reader-bookmark-state" role="alert">
+              <p>{{ statusMessage(error) }}</p>
+              @if (error.status === 401 || error.status === 403) {
+                <a
+                  class="text-link"
+                  [routerLink]="recoveryUrl"
+                  [queryParams]="recoveryQueryParams"
+                  >{{ recoveryLabel }}</a
+                >
+              } @else if (bookmarkOpenRetry()) {
+                <button class="text-button" type="button" (click)="retryOpenBookmark()">
+                  Thử mở chương lại
+                </button>
+              }
+            </div>
+          }
+          @if (nextBookmarkCursor()) {
+            <button
+              class="button button-outline button-full account-reader-bookmark-more"
+              type="button"
+              [disabled]="bookmarkPageBusy()"
+              (click)="loadMoreBookmarks()"
+            >
+              {{ bookmarkPageBusy() ? 'Đang tải…' : 'Tải thêm dấu trang' }}
+            </button>
+          }
+        }
+      </section>
     }
 
     @if (manifestState() === 'loading') {

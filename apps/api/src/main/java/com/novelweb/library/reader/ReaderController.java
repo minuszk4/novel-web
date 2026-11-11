@@ -13,11 +13,14 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -31,16 +34,19 @@ public class ReaderController {
   private final ReaderService readerService;
   private final ReaderProgressService progressService;
   private final ReaderPreferencesService preferencesService;
+  private final ReaderBookmarkService bookmarkService;
   private final PolicyService policyService;
 
   public ReaderController(
       ReaderService readerService,
       ReaderProgressService progressService,
       ReaderPreferencesService preferencesService,
+      ReaderBookmarkService bookmarkService,
       PolicyService policyService) {
     this.readerService = readerService;
     this.progressService = progressService;
     this.preferencesService = preferencesService;
+    this.bookmarkService = bookmarkService;
     this.policyService = policyService;
   }
 
@@ -148,6 +154,66 @@ public class ReaderController {
     return ok(preferencesService.save(actor.orElseThrow(), body));
   }
 
+  @GetMapping("/works/{workId}/bookmarks")
+  public ResponseEntity<?> bookmarks(
+      Authentication authentication,
+      @PathVariable UUID workId,
+      @RequestParam(required = false) String cursor,
+      @RequestParam(defaultValue = "50") String limit,
+      HttpServletRequest request) {
+    Optional<UUID> actor = actorUserId(authentication);
+    if (actor.isEmpty()) {
+      return problem(
+          HttpStatus.UNAUTHORIZED, "UNAUTHENTICATED", "Sign in to view Reader bookmarks.", request);
+    }
+    ResponseEntity<?> policyGate = policyGate(actor.orElseThrow(), request);
+    if (policyGate != null) return policyGate;
+    return ok(bookmarkService.list(actor.orElseThrow(), workId, cursor, parseLimit(limit)));
+  }
+
+  @PostMapping("/works/{workId}/bookmarks")
+  public ResponseEntity<?> createBookmark(
+      Authentication authentication,
+      @PathVariable UUID workId,
+      @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+      @RequestBody(required = false) ReaderBookmarkService.CreateBookmarkRequest body,
+      HttpServletRequest request) {
+    Optional<UUID> actor = actorUserId(authentication);
+    if (actor.isEmpty()) {
+      return problem(
+          HttpStatus.UNAUTHORIZED,
+          "UNAUTHENTICATED",
+          "Sign in to save a Reader bookmark.",
+          request);
+    }
+    ResponseEntity<?> policyGate = policyGate(actor.orElseThrow(), request);
+    if (policyGate != null) return policyGate;
+    return ResponseEntity.status(HttpStatus.CREATED)
+        .cacheControl(CacheControl.noStore())
+        .header(HttpHeaders.PRAGMA, "no-cache")
+        .body(bookmarkService.create(actor.orElseThrow(), workId, idempotencyKey, body));
+  }
+
+  @DeleteMapping("/bookmarks/{bookmarkId}")
+  public ResponseEntity<?> deleteBookmark(
+      Authentication authentication, @PathVariable UUID bookmarkId, HttpServletRequest request) {
+    Optional<UUID> actor = actorUserId(authentication);
+    if (actor.isEmpty()) {
+      return problem(
+          HttpStatus.UNAUTHORIZED,
+          "UNAUTHENTICATED",
+          "Sign in to remove a Reader bookmark.",
+          request);
+    }
+    ResponseEntity<?> policyGate = policyGate(actor.orElseThrow(), request);
+    if (policyGate != null) return policyGate;
+    bookmarkService.delete(actor.orElseThrow(), bookmarkId);
+    return ResponseEntity.noContent()
+        .cacheControl(CacheControl.noStore())
+        .header(HttpHeaders.PRAGMA, "no-cache")
+        .build();
+  }
+
   @ExceptionHandler(ReaderService.ReaderNotFoundException.class)
   public ResponseEntity<ProblemDetail> notFound(HttpServletRequest request) {
     return problem(
@@ -181,6 +247,43 @@ public class ReaderController {
         HttpStatus.NOT_FOUND,
         "NOT_FOUND",
         "Reader preferences are unavailable for this account.",
+        request);
+  }
+
+  @ExceptionHandler(ReaderBookmarkRepository.BookmarkNotFoundException.class)
+  public ResponseEntity<ProblemDetail> unavailableBookmark(HttpServletRequest request) {
+    return problem(
+        HttpStatus.NOT_FOUND,
+        "NOT_FOUND",
+        "The requested work or Reader bookmark is unavailable.",
+        request);
+  }
+
+  @ExceptionHandler(ReaderBookmarkRepository.InvalidBookmarkException.class)
+  public ResponseEntity<ProblemDetail> invalidBookmark(HttpServletRequest request) {
+    return problem(
+        HttpStatus.UNPROCESSABLE_ENTITY,
+        "INVALID_READER_BOOKMARK",
+        "The chapter or stable anchor is not part of readable content in this work.",
+        request);
+  }
+
+  @ExceptionHandler(ReaderBookmarkService.InvalidBookmarkRequestException.class)
+  public ResponseEntity<ProblemDetail> invalidBookmarkRequest(
+      ReaderBookmarkService.InvalidBookmarkRequestException exception, HttpServletRequest request) {
+    return problem(
+        HttpStatus.UNPROCESSABLE_ENTITY,
+        "INVALID_READER_BOOKMARK",
+        exception.getMessage(),
+        request);
+  }
+
+  @ExceptionHandler(ReaderBookmarkRepository.BookmarkIdempotencyConflictException.class)
+  public ResponseEntity<ProblemDetail> bookmarkIdempotencyConflict(HttpServletRequest request) {
+    return problem(
+        HttpStatus.CONFLICT,
+        "BOOKMARK_IDEMPOTENCY_KEY_REUSED",
+        "The Idempotency-Key was already used for a different bookmark request.",
         request);
   }
 

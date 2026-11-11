@@ -3581,6 +3581,22 @@ label:has(input:focus-visible) {
 .reader-dark .reader-account-sync {
   color: #c9c5b9;
 }
+.reader-dark .account-reader-bookmark-global-message {
+  color: #c9cff8 !important;
+}
+.reader-dark .account-reader-bookmark-item {
+  border-color: #45464d;
+}
+.reader-dark .account-reader-bookmark-open:hover {
+  background: #303139;
+}
+.reader-dark .account-reader-bookmark-icon {
+  color: #d4d8ff;
+  background: #35374a;
+}
+.reader-dark .account-reader-bookmark-delete {
+  color: #f1b3aa;
+}
 .reader-dark .account-reader-state {
   color: #eeeae1;
 }
@@ -3609,6 +3625,124 @@ label:has(input:focus-visible) {
 }
 .reader-settings-panel {
   right: 0;
+}
+.reader-bookmarks-panel {
+  right: 0;
+}
+.account-reader-save-bookmark {
+  min-height: 44px;
+}
+.account-reader-bookmark-hint,
+.account-reader-bookmark-state {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.account-reader-bookmark-global-message {
+  flex-basis: 100%;
+  color: var(--primary) !important;
+  font-weight: 700;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  text-align: center;
+}
+.account-reader-bookmark-empty {
+  padding: 38px 14px;
+  color: var(--muted);
+  text-align: center;
+}
+.account-reader-bookmark-empty > span {
+  color: var(--primary);
+  font-size: 28px;
+}
+.account-reader-bookmark-empty h3 {
+  margin: 12px 0 6px;
+  color: var(--text);
+  font-family: var(--font-display);
+  font-size: 17px;
+}
+.account-reader-bookmark-empty p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.55;
+}
+.account-reader-bookmark-list {
+  display: grid;
+  gap: 8px;
+  margin: 18px 0;
+  padding: 0;
+  list-style: none;
+}
+.account-reader-bookmark-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+  border: 1px solid #e5e6eb;
+  border-radius: 7px;
+}
+.account-reader-bookmark-open {
+  min-width: 0;
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border: 0;
+  color: var(--text);
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+.account-reader-bookmark-open:hover {
+  background: #f7f8fc;
+}
+.account-reader-bookmark-icon {
+  flex: 0 0 24px;
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--primary);
+  background: #eff0f9;
+}
+.account-reader-bookmark-copy {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+.account-reader-bookmark-copy strong {
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.account-reader-bookmark-copy small {
+  color: var(--muted);
+  font-size: 10px;
+}
+.account-reader-bookmark-delete {
+  min-width: 54px;
+  min-height: 44px;
+  align-self: center;
+  margin-right: 5px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 5px;
+  color: #75413d;
+  background: transparent;
+  cursor: pointer;
+  font-size: 11px;
+}
+.account-reader-bookmark-delete:hover {
+  background: #fbf1ef;
+}
+.account-reader-bookmark-delete:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+.account-reader-bookmark-more {
+  min-height: 44px;
 }
 .panel-heading {
   display: flex;

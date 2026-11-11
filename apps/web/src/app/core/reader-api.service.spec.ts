@@ -151,6 +151,102 @@ describe('ReaderApiService', () => {
     await expect(saved).resolves.toEqual(preferences);
   });
 
+  it('loads a bounded bookmark page and validates bookmark ownership shape', async () => {
+    const result = service.getBookmarks(workId, undefined, 25);
+    const request = http.expectOne(
+      (candidate) =>
+        candidate.method === 'GET' &&
+        candidate.url === `/api/v1/works/${workId}/bookmarks` &&
+        candidate.params.get('limit') === '25',
+    );
+    request.flush({
+      items: [
+        {
+          id: '99999999-9999-4999-8999-999999999999',
+          workId,
+          chapterId,
+          segmentAnchor: 'chapter-1-p1',
+          label: 'Chương 1 · Gió qua núi',
+          createdAt: '2026-11-11T10:00:00Z',
+        },
+      ],
+      nextCursor: cursor,
+    });
+    await expect(result).resolves.toMatchObject({
+      items: [{ chapterId, segmentAnchor: 'chapter-1-p1' }],
+      nextCursor: cursor,
+    });
+
+    const malformed = service.getBookmarks(workId);
+    http
+      .expectOne((candidate) => candidate.url === `/api/v1/works/${workId}/bookmarks`)
+      .flush({
+        items: [
+          {
+            id: '99999999-9999-4999-8999-999999999999',
+            workId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            chapterId,
+            segmentAnchor: null,
+            label: 'Other work',
+            createdAt: '2026-11-11T10:00:00Z',
+          },
+        ],
+        nextCursor: null,
+      });
+    await expect(malformed).rejects.toMatchObject({ status: 502, code: 'INVALID_READER_RESPONSE' });
+  });
+
+  it('sends bookmark writes with an idempotency key and deletes by bookmark id', async () => {
+    const bookmarkId = '99999999-9999-4999-8999-999999999999';
+    const bookmark = {
+      id: bookmarkId,
+      workId,
+      chapterId,
+      segmentAnchor: null,
+      label: 'Chương một',
+      createdAt: '2026-11-11T10:00:00Z',
+    };
+    const created = service.createBookmark(
+      workId,
+      { chapterId, segmentAnchor: null, label: bookmark.label },
+      'client-retry-key-0001',
+    );
+    const createRequest = http.expectOne({
+      method: 'POST',
+      url: `/api/v1/works/${workId}/bookmarks`,
+    });
+    expect(createRequest.request.headers.get('Idempotency-Key')).toBe('client-retry-key-0001');
+    expect(createRequest.request.body).toEqual({
+      chapterId,
+      segmentAnchor: null,
+      label: 'Chương một',
+    });
+    createRequest.flush(bookmark);
+    await expect(created).resolves.toEqual(bookmark);
+
+    const deleted = service.deleteBookmark(bookmarkId);
+    http.expectOne({ method: 'DELETE', url: `/api/v1/bookmarks/${bookmarkId}` }).flush(null, {
+      status: 204,
+      statusText: 'No Content',
+    });
+    await expect(deleted).resolves.toBeUndefined();
+  });
+
+  it('rejects unsafe bookmark anchors, invalid page limits, and idempotency keys locally', async () => {
+    await expect(service.getBookmarks(workId, undefined, 101)).rejects.toMatchObject({
+      status: 502,
+      code: 'INVALID_READER_QUERY',
+    });
+    await expect(
+      service.createBookmark(
+        workId,
+        { chapterId, segmentAnchor: 'unstable anchor', label: 'Chapter' },
+        'short',
+      ),
+    ).rejects.toMatchObject({ status: 502, code: 'INVALID_READER_QUERY' });
+    expect(() => http.expectNone((request) => request.url.includes('/bookmarks'))).not.toThrow();
+  });
+
   it('rejects preferences outside the server contract', async () => {
     const loaded = service.getReaderPreferences();
     http.expectOne({ method: 'GET', url: '/api/v1/me/reader-preferences' }).flush({

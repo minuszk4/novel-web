@@ -79,6 +79,15 @@ interface MockProgressWrite extends Omit<MockProgress, 'version' | 'updatedAt' |
   expectedVersion: number;
 }
 
+interface MockReaderBookmark {
+  id: string;
+  workId: string;
+  chapterId: string;
+  segmentAnchor: string | null;
+  label: string;
+  createdAt: string;
+}
+
 async function json(route: Route, body: unknown, status = 200): Promise<void> {
   await route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
 }
@@ -92,6 +101,7 @@ async function installReaderRoutes(
   initialProgress?: MockProgress,
   onProgressSave?: (request: MockProgressWrite) => void,
   longThirdChapter = false,
+  initialBookmarks: MockReaderBookmark[] = [],
 ): Promise<string[]> {
   const loadedChapters: string[] = [];
   const manifestStatuses =
@@ -115,6 +125,7 @@ async function installReaderRoutes(
     lineHeight: 1.8,
     contentWidth: 720,
   };
+  const bookmarks: MockReaderBookmark[] = [...initialBookmarks];
   await page.route('**/api/v1/system/status', (route) =>
     json(route, {
       apiVersion: '4.2.1',
@@ -136,6 +147,46 @@ async function installReaderRoutes(
     if (route.request().method() === 'GET') return json(route, readerPreferences);
     Object.assign(readerPreferences, route.request().postDataJSON());
     return json(route, readerPreferences);
+  });
+  await page.route(`**/api/v1/works/${workId}/bookmarks**`, async (route) => {
+    const request = route.request();
+    if (request.method() === 'GET') {
+      return json(route, { items: bookmarks, nextCursor: null });
+    }
+    if (request.method() === 'POST') {
+      const idempotencyKey = request.headers()['idempotency-key'];
+      const body = request.postDataJSON() as {
+        chapterId: string;
+        segmentAnchor: string | null;
+        label: string;
+      };
+      if (!idempotencyKey || idempotencyKey.length < 16) {
+        return json(route, { code: 'INVALID_BOOKMARK_REQUEST' }, 400);
+      }
+      const existing = bookmarks.find(
+        (item) => item.chapterId === body.chapterId && item.segmentAnchor === body.segmentAnchor,
+      );
+      if (existing) return json(route, existing, 200);
+      const bookmark = {
+        id: `bbbbbbbb-bbbb-4bbb-8bbb-${String(bookmarks.length + 1).padStart(12, '0')}`,
+        workId,
+        chapterId: body.chapterId,
+        segmentAnchor: body.segmentAnchor,
+        label: body.label,
+        createdAt: '2026-11-11T10:00:00Z',
+      };
+      bookmarks.unshift(bookmark);
+      return json(route, bookmark, 201);
+    }
+    return route.fallback();
+  });
+  await page.route('**/api/v1/bookmarks/*', async (route) => {
+    if (route.request().method() !== 'DELETE') return route.fallback();
+    const bookmarkId = route.request().url().split('/bookmarks/')[1]?.split('?')[0];
+    const index = bookmarks.findIndex((bookmark) => bookmark.id === bookmarkId);
+    if (index < 0) return json(route, { code: 'NOT_FOUND' }, 404);
+    bookmarks.splice(index, 1);
+    return route.fulfill({ status: 204 });
   });
   await page.route(`**/api/v1/works/${workId}/progress`, async (route) => {
     if (route.request().method() === 'GET') return json(route, progress);
@@ -296,7 +347,7 @@ for (const viewport of viewports) {
     await expect(page.getByRole('heading', { name: 'Cánh cửa mở' })).toBeVisible();
     await expect(page.getByText('Một đoạn văn bản riêng tư.')).toBeVisible();
     await expect(page.locator('.reader-account-private')).toContainText('THƯ VIỆN TÀI KHOẢN');
-    await expect(page.getByText(/Tiến độ đã đồng bộ · Dấu trang chưa đồng bộ/)).toBeVisible();
+    await expect(page.getByText(/Tiến độ đã đồng bộ · Dấu trang chưa tải/)).toBeVisible();
     for (const payload of hostileMarkup) {
       await expect(page.locator('.reader-body').getByText(payload, { exact: true })).toBeVisible();
     }
@@ -333,6 +384,117 @@ for (const viewport of viewports) {
     expect(dimensions.document).toBeLessThanOrEqual(dimensions.viewport);
   });
 }
+
+test('saves, opens across chapters, and removes a private Reader bookmark at mobile width', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 360, height: 800 });
+  await installReaderRoutes(page, 200, false);
+  await page.goto(`/app/reader/${workId}`);
+  await expect(page.getByRole('heading', { name: 'Cánh cửa mở' })).toBeVisible();
+
+  await page.getByRole('button', { name: 'Mở dấu trang' }).click();
+  const panel = page.getByRole('dialog', { name: 'Vị trí đã lưu' });
+  await expect(panel.getByRole('heading', { name: 'Chưa có dấu trang' })).toBeVisible();
+  await expectNoAxeViolations(page);
+  await panel.getByRole('button', { name: 'Lưu vị trí đang đọc' }).click();
+  const bookmark = panel.getByRole('button', {
+    name: 'Chương 1 · Cánh cửa mở',
+    exact: true,
+  });
+  await expect(bookmark).toBeVisible();
+  await expect(page.locator('.account-reader-bookmark-global-message')).toContainText(
+    'Đã lưu vị trí đọc hiện tại.',
+  );
+  await expectNoAxeViolations(page);
+
+  await panel.getByRole('button', { name: /Đóng dấu trang/ }).click();
+  await page.getByRole('button', { name: 'Mở mục lục' }).click();
+  await page
+    .getByRole('dialog', { name: 'Gió qua núi' })
+    .getByRole('button', { name: /Qua khỏi dốc/ })
+    .click();
+  await expect(page).toHaveURL(new RegExp(`/app/reader/${workId}/${chapterIds[2]}$`));
+  await page.getByRole('button', { name: 'Mở dấu trang' }).click();
+  const reopenedPanel = page.getByRole('dialog', { name: 'Vị trí đã lưu' });
+  await reopenedPanel.getByRole('button', { name: 'Chương 1 · Cánh cửa mở', exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`/app/reader/${workId}/${chapterIds[0]}$`));
+  await expect(page.locator('[data-source-anchor="ch1-h1"]')).toBeFocused();
+
+  await page.getByRole('button', { name: 'Mở dấu trang' }).click();
+  const finalPanel = page.getByRole('dialog', { name: 'Vị trí đã lưu' });
+  await finalPanel.getByRole('button', { name: 'Xóa Chương 1 · Cánh cửa mở', exact: true }).click();
+  await expect(finalPanel.getByRole('heading', { name: 'Chưa có dấu trang' })).toBeVisible();
+  await expect(page.locator('.account-reader-bookmark-global-message')).toContainText(
+    'Đã xóa dấu trang.',
+  );
+  await expectNoAxeViolations(page);
+  const dimensions = await page.evaluate(() => ({
+    document: document.documentElement.scrollWidth,
+    viewport: document.documentElement.clientWidth,
+  }));
+  expect(dimensions.document).toBeLessThanOrEqual(dimensions.viewport);
+});
+
+test('explains when a bookmark anchor is absent from the current chapter revision', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 360, height: 800 });
+  await installReaderRoutes(page, 200, false, 200, false, undefined, undefined, false, [
+    {
+      id: 'bbbbbbbb-bbbb-4bbb-8bbb-000000000001',
+      workId,
+      chapterId: chapterIds[0],
+      segmentAnchor: 'ch1-removed-anchor',
+      label: 'Chương 1 · Bản cũ',
+      createdAt: '2026-11-11T10:00:00Z',
+    },
+  ]);
+  await page.goto(`/app/reader/${workId}/${chapterIds[2]}`);
+  await expect(page.getByRole('heading', { name: 'Qua khỏi dốc' })).toBeVisible();
+  await page.getByRole('button', { name: 'Mở dấu trang' }).click();
+  await page
+    .getByRole('dialog', { name: 'Vị trí đã lưu' })
+    .getByRole('button', {
+      name: 'Chương 1 · Bản cũ',
+      exact: true,
+    })
+    .click();
+  await expect(page).toHaveURL(new RegExp(`/app/reader/${workId}/${chapterIds[0]}$`));
+  await expect(page.getByRole('heading', { name: 'Cánh cửa mở' })).toBeFocused();
+  await expect(page.locator('.account-reader-bookmark-global-message')).toContainText(
+    'Đoạn đã đánh dấu không còn trong phiên bản chương hiện tại',
+  );
+  await expectNoAxeViolations(page);
+});
+
+test('keeps a bookmark jump retryable when the next manifest page is temporarily unavailable', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 360, height: 800 });
+  await installReaderRoutes(page, [503, 200], false, 200, true, undefined, undefined, false, [
+    {
+      id: 'bbbbbbbb-bbbb-4bbb-8bbb-000000000003',
+      workId,
+      chapterId: chapterIds[2],
+      segmentAnchor: 'ch3-p1',
+      label: 'Chương 3 · Qua khỏi dốc',
+      createdAt: '2026-11-11T10:00:00Z',
+    },
+  ]);
+  await page.goto(`/app/reader/${workId}`);
+  await expect(page.getByRole('heading', { name: 'Cánh cửa mở' })).toBeVisible();
+  const panel = page.getByRole('dialog', { name: 'Vị trí đã lưu' });
+  await page.getByRole('button', { name: 'Mở dấu trang' }).click();
+  await panel.getByRole('button', { name: 'Chương 3 · Qua khỏi dốc', exact: true }).click();
+  await expect(panel.getByRole('alert')).toContainText('Reader đang tạm thời không khả dụng');
+  await expect(panel.getByRole('button', { name: 'Thử mở chương lại' })).toBeVisible();
+  await expectNoAxeViolations(page);
+
+  await panel.getByRole('button', { name: 'Thử mở chương lại' }).click();
+  await expect(page).toHaveURL(new RegExp(`/app/reader/${workId}/${chapterIds[2]}$`));
+  await expect(page.getByRole('heading', { name: 'Qua khỏi dốc' })).toBeVisible();
+});
 
 test('restores and syncs Reader typography preferences across reloads', async ({ page }) => {
   await page.setViewportSize({ width: 360, height: 800 });

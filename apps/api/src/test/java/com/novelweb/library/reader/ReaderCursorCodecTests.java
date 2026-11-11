@@ -3,6 +3,7 @@ package com.novelweb.library.reader;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import java.time.Instant;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
@@ -74,6 +75,57 @@ class ReaderCursorCodecTests {
   void requiresCanonicalThirtyTwoByteSigningKey() {
     assertThrows(IllegalArgumentException.class, () -> new ReaderCursorCodec("not-a-key"));
     assertThrows(IllegalArgumentException.class, () -> new ReaderCursorCodec("AQ"));
+  }
+
+  @Test
+  void signsAndBindsKeysetBookmarksToActorAndWork() {
+    ReaderCursorCodec codec = new ReaderCursorCodec(HMAC_KEY);
+    UUID actorId = UUID.randomUUID();
+    UUID workId = UUID.randomUUID();
+    ReaderCursorCodec.Context context = ReaderCursorCodec.bookmarksContext(actorId, workId);
+    ReaderCursorCodec.KeysetPosition position =
+        new ReaderCursorCodec.KeysetPosition(
+            Instant.parse("2026-11-11T12:34:56.123456Z"), UUID.randomUUID());
+
+    String cursor = codec.encodeKeyset(context, position);
+
+    assertEquals(position, codec.decodeKeyset(cursor, context));
+    assertThrows(
+        ReaderCursorCodec.InvalidCursorException.class,
+        () ->
+            codec.decodeKeyset(
+                cursor, ReaderCursorCodec.bookmarksContext(UUID.randomUUID(), workId)));
+    assertThrows(
+        ReaderCursorCodec.InvalidCursorException.class,
+        () ->
+            codec.decodeKeyset(
+                cursor, ReaderCursorCodec.bookmarksContext(actorId, UUID.randomUUID())));
+    assertThrows(
+        ReaderCursorCodec.InvalidCursorException.class,
+        () -> codec.decodeKeyset(tamperLastCharacter(cursor), context));
+    assertThrows(IllegalArgumentException.class, () -> codec.decode(cursor, context));
+  }
+
+  @Test
+  void scopesHistoryKeysetsAndPreventsCursorTypeReplay() {
+    ReaderCursorCodec codec = new ReaderCursorCodec(HMAC_KEY);
+    UUID actorId = UUID.randomUUID();
+    ReaderCursorCodec.Context context = ReaderCursorCodec.readingHistoryContext(actorId);
+    ReaderCursorCodec.KeysetPosition position =
+        new ReaderCursorCodec.KeysetPosition(
+            Instant.parse("2026-11-11T00:00:00Z"), UUID.randomUUID());
+    String cursor = codec.encodeKeyset(context, position);
+
+    assertEquals(position, codec.decodeKeyset(cursor, context));
+    assertThrows(
+        ReaderCursorCodec.InvalidCursorException.class,
+        () ->
+            codec.decodeKeyset(cursor, ReaderCursorCodec.readingHistoryContext(UUID.randomUUID())));
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            codec.decodeKeyset(
+                cursor, ReaderCursorCodec.manifestContext(actorId, UUID.randomUUID())));
   }
 
   private static String tamperLastCharacter(String cursor) {

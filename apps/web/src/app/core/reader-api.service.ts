@@ -70,6 +70,26 @@ export interface ReaderPreferences {
   contentWidth: number;
 }
 
+export interface ReaderBookmark {
+  id: string;
+  workId: string;
+  chapterId: string;
+  segmentAnchor: string | null;
+  label: string;
+  createdAt: string;
+}
+
+export interface ReaderBookmarkPage {
+  items: ReaderBookmark[];
+  nextCursor: string | null;
+}
+
+export interface CreateReaderBookmarkRequest {
+  chapterId: string;
+  segmentAnchor: string | null;
+  label: string;
+}
+
 export class ReaderApiError extends Error {
   constructor(
     message: string,
@@ -86,6 +106,8 @@ const manifestUrl = (workId: string) => `/api/v1/works/${workId}/reader-manifest
 const contentUrl = (chapterId: string) => `/api/v1/chapters/${chapterId}/content`;
 const progressUrl = (workId: string) => `/api/v1/works/${workId}/progress`;
 const readerPreferencesUrl = '/api/v1/me/reader-preferences';
+const bookmarksUrl = (workId: string) => `/api/v1/works/${workId}/bookmarks`;
+const bookmarkUrl = (bookmarkId: string) => `/api/v1/bookmarks/${bookmarkId}`;
 const requestTimeoutMs = 10_000;
 
 @Injectable({ providedIn: 'root' })
@@ -110,6 +132,63 @@ export class ReaderApiService {
         this.http.put<unknown>(readerPreferencesUrl, validated).pipe(timeout(requestTimeoutMs)),
       );
       return parseReaderPreferences(response);
+    } catch (error) {
+      throw toReaderApiError(error);
+    }
+  }
+
+  async getBookmarks(workId: string, cursor?: string, limit = 50): Promise<ReaderBookmarkPage> {
+    if (!isUuid(workId) || !isValidPageRequest(cursor, limit, 100)) {
+      throw invalidResponse('INVALID_READER_QUERY');
+    }
+    try {
+      let params = new HttpParams().set('limit', limit);
+      if (cursor) params = params.set('cursor', cursor);
+      const response: unknown = await firstValueFrom(
+        this.http.get<unknown>(bookmarksUrl(workId), { params }).pipe(timeout(requestTimeoutMs)),
+      );
+      return parseBookmarkPage(response, workId, limit);
+    } catch (error) {
+      throw toReaderApiError(error);
+    }
+  }
+
+  async createBookmark(
+    workId: string,
+    request: CreateReaderBookmarkRequest,
+    idempotencyKey: string,
+  ): Promise<ReaderBookmark> {
+    if (
+      !isUuid(workId) ||
+      !isUuid(request.chapterId) ||
+      !(request.segmentAnchor === null || isStableAnchor(request.segmentAnchor)) ||
+      typeof request.label !== 'string' ||
+      !request.label.trim() ||
+      [...request.label.trim()].length > 160 ||
+      !/^[A-Za-z0-9._~-]{16,128}$/.test(idempotencyKey)
+    ) {
+      throw invalidResponse('INVALID_READER_QUERY');
+    }
+    try {
+      const response: unknown = await firstValueFrom(
+        this.http
+          .post<unknown>(bookmarksUrl(workId), request, {
+            headers: { 'Idempotency-Key': idempotencyKey },
+          })
+          .pipe(timeout(requestTimeoutMs)),
+      );
+      return parseBookmark(response, workId);
+    } catch (error) {
+      throw toReaderApiError(error);
+    }
+  }
+
+  async deleteBookmark(bookmarkId: string): Promise<void> {
+    if (!isUuid(bookmarkId)) throw invalidResponse('INVALID_READER_QUERY');
+    try {
+      await firstValueFrom(
+        this.http.delete<void>(bookmarkUrl(bookmarkId)).pipe(timeout(requestTimeoutMs)),
+      );
     } catch (error) {
       throw toReaderApiError(error);
     }
@@ -249,6 +328,50 @@ function parseReaderPreferences(value: unknown): ReaderPreferences {
     fontSize: value['fontSize'] as number,
     lineHeight: value['lineHeight'],
     contentWidth: value['contentWidth'] as number,
+  };
+}
+
+function parseBookmarkPage(
+  value: unknown,
+  expectedWorkId: string,
+  limit: number,
+): ReaderBookmarkPage {
+  if (
+    !isRecord(value) ||
+    Object.keys(value).sort().join(',') !== 'items,nextCursor' ||
+    !Array.isArray(value['items']) ||
+    value['items'].length > limit ||
+    !isCursor(value['nextCursor'])
+  ) {
+    throw invalidResponse();
+  }
+  const items = value['items'].map((item) => parseBookmark(item, expectedWorkId));
+  if (new Set(items.map((item) => item.id)).size !== items.length) throw invalidResponse();
+  return { items, nextCursor: value['nextCursor'] };
+}
+
+function parseBookmark(value: unknown, expectedWorkId: string): ReaderBookmark {
+  if (
+    !isRecord(value) ||
+    Object.keys(value).sort().join(',') !== 'chapterId,createdAt,id,label,segmentAnchor,workId' ||
+    !isUuid(value['id']) ||
+    value['workId'] !== expectedWorkId ||
+    !isUuid(value['chapterId']) ||
+    !(value['segmentAnchor'] === null || isStableAnchor(value['segmentAnchor'])) ||
+    typeof value['label'] !== 'string' ||
+    !value['label'].trim() ||
+    [...value['label']].length > 160 ||
+    !isTimestamp(value['createdAt'])
+  ) {
+    throw invalidResponse();
+  }
+  return {
+    id: value['id'],
+    workId: value['workId'],
+    chapterId: value['chapterId'],
+    segmentAnchor: value['segmentAnchor'] as string | null,
+    label: value['label'],
+    createdAt: value['createdAt'],
   };
 }
 

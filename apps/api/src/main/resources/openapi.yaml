@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 5.1.0
+  version: 6.0.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -11,8 +11,8 @@ info:
     HTML documents have a 4 MiB source limit and Markdown has a 16 MiB source limit, both lower than the configured general upload limit.
     EPUB 3, bounded UTF-8 TXT and single-document HTML/Markdown parse queue/status, private-preview persistence/edit and atomic private import
     commit are implemented. Markdown uses CommonMark core only, strips raw HTML and link destinations, and derives chapter boundaries from repeated top-level headings.
-    Source-only Reader manifest, chapter-content, progress and reader-preferences routes are implemented in the PostgreSQL profile;
-    bookmarks and reading-history operations tagged planned describe the remaining G2 target.
+    Source-only Reader manifest, chapter-content, progress, reader-preferences and bookmark routes are implemented in the PostgreSQL profile;
+    reading-history operations tagged planned describe the remaining G2 target.
 servers:
   - url: http://127.0.0.1:8080
 tags:
@@ -25,7 +25,7 @@ tags:
     description: Library/work listing, personal reading-state/collection, import-rights and local upload-staging operations are available in the PostgreSQL profile; parsing and other operations remain planned for G2.
     x-implementation-status: partial
   - name: Reader
-    description: Source-only reader, progress and preferences are available in the PostgreSQL profile; bookmarks and history remain planned for G2.
+    description: Source-only reader, progress, preferences and private bookmarks are available in the PostgreSQL profile; reading history remains planned for G2.
     x-implementation-status: partial
 paths:
   /api/v1/system/status:
@@ -1755,8 +1755,9 @@ paths:
     get:
       operationId: listWorkBookmarks
       tags: [Reader]
-      x-implementation-status: planned
-      summary: List private bookmarks in an owned work
+      x-implementation-status: implemented
+      summary: List private bookmarks in an accessible work
+      description: Returns the current user's bookmarks ordered newest-first. Each page rechecks current work access, uses a signed actor/work-bound keyset cursor, and is not cacheable.
       security:
         - appSession: []
       parameters:
@@ -1780,7 +1781,7 @@ paths:
             default: 50
       responses:
         '200':
-          description: Private bookmarks; no other user's annotations are returned.
+          description: Private bookmarks owned by the current user; no other user's bookmarks are returned.
           content:
             application/json:
               schema:
@@ -1791,11 +1792,18 @@ paths:
           $ref: '#/components/responses/Problem'
         '404':
           $ref: '#/components/responses/Problem'
+        '400':
+          $ref: '#/components/responses/Problem'
     post:
       operationId: createWorkBookmark
       tags: [Reader]
-      x-implementation-status: planned
+      x-implementation-status: implemented
       summary: Create a private bookmark at a stable chapter anchor
+      description: >-
+        Validates that the chapter is currently readable and that a non-null stable anchor exists in a retained
+        chapter revision. A matching Idempotency-Key retry returns its original response for 24 hours. A distinct
+        key for an already-bookmarked position returns the existing bookmark. Reusing a key for different request
+        content returns 409; access is rechecked before a cached response is returned.
       security:
         - appSession: []
           csrfToken: []
@@ -1821,7 +1829,7 @@ paths:
               $ref: '#/components/schemas/CreateBookmarkRequest'
       responses:
         '201':
-          description: Private bookmark created
+          description: Private bookmark created, or the original/equivalent bookmark returned for an idempotent retry.
           content:
             application/json:
               schema:
@@ -1840,9 +1848,11 @@ paths:
     delete:
       operationId: deleteOwnedBookmark
       tags: [Reader]
-      x-implementation-status: planned
+      x-implementation-status: implemented
       summary: Delete one of the current user's bookmarks
-      description: Owner-scoped; a bookmark belonging to another user is indistinguishable from a missing bookmark.
+      description: >-
+        Owner-scoped and protected by session-bound CSRF. A bookmark belonging to another user is indistinguishable
+        from a missing bookmark. Successful responses are no-store.
       security:
         - appSession: []
           csrfToken: []
@@ -2824,7 +2834,8 @@ components:
           format: uuid
         segmentAnchor:
           type: [string, 'null']
-          maxLength: 256
+          maxLength: 160
+          pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$'
         label:
           type: string
           minLength: 1
@@ -2842,7 +2853,8 @@ components:
           format: uuid
         segmentAnchor:
           type: [string, 'null']
-          maxLength: 256
+          maxLength: 160
+          pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$'
         label:
           type: string
           minLength: 1

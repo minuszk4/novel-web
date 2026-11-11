@@ -155,6 +155,8 @@ class PostgresSchemaIntegrationTests {
           "library_reading_states",
           "reader_progress",
           "reader_preferences",
+          "reader_bookmarks",
+          "reader_bookmark_idempotency",
           "library_collections",
           "library_collection_works",
           "import_rights_statements",
@@ -235,7 +237,7 @@ class PostgresSchemaIntegrationTests {
             connection.prepareStatement("SELECT COUNT(*) FROM databasechangelog");
         ResultSet changesets = changesetCount.executeQuery()) {
       changesets.next();
-      assertEquals(71, changesets.getInt(1), "unexpected number of applied changesets");
+      assertEquals(72, changesets.getInt(1), "unexpected number of applied changesets");
     }
 
     Set<String> actualTables = new HashSet<>();
@@ -3249,6 +3251,294 @@ class PostgresSchemaIntegrationTests {
   }
 
   @Test
+  void readerBookmarksArePrivateStableIdempotentAndCursorPaged() throws Exception {
+    UUID ownerId = createSessionTestUser("Reader Bookmark Owner");
+    UUID outsiderId = createSessionTestUser("Reader Bookmark Outsider");
+    UUID pendingPolicyId = createSessionTestUser("Reader Bookmark Pending Policy");
+    UUID workId = null;
+    try {
+      LibraryRepository.LibraryRecord library =
+          libraryService.createLibrary(ownerId, "Bookmark Shelf");
+      LibraryRepository.WorkRecord work =
+          libraryService.createPrivateImportedWork(
+              ownerId,
+              library.id(),
+              "Bookmark Story",
+              "Synthetic Author",
+              "vi",
+              sha256("reader-bookmark-work"));
+      workId = work.id();
+      LibraryRepository.VolumeRecord volume =
+          libraryService.createVolume(ownerId, workId, 1, "Volume 1");
+      LibraryRepository.ChapterRecord firstChapter =
+          libraryService.createChapter(ownerId, workId, volume.id(), 1, "Chapter 1", "vi");
+      LibraryRepository.ChapterRecord secondChapter =
+          libraryService.createChapter(ownerId, workId, volume.id(), 2, "Chapter 2", "vi");
+      libraryService.appendChapterRevision(
+          ownerId,
+          firstChapter.id(),
+          "plain_text",
+          "The old passage is retained.",
+          List.of(
+              new LibraryService.NewSegment(
+                  1, "paragraph", "The old passage is retained.", "retained-anchor")));
+      libraryService.appendChapterRevision(
+          ownerId,
+          firstChapter.id(),
+          "plain_text",
+          "The new passage is readable.",
+          List.of(
+              new LibraryService.NewSegment(
+                  1, "paragraph", "The new passage is readable.", "current-anchor")));
+      libraryService.appendChapterRevision(
+          ownerId,
+          secondChapter.id(),
+          "plain_text",
+          "A second chapter passage.",
+          List.of(
+              new LibraryService.NewSegment(
+                  1, "paragraph", "A second chapter passage.", "second-anchor")));
+      addCurrentPolicyAcceptances(ownerId);
+      addCurrentPolicyAcceptances(outsiderId);
+
+      SessionService.IssuedSession ownerSession = sessionService.create(ownerId).orElseThrow();
+      var ownerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", ownerSession.cookieValue());
+      String ownerCsrf = csrfTokenService.tokenFor(ownerSession.cookieValue());
+      SessionService.IssuedSession outsiderSession =
+          sessionService.create(outsiderId).orElseThrow();
+      var outsiderCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", outsiderSession.cookieValue());
+      SessionService.IssuedSession pendingPolicySession =
+          sessionService.create(pendingPolicyId).orElseThrow();
+      var pendingPolicyCookie =
+          new jakarta.servlet.http.Cookie(
+              "__Host-novel_session", pendingPolicySession.cookieValue());
+
+      MvcResult unauthenticated =
+          mockMvc.perform(get("/api/v1/works/{workId}/bookmarks", workId)).andReturn();
+      assertEquals(401, unauthenticated.getResponse().getStatus());
+
+      MvcResult defaults =
+          mockMvc
+              .perform(get("/api/v1/works/{workId}/bookmarks", workId).cookie(ownerCookie))
+              .andReturn();
+      assertEquals(200, defaults.getResponse().getStatus());
+      assertTrue(defaults.getResponse().getHeader("Cache-Control").contains("no-store"));
+      assertEquals(
+          0,
+          objectMapper.readTree(defaults.getResponse().getContentAsString()).path("items").size());
+
+      MvcResult pendingPolicy =
+          mockMvc
+              .perform(get("/api/v1/works/{workId}/bookmarks", workId).cookie(pendingPolicyCookie))
+              .andReturn();
+      assertEquals(403, pendingPolicy.getResponse().getStatus());
+
+      String firstRequest =
+          "{\"chapterId\":\""
+              + firstChapter.id()
+              + "\",\"segmentAnchor\":\"retained-anchor\",\"label\":\"Chapter 1 · saved\"}";
+      MvcResult missingCsrf =
+          mockMvc
+              .perform(
+                  post("/api/v1/works/{workId}/bookmarks", workId)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .header("Idempotency-Key", "bookmark-key-owner-0001")
+                      .content(firstRequest)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(403, missingCsrf.getResponse().getStatus());
+
+      MvcResult created =
+          mockMvc
+              .perform(
+                  post("/api/v1/works/{workId}/bookmarks", workId)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .header("Idempotency-Key", "bookmark-key-owner-0001")
+                      .content(firstRequest)
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(201, created.getResponse().getStatus());
+      assertTrue(created.getResponse().getHeader("Cache-Control").contains("no-store"));
+      JsonNode createdBookmark = objectMapper.readTree(created.getResponse().getContentAsString());
+      String bookmarkId = createdBookmark.path("id").asText();
+      assertEquals(workId.toString(), createdBookmark.path("workId").asText());
+      assertEquals(firstChapter.id().toString(), createdBookmark.path("chapterId").asText());
+      assertEquals("retained-anchor", createdBookmark.path("segmentAnchor").asText());
+
+      MvcResult retry =
+          mockMvc
+              .perform(
+                  post("/api/v1/works/{workId}/bookmarks", workId)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .header("Idempotency-Key", "bookmark-key-owner-0001")
+                      .content(firstRequest)
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(201, retry.getResponse().getStatus());
+      assertEquals(
+          createdBookmark, objectMapper.readTree(retry.getResponse().getContentAsString()));
+      assertEquals(1, bookmarkCount(ownerId, workId));
+
+      MvcResult reusedKey =
+          mockMvc
+              .perform(
+                  post("/api/v1/works/{workId}/bookmarks", workId)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .header("Idempotency-Key", "bookmark-key-owner-0001")
+                      .content(firstRequest.replace("saved", "edited"))
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(409, reusedKey.getResponse().getStatus());
+      assertTrue(
+          reusedKey.getResponse().getContentAsString().contains("BOOKMARK_IDEMPOTENCY_KEY_REUSED"));
+
+      MvcResult samePosition =
+          mockMvc
+              .perform(
+                  post("/api/v1/works/{workId}/bookmarks", workId)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .header("Idempotency-Key", "bookmark-key-owner-0002")
+                      .content(firstRequest.replace("owner-0001", "owner-0002"))
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(201, samePosition.getResponse().getStatus());
+      assertEquals(
+          bookmarkId,
+          objectMapper
+              .readTree(samePosition.getResponse().getContentAsString())
+              .path("id")
+              .asText());
+      assertEquals(1, bookmarkCount(ownerId, workId));
+
+      MvcResult invalidAnchor =
+          mockMvc
+              .perform(
+                  post("/api/v1/works/{workId}/bookmarks", workId)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .header("Idempotency-Key", "bookmark-key-owner-0003")
+                      .content(
+                          "{\"chapterId\":\""
+                              + firstChapter.id()
+                              + "\",\"segmentAnchor\":\"missing-anchor\",\"label\":\"Invalid\"}")
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(422, invalidAnchor.getResponse().getStatus());
+
+      MvcResult unknownField =
+          mockMvc
+              .perform(
+                  post("/api/v1/works/{workId}/bookmarks", workId)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .header("Idempotency-Key", "bookmark-key-owner-0004")
+                      .content(
+                          firstRequest.substring(0, firstRequest.length() - 1) + ",\"debug\":true}")
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(422, unknownField.getResponse().getStatus());
+
+      String secondRequest =
+          "{\"chapterId\":\""
+              + secondChapter.id()
+              + "\",\"segmentAnchor\":\"second-anchor\",\"label\":\"Chapter 2 · saved\"}";
+      MvcResult secondCreated =
+          mockMvc
+              .perform(
+                  post("/api/v1/works/{workId}/bookmarks", workId)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .header("Idempotency-Key", "bookmark-key-owner-0005")
+                      .content(secondRequest)
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(201, secondCreated.getResponse().getStatus());
+
+      MvcResult firstPage =
+          mockMvc
+              .perform(
+                  get("/api/v1/works/{workId}/bookmarks", workId)
+                      .param("limit", "1")
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(200, firstPage.getResponse().getStatus());
+      JsonNode firstPageBody = objectMapper.readTree(firstPage.getResponse().getContentAsString());
+      assertEquals(1, firstPageBody.path("items").size());
+      String cursor = firstPageBody.path("nextCursor").asText();
+      assertFalse(cursor.isBlank());
+
+      MvcResult secondPage =
+          mockMvc
+              .perform(
+                  get("/api/v1/works/{workId}/bookmarks", workId)
+                      .param("limit", "1")
+                      .param("cursor", cursor)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(200, secondPage.getResponse().getStatus());
+      assertEquals(
+          1,
+          objectMapper
+              .readTree(secondPage.getResponse().getContentAsString())
+              .path("items")
+              .size());
+
+      MvcResult tamperedCursor =
+          mockMvc
+              .perform(
+                  get("/api/v1/works/{workId}/bookmarks", workId)
+                      .param("cursor", cursor.substring(0, cursor.length() - 1) + "A")
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(400, tamperedCursor.getResponse().getStatus());
+
+      MvcResult outsiderList =
+          mockMvc
+              .perform(get("/api/v1/works/{workId}/bookmarks", workId).cookie(outsiderCookie))
+              .andReturn();
+      assertEquals(404, outsiderList.getResponse().getStatus());
+      MvcResult outsiderDelete =
+          mockMvc
+              .perform(
+                  delete("/api/v1/bookmarks/{bookmarkId}", bookmarkId)
+                      .header(
+                          "X-CSRF-Token", csrfTokenService.tokenFor(outsiderSession.cookieValue()))
+                      .cookie(outsiderCookie))
+              .andReturn();
+      assertEquals(404, outsiderDelete.getResponse().getStatus());
+
+      MvcResult ownerDelete =
+          mockMvc
+              .perform(
+                  delete("/api/v1/bookmarks/{bookmarkId}", bookmarkId)
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(204, ownerDelete.getResponse().getStatus());
+      assertTrue(ownerDelete.getResponse().getHeader("Cache-Control").contains("no-store"));
+      MvcResult missingAfterDelete =
+          mockMvc
+              .perform(
+                  delete("/api/v1/bookmarks/{bookmarkId}", bookmarkId)
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(404, missingAfterDelete.getResponse().getStatus());
+    } finally {
+      deleteLibraryUserData(ownerId, workId);
+      deleteSessionTestUser(pendingPolicyId);
+      deleteSessionTestUser(outsiderId);
+      deleteSessionTestUser(ownerId);
+    }
+  }
+
+  @Test
   void sourceOnlyReaderRechecksOwnerPaginatesAndNeverPutsBodyInManifest() throws Exception {
     UUID ownerId = createSessionTestUser("Reader API Owner");
     UUID outsiderId = createSessionTestUser("Reader API Outsider");
@@ -4217,6 +4507,8 @@ class PostgresSchemaIntegrationTests {
             "workspace_members",
             "workspaces",
             "library_collection_works",
+            "reader_bookmark_idempotency",
+            "reader_bookmarks",
             "reader_preferences",
             "reader_progress",
             "library_reading_states",
@@ -6642,6 +6934,20 @@ class PostgresSchemaIntegrationTests {
     }
   }
 
+  private int bookmarkCount(UUID userId, UUID workId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT COUNT(*) FROM reader_bookmarks WHERE user_id = ? AND work_id = ?")) {
+      select.setObject(1, userId);
+      select.setObject(2, workId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getInt(1);
+      }
+    }
+  }
+
   private int chapterCountForLibrary(UUID libraryId) throws SQLException {
     try (Connection connection = dataSource.getConnection();
         PreparedStatement select =
@@ -7214,6 +7520,50 @@ class PostgresSchemaIntegrationTests {
         deleteCollections.executeUpdate();
       }
       if (workId != null) {
+        try (PreparedStatement deleteBookmarkRetries =
+            connection.prepareStatement(
+                "DELETE FROM reader_bookmark_idempotency WHERE response_work_id = ? OR "
+                    + "response_chapter_id IN (SELECT id FROM chapters WHERE work_id = ?)")) {
+          deleteBookmarkRetries.setObject(1, workId);
+          deleteBookmarkRetries.setObject(2, workId);
+          deleteBookmarkRetries.executeUpdate();
+        }
+        try (PreparedStatement deleteBookmarks =
+            connection.prepareStatement("DELETE FROM reader_bookmarks WHERE work_id = ?")) {
+          deleteBookmarks.setObject(1, workId);
+          deleteBookmarks.executeUpdate();
+        }
+        try (PreparedStatement deleteSegments =
+            connection.prepareStatement(
+                "DELETE FROM segments s USING chapter_revisions r, chapters c "
+                    + "WHERE s.chapter_revision_id = r.id AND r.chapter_id = c.id "
+                    + "AND c.work_id = ?")) {
+          deleteSegments.setObject(1, workId);
+          deleteSegments.executeUpdate();
+        }
+        try (PreparedStatement detachChapterRevisions =
+            connection.prepareStatement(
+                "UPDATE chapters SET source_revision_id = NULL WHERE work_id = ?")) {
+          detachChapterRevisions.setObject(1, workId);
+          detachChapterRevisions.executeUpdate();
+        }
+        try (PreparedStatement deleteRevisions =
+            connection.prepareStatement(
+                "DELETE FROM chapter_revisions r USING chapters c "
+                    + "WHERE r.chapter_id = c.id AND c.work_id = ?")) {
+          deleteRevisions.setObject(1, workId);
+          deleteRevisions.executeUpdate();
+        }
+        try (PreparedStatement deleteChapters =
+            connection.prepareStatement("DELETE FROM chapters WHERE work_id = ?")) {
+          deleteChapters.setObject(1, workId);
+          deleteChapters.executeUpdate();
+        }
+        try (PreparedStatement deleteVolumes =
+            connection.prepareStatement("DELETE FROM volumes WHERE work_id = ?")) {
+          deleteVolumes.setObject(1, workId);
+          deleteVolumes.executeUpdate();
+        }
         try (PreparedStatement deleteWork =
             connection.prepareStatement("DELETE FROM works WHERE id = ? AND owner_user_id = ?")) {
           deleteWork.setObject(1, workId);

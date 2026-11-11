@@ -11,6 +11,7 @@ import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import {
   ReaderApiError,
+  ReaderBookmark,
   ReaderApiService,
   ReaderChapter,
   ReaderContentPage,
@@ -66,6 +67,16 @@ export class AccountReaderPageComponent {
   protected readonly manifestPageError = signal<ReaderApiError | null>(null);
   protected readonly tocOpen = signal(false);
   protected readonly settingsOpen = signal(false);
+  protected readonly bookmarksOpen = signal(false);
+  protected readonly bookmarks = signal<ReaderBookmark[]>([]);
+  protected readonly nextBookmarkCursor = signal<string | null>(null);
+  protected readonly bookmarkOpenRetry = signal<ReaderBookmark | null>(null);
+  protected readonly bookmarkPanelState = signal<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  protected readonly bookmarkSyncState = signal<'idle' | 'saved' | 'saving' | 'pending'>('idle');
+  protected readonly bookmarkError = signal<ReaderApiError | null>(null);
+  protected readonly bookmarkMessage = signal('');
+  protected readonly bookmarkPageBusy = signal(false);
+  protected readonly deletingBookmarkIds = signal<ReadonlySet<string>>(new Set());
   protected readonly progressSyncState = signal<
     'loading' | 'saved' | 'saving' | 'pending' | 'conflict'
   >('loading');
@@ -82,6 +93,8 @@ export class AccountReaderPageComponent {
   private requestedChapterId: string | null = null;
   private loadToken = 0;
   private panelReturnFocus: HTMLElement | null = null;
+  private pendingBookmarkPosition: { chapterId: string; segmentAnchor: string | null } | null =
+    null;
   private readonly progressVersions = new Map<string, number>();
   private progressTimer: number | null = null;
   private pendingProgress: PendingReaderProgress | null = null;
@@ -100,6 +113,12 @@ export class AccountReaderPageComponent {
     if (panel) this.focusPanel(panel.nativeElement);
   }
 
+  @ViewChild('bookmarksPanel') private set bookmarksPanel(
+    panel: ElementRef<HTMLElement> | undefined,
+  ) {
+    if (panel) this.focusPanel(panel.nativeElement);
+  }
+
   constructor() {
     this.route.paramMap.pipe(takeUntilDestroyed(this.destroyRef)).subscribe((params) => {
       const workId = params.get('workId');
@@ -110,6 +129,7 @@ export class AccountReaderPageComponent {
       const token = ++this.loadToken;
       this.tocOpen.set(false);
       this.settingsOpen.set(false);
+      this.bookmarksOpen.set(false);
       this.panelReturnFocus = null;
       if (!workId) {
         this.setManifestError(
@@ -156,6 +176,19 @@ export class AccountReaderPageComponent {
         return 'Cài đặt chưa đồng bộ';
       default:
         return 'Cài đặt đã đồng bộ';
+    }
+  }
+
+  protected bookmarkStatusLabel(): string {
+    switch (this.bookmarkSyncState()) {
+      case 'saving':
+        return 'Đang lưu dấu trang…';
+      case 'pending':
+        return 'Dấu trang chưa đồng bộ';
+      case 'saved':
+        return 'Dấu trang đã đồng bộ';
+      default:
+        return 'Dấu trang chưa tải';
     }
   }
 
@@ -211,7 +244,7 @@ export class AccountReaderPageComponent {
     void this.loadNextManifestPage();
   }
 
-  protected async loadNextManifestPage(): Promise<ReaderChapter[]> {
+  protected async loadNextManifestPage(focusErrorRecovery = true): Promise<ReaderChapter[]> {
     const work = this.work();
     const cursor = this.nextManifestCursor();
     if (!work || !cursor || this.manifestBusy()) return [];
@@ -228,14 +261,16 @@ export class AccountReaderPageComponent {
     } catch (error) {
       if (token === this.loadToken) {
         this.manifestPageError.set(asReaderApiError(error));
-        const status = this.manifestPageError()?.status;
-        const focusTargetId =
-          status === 401 || status === 403
-            ? 'account-reader-page-recovery'
-            : 'account-reader-retry-manifest-page';
-        requestAnimationFrame(() => {
-          document.getElementById(focusTargetId)?.focus({ preventScroll: true });
-        });
+        if (focusErrorRecovery) {
+          const status = this.manifestPageError()?.status;
+          const focusTargetId =
+            status === 401 || status === 403
+              ? 'account-reader-page-recovery'
+              : 'account-reader-retry-manifest-page';
+          requestAnimationFrame(() => {
+            document.getElementById(focusTargetId)?.focus({ preventScroll: true });
+          });
+        }
       }
       return [];
     } finally {
@@ -296,10 +331,140 @@ export class AccountReaderPageComponent {
     this.openPanel('settings', event);
   }
 
+  protected toggleBookmarks(event?: Event): void {
+    if (this.bookmarksOpen()) {
+      this.closePanel();
+      return;
+    }
+    this.openPanel('bookmarks', event);
+    this.bookmarkMessage.set('');
+    if (this.bookmarkPanelState() === 'idle') void this.loadBookmarks();
+  }
+
+  protected retryBookmarks(): void {
+    void this.loadBookmarks();
+  }
+
+  protected async loadMoreBookmarks(): Promise<void> {
+    const workId = this.work()?.id;
+    const cursor = this.nextBookmarkCursor();
+    if (!workId || !cursor || this.bookmarkPageBusy()) return;
+    this.bookmarkPageBusy.set(true);
+    try {
+      const page = await this.api.getBookmarks(workId, cursor, 50);
+      if (workId !== this.work()?.id) return;
+      const existing = new Set(this.bookmarks().map((bookmark) => bookmark.id));
+      this.bookmarks.update((items) => [
+        ...items,
+        ...page.items.filter((item) => !existing.has(item.id)),
+      ]);
+      this.nextBookmarkCursor.set(page.nextCursor);
+      this.bookmarkError.set(null);
+      this.bookmarkPanelState.set('ready');
+    } catch (error) {
+      this.bookmarkError.set(asReaderApiError(error));
+    } finally {
+      this.bookmarkPageBusy.set(false);
+    }
+  }
+
+  protected async saveCurrentBookmark(): Promise<void> {
+    const work = this.work();
+    const chapter = this.activeChapter();
+    if (
+      !work ||
+      !chapter ||
+      this.contentState() !== 'ready' ||
+      this.bookmarkSyncState() === 'saving'
+    ) {
+      return;
+    }
+    const segmentAnchor = this.currentSegmentAnchor();
+    const label = [...`Chương ${chapter.ordinal} · ${chapter.title || 'Chưa có tiêu đề'}`]
+      .slice(0, 160)
+      .join('');
+    this.bookmarkSyncState.set('saving');
+    this.bookmarkMessage.set('');
+    try {
+      const saved = await this.api.createBookmark(
+        work.id,
+        { chapterId: chapter.id, segmentAnchor, label },
+        crypto.randomUUID(),
+      );
+      if (work.id !== this.work()?.id) return;
+      this.bookmarks.update((items) => [saved, ...items.filter((item) => item.id !== saved.id)]);
+      this.bookmarkPanelState.set('ready');
+      this.bookmarkSyncState.set('saved');
+      this.bookmarkMessage.set('Đã lưu vị trí đọc hiện tại.');
+    } catch (error) {
+      this.bookmarkSyncState.set('pending');
+      this.bookmarkMessage.set(this.statusMessage(asReaderApiError(error)));
+    }
+  }
+
+  protected async deleteBookmark(bookmark: ReaderBookmark): Promise<void> {
+    if (this.deletingBookmarkIds().has(bookmark.id)) return;
+    this.deletingBookmarkIds.update((items) => new Set(items).add(bookmark.id));
+    this.bookmarkMessage.set('');
+    try {
+      await this.api.deleteBookmark(bookmark.id);
+      this.bookmarks.update((items) => items.filter((item) => item.id !== bookmark.id));
+      this.bookmarkSyncState.set('saved');
+      this.bookmarkMessage.set('Đã xóa dấu trang.');
+    } catch (error) {
+      this.bookmarkMessage.set(this.statusMessage(asReaderApiError(error)));
+    } finally {
+      this.deletingBookmarkIds.update((items) => {
+        const next = new Set(items);
+        next.delete(bookmark.id);
+        return next;
+      });
+    }
+  }
+
+  protected async openBookmark(bookmark: ReaderBookmark): Promise<void> {
+    this.bookmarkMessage.set('');
+    this.bookmarkError.set(null);
+    this.bookmarkOpenRetry.set(null);
+    let chapter = this.chapters().find((item) => item.id === bookmark.chapterId);
+    for (
+      let pageIndex = 0;
+      !chapter && this.nextManifestCursor() && pageIndex < maxManifestPages;
+      pageIndex += 1
+    ) {
+      const added = await this.loadNextManifestPage(false);
+      chapter = added.find((item) => item.id === bookmark.chapterId);
+      if (this.manifestPageError()) break;
+    }
+    if (this.manifestPageError()) {
+      this.bookmarkError.set(this.manifestPageError());
+      this.bookmarkOpenRetry.set(bookmark);
+      return;
+    }
+    if (!chapter || chapter.accessState !== 'readable') {
+      this.bookmarkMessage.set('Chương của dấu trang hiện không còn quyền đọc.');
+      return;
+    }
+    const position = { chapterId: chapter.id, segmentAnchor: bookmark.segmentAnchor };
+    this.closePanel(false);
+    if (chapter.id === this.activeChapter()?.id && this.contentState() === 'ready') {
+      this.restoreBookmarkPosition(position);
+      return;
+    }
+    this.pendingBookmarkPosition = position;
+    this.navigateToChapter(chapter);
+  }
+
+  protected retryOpenBookmark(): void {
+    const bookmark = this.bookmarkOpenRetry();
+    if (bookmark) void this.openBookmark(bookmark);
+  }
+
   protected closePanel(restoreFocus = true): void {
     const returnFocus = this.panelReturnFocus;
     this.tocOpen.set(false);
     this.settingsOpen.set(false);
+    this.bookmarksOpen.set(false);
     this.panelReturnFocus = null;
     if (restoreFocus && returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
   }
@@ -358,7 +523,8 @@ export class AccountReaderPageComponent {
     if (
       this.contentError()?.status === 403 ||
       this.manifestError()?.status === 403 ||
-      this.manifestPageError()?.status === 403
+      this.manifestPageError()?.status === 403 ||
+      this.bookmarkError()?.status === 403
     ) {
       return '/app/setup';
     }
@@ -414,6 +580,13 @@ export class AccountReaderPageComponent {
     this.nextManifestCursor.set(null);
     this.manifestError.set(null);
     this.contentError.set(null);
+    this.bookmarks.set([]);
+    this.nextBookmarkCursor.set(null);
+    this.bookmarkOpenRetry.set(null);
+    this.bookmarkPanelState.set('idle');
+    this.bookmarkSyncState.set('idle');
+    this.bookmarkError.set(null);
+    this.bookmarkMessage.set('');
     this.manifestPageError.set(null);
     this.manifestState.set('loading');
     this.contentState.set('idle');
@@ -591,6 +764,10 @@ export class AccountReaderPageComponent {
       this.contentState.set('ready');
       if (restoreProgress?.chapterId === chapter.id) {
         this.restoreProgressPosition(restoreProgress);
+      } else if (this.pendingBookmarkPosition?.chapterId === chapter.id) {
+        const position = this.pendingBookmarkPosition;
+        this.pendingBookmarkPosition = null;
+        this.restoreBookmarkPosition(position);
       } else {
         this.focusReaderHeading();
       }
@@ -624,10 +801,13 @@ export class AccountReaderPageComponent {
     this.contentState.set('idle');
   }
 
-  private openPanel(panelName: 'toc' | 'settings', event?: Event): void {
-    if (!this.tocOpen() && !this.settingsOpen()) this.panelReturnFocus = this.getPanelOpener(event);
+  private openPanel(panelName: 'toc' | 'settings' | 'bookmarks', event?: Event): void {
+    if (!this.tocOpen() && !this.settingsOpen() && !this.bookmarksOpen()) {
+      this.panelReturnFocus = this.getPanelOpener(event);
+    }
     this.tocOpen.set(panelName === 'toc');
     this.settingsOpen.set(panelName === 'settings');
+    this.bookmarksOpen.set(panelName === 'bookmarks');
   }
 
   private getPanelOpener(event?: Event): HTMLElement | null {
@@ -641,7 +821,77 @@ export class AccountReaderPageComponent {
   private openPanelElement(): HTMLElement | null {
     if (this.tocOpen()) return document.getElementById('account-reader-toc-panel');
     if (this.settingsOpen()) return document.getElementById('account-reader-settings-panel');
+    if (this.bookmarksOpen()) return document.getElementById('account-reader-bookmarks-panel');
     return null;
+  }
+
+  private async loadBookmarks(): Promise<void> {
+    const workId = this.work()?.id;
+    if (!workId) return;
+    this.bookmarkPanelState.set('loading');
+    this.bookmarkError.set(null);
+    try {
+      const page = await this.api.getBookmarks(workId, undefined, 50);
+      if (workId !== this.work()?.id) return;
+      this.bookmarks.set(page.items);
+      this.nextBookmarkCursor.set(page.nextCursor);
+      this.bookmarkPanelState.set('ready');
+      this.bookmarkSyncState.set('saved');
+    } catch (error) {
+      if (workId !== this.work()?.id) return;
+      this.bookmarkError.set(asReaderApiError(error));
+      this.bookmarkPanelState.set('error');
+      this.bookmarkSyncState.set('pending');
+    }
+  }
+
+  private currentSegmentAnchor(): string | null {
+    const container = document.querySelector<HTMLElement>('.account-reader-content');
+    if (!container) return null;
+    const segments = Array.from(container.querySelectorAll<HTMLElement>('[data-source-anchor]'));
+    if (!segments.length) return null;
+    const threshold =
+      container.getBoundingClientRect().top + Math.min(100, container.clientHeight * 0.2);
+    return (
+      segments.find((segment) => segment.getBoundingClientRect().bottom > threshold)?.dataset[
+        'sourceAnchor'
+      ] ??
+      segments.at(-1)?.dataset['sourceAnchor'] ??
+      null
+    );
+  }
+
+  private restoreBookmarkPosition(position: {
+    chapterId: string;
+    segmentAnchor: string | null;
+  }): void {
+    requestAnimationFrame(() => {
+      const container = document.querySelector<HTMLElement>('.account-reader-content');
+      if (!container || this.activeChapter()?.id !== position.chapterId) return;
+      const heading = document.getElementById('account-reader-title');
+      if (position.segmentAnchor === null) {
+        container.scrollTo({ top: 0, behavior: 'auto' });
+        heading?.focus({ preventScroll: true });
+        this.bookmarkMessage.set('Đã mở đầu chương từ dấu trang.');
+        return;
+      }
+      const target = Array.from(
+        container.querySelectorAll<HTMLElement>('[data-source-anchor]'),
+      ).find((element) => element.dataset['sourceAnchor'] === position.segmentAnchor);
+      if (!target) {
+        container.scrollTo({ top: 0, behavior: 'auto' });
+        heading?.focus({ preventScroll: true });
+        this.bookmarkMessage.set(
+          'Đoạn đã đánh dấu không còn trong phiên bản chương hiện tại. Bạn đang ở đầu chương.',
+        );
+        return;
+      }
+      container.scrollTop +=
+        target.getBoundingClientRect().top - container.getBoundingClientRect().top;
+      target.tabIndex = -1;
+      target.focus({ preventScroll: true });
+      this.bookmarkMessage.set('Đã chuyển tới vị trí đã đánh dấu.');
+    });
   }
 
   private focusPanel(panel: HTMLElement): void {

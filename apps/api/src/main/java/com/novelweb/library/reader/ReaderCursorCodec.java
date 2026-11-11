@@ -8,6 +8,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.security.MessageDigest;
+import java.time.Instant;
 import java.util.Base64;
 import java.util.Objects;
 import java.util.UUID;
@@ -24,6 +25,7 @@ import org.springframework.stereotype.Service;
 public class ReaderCursorCodec {
 
   private static final int PAYLOAD_LENGTH = 54;
+  private static final int KEYSET_PAYLOAD_LENGTH = 62;
   private static final int SIGNATURE_LENGTH = 32;
   private static final int MAX_TOKEN_LENGTH = 2048;
   private static final int VERSION = 1;
@@ -44,12 +46,23 @@ public class ReaderCursorCodec {
     return new Context(Kind.CONTENT, actorUserId, chapterId, revisionId);
   }
 
+  public static Context bookmarksContext(UUID actorUserId, UUID workId) {
+    return new Context(Kind.BOOKMARKS, actorUserId, workId, NO_REVISION);
+  }
+
+  public static Context readingHistoryContext(UUID actorUserId) {
+    return new Context(Kind.READING_HISTORY, actorUserId, actorUserId, NO_REVISION);
+  }
+
   public void requireConfigured() {
     if (hmacKey == null) throw new SigningUnavailableException();
   }
 
   public String encode(Context context, int ordinal) {
     Objects.requireNonNull(context, "cursor context is required");
+    if (context.kind() != Kind.MANIFEST && context.kind() != Kind.CONTENT) {
+      throw new IllegalArgumentException("ordinal cursor requires a manifest or content context");
+    }
     if (ordinal < 1) throw new IllegalArgumentException("cursor ordinal must be positive");
     requireConfigured();
     byte[] payload = payload(context, ordinal);
@@ -60,6 +73,9 @@ public class ReaderCursorCodec {
 
   public int decode(String token, Context expectedContext) {
     Objects.requireNonNull(expectedContext, "expected cursor context is required");
+    if (expectedContext.kind() != Kind.MANIFEST && expectedContext.kind() != Kind.CONTENT) {
+      throw new IllegalArgumentException("ordinal cursor requires a manifest or content context");
+    }
     requireConfigured();
     if (token == null || token.isBlank() || token.length() > MAX_TOKEN_LENGTH) {
       throw new InvalidCursorException();
@@ -102,6 +118,83 @@ public class ReaderCursorCodec {
     }
   }
 
+  public String encodeKeyset(Context context, KeysetPosition position) {
+    Objects.requireNonNull(context, "cursor context is required");
+    Objects.requireNonNull(position, "cursor position is required");
+    if (context.kind() != Kind.BOOKMARKS && context.kind() != Kind.READING_HISTORY) {
+      throw new IllegalArgumentException("keyset cursor requires a bookmark or history context");
+    }
+    requireConfigured();
+    try {
+      ByteArrayOutputStream bytes = new ByteArrayOutputStream(KEYSET_PAYLOAD_LENGTH);
+      try (DataOutputStream output = new DataOutputStream(bytes)) {
+        output.writeByte(VERSION);
+        output.writeByte(context.kind().code());
+        writeUuid(output, context.actorUserId());
+        writeUuid(output, context.resourceId());
+        writeUuid(output, position.id());
+        output.writeLong(position.timestamp().getEpochSecond());
+        output.writeInt(position.timestamp().getNano());
+      }
+      byte[] payload = bytes.toByteArray();
+      if (payload.length != KEYSET_PAYLOAD_LENGTH) {
+        throw new IllegalStateException("Invalid Reader keyset cursor payload size");
+      }
+      return Base64.getUrlEncoder().withoutPadding().encodeToString(payload)
+          + "."
+          + Base64.getUrlEncoder().withoutPadding().encodeToString(sign(payload, "keyset"));
+    } catch (IOException exception) {
+      throw new IllegalStateException("Unable to encode a Reader keyset cursor", exception);
+    }
+  }
+
+  public KeysetPosition decodeKeyset(String token, Context expectedContext) {
+    Objects.requireNonNull(expectedContext, "expected cursor context is required");
+    if (expectedContext.kind() != Kind.BOOKMARKS
+        && expectedContext.kind() != Kind.READING_HISTORY) {
+      throw new IllegalArgumentException("keyset cursor requires a bookmark or history context");
+    }
+    requireConfigured();
+    if (token == null || token.isBlank() || token.length() > MAX_TOKEN_LENGTH) {
+      throw new InvalidCursorException();
+    }
+    String[] parts = token.split("\\.", -1);
+    if (parts.length != 2 || !CANONICAL_BASE64URL.matcher(token).matches()) {
+      throw new InvalidCursorException();
+    }
+    byte[] payload = decodeCanonical(parts[0]);
+    byte[] signature = decodeCanonical(parts[1]);
+    if (payload.length != KEYSET_PAYLOAD_LENGTH
+        || signature.length != SIGNATURE_LENGTH
+        || !MessageDigest.isEqual(sign(payload, "keyset"), signature)) {
+      throw new InvalidCursorException();
+    }
+    try (DataInputStream input = new DataInputStream(new ByteArrayInputStream(payload))) {
+      int version = input.readUnsignedByte();
+      Kind kind = Kind.fromCode(input.readUnsignedByte());
+      UUID actorUserId = readUuid(input);
+      UUID resourceId = readUuid(input);
+      UUID positionId = readUuid(input);
+      long epochSecond = input.readLong();
+      int nano = input.readInt();
+      if (version != VERSION
+          || input.available() != 0
+          || kind != expectedContext.kind()
+          || !actorUserId.equals(expectedContext.actorUserId())
+          || !resourceId.equals(expectedContext.resourceId())
+          || nano < 0
+          || nano > 999_999_999) {
+        throw new InvalidCursorException();
+      }
+      return new KeysetPosition(Instant.ofEpochSecond(epochSecond, nano), positionId);
+    } catch (IOException | RuntimeException exception) {
+      if (exception instanceof InvalidCursorException invalidCursorException) {
+        throw invalidCursorException;
+      }
+      throw new InvalidCursorException();
+    }
+  }
+
   private static byte[] payload(Context context, int ordinal) {
     try {
       ByteArrayOutputStream bytes = new ByteArrayOutputStream(PAYLOAD_LENGTH);
@@ -124,10 +217,18 @@ public class ReaderCursorCodec {
   }
 
   private byte[] sign(byte[] payload) {
+    return signWithDomain(payload, "novel-reader-cursor-v1");
+  }
+
+  private byte[] sign(byte[] payload, String cursorType) {
+    return signWithDomain(payload, "novel-reader-cursor-v1-" + cursorType);
+  }
+
+  private byte[] signWithDomain(byte[] payload, String domain) {
     try {
       Mac mac = Mac.getInstance("HmacSHA256");
       mac.init(new SecretKeySpec(hmacKey, "HmacSHA256"));
-      mac.update("novel-reader-cursor-v1".getBytes(StandardCharsets.UTF_8));
+      mac.update(domain.getBytes(StandardCharsets.UTF_8));
       return mac.doFinal(payload);
     } catch (GeneralSecurityException exception) {
       throw new IllegalStateException("Unable to sign a Reader cursor", exception);
@@ -177,7 +278,8 @@ public class ReaderCursorCodec {
       Objects.requireNonNull(actorUserId, "cursor actor is required");
       Objects.requireNonNull(resourceId, "cursor resource is required");
       Objects.requireNonNull(revisionId, "cursor revision is required");
-      if (kind == Kind.MANIFEST && !revisionId.equals(NO_REVISION)) {
+      if ((kind == Kind.MANIFEST || kind == Kind.BOOKMARKS || kind == Kind.READING_HISTORY)
+          && !revisionId.equals(NO_REVISION)) {
         throw new IllegalArgumentException("manifest cursor cannot include a revision");
       }
       if (kind == Kind.CONTENT && revisionId.equals(NO_REVISION)) {
@@ -186,9 +288,18 @@ public class ReaderCursorCodec {
     }
   }
 
+  public record KeysetPosition(Instant timestamp, UUID id) {
+    public KeysetPosition {
+      Objects.requireNonNull(timestamp, "cursor timestamp is required");
+      Objects.requireNonNull(id, "cursor id is required");
+    }
+  }
+
   public enum Kind {
     MANIFEST(1),
-    CONTENT(2);
+    CONTENT(2),
+    BOOKMARKS(3),
+    READING_HISTORY(4);
 
     private final int code;
 
