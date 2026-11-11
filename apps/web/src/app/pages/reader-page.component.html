@@ -225,9 +225,17 @@
         class="bookmark-button"
         type="button"
         [attr.aria-pressed]="demo.bookmarkedChapter() === chapter.id"
+        [attr.aria-label]="
+          demo.bookmarkedChapter() === chapter.id
+            ? 'Đã lưu dấu trang, bỏ dấu trang chương'
+            : 'Đánh dấu trang'
+        "
         (click)="toggleBookmark()"
       >
-        {{ demo.bookmarkedChapter() === chapter.id ? '◆ Đã lưu dấu trang' : '◇ Đánh dấu trang' }}
+        <span aria-hidden="true">{{ demo.bookmarkedChapter() === chapter.id ? '◆' : '◇' }}</span>
+        <span class="bookmark-label">{{
+          demo.bookmarkedChapter() === chapter.id ? 'Đã lưu dấu trang' : 'Đánh dấu trang'
+        }}</span>
       </button>
       @if (nextChapter) {
         <a
