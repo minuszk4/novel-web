@@ -170,11 +170,11 @@ Run the local test and report lifecycle from `apps/api`:
 .\mvnw.cmd -B -ntp verify
 ```
 
-JUnit XML/text reports are written to `target/surefire-reports/`; JaCoCo HTML/XML coverage is written to `target/site/jacoco/`. CI retains both report folders for 14 days. Maven `verify` enforces a 20% aggregate line-coverage floor; this is a regression guard, not a release-readiness target. The default database-free run passes 109 tests and skips the 68 PostgreSQL integration cases (177 discovered).
+JUnit XML/text reports are written to `target/surefire-reports/`; JaCoCo HTML/XML coverage is written to `target/site/jacoco/`. CI retains both report folders for 14 days. Maven `verify` enforces a 20% aggregate line-coverage floor; this is a regression guard, not a release-readiness target. The default database-free run passes 109 tests and skips the 69 PostgreSQL integration cases (178 discovered).
 
 ### PostgreSQL 17 integration tests
 
-For safe backup/restore drills, use [PostgreSQL backup and restore](docs/postgresql-recovery.md). Keep the normal `mvnw verify` run database-free: it executes 109 tests and skips the 68 PostgreSQL integration cases. The PostgreSQL CI job runs only `PostgresSchemaIntegrationTests`; running every test under the PostgreSQL profile also puts the optional JDBC driver on the classpath for `ApiFoundationTests`, which are designed for the default profile.
+For safe backup/restore drills, use [PostgreSQL backup and restore](docs/postgresql-recovery.md). Keep the normal `mvnw verify` run database-free: it executes 109 tests and skips the 69 PostgreSQL integration cases. The PostgreSQL CI job runs only `PostgresSchemaIntegrationTests` and `PostgresLegacyImportMigrationTests`; running every test under the PostgreSQL profile also puts the optional JDBC driver on the classpath for `ApiFoundationTests`, which are designed for the default profile.
 
 Run the PostgreSQL integration class against a uniquely named disposable Compose project, separate from `novel-web-local`. Choose an unused loopback port. This example supplies local-only test credentials so it works from a clean clone without an `.env` file:
 
@@ -193,7 +193,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Could not start the disposable PostgreSQL service.' }
     docker compose -p $disposableProject --profile database exec postgres pg_isready -U novelweb -d novelweb
     if ($LASTEXITCODE -ne 0) { throw 'The disposable PostgreSQL service is not ready.' }
-    .\mvnw.cmd -B -ntp -Ppostgres '-Dpostgres.integration=true' '-Dspring.profiles.active=postgres' '-Dtest=PostgresSchemaIntegrationTests' verify
+    .\mvnw.cmd -B -ntp -Ppostgres '-Dpostgres.integration=true' '-Dspring.profiles.active=postgres' '-Dtest=PostgresSchemaIntegrationTests,PostgresLegacyImportMigrationTests' verify
     if ($LASTEXITCODE -ne 0) { throw 'PostgreSQL integration verification failed.' }
 }
 finally {
@@ -209,6 +209,6 @@ finally {
 }
 ```
 
-This focused command passes 68/68 PostgreSQL integration tests and verifies all 69 Liquibase changesets / 29 application tables, owner and policy gates, concurrency/idempotency, import parse/preview/commit lifecycles, reader access and fixture/staging cleanup. Run it only against its disposable database; never target `novel-web-local`. CI retains Surefire and JaCoCo reports for 14 days.
+This focused command passes 69/69 PostgreSQL integration tests and verifies all 69 Liquibase changesets / 29 application tables, owner and policy gates, concurrency/idempotency, import parse/preview/commit lifecycles, reader access, fixture/staging cleanup, and a data-bearing forward migration from changeset 55 to 69 that preserves pending, uploaded, failed, cancelled and expired import jobs. Run it only against its disposable database; never target `novel-web-local`. CI retains Surefire and JaCoCo reports for 14 days.
 
 Import-rights slice (2026-11-10, checkpoint before import creation): GET /api/v1/imports/rights-statement/current returns only an effective approved statement; none is seeded locally, so it returns 503. POST /api/v1/imports/rights-statement/acceptance requires a session, session-bound CSRF, current Terms/Privacy acceptance, explicit confirmation and a UUID Idempotency-Key; it records the exact-text SHA-256 and server timestamp, returns the same receipt on retry, and exposes no upload target. Approved statement and acceptance audit fields are protected by PostgreSQL triggers; the acceptance row permits only a one-time consumed_at update for a future atomic import-create flow. The rights-only checkpoint passed 110/110 tests with 51 changesets/25 application tables. The import-create/upload checkpoint before content hardening passed 116/116 tests with 55 changesets/26 application tables; it implements transaction-gated `POST /api/v1/imports`, one-use same-origin upload targets, local streamed storage, actor/token binding and exact-byte SHA-256. Evidence: `../../.ai/evidence/import-create-postgres-2026-11-10/result.md`. A later content-validation checkpoint passed 122/122 tests: UTF-8 text/HTML and bounded EPUB ZIP checks run before uploaded state and rejected bytes are removed while the target remains retryable. Staging cleanup and per-user quotas/rate controls are now implemented and tested; quota reservation remains until terminal staging bytes are deleted. EPUB 3 parse/status and bounded-preview persistence are implemented; private preview GET/PATCH is implemented; atomic private-work commit and production object storage remain open. Evidence: ../../.ai/evidence/import-content-validation-postgres-2026-11-10/result.md, ../../.ai/evidence/import-staging-cleanup-postgres-2026-11-10/result.md, and ../../.ai/evidence/import-staging-quota-rate-limit-postgres-2026-11-11/result.md; parse-job evidence: ../../.ai/evidence/import-parse-job-2026-11-11/result.md.
