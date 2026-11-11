@@ -63,10 +63,13 @@ async function json(route: Route, body: unknown, status = 200): Promise<void> {
 
 async function installReaderRoutes(
   page: Page,
-  manifestStatus = 200,
+  manifestStatus: number | readonly number[] = 200,
   includeHostileMarkup = true,
 ): Promise<string[]> {
   const loadedChapters: string[] = [];
+  const manifestStatuses =
+    typeof manifestStatus === 'number' ? [manifestStatus] : [...manifestStatus];
+  let manifestRequestCount = 0;
   await page.route('**/api/v1/system/status', (route) =>
     json(route, {
       apiVersion: '4.2.1',
@@ -104,15 +107,25 @@ async function installReaderRoutes(
   await page.route('**/api/v1/auth/policies/privacy-notice/**', (route) =>
     route.fulfill({ status: 200, contentType: 'text/markdown', body: '# Privacy' }),
   );
-  await page.route(`**/api/v1/works/${workId}/reader-manifest**`, (route) =>
-    manifestStatus === 200
+  await page.route(`**/api/v1/works/${workId}/reader-manifest**`, (route) => {
+    const status =
+      manifestStatuses[Math.min(manifestRequestCount, manifestStatuses.length - 1)] ?? 200;
+    manifestRequestCount += 1;
+    return status === 200
       ? json(route, { work, sourceLanguage: 'vi', chapters, nextCursor: null })
       : json(
           route,
-          { code: manifestStatus === 401 ? 'UNAUTHENTICATED' : 'POLICY_REQUIRED' },
-          manifestStatus,
-        ),
-  );
+          {
+            code:
+              status === 401
+                ? 'UNAUTHENTICATED'
+                : status === 403
+                  ? 'POLICY_REQUIRED'
+                  : 'READER_TEMPORARILY_UNAVAILABLE',
+          },
+          status,
+        );
+  });
   await page.route('**/api/v1/chapters/*/content**', (route) => {
     const chapterId = route.request().url().split('/chapters/')[1]?.split('/')[0];
     if (chapterId) loadedChapters.push(chapterId);
@@ -306,6 +319,28 @@ for (const recovery of [
     }
   });
 }
+
+test('account Reader announces a transient manifest failure and recovers with retry', async ({
+  page,
+}) => {
+  await installReaderRoutes(page, [503, 200]);
+  await page.goto(`/app/reader/${workId}/${chapterIds[0]}`);
+
+  const error = page.getByRole('alert');
+  await expect(error).toBeVisible();
+  await expect(error.getByRole('heading', { name: 'Chưa mở được tác phẩm' })).toBeVisible();
+  await expect(error).toContainText('Reader đang tạm thời không khả dụng. Thử lại sau ít phút.');
+  await expect(error.getByRole('link', { name: 'Quay lại thư viện' })).toBeVisible();
+  await expectNoAxeViolations(page);
+
+  await error.getByRole('button', { name: 'Thử lại' }).click();
+
+  const chapterHeading = page.getByRole('heading', { name: 'Cánh cửa mở' });
+  await expect(chapterHeading).toBeVisible();
+  await expect(chapterHeading).toBeFocused();
+  await expect(error).toHaveCount(0);
+  await expectNoAxeViolations(page);
+});
 
 async function verifyEffectiveZoom(browser: Browser): Promise<void> {
   const context = await browser.newContext({
