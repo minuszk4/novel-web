@@ -111,7 +111,6 @@ label:has(input:focus-visible) {
   font-weight: 700;
   line-height: 1.2;
   transition:
-    background-color 0.16s ease,
     border-color 0.16s ease,
     box-shadow 0.16s ease,
     transform 0.16s ease;
@@ -193,6 +192,11 @@ label:has(input:focus-visible) {
   font-weight: 600;
   line-height: 1.18;
   letter-spacing: -0.45px;
+}
+.import-route-heading:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 4px;
+  border-radius: 2px;
 }
 .page-heading > p:last-child {
   max-width: 650px;

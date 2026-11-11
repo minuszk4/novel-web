@@ -6,7 +6,9 @@
   </div>
   <div class="page-heading">
     <p class="eyebrow">NHẬP TÁC PHẨM</p>
-    <h1>Mang câu chuyện của bạn về đây</h1>
+    <h1 #importHeading class="import-route-heading" tabindex="-1">
+      Mang câu chuyện của bạn về đây
+    </h1>
     @if (accountMode()) {
       <p>Chọn EPUB 3. Tệp chỉ được gửi sau khi bạn đọc hướng dẫn quyền, xác nhận và bấm bắt đầu.</p>
     } @else {
@@ -147,6 +149,7 @@
         type="checkbox"
         [checked]="rightsConfirmed()"
         [disabled]="accountMode() && (!accountImport.rightsStatement() || accountImport.isBusy())"
+        (focus)="keepRightsCheckVisible($event)"
         (change)="
           accountMode()
             ? accountImport.setRightsConfirmed($any($event.target).checked)

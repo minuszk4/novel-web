@@ -67,6 +67,12 @@ async function installAccountRoutes(page: Page, options: {
   const patchBodies: Record<string, unknown>[] = [];
   let rightsReads = 0;
 
+  await page.route('**/api/v1/system/status', (route) => json(route, {
+    apiVersion: '4.2.1',
+    environment: 'test',
+    integrations: { googleOidcEnabled: false, momoTestEnabled: false, momoEnvironment: 'disabled' },
+    features: { importProcessingEnabled: true, cultivationEnabled: false, commerceSandboxEnabled: false },
+  }));
   await page.route('**/api/v1/auth/me', (route) => json(route, currentUser));
   await page.route('**/api/v1/auth/policies/current', (route) => json(route, {
     terms: {
@@ -310,6 +316,82 @@ test('account import uploads only after rights confirmation, reviews, edits and 
     viewport: document.documentElement.clientWidth,
   }));
   expect(dimensions.document).toBeLessThanOrEqual(dimensions.viewport);
+});
+
+test('mobile account import keeps keyboard focus visible from file selection through review', async ({ page }, testInfo) => {
+  await installAccountRoutes(page);
+  await page.setViewportSize({ width: 360, height: 800 });
+  await page.goto('/app/import');
+  await expect(page.getByRole('heading', { name: 'Mang câu chuyện của bạn về đây' })).toBeFocused();
+  await expect(page.getByText(rightsCopy)).toBeVisible();
+  await expectNoAxeViolations(page);
+
+  const fileInput = page.locator('#work-file');
+  for (let tab = 0; tab < 30; tab += 1) {
+    if (await fileInput.evaluate((element) => document.activeElement === element)) break;
+    await page.keyboard.press('Tab');
+  }
+  await expect(fileInput).toBeFocused();
+  await expect(page.locator('.upload-dropzone')).toHaveCSS('outline-style', 'solid');
+  await page.screenshot({ path: testInfo.outputPath('audit-01-import-file-picker-focus.png') });
+
+  const fileChooserPromise = page.waitForEvent('filechooser');
+  await page.keyboard.press('Enter');
+  const fileChooser = await fileChooserPromise;
+  await fileChooser.setFiles({
+    name: 'keyboard-import.epub',
+    mimeType: 'application/epub+zip',
+    buffer: Buffer.from('keyboard import fixture'),
+  });
+  await expect(page.locator('.selected-file')).toContainText('keyboard-import.epub');
+  const replaceButton = page.getByRole('button', { name: 'Đổi tệp' });
+  await page.keyboard.press('Tab');
+  await expect(replaceButton).toBeFocused();
+  await page.keyboard.press('Tab');
+  const rightsCheckbox = page.getByRole('checkbox');
+  await expect(rightsCheckbox).toBeFocused();
+  await expect(page.locator('.account-rights-check .check-visual')).toHaveCSS('outline-style', 'solid');
+  const rightsGeometry = await page.evaluate(() => {
+    const check = document.querySelector<HTMLElement>('.account-rights-check .check-visual');
+    const actionBar = document.querySelector<HTMLElement>('.mobile-form-actions');
+    if (!check || !actionBar) throw new Error('Rights checkbox or fixed action bar is missing');
+    return {
+      checkBottom: check.getBoundingClientRect().bottom,
+      actionTop: actionBar.getBoundingClientRect().top,
+    };
+  });
+  expect(rightsGeometry.checkBottom).toBeLessThanOrEqual(rightsGeometry.actionTop - 8);
+  await expectNoAxeViolations(page);
+  await page.screenshot({ path: testInfo.outputPath('audit-02-import-rights-checkbox-focus.png') });
+
+  await page.keyboard.press('Space');
+  await expect(rightsCheckbox).toBeChecked();
+  const startButton = page.getByRole('button', { name: 'Tải lên và phân tích' });
+  await expect(startButton).toBeEnabled();
+  await page.keyboard.press('Tab');
+  await expect(startButton).toBeFocused();
+  await expect(startButton).toBeEnabled();
+  const actionGeometry = await page.evaluate(() => {
+    const action = document.querySelector<HTMLElement>('.mobile-form-actions .button-primary');
+    const mobileNav = document.querySelector<HTMLElement>('.mobile-nav');
+    if (!action || !mobileNav) throw new Error('Import action or mobile navigation is missing');
+    const actionBox = action.getBoundingClientRect();
+    const navBox = mobileNav.getBoundingClientRect();
+    return { actionHeight: actionBox.height, navGap: navBox.top - actionBox.bottom };
+  });
+  expect(actionGeometry.actionHeight).toBeGreaterThanOrEqual(44);
+  expect(actionGeometry.navGap).toBeGreaterThanOrEqual(8);
+  await expectNoAxeViolations(page);
+  await page.screenshot({ path: testInfo.outputPath('audit-03-import-action-focus.png') });
+
+  await page.keyboard.press('Enter');
+  await expect(page).toHaveURL(/\/app\/import\/review$/);
+  const reviewHeading = page.getByRole('heading', { name: 'Kiểm tra metadata và mục lục' });
+  await expect(reviewHeading).toBeVisible();
+  await expect(reviewHeading).toBeFocused();
+  await expect(reviewHeading).toHaveCSS('outline-style', 'solid');
+  await expectNoAxeViolations(page);
+  await page.screenshot({ path: testInfo.outputPath('audit-04-import-review-focus.png') });
 });
 
 test('account import stays fail-closed when no approved rights statement is available', async ({ page }) => {

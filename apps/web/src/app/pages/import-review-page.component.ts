@@ -1,4 +1,12 @@
-import { Component, computed, inject, signal } from '@angular/core';
+import {
+  AfterViewInit,
+  Component,
+  ElementRef,
+  computed,
+  inject,
+  signal,
+  ViewChild,
+} from '@angular/core';
 import { DecimalPipe } from '@angular/common';
 import { Router, RouterLink } from '@angular/router';
 import {
@@ -14,7 +22,7 @@ import { PolicyOnboardingService } from '../core/policy-onboarding.service';
   imports: [DecimalPipe, RouterLink],
   templateUrl: './import-review-page.component.html',
 })
-export class ImportReviewPageComponent {
+export class ImportReviewPageComponent implements AfterViewInit {
   protected readonly chapterPageSize = 50;
   protected readonly demo = inject(DemoStateService);
   protected readonly accountImport = inject(AccountImportService);
@@ -69,6 +77,7 @@ export class ImportReviewPageComponent {
       this.accountImport.state() !== 'committed',
   );
   private readonly router = inject(Router);
+  @ViewChild('reviewHeading') private reviewHeading?: ElementRef<HTMLHeadingElement>;
 
   constructor() {
     if (this.accountMode()) {
@@ -86,6 +95,10 @@ export class ImportReviewPageComponent {
       return;
     }
     this.title.set(file.name.replace(/\.[^.]+$/, ''));
+  }
+
+  ngAfterViewInit(): void {
+    this.reviewHeading?.nativeElement.focus({ preventScroll: true });
   }
 
   updateTitle(event: Event): void {

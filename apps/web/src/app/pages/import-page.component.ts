@@ -1,4 +1,4 @@
-import { Component, ElementRef, computed, inject, ViewChild } from '@angular/core';
+import { AfterViewInit, Component, ElementRef, computed, inject, ViewChild } from '@angular/core';
 import { DatePipe } from '@angular/common';
 import { Router, RouterLink } from '@angular/router';
 import { AccountImportService, maxAccountImportBytes } from '../core/account-import.service';
@@ -13,7 +13,7 @@ const supportedExtensions = ['epub', 'txt', 'html', 'htm', 'md', 'markdown'];
   imports: [DatePipe, RouterLink],
   templateUrl: './import-page.component.html',
 })
-export class ImportPageComponent {
+export class ImportPageComponent implements AfterViewInit {
   protected readonly demo = inject(DemoStateService);
   protected readonly accountImport = inject(AccountImportService);
   protected readonly policy = inject(PolicyOnboardingService);
@@ -34,6 +34,11 @@ export class ImportPageComponent {
   private readonly router = inject(Router);
 
   @ViewChild('workFileInput') private workFileInput?: ElementRef<HTMLInputElement>;
+  @ViewChild('importHeading') private importHeading?: ElementRef<HTMLHeadingElement>;
+
+  ngAfterViewInit(): void {
+    this.importHeading?.nativeElement.focus({ preventScroll: true });
+  }
 
   constructor() {
     if (this.accountMode()) {
@@ -78,6 +83,21 @@ export class ImportPageComponent {
     } else {
       // The demo intentionally keeps metadata only. It never reads or uploads file bytes.
       this.demo.selectFile(metadata);
+    }
+  }
+
+  keepRightsCheckVisible(event: FocusEvent): void {
+    const input = event.target as HTMLInputElement;
+    if (!input.matches(':focus-visible') || window.innerWidth > 650) return;
+    const label = input.closest('.account-rights-check');
+    const checkVisual = label?.querySelector<HTMLElement>('.check-visual');
+    const actionBar = document.querySelector<HTMLElement>('.mobile-form-actions');
+    if (!checkVisual || !actionBar) return;
+
+    const hiddenByActionBar =
+      checkVisual.getBoundingClientRect().bottom + 14 - actionBar.getBoundingClientRect().top;
+    if (hiddenByActionBar > 0) {
+      window.scrollBy({ top: Math.ceil(hiddenByActionBar), behavior: 'instant' });
     }
   }
 
