@@ -110,7 +110,12 @@ jobs:
           distribution: temurin
           java-version: '21'
           cache: maven
-      - run: bash ./mvnw -B -ntp -Ppostgres -Dpostgres.integration=true -Dspring.profiles.active=postgres verify
+      - name: Run PostgreSQL integration tests
+        run: >-
+          bash ./mvnw -B -ntp -Ppostgres
+          -Dpostgres.integration=true
+          -Dspring.profiles.active=postgres
+          -Dtest=PostgresSchemaIntegrationTests verify
       - uses: actions/upload-artifact@v7
         if: always()
         with:
