@@ -43,26 +43,35 @@ for (const viewport of viewports) {
     const search = page.getByRole('searchbox', {
       name: 'Tìm trong thư viện theo tên tác phẩm hoặc tác giả',
     });
+    const resultAnnouncement = page.locator('.search-result-announcement');
     await expect(search).toBeVisible();
-    await expect(page.getByText('1 kết quả')).toBeVisible();
+    await expect(resultAnnouncement).toBeEmpty();
+    await expect(resultAnnouncement).toHaveAttribute('role', 'status');
+    await expect(resultAnnouncement).toHaveAttribute('aria-live', 'polite');
+    await expect(resultAnnouncement).toHaveAttribute('aria-atomic', 'true');
+    await expect(page.getByText('1 kết quả', { exact: true })).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Quán Trọ Ánh Trăng' })).toBeVisible();
     await expect(page.getByText('RIÊNG TƯ', { exact: true })).toBeVisible();
     await expectNoAxeViolations(page);
 
     await search.fill('Nguyệt');
+    await page.keyboard.press('Enter');
     await expect(page.getByRole('heading', { name: 'Quán Trọ Ánh Trăng' })).toBeVisible();
-    await expect(page.getByText('1 kết quả')).toBeVisible();
+    await expect(page.getByText('1 kết quả', { exact: true })).toBeVisible();
+    await expect(resultAnnouncement).toHaveText('Tìm thấy 1 kết quả cho “nguyệt”.');
     await expectNoAxeViolations(page);
 
     await search.fill('không tồn tại 123');
     await expect(page.getByText('0 kết quả')).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Không tìm thấy kết quả' })).toBeVisible();
     await expect(page.getByText(/Không có kết quả cho “không tồn tại 123”/)).toBeVisible();
+    await expect(resultAnnouncement).toHaveText('Không tìm thấy kết quả cho “không tồn tại 123”.');
     await expectNoAxeViolations(page);
 
     await page.getByRole('button', { name: 'Xóa tìm kiếm' }).click();
     await expect(search).toHaveValue('');
     await expect(search).toBeFocused();
+    await expect(resultAnnouncement).toHaveText('Có 1 kết quả trong thư viện riêng tư.');
     await expect(page.getByRole('heading', { name: 'Quán Trọ Ánh Trăng' })).toBeVisible();
     await expectNoAxeViolations(page);
   });

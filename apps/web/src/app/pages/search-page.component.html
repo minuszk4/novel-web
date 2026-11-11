@@ -14,7 +14,16 @@
       placeholder="Tên tác phẩm hoặc tác giả"
       [value]="query()"
       (input)="updateQuery($event)"
+      (keydown.enter)="announceResultsImmediately()"
   /></label>
+  <p
+    class="visually-hidden search-result-announcement"
+    role="status"
+    aria-live="polite"
+    aria-atomic="true"
+  >
+    {{ resultAnnouncement() }}
+  </p>
   <div class="search-results-heading">
     <h2>Kết quả riêng tư</h2>
     <span>{{ hasMatch && demo.importedWork() ? '1 kết quả' : '0 kết quả' }}</span>
