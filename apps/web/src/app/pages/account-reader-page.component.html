@@ -82,7 +82,7 @@
             <span>Chương {{ chapter.ordinal }}</span>
             <strong>{{ chapter.title || 'Chưa có tiêu đề' }}</strong>
             @if (chapter.accessState !== 'readable') {
-              <span class="visually-hidden">Nội dung chưa sẵn sàng</span>
+              <span class="account-toc-status">Chưa sẵn sàng</span>
             }
             <span class="toc-current-mark" aria-hidden="true">{{
               chapter.id === activeChapter()?.id ? '●' : ''
@@ -136,14 +136,14 @@
           <div class="font-buttons">
             <button
               type="button"
-              aria-label="Giảm cỡ chữ"
+              aria-label="A−, giảm cỡ chữ"
               [disabled]="fontSize() <= 16"
               (click)="changeFont(-1)"
             >
               A−</button
             ><button
               type="button"
-              aria-label="Tăng cỡ chữ"
+              aria-label="A+, tăng cỡ chữ"
               [disabled]="fontSize() >= 28"
               (click)="changeFont(1)"
             >

@@ -61,7 +61,11 @@ async function json(route: Route, body: unknown, status = 200): Promise<void> {
   await route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
 }
 
-async function installReaderRoutes(page: Page, manifestStatus = 200): Promise<string[]> {
+async function installReaderRoutes(
+  page: Page,
+  manifestStatus = 200,
+  includeHostileMarkup = true,
+): Promise<string[]> {
   const loadedChapters: string[] = [];
   await page.route('**/api/v1/system/status', (route) =>
     json(route, {
@@ -113,20 +117,29 @@ async function installReaderRoutes(page: Page, manifestStatus = 200): Promise<st
     const chapterId = route.request().url().split('/chapters/')[1]?.split('/')[0];
     if (chapterId) loadedChapters.push(chapterId);
     if (chapterId === chapterIds[0]) {
+      const segments = [
+        { anchor: 'ch1-h1', type: 'heading', sourceText: 'Ngày đầu tiên' },
+        { anchor: 'ch1-p1', type: 'paragraph', sourceText: 'Một đoạn văn bản riêng tư.' },
+        ...(includeHostileMarkup
+          ? hostileMarkup.map((sourceText, index) => ({
+              anchor: `ch1-xss-${index + 1}`,
+              type: 'paragraph',
+              sourceText,
+            }))
+          : [
+              {
+                anchor: 'ch1-p2',
+                type: 'paragraph',
+                sourceText: 'Gió lặng dần khi con đường men theo sườn núi.',
+              },
+            ]),
+      ];
       return json(route, {
         chapterId,
         workId,
         sourceRevisionId: revisionId,
         sourceLanguage: 'vi',
-        segments: [
-          { anchor: 'ch1-h1', type: 'heading', sourceText: 'Ngày đầu tiên' },
-          { anchor: 'ch1-p1', type: 'paragraph', sourceText: 'Một đoạn văn bản riêng tư.' },
-          ...hostileMarkup.map((sourceText, index) => ({
-            anchor: `ch1-xss-${index + 1}`,
-            type: 'paragraph',
-            sourceText,
-          })),
-        ],
+        segments,
         nextSegmentCursor: null,
       });
     }
@@ -205,6 +218,70 @@ for (const viewport of viewports) {
 
 test('account Reader remains usable in an effective 200% mobile viewport', async ({ browser }) => {
   await verifyEffectiveZoom(browser);
+});
+
+test('account Reader dialogs keep keyboard focus and restore it to the opener', async ({
+  page,
+}) => {
+  const expectNoHorizontalOverflow = async () => {
+    const dimensions = await page.evaluate(() => ({
+      document: document.documentElement.scrollWidth,
+      viewport: document.documentElement.clientWidth,
+    }));
+    expect(dimensions.document).toBeLessThanOrEqual(dimensions.viewport);
+  };
+  await page.setViewportSize({ width: 360, height: 800 });
+  await installReaderRoutes(page, 200, false);
+  await page.goto(`/app/reader/${workId}`);
+  await expect(page.getByRole('heading', { name: 'Cánh cửa mở' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Cánh cửa mở' })).toBeFocused();
+  await expectNoAxeViolations(page);
+  await expectNoHorizontalOverflow();
+  await page.screenshot({ path: test.info().outputPath('audit-01-reader.png') });
+
+  const tocOpener = page.getByRole('button', { name: 'Mở mục lục' });
+  const settingsOpener = page.getByRole('button', { name: 'Cài đặt trình đọc' });
+  await tocOpener.focus();
+  await expect(tocOpener).toBeFocused();
+  await page.keyboard.press('Enter');
+  const toc = page.getByRole('dialog', { name: 'Gió qua núi' });
+  const tocClose = toc.getByRole('button', { name: 'Đóng mục lục' });
+  await expect(toc.getByRole('button', { name: /Bản nháp/ })).toBeDisabled();
+  await expect(toc.getByText('Chưa sẵn sàng', { exact: true })).toBeVisible();
+  await expect(tocClose).toBeFocused();
+  await expectNoAxeViolations(page);
+  await expectNoHorizontalOverflow();
+  await page.screenshot({ path: test.info().outputPath('audit-02-toc-open.png') });
+
+  const lastChapter = toc.getByRole('button', { name: /Qua khỏi dốc/ });
+  await page.keyboard.press('Shift+Tab');
+  await expect(lastChapter).toBeFocused();
+  await page.screenshot({ path: test.info().outputPath('audit-03-toc-focus-wrap.png') });
+  await page.keyboard.press('Tab');
+  await expect(tocClose).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(toc).toHaveCount(0);
+  await expect(tocOpener).toBeFocused();
+  await page.screenshot({ path: test.info().outputPath('audit-04-toc-closed-focus-return.png') });
+
+  await page.keyboard.press('Tab');
+  await expect(settingsOpener).toBeFocused();
+  await page.keyboard.press('Enter');
+  const settings = page.getByRole('dialog', { name: 'Cài đặt đọc' });
+  const settingsClose = settings.getByRole('button', { name: 'Đóng cài đặt' });
+  await expect(settingsClose).toBeFocused();
+  await expect(settings.getByRole('button', { name: /A−.*giảm cỡ chữ/i })).toBeVisible();
+  await expect(settings.getByRole('button', { name: /A\+.*tăng cỡ chữ/i })).toBeVisible();
+  await expectNoAxeViolations(page);
+  await expectNoHorizontalOverflow();
+  await page.screenshot({ path: test.info().outputPath('audit-05-settings-open.png') });
+  await page.keyboard.press('Escape');
+  await expect(settings).toHaveCount(0);
+  await expect(settingsOpener).toBeFocused();
+  await expectNoAxeViolations(page);
+  await page.screenshot({
+    path: test.info().outputPath('audit-06-settings-closed-focus-return.png'),
+  });
 });
 
 for (const recovery of [
