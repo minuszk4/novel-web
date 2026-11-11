@@ -3512,7 +3512,7 @@ label:has(input:focus-visible) {
   font-size: 18px;
 }
 .library-reader-link {
-  min-height: 36px;
+  min-height: 44px;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -4128,6 +4128,9 @@ label:has(input:focus-visible) {
   }
 }
 @media (max-width: 650px) {
+  .library-page .page-heading > .button {
+    display: none;
+  }
   .rights-statement-heading,
   .import-chapter-heading {
     align-items: flex-start;

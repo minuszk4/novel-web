@@ -255,6 +255,8 @@ test('account library loads scoped catalog pages and keeps local demo imports se
   const secondLibraryId = '44444444-4444-4444-8444-444444444444';
   const firstWorkId = '55555555-5555-4555-8555-555555555555';
   const secondWorkId = '66666666-6666-4666-8666-666666666666';
+  const firstChapterId = '77777777-7777-4777-8777-777777777777';
+  await page.setViewportSize({ width: 360, height: 800 });
   await page.addInitScript(() => localStorage.setItem('novel.demo.library.v1', JSON.stringify({
     version: 1,
     importedWork: {
@@ -316,12 +318,68 @@ test('account library loads scoped catalog pages and keeps local demo imports se
       updatedAt: null,
     }, 200, { etag: '"v0"' });
   });
+  await page.route(`**/api/v1/works/${firstWorkId}/reader-manifest**`, (route) => json(route, {
+    work: {
+      id: firstWorkId,
+      libraryId: firstLibraryId,
+      title: 'Tác phẩm một',
+      author: 'Tác giả',
+      language: 'vi',
+      visibility: 'private',
+      chapterCount: 3,
+      createdAt: '2026-11-10T00:00:00Z',
+    },
+    sourceLanguage: 'vi',
+    chapters: [{ id: firstChapterId, ordinal: 1, title: 'Chương mở đầu', accessState: 'readable' }],
+    nextCursor: null,
+  }));
+  await page.route(`**/api/v1/chapters/${firstChapterId}/content**`, (route) => json(route, {
+    chapterId: firstChapterId,
+    workId: firstWorkId,
+    sourceRevisionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    sourceLanguage: 'vi',
+    segments: [{ anchor: 'opening', type: 'paragraph', sourceText: 'Một đoạn mở đầu để kiểm tra luồng đọc.' }],
+    nextSegmentCursor: null,
+  }));
 
   await page.goto('/app/library');
   await expect(page.getByRole('heading', { name: 'Tác phẩm một' })).toBeVisible();
   await expect(page.getByText('“Bản nhập demo” chỉ được lưu trong demo')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Tất cả 1' })).toBeVisible();
   await expect(page.getByText('Bộ lọc và số đếm hiện dựa trên 1 tác phẩm đã tải.')).toBeVisible();
+  await expect(page.locator('.library-page .page-heading > .button')).toBeHidden();
+  await expect(page.locator('.topbar-actions .quiet-link')).toBeVisible();
+  const readerLink = page.getByRole('link', { name: 'Mở trình đọc' });
+  await expect(readerLink).toBeVisible();
+  for (let tab = 0; tab < 25; tab += 1) {
+    if (await readerLink.evaluate((element) => document.activeElement === element)) break;
+    await page.keyboard.press('Tab');
+  }
+  await expect(readerLink).toBeFocused();
+  const focusGeometry = await page.evaluate(() => {
+    const link = document.querySelector<HTMLElement>('.library-reader-link');
+    const mobileNav = document.querySelector<HTMLElement>('.mobile-nav');
+    if (!link || !mobileNav) throw new Error('Library Reader link or mobile navigation is missing');
+    const linkBox = link.getBoundingClientRect();
+    const navBox = mobileNav.getBoundingClientRect();
+    return { linkHeight: linkBox.height, navGap: navBox.top - linkBox.bottom };
+  });
+  expect(focusGeometry.linkHeight).toBeGreaterThanOrEqual(44);
+  expect(focusGeometry.navGap).toBeGreaterThanOrEqual(8);
+  await expectNoAxeViolations(page);
+  const libraryDimensions = await page.evaluate(() => ({ document: document.documentElement.scrollWidth, viewport: document.documentElement.clientWidth }));
+  expect(libraryDimensions.document).toBeLessThanOrEqual(libraryDimensions.viewport);
+  await page.screenshot({ path: test.info().outputPath('audit-01-account-library-mobile.png') });
+  await page.keyboard.press('Enter');
+  await expect(page).toHaveURL(new RegExp(`/app/reader/${firstWorkId}$`));
+  await expect(page.getByRole('heading', { name: 'Chương mở đầu' })).toBeFocused();
+  await expectNoAxeViolations(page);
+  const readerDimensions = await page.evaluate(() => ({ document: document.documentElement.scrollWidth, viewport: document.documentElement.clientWidth }));
+  expect(readerDimensions.document).toBeLessThanOrEqual(readerDimensions.viewport);
+  await page.screenshot({ path: test.info().outputPath('audit-02-account-reader-handoff.png') });
+  await page.goBack();
+  await expect(page).toHaveURL(/\/app\/library$/);
+  await expect(page.getByRole('heading', { name: 'Tác phẩm một' })).toBeVisible();
   await page.getByRole('button', { name: 'Hoàn thành 0' }).click();
   await expect(page.getByRole('heading', { name: 'Không có truyện trong mục này' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Tải thêm tác phẩm' })).toBeVisible();
@@ -376,6 +434,12 @@ const acceptedAccount = {
 };
 
 async function installAcceptedAccountRoutes(page: Page): Promise<void> {
+  await page.route('**/api/v1/system/status', (route) => json(route, {
+    apiVersion: '4.2.1',
+    environment: 'test',
+    integrations: { googleOidcEnabled: false, momoTestEnabled: false, momoEnvironment: 'disabled' },
+    features: { importProcessingEnabled: false, cultivationEnabled: false, commerceSandboxEnabled: false },
+  }));
   await page.route('**/api/v1/auth/me', (route) => json(route, acceptedAccount));
   await page.route('**/api/v1/auth/policies/current', (route) => json(route, {
     terms: { version: 'terms-1', effectiveAt: '2026-11-01T00:00:00Z', documentUrl: '/api/v1/auth/policies/terms/terms-1' },
@@ -385,6 +449,7 @@ async function installAcceptedAccountRoutes(page: Page): Promise<void> {
   await page.route('**/api/v1/auth/policies/privacy-notice/**', (route) => route.fulfill({ status: 200, contentType: 'text/markdown', body: '# Privacy' }));
   await page.route('**/api/v1/libraries**', (route) => json(route, { items: [], nextCursor: null }));
   await page.route('**/api/v1/works**', (route) => json(route, { items: [], nextCursor: null }));
+  await page.route('**/api/v1/me/library/collections', (route) => json(route, []));
   await page.route('**/api/v1/auth/csrf', (route) => json(route, { token: 'session-library-csrf' }));
 }
 
