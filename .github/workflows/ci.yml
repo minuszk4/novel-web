@@ -52,23 +52,40 @@ jobs:
       - uses: actions/setup-java@v6
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: "21"
           cache: maven
       - run: bash ./mvnw -B -ntp verify
       - name: Resolve optional PostgreSQL dependencies for offline scan
         run: bash ./mvnw -B -ntp -Ppostgres dependency:resolve
-      - name: Scan dependency manifests with Trivy
+      - name: Generate API SBOM including test-scoped dependencies
+        run: >
+          bash ./mvnw -B -ntp -Ppostgres
+          org.cyclonedx:cyclonedx-maven-plugin:2.9.3:makeBom
+          -DincludeTestScope=true
+          -Dcyclonedx.skipAttach=true
+          -DoutputFormat=json
+          -DoutputName=api-test-scope
+          -DoutputDirectory=target/security-scan
+      - name: Scan manifests and Maven test-scope SBOM with Trivy
         shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/trivy-cache"
-          docker run --rm --read-only --tmpfs /tmp:rw,size=256m \
+          trivy_image='ghcr.io/aquasecurity/trivy:0.76.2@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb'
+          docker run --rm --read-only --tmpfs /tmp:rw,size=1g \
             --mount type=bind,source="$GITHUB_WORKSPACE",target=/src,readonly \
             --mount type=bind,source="$RUNNER_TEMP/trivy-cache",target=/cache \
             --mount type=bind,source="$HOME/.m2/repository",target=/root/.m2/repository,readonly \
-            ghcr.io/aquasecurity/trivy:0.76.2@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb \
+            "$trivy_image" \
             --cache-dir /cache fs --offline-scan --skip-check-update --include-dev-deps \
             --ignorefile /src/.trivyignore --scanners vuln --severity HIGH,CRITICAL \
             --exit-code 1 --no-progress /src
+          docker run --rm --read-only --tmpfs /tmp:rw,size=1g \
+            --mount type=bind,source="$GITHUB_WORKSPACE",target=/src,readonly \
+            --mount type=bind,source="$RUNNER_TEMP/trivy-cache",target=/cache \
+            "$trivy_image" \
+            --cache-dir /cache sbom --offline-scan --skip-db-update --skip-java-db-update \
+            --ignorefile /src/.trivyignore --scanners vuln --severity HIGH,CRITICAL \
+            --exit-code 1 --no-progress /src/apps/api/target/security-scan/api-test-scope.json
       - uses: actions/upload-artifact@v7
         if: always()
         with:
@@ -76,6 +93,7 @@ jobs:
           path: |
             apps/api/target/surefire-reports/
             apps/api/target/site/jacoco/
+            apps/api/target/security-scan/api-test-scope.json
           if-no-files-found: warn
           retention-days: 14
 
@@ -108,7 +126,7 @@ jobs:
       - uses: actions/setup-java@v6
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: "21"
           cache: maven
       - name: Run PostgreSQL integration tests
         run: >-
