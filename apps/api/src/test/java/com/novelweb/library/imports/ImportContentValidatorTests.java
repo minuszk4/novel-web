@@ -68,6 +68,15 @@ class ImportContentValidatorTests {
     assertThrows(
         ImportContentValidator.InvalidContentException.class,
         () -> validator.validate(valid, "story.html", "text/plain"));
+
+    Path oversized = temporaryDirectory.resolve("oversized.html");
+    try (var output = Files.newOutputStream(oversized)) {
+      output.write("<html><body>".getBytes(StandardCharsets.UTF_8));
+      output.write(new byte[(int) HtmlDocumentParser.MAX_SOURCE_BYTES]);
+    }
+    assertThrows(
+        ImportContentValidator.InvalidContentException.class,
+        () -> validator.validate(oversized, "oversized.html", "text/html"));
   }
 
   @Test

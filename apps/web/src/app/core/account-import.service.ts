@@ -8,6 +8,7 @@ const rightsAcceptanceUrl = '/api/v1/imports/rights-statement/acceptance';
 const importsUrl = '/api/v1/imports';
 const csrfUrl = '/api/v1/auth/csrf';
 export const maxAccountImportBytes = 50 * 1024 * 1024;
+export const maxHtmlImportBytes = 4 * 1024 * 1024;
 const previewPageSize = 100;
 const apiTimeoutMs = 10_000;
 const uploadTimeoutMs = 120_000;
@@ -900,6 +901,12 @@ function parsePreviewPage(value: unknown, expectedImportId: string): ImportPrevi
 
 function parseWarnings(value: unknown): ImportWarning[] {
   if (!Array.isArray(value) || value.length > 100) throw invalidResponse();
+  const localizedMessages: Record<string, string> = {
+    HTML_SINGLE_DOCUMENT:
+      'Tài liệu HTML được giữ thành một chương vì một tệp không có ranh giới chương đáng tin cậy.',
+    TXT_SINGLE_CHAPTER:
+      'Tệp TXT được giữ thành một chương vì không có cấu trúc chương đáng tin cậy.',
+  };
   return value.map((warning) => {
     if (
       !isRecord(warning) ||
@@ -910,7 +917,10 @@ function parseWarnings(value: unknown): ImportWarning[] {
     ) {
       throw invalidResponse();
     }
-    return { code: warning['code'], message: warning['message'] };
+    return {
+      code: warning['code'],
+      message: localizedMessages[warning['code']] ?? warning['message'],
+    };
   });
 }
 
@@ -997,9 +1007,9 @@ function toImportError(error: unknown): AccountImportError {
       'Thư viện đang có quá nhiều tệp chờ xử lý. Hãy thử sau khi lượt cũ hết hạn được dọn.',
     IMPORT_CREATE_RATE_LIMITED: `Bạn vừa bắt đầu nhiều lượt nhập.${retryText}`,
     IMPORT_UPLOAD_RATE_LIMITED: `Bạn vừa tải lên quá nhanh.${retryText}`,
-    IMPORT_FILE_TOO_LARGE: 'Tệp vượt giới hạn 50 MB của máy chủ. Chọn một tệp nhỏ hơn.',
+    IMPORT_FILE_TOO_LARGE: 'Tệp vượt giới hạn 4 MiB cho HTML hoặc 50 MiB cho định dạng khác.',
     IMPORT_FILE_METADATA_INVALID:
-      'Máy chủ chỉ chấp nhận EPUB 3 hoặc TXT UTF-8 trong luồng nhập tài khoản hiện tại.',
+      'Máy chủ chỉ chấp nhận EPUB 3, TXT UTF-8 hoặc HTML UTF-8 trong luồng nhập tài khoản hiện tại.',
     IMPORT_CONTENT_INVALID: 'Tệp không vượt qua kiểm tra định dạng và nội dung an toàn.',
     IMPORT_FILE_SIZE_MISMATCH: 'Kích thước tệp thay đổi trong lúc tải lên. Hãy chọn lại tệp.',
     IMPORT_PARSE_FAILED:

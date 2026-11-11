@@ -263,15 +263,21 @@ public class ImportCreationService {
         || command.source().filename() == null
         || command.source().filename().length() > 255
         || command.source().sizeBytes() == null
-        || command.source().sizeBytes() < 1
-        || command.source().sizeBytes() > maxUploadBytes) {
+        || command.source().sizeBytes() < 1) {
       return Validation.failure(Outcome.FILE_METADATA_INVALID);
+    }
+    if (command.source().sizeBytes() > maxUploadBytes) {
+      return Validation.failure(Outcome.FILE_TOO_LARGE);
     }
 
     String filename = safeDisplayFilename(command.source().filename());
     if (filename == null || filename.length() > 255)
       return Validation.failure(Outcome.FILE_METADATA_INVALID);
     String extension = extension(filename);
+    if (Set.of("html", "htm").contains(extension)
+        && command.source().sizeBytes() > HtmlDocumentParser.MAX_SOURCE_BYTES) {
+      return Validation.failure(Outcome.FILE_TOO_LARGE);
+    }
     String contentType = normalizeContentType(command.source().contentType());
     if (contentType != null && contentType.length() > 160) {
       return Validation.failure(Outcome.FILE_METADATA_INVALID);

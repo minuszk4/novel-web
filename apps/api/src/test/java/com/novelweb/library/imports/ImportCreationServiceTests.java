@@ -78,7 +78,7 @@ class ImportCreationServiceTests {
                 command("story.txt", "text/plain", 0L, true, "v1"), MAX_BYTES)
             .outcome());
     assertEquals(
-        Outcome.FILE_METADATA_INVALID,
+        Outcome.FILE_TOO_LARGE,
         ImportCreationService.validate(
                 command("story.txt", "text/plain", MAX_BYTES + 1, true, "v1"), MAX_BYTES)
             .outcome());

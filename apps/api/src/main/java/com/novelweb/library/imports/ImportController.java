@@ -503,6 +503,12 @@ public class ImportController {
                 "IMPORT_FILE_METADATA_INVALID",
                 "Choose a supported file type and provide a size within the configured limit.",
                 correlationId);
+        case FILE_TOO_LARGE ->
+            problem(
+                HttpStatus.PAYLOAD_TOO_LARGE,
+                "IMPORT_FILE_TOO_LARGE",
+                "The file exceeds the configured limit for its format.",
+                correlationId);
         case POLICY_REQUIRED ->
             problem(
                 HttpStatus.FORBIDDEN,

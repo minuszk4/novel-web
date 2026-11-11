@@ -1,14 +1,15 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 4.3.0
+  version: 4.4.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
     implemented only in the configured PostgreSQL profile. The import-rights statement read and acceptance routes
     are also implemented in that profile; private job creation and local staging upload are now implemented too.
-    Import staging applies actor-scoped active-job/declared-byte quotas and persistent create/upload token buckets.
-    EPUB 3 and bounded UTF-8 TXT parse queue/status, private-preview persistence/edit and atomic private import
+    Import staging applies actor-scoped active-job/declared-byte quotas and persistent create/upload token buckets;
+    HTML documents have a stricter 4 MiB source limit than the configured general upload limit.
+    EPUB 3, bounded UTF-8 TXT and single-document HTML parse queue/status, private-preview persistence/edit and atomic private import
     commit are implemented. Source-only Reader manifest and chapter-content routes are implemented in the PostgreSQL profile;
     progress, bookmarks, preferences and history operations tagged planned describe the remaining G2 target.
 servers:
@@ -1117,6 +1118,7 @@ paths:
         The server derives the actor from the active session, requires current Terms and Privacy acceptance, confirms
         the current approved rights version, locks and consumes an actor-bound one-time receipt, checks library write
         access and validates supported filename/MIME hints and the configured size limit in one PostgreSQL transaction.
+        HTML/HTM documents have an additional 4 MiB cap before a staging job is created.
         A PostgreSQL user-row lock serializes active-job and declared-byte quota checks; rejected quota requests do not
         consume the rights receipt. Existing matching receipt retries remain idempotent and rotate the upload token.
         Per-actor create requests use a persistent token bucket. Rate-limited responses include Retry-After.
@@ -1170,6 +1172,12 @@ paths:
                 $ref: '#/components/schemas/Problem'
         '422':
           description: Missing rights confirmation or unsupported/invalid file metadata; no job or upload target is created.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '413':
+          description: The declared file size exceeds the configured upload maximum or the 4 MiB HTML/HTM parser limit; no job or upload target is created.
           content:
             application/problem+json:
               schema:
@@ -1267,7 +1275,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Problem'
         '422':
-          description: The byte count mismatches the declaration, text encoding/type does not match, or EPUB fails archive safety checks. The file is deleted and the one-time target remains available for a corrected retry.
+          description: The byte count mismatches the declaration, text encoding/type does not match, HTML exceeds its 4 MiB parser limit, or EPUB fails archive safety checks. The file is deleted and the one-time target remains available for a corrected retry.
           content:
             application/problem+json:
               schema:
@@ -1323,8 +1331,9 @@ paths:
       description: >-
         Verifies owner access, staged-object availability and the accepted size/SHA-256 before queuing a durable
         PostgreSQL parser job. A separate worker rechecks the digest and content safety bounds, parses outside the
-        request transaction and atomically stores a bounded private EPUB 3 or UTF-8 TXT preview, based on the
-        uploaded extension and immutable parser version. TXT becomes one chapter and emits TXT_SINGLE_CHAPTER.
+        request transaction and atomically stores a bounded private EPUB 3, UTF-8 TXT or single-document HTML preview,
+        based on the uploaded extension and immutable parser version. TXT becomes one chapter and emits TXT_SINGLE_CHAPTER;
+        HTML becomes one chapter, strips active/non-content markup without executing or fetching it, and emits HTML_SINGLE_DOCUMENT.
         Repeated calls for one import
         return the same parse state. Does not publish or commit a work. Preview data is deleted when the staging
         import expires.
@@ -1501,9 +1510,9 @@ paths:
       summary: Atomically commit a ready import as a private work
       description: >-
         Requires an owned, successfully parsed job, the unchanged strong preview ETag and an Idempotency-Key.
-        The commit path accepts normalized source content from parser schemas epub3-v2 and txt-v1; older or
+        The commit path accepts normalized source content from parser schemas epub3-v2, txt-v1 and html-v1; older or
         unsupported parser results must be imported again. TXT revisions use source_format plain_text and stable
-        txt-* segment anchors; EPUB revisions use epub_xhtml and epub-* anchors.
+        txt-* segment anchors; HTML revisions use xhtml and html-* anchors; EPUB revisions use epub_xhtml and epub-* anchors.
         In one PostgreSQL transaction, rechecks current policy, rights receipt/version and library write access;
         copies normalized source segments into private work/chapter/revision rows; records the idempotency result;
         and clears private preview staging JSON. Replaying the same user/key/request returns the same work with

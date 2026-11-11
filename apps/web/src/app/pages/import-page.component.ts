@@ -1,7 +1,11 @@
 import { AfterViewInit, Component, ElementRef, computed, inject, ViewChild } from '@angular/core';
 import { DatePipe } from '@angular/common';
 import { Router, RouterLink } from '@angular/router';
-import { AccountImportService, maxAccountImportBytes } from '../core/account-import.service';
+import {
+  AccountImportService,
+  maxAccountImportBytes,
+  maxHtmlImportBytes,
+} from '../core/account-import.service';
 import { DemoStateService } from '../core/demo-state.service';
 import { ImportFileMetadata } from '../core/models';
 import { PolicyOnboardingService } from '../core/policy-onboarding.service';
@@ -55,19 +59,28 @@ export class ImportPageComponent implements AfterViewInit {
     if (!file) return;
 
     const extension = file.name.split('.').pop()?.toLowerCase() ?? '';
-    const allowedExtensions = this.accountMode() ? ['epub', 'txt'] : supportedExtensions;
+    const allowedExtensions = this.accountMode()
+      ? ['epub', 'txt', 'html', 'htm']
+      : supportedExtensions;
     if (!allowedExtensions.includes(extension)) {
       this.clearSelectedFile();
       this.errorMessage = this.accountMode()
-        ? 'Tài khoản hiện nhận EPUB 3 và TXT UTF-8. HTML và Markdown chưa được bật.'
+        ? 'Tài khoản hiện nhận EPUB 3, TXT UTF-8 và HTML UTF-8. Markdown chưa được bật.'
         : 'Định dạng này chưa được hỗ trợ. Hãy chọn EPUB, TXT, HTML hoặc Markdown.';
       input.value = '';
       return;
     }
 
-    if (this.accountMode() && (file.size < 1 || file.size > maxAccountImportBytes)) {
+    const maxFileBytes =
+      this.accountMode() && ['html', 'htm'].includes(extension)
+        ? maxHtmlImportBytes
+        : maxAccountImportBytes;
+    if (this.accountMode() && (file.size < 1 || file.size > maxFileBytes)) {
       this.clearSelectedFile();
-      this.errorMessage = 'Tệp phải lớn hơn 0 byte và không vượt quá 50 MB.';
+      this.errorMessage =
+        maxFileBytes === maxHtmlImportBytes
+          ? 'Tệp HTML phải lớn hơn 0 byte và không vượt quá 4 MiB.'
+          : 'Tệp phải lớn hơn 0 byte và không vượt quá 50 MiB.';
       input.value = '';
       return;
     }

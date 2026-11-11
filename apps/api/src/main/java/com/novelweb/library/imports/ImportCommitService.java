@@ -361,7 +361,12 @@ public class ImportCommitService {
         String.join("\n\n", segments.stream().map(NormalizedSegment::text).toList());
     byte[] contentHash = sha256(normalizedContent.getBytes(StandardCharsets.UTF_8));
     UUID revisionId = UUID.randomUUID();
-    String sourceFormat = "txt-v1".equals(parserVersion) ? "plain_text" : "epub_xhtml";
+    String sourceFormat =
+        switch (parserVersion) {
+          case "txt-v1" -> "plain_text";
+          case "html-v1" -> "xhtml";
+          default -> "epub_xhtml";
+        };
     try (PreparedStatement insert =
         connection.prepareStatement(
             """
@@ -391,7 +396,12 @@ public class ImportCommitService {
         insert.setInt(3, index + 1);
         insert.setString(4, segment.type());
         insert.setString(5, segment.text());
-        String anchorPrefix = "txt-v1".equals(parserVersion) ? "txt" : "epub";
+        String anchorPrefix =
+            switch (parserVersion) {
+              case "txt-v1" -> "txt";
+              case "html-v1" -> "html";
+              default -> "epub";
+            };
         insert.setString(
             6, anchorPrefix + "-c" + Math.max(0, chapter.index()) + "-s" + (index + 1));
         insert.setBytes(7, sha256(segment.text().getBytes(StandardCharsets.UTF_8)));
@@ -414,7 +424,9 @@ public class ImportCommitService {
   }
 
   private static boolean supportedParser(String parserVersion) {
-    return "epub3-v2".equals(parserVersion) || "txt-v1".equals(parserVersion);
+    return "epub3-v2".equals(parserVersion)
+        || "txt-v1".equals(parserVersion)
+        || "html-v1".equals(parserVersion);
   }
 
   private static List<NormalizedSegment> normalizeSegments(

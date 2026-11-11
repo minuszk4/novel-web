@@ -87,6 +87,9 @@ public class ImportContentValidator {
   }
 
   private void validateText(Path path, boolean html) throws IOException, InvalidContentException {
+    if (html && Files.size(path) > HtmlDocumentParser.MAX_SOURCE_BYTES) {
+      throw new InvalidContentException("HTML document exceeds its parser byte limit");
+    }
     long deadline = deadline();
     CharsetDecoder decoder =
         StandardCharsets.UTF_8

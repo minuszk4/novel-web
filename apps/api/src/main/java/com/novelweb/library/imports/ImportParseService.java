@@ -27,6 +27,7 @@ public class ImportParseService {
   private final ImportStagingFileStore fileStore;
   private final EpubPackageParser epubPackageParser;
   private final PlainTextParser plainTextParser;
+  private final HtmlDocumentParser htmlDocumentParser;
   private final ObjectMapper objectMapper;
 
   public ImportParseService(
@@ -34,11 +35,13 @@ public class ImportParseService {
       ImportStagingFileStore fileStore,
       EpubPackageParser epubPackageParser,
       PlainTextParser plainTextParser,
+      HtmlDocumentParser htmlDocumentParser,
       ObjectMapper objectMapper) {
     this.repository = repository;
     this.fileStore = fileStore;
     this.epubPackageParser = epubPackageParser;
     this.plainTextParser = plainTextParser;
+    this.htmlDocumentParser = htmlDocumentParser;
     this.objectMapper = objectMapper;
   }
 
@@ -124,6 +127,8 @@ public class ImportParseService {
       fail(claim, exception.code());
     } catch (PlainTextParser.TextParseException exception) {
       fail(claim, exception.code());
+    } catch (HtmlDocumentParser.HtmlParseException exception) {
+      fail(claim, exception.code());
     } catch (ImportContentValidator.InvalidContentException exception) {
       fail(claim, "IMPORT_CONTENT_INVALID");
     } catch (IOException exception) {
@@ -146,6 +151,10 @@ public class ImportParseService {
       return plainTextParser.parse(
           source, claim.filename(), claim.contentType(), claim.parserVersion());
     }
+    if (filename.endsWith(".html") || filename.endsWith(".htm")) {
+      return htmlDocumentParser.parse(
+          source, claim.filename(), claim.contentType(), claim.parserVersion());
+    }
     throw new EpubPackageParser.EpubParseException(
         "IMPORT_FORMAT_UNSUPPORTED", "The uploaded file format is not enabled for parsing.");
   }
@@ -155,6 +164,9 @@ public class ImportParseService {
     String normalized = filename.toLowerCase(java.util.Locale.ROOT);
     if (normalized.endsWith(".epub")) return EpubPackageParser.PARSER_VERSION;
     if (normalized.endsWith(".txt")) return PlainTextParser.PARSER_VERSION;
+    if (normalized.endsWith(".html") || normalized.endsWith(".htm")) {
+      return HtmlDocumentParser.PARSER_VERSION;
+    }
     return "unsupported-v1";
   }
 
