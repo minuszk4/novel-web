@@ -101,6 +101,64 @@ describe('ReaderApiService', () => {
     });
   });
 
+  it('loads, validates, and conditionally saves persisted reader progress', async () => {
+    const progress = {
+      workId,
+      chapterId,
+      segmentAnchor: 'chapter-1-p1',
+      scrollRatio: 0.42,
+      version: 3,
+      updatedAt: '2026-11-11T10:00:00Z',
+    };
+    const loaded = service.getProgress(workId);
+    http.expectOne({ method: 'GET', url: `/api/v1/works/${workId}/progress` }).flush(progress);
+    await expect(loaded).resolves.toEqual(progress);
+
+    const saved = service.saveProgress(workId, {
+      expectedVersion: 3,
+      chapterId,
+      segmentAnchor: 'chapter-1-p1',
+      scrollRatio: 0.42,
+    });
+    const saveRequest = http.expectOne({ method: 'PUT', url: `/api/v1/works/${workId}/progress` });
+    expect(saveRequest.request.body).toEqual({
+      expectedVersion: 3,
+      chapterId,
+      segmentAnchor: 'chapter-1-p1',
+      scrollRatio: 0.42,
+    });
+    saveRequest.flush(progress);
+    await expect(saved).resolves.toEqual(progress);
+  });
+
+  it('exposes a validated latest progress snapshot for stale-device reconciliation', async () => {
+    const staleSave = service.saveProgress(workId, {
+      expectedVersion: 2,
+      chapterId,
+      segmentAnchor: 'chapter-1-p1',
+      scrollRatio: 0.2,
+    });
+    http.expectOne({ method: 'PUT', url: `/api/v1/works/${workId}/progress` }).flush(
+      {
+        code: 'READER_PROGRESS_VERSION_STALE',
+        latestProgress: {
+          workId,
+          chapterId,
+          segmentAnchor: 'chapter-1-p1',
+          scrollRatio: 0.8,
+          version: 4,
+          updatedAt: '2026-11-11T10:00:00Z',
+        },
+      },
+      { status: 409, statusText: 'Conflict' },
+    );
+    await expect(staleSave).rejects.toMatchObject({
+      status: 409,
+      code: 'READER_PROGRESS_VERSION_STALE',
+      latestProgress: { version: 4, scrollRatio: 0.8 },
+    });
+  });
+
   it('rejects malformed response data and preserves safe HTTP status details', async () => {
     const malformed = service.getManifestPage(workId);
     http

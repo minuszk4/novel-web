@@ -45,7 +45,9 @@
     @if (work(); as currentWork) {
       <span class="reader-account-source">Nguyên tác · {{ currentWork.language }}</span>
     }
-    <span class="reader-account-sync">Tiến độ và dấu trang chưa đồng bộ</span>
+    <span class="reader-account-sync" role="status" aria-live="polite"
+      >{{ progressStatusLabel() }} · Dấu trang chưa đồng bộ</span
+    >
   </div>
 
   <div class="reader-main account-reader-main" role="region" aria-label="Reader tài khoản">
@@ -272,6 +274,7 @@
         role="region"
         aria-label="Nội dung chương"
         tabindex="0"
+        (scroll)="onReaderScroll()"
       >
         <article
           class="reader-article"

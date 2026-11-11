@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 4.5.0
+  version: 5.0.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -1667,7 +1667,7 @@ paths:
     get:
       operationId: getWorkReadingProgress
       tags: [Reader]
-      x-implementation-status: planned
+      x-implementation-status: implemented
       summary: Get this user's progress in an owned work
       security:
         - appSession: []
@@ -1698,12 +1698,16 @@ paths:
     put:
       operationId: saveWorkReadingProgress
       tags: [Reader]
-      x-implementation-status: planned
+      x-implementation-status: implemented
       summary: Save a stable chapter/segment anchor for this user's work
       description: >-
-        Owner-scoped, versioned and idempotent for a given representation. The server validates chapter
-        membership and anchor; client timestamps are not authoritative. Stale versions return 409 with
-        the latest safe progress snapshot so the client can reconcile rather than overwrite silently.
+        Actor-scoped to an accessible work, versioned and idempotent for a given position. Repeating the
+        same position is safe even if the request is retried with its previous expectedVersion. A
+        different position with a stale expectedVersion returns 409 and latestProgress; clients must
+        reconcile before the next write. The server validates that the chapter is readable in the work
+        and that an anchor occurs in a retained readable revision of that chapter. If the anchor no
+        longer exists in the current revision, clients restore by anchor when possible and otherwise
+        use scrollRatio. The server owns updatedAt.
       security:
         - appSession: []
           csrfToken: []
@@ -2452,7 +2456,7 @@ components:
         anchor:
           type: string
           minLength: 1
-          maxLength: 256
+          maxLength: 160
         type:
           type: string
           enum: [heading, paragraph, quote]
@@ -2742,7 +2746,8 @@ components:
           format: uuid
         segmentAnchor:
           type: [string, 'null']
-          maxLength: 256
+          maxLength: 160
+          pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$'
         scrollRatio:
           type: number
           minimum: 0
@@ -2772,9 +2777,11 @@ components:
         chapterId:
           type: [string, 'null']
           format: uuid
+          description: Null denotes an empty position and requires null segmentAnchor and scrollRatio zero.
         segmentAnchor:
           type: [string, 'null']
-          maxLength: 256
+          maxLength: 160
+          pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$'
         scrollRatio:
           type: number
           minimum: 0

@@ -30,7 +30,7 @@ class PostgresLegacyImportMigrationTests {
 
   private static final int LEGACY_CHANGESET_COUNT = 55;
 
-  private static final int CURRENT_CHANGESET_COUNT = 69;
+  private static final int CURRENT_CHANGESET_COUNT = 70;
 
   private static final int UPGRADE_CHANGESET_COUNT =
       CURRENT_CHANGESET_COUNT - LEGACY_CHANGESET_COUNT;

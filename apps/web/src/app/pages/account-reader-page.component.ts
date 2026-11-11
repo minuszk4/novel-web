@@ -15,7 +15,9 @@ import {
   ReaderChapter,
   ReaderContentPage,
   ReaderManifestPage,
+  ReaderProgress,
   ReaderSourceSegment,
+  SaveReaderProgressRequest,
   ReaderWork,
 } from '../core/reader-api.service';
 
@@ -24,6 +26,10 @@ const contentPageSize = 1000;
 const maxManifestPages = 25;
 const maxContentPages = 20;
 const maxSegmentsPerChapter = 20_000;
+
+type PendingReaderProgress = Omit<SaveReaderProgressRequest, 'expectedVersion'> & {
+  workId: string;
+};
 
 @Component({
   selector: 'app-account-reader-page',
@@ -48,6 +54,9 @@ export class AccountReaderPageComponent {
   protected readonly manifestPageError = signal<ReaderApiError | null>(null);
   protected readonly tocOpen = signal(false);
   protected readonly settingsOpen = signal(false);
+  protected readonly progressSyncState = signal<
+    'loading' | 'saved' | 'saving' | 'pending' | 'conflict'
+  >('loading');
 
   private readonly api = inject(ReaderApiService);
   private readonly route = inject(ActivatedRoute);
@@ -58,6 +67,10 @@ export class AccountReaderPageComponent {
   private requestedChapterId: string | null = null;
   private loadToken = 0;
   private panelReturnFocus: HTMLElement | null = null;
+  private readonly progressVersions = new Map<string, number>();
+  private progressTimer: number | null = null;
+  private pendingProgress: PendingReaderProgress | null = null;
+  private savingProgress = false;
 
   @ViewChild('tocPanel') private set tocPanel(panel: ElementRef<HTMLElement> | undefined) {
     if (panel) this.focusPanel(panel.nativeElement);
@@ -73,6 +86,7 @@ export class AccountReaderPageComponent {
     this.route.paramMap.pipe(takeUntilDestroyed(this.destroyRef)).subscribe((params) => {
       const workId = params.get('workId');
       const chapterId = params.get('chapterId');
+      if (this.activeChapter()) void this.flushProgress();
       this.requestedWorkId = workId;
       this.requestedChapterId = chapterId;
       const token = ++this.loadToken;
@@ -91,6 +105,43 @@ export class AccountReaderPageComponent {
         void this.loadWork(workId, chapterId, token);
       }
     });
+    this.destroyRef.onDestroy(() => {
+      if (this.progressTimer !== null) window.clearTimeout(this.progressTimer);
+      if (this.activeChapter()) void this.flushProgress();
+    });
+  }
+
+  protected progressStatusLabel(): string {
+    switch (this.progressSyncState()) {
+      case 'loading':
+        return 'Đang tải tiến độ…';
+      case 'saving':
+        return 'Đang lưu tiến độ…';
+      case 'pending':
+        return 'Tiến độ chưa đồng bộ';
+      case 'conflict':
+        return 'Tiến độ đã đổi trên thiết bị khác';
+      default:
+        return 'Tiến độ đã đồng bộ';
+    }
+  }
+
+  protected onReaderScroll(): void {
+    if (this.progressTimer !== null) window.clearTimeout(this.progressTimer);
+    this.progressTimer = window.setTimeout(() => {
+      this.progressTimer = null;
+      void this.flushProgress();
+    }, 800);
+  }
+
+  @HostListener('document:visibilitychange')
+  protected onVisibilityChange(): void {
+    if (document.visibilityState === 'hidden') void this.flushProgress();
+  }
+
+  @HostListener('window:pagehide')
+  protected onPageHide(): void {
+    void this.flushProgress();
   }
 
   protected get previousChapter(): ReaderChapter | null {
@@ -300,11 +351,24 @@ export class AccountReaderPageComponent {
     this.manifestPageError.set(null);
     this.manifestState.set('loading');
     this.contentState.set('idle');
+    this.progressSyncState.set('loading');
     if (!isUuid(workId)) {
       this.setManifestError(
         new ReaderApiError('INVALID_READER_QUERY', 400, 'INVALID_READER_QUERY'),
       );
       return;
+    }
+
+    let restoredProgress: ReaderProgress | null = null;
+    try {
+      restoredProgress = await this.api.getProgress(workId);
+      if (token !== this.loadToken) return;
+      this.progressVersions.set(workId, restoredProgress.version);
+      this.progressSyncState.set('saved');
+    } catch {
+      // The chapter remains readable if progress storage is temporarily unavailable.
+      this.progressVersions.set(workId, 0);
+      this.progressSyncState.set('pending');
     }
 
     let cursor: string | undefined;
@@ -317,11 +381,22 @@ export class AccountReaderPageComponent {
         this.nextManifestCursor.set(page.nextCursor);
         const target = chapterId
           ? this.chapters().find((chapter) => chapter.id === chapterId)
-          : this.chapters().find((chapter) => chapter.accessState === 'readable');
+          : restoredProgress?.chapterId
+            ? this.chapters().find(
+                (chapter) =>
+                  chapter.id === restoredProgress?.chapterId && chapter.accessState === 'readable',
+              )
+            : this.chapters().find((chapter) => chapter.accessState === 'readable');
         if (target) {
           this.loadedWorkId = workId;
           this.manifestState.set('ready');
-          await this.activateChapter(target, token);
+          await this.activateChapter(
+            target,
+            token,
+            chapterId === null && restoredProgress?.chapterId === target.id
+              ? restoredProgress
+              : null,
+          );
           return;
         }
         if (!page.nextCursor) break;
@@ -334,7 +409,12 @@ export class AccountReaderPageComponent {
       if (chapterId) {
         this.setManifestError(new ReaderApiError('NOT_FOUND', 404, 'NOT_FOUND'));
       } else {
-        this.contentState.set('empty');
+        const fallback = this.chapters().find((chapter) => chapter.accessState === 'readable');
+        if (fallback) {
+          await this.activateChapter(fallback, token, null);
+        } else {
+          this.contentState.set('empty');
+        }
       }
     } catch (error) {
       if (token === this.loadToken) this.setManifestError(asReaderApiError(error));
@@ -368,7 +448,14 @@ export class AccountReaderPageComponent {
     await this.activateChapter(chapter, token);
   }
 
-  private async activateChapter(chapter: ReaderChapter, token: number): Promise<void> {
+  private async activateChapter(
+    chapter: ReaderChapter,
+    token: number,
+    restoreProgress: ReaderProgress | null = null,
+  ): Promise<void> {
+    if (this.activeChapter() && this.activeChapter()?.id !== chapter.id) {
+      void this.flushProgress();
+    }
     this.activeChapter.set(chapter);
     this.segments.set([]);
     this.contentError.set(null);
@@ -423,7 +510,11 @@ export class AccountReaderPageComponent {
       }
       this.segments.set(segments);
       this.contentState.set('ready');
-      this.focusReaderHeading();
+      if (restoreProgress?.chapterId === chapter.id) {
+        this.restoreProgressPosition(restoreProgress);
+      } else {
+        this.focusReaderHeading();
+      }
     } catch (error) {
       if (token !== this.loadToken) return;
       this.contentError.set(asReaderApiError(error));
@@ -501,6 +592,84 @@ export class AccountReaderPageComponent {
         ?.scrollTo({ top: 0, behavior: 'auto' });
       document.getElementById('account-reader-title')?.focus({ preventScroll: true });
     });
+  }
+
+  private restoreProgressPosition(progress: ReaderProgress): void {
+    requestAnimationFrame(() => {
+      const container = document.querySelector<HTMLElement>('.account-reader-content');
+      if (!container) return;
+      const anchorTarget = progress.segmentAnchor
+        ? Array.from(container.querySelectorAll<HTMLElement>('[data-source-anchor]')).find(
+            (element) => element.dataset['sourceAnchor'] === progress.segmentAnchor,
+          )
+        : undefined;
+      if (anchorTarget) {
+        container.scrollTop +=
+          anchorTarget.getBoundingClientRect().top - container.getBoundingClientRect().top;
+      } else {
+        const availableScroll = Math.max(0, container.scrollHeight - container.clientHeight);
+        container.scrollTop = progress.scrollRatio * availableScroll;
+      }
+      document.getElementById('account-reader-title')?.focus({ preventScroll: true });
+    });
+  }
+
+  private async flushProgress(): Promise<void> {
+    if (this.progressTimer !== null) {
+      window.clearTimeout(this.progressTimer);
+      this.progressTimer = null;
+    }
+    const workId = this.work()?.id;
+    const chapter = this.activeChapter();
+    if (workId && chapter && this.contentState() === 'ready') {
+      const container = document.querySelector<HTMLElement>('.account-reader-content');
+      if (container) {
+        const availableScroll = Math.max(0, container.scrollHeight - container.clientHeight);
+        const scrollRatio =
+          availableScroll === 0
+            ? 0
+            : Math.min(1, Math.max(0, container.scrollTop / availableScroll));
+        const containerTop = container.getBoundingClientRect().top;
+        const visibleSegment = Array.from(
+          container.querySelectorAll<HTMLElement>('[data-source-anchor]'),
+        ).find((element) => element.getBoundingClientRect().bottom > containerTop);
+        this.pendingProgress = {
+          workId,
+          chapterId: chapter.id,
+          segmentAnchor: visibleSegment?.dataset['sourceAnchor'] || null,
+          scrollRatio,
+        };
+      }
+    }
+    if (this.savingProgress || !this.pendingProgress) return;
+
+    this.savingProgress = true;
+    while (this.pendingProgress) {
+      const position: PendingReaderProgress = this.pendingProgress;
+      this.pendingProgress = null;
+      this.progressSyncState.set('saving');
+      try {
+        const saved = await this.api.saveProgress(position.workId, {
+          chapterId: position.chapterId,
+          segmentAnchor: position.segmentAnchor,
+          scrollRatio: position.scrollRatio,
+          expectedVersion: this.progressVersions.get(position.workId) ?? 0,
+        });
+        this.progressVersions.set(position.workId, saved.version);
+        this.progressSyncState.set('saved');
+      } catch (error) {
+        const apiError = asReaderApiError(error);
+        if (apiError.status === 409 && apiError.latestProgress) {
+          this.progressVersions.set(position.workId, apiError.latestProgress.version);
+          this.progressSyncState.set('conflict');
+        } else {
+          this.pendingProgress ??= position;
+          this.progressSyncState.set('pending');
+        }
+        if (!this.pendingProgress) break;
+      }
+    }
+    this.savingProgress = false;
   }
 
   private keepTabFocusInsidePanel(event: KeyboardEvent, panel: HTMLElement): void {

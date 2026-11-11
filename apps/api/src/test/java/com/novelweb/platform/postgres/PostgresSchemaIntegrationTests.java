@@ -153,6 +153,7 @@ class PostgresSchemaIntegrationTests {
           "workspaces",
           "workspace_members",
           "library_reading_states",
+          "reader_progress",
           "library_collections",
           "library_collection_works",
           "import_rights_statements",
@@ -233,7 +234,7 @@ class PostgresSchemaIntegrationTests {
             connection.prepareStatement("SELECT COUNT(*) FROM databasechangelog");
         ResultSet changesets = changesetCount.executeQuery()) {
       changesets.next();
-      assertEquals(69, changesets.getInt(1), "unexpected number of applied changesets");
+      assertEquals(70, changesets.getInt(1), "unexpected number of applied changesets");
     }
 
     Set<String> actualTables = new HashSet<>();
@@ -2910,6 +2911,224 @@ class PostgresSchemaIntegrationTests {
   }
 
   @Test
+  void readerProgressPersistsStableAnchorsAndReconcilesConcurrentSaves() throws Exception {
+    UUID ownerId = createSessionTestUser("Progress Owner");
+    UUID outsiderId = createSessionTestUser("Progress Outsider");
+    UUID workId = null;
+    try {
+      LibraryRepository.LibraryRecord library =
+          libraryService.createLibrary(ownerId, "Progress Shelf");
+      LibraryRepository.WorkRecord work =
+          libraryService.createPrivateImportedWork(
+              ownerId,
+              library.id(),
+              "Progress Novel",
+              "Synthetic Author",
+              "vi",
+              sha256("progress-reader-work"));
+      workId = work.id();
+      LibraryRepository.VolumeRecord volume =
+          libraryService.createVolume(ownerId, workId, 1, "Volume 1");
+      LibraryRepository.ChapterRecord firstChapter =
+          libraryService.createChapter(ownerId, workId, volume.id(), 1, "Chapter 1", "vi");
+      LibraryRepository.ChapterRecord secondChapter =
+          libraryService.createChapter(ownerId, workId, volume.id(), 2, "Chapter 2", "vi");
+      LibraryRepository.RevisionRecord oldRevision =
+          libraryService.appendChapterRevision(
+              ownerId,
+              firstChapter.id(),
+              "plain_text",
+              "Old passage retained for anchor lookup.",
+              List.of(
+                  new LibraryService.NewSegment(
+                      1, "paragraph", "Old passage retained for anchor lookup.", "legacy-anchor")));
+      libraryService.appendChapterRevision(
+          ownerId,
+          firstChapter.id(),
+          "plain_text",
+          "Replacement passage with a different anchor.",
+          List.of(
+              new LibraryService.NewSegment(
+                  1,
+                  "paragraph",
+                  "Replacement passage with a different anchor.",
+                  "current-anchor")));
+      libraryService.appendChapterRevision(
+          ownerId,
+          secondChapter.id(),
+          "plain_text",
+          "A second chapter for a second device.",
+          List.of(
+              new LibraryService.NewSegment(
+                  1,
+                  "paragraph",
+                  "A second chapter for a second device.",
+                  "second-device-anchor")));
+      assertNotNull(oldRevision);
+      addCurrentPolicyAcceptances(ownerId);
+      addCurrentPolicyAcceptances(outsiderId);
+
+      SessionService.IssuedSession firstDevice = sessionService.create(ownerId).orElseThrow();
+      jakarta.servlet.http.Cookie firstCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", firstDevice.cookieValue());
+      String firstCsrf = csrfTokenService.tokenFor(firstDevice.cookieValue());
+      SessionService.IssuedSession secondDevice = sessionService.create(ownerId).orElseThrow();
+      jakarta.servlet.http.Cookie secondCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", secondDevice.cookieValue());
+      String secondCsrf = csrfTokenService.tokenFor(secondDevice.cookieValue());
+      SessionService.IssuedSession outsiderSession =
+          sessionService.create(outsiderId).orElseThrow();
+      jakarta.servlet.http.Cookie outsiderCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", outsiderSession.cookieValue());
+
+      MvcResult initial =
+          mockMvc
+              .perform(get("/api/v1/works/{workId}/progress", workId).cookie(firstCookie))
+              .andReturn();
+      assertEquals(200, initial.getResponse().getStatus());
+      assertEquals("\"progress-0\"", initial.getResponse().getHeader("ETag"));
+      assertTrue(initial.getResponse().getHeader("Cache-Control").contains("no-store"));
+      JsonNode initialProgress = objectMapper.readTree(initial.getResponse().getContentAsString());
+      assertEquals(0, initialProgress.path("version").asInt());
+      assertTrue(initialProgress.path("chapterId").isNull());
+
+      MvcResult missingCsrf =
+          mockMvc
+              .perform(
+                  put("/api/v1/works/{workId}/progress", workId)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          "{\"expectedVersion\":0,\"chapterId\":\""
+                              + firstChapter.id()
+                              + "\",\"segmentAnchor\":\"legacy-anchor\",\"scrollRatio\":0.45}")
+                      .cookie(firstCookie))
+              .andReturn();
+      assertEquals(403, missingCsrf.getResponse().getStatus());
+
+      String firstPosition =
+          "{\"expectedVersion\":0,\"chapterId\":\""
+              + firstChapter.id()
+              + "\",\"segmentAnchor\":\"legacy-anchor\",\"scrollRatio\":0.45}";
+      MvcResult firstSave =
+          mockMvc
+              .perform(
+                  put("/api/v1/works/{workId}/progress", workId)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(firstPosition)
+                      .header("X-CSRF-Token", firstCsrf)
+                      .cookie(firstCookie))
+              .andReturn();
+      assertEquals(200, firstSave.getResponse().getStatus());
+      assertEquals("\"progress-1\"", firstSave.getResponse().getHeader("ETag"));
+      JsonNode savedPosition = objectMapper.readTree(firstSave.getResponse().getContentAsString());
+      assertEquals(1, savedPosition.path("version").asInt());
+      String savedAt = savedPosition.path("updatedAt").asText();
+
+      MvcResult retry =
+          mockMvc
+              .perform(
+                  put("/api/v1/works/{workId}/progress", workId)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(firstPosition)
+                      .header("X-CSRF-Token", firstCsrf)
+                      .cookie(firstCookie))
+              .andReturn();
+      JsonNode retriedPosition = objectMapper.readTree(retry.getResponse().getContentAsString());
+      assertEquals(200, retry.getResponse().getStatus());
+      assertEquals(1, retriedPosition.path("version").asInt());
+      assertEquals(savedAt, retriedPosition.path("updatedAt").asText());
+
+      MvcResult rapidScroll =
+          mockMvc
+              .perform(
+                  put("/api/v1/works/{workId}/progress", workId)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          "{\"expectedVersion\":1,\"chapterId\":\""
+                              + firstChapter.id()
+                              + "\",\"segmentAnchor\":\"legacy-anchor\",\"scrollRatio\":0.62}")
+                      .header("X-CSRF-Token", firstCsrf)
+                      .cookie(firstCookie))
+              .andReturn();
+      assertEquals(200, rapidScroll.getResponse().getStatus());
+      assertEquals(
+          2,
+          objectMapper
+              .readTree(rapidScroll.getResponse().getContentAsString())
+              .path("version")
+              .asInt());
+
+      MvcResult secondDeviceSave =
+          mockMvc
+              .perform(
+                  put("/api/v1/works/{workId}/progress", workId)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          "{\"expectedVersion\":2,\"chapterId\":\""
+                              + secondChapter.id()
+                              + "\",\"segmentAnchor\":\"second-device-anchor\",\"scrollRatio\":0.1}")
+                      .header("X-CSRF-Token", secondCsrf)
+                      .cookie(secondCookie))
+              .andReturn();
+      assertEquals(200, secondDeviceSave.getResponse().getStatus());
+      assertEquals("\"progress-3\"", secondDeviceSave.getResponse().getHeader("ETag"));
+
+      MvcResult staleDeviceSave =
+          mockMvc
+              .perform(
+                  put("/api/v1/works/{workId}/progress", workId)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(firstPosition)
+                      .header("X-CSRF-Token", firstCsrf)
+                      .cookie(firstCookie))
+              .andReturn();
+      JsonNode conflict = objectMapper.readTree(staleDeviceSave.getResponse().getContentAsString());
+      assertEquals(409, staleDeviceSave.getResponse().getStatus());
+      assertEquals("READER_PROGRESS_VERSION_STALE", conflict.path("code").asText());
+      assertEquals(3, conflict.path("latestProgress").path("version").asInt());
+      assertEquals(
+          secondChapter.id().toString(),
+          conflict.path("latestProgress").path("chapterId").asText());
+
+      MvcResult reloaded =
+          mockMvc
+              .perform(get("/api/v1/works/{workId}/progress", workId).cookie(secondCookie))
+              .andReturn();
+      assertEquals(200, reloaded.getResponse().getStatus());
+      JsonNode afterReload = objectMapper.readTree(reloaded.getResponse().getContentAsString());
+      assertEquals(3, afterReload.path("version").asInt());
+      assertEquals(secondChapter.id().toString(), afterReload.path("chapterId").asText());
+      assertEquals("second-device-anchor", afterReload.path("segmentAnchor").asText());
+
+      MvcResult invalidAnchor =
+          mockMvc
+              .perform(
+                  put("/api/v1/works/{workId}/progress", workId)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          "{\"expectedVersion\":3,\"chapterId\":\""
+                              + firstChapter.id()
+                              + "\",\"segmentAnchor\":\"not-an-anchor\",\"scrollRatio\":0.5}")
+                      .header("X-CSRF-Token", secondCsrf)
+                      .cookie(secondCookie))
+              .andReturn();
+      assertEquals(422, invalidAnchor.getResponse().getStatus());
+
+      MvcResult outsider =
+          mockMvc
+              .perform(get("/api/v1/works/{workId}/progress", workId).cookie(outsiderCookie))
+              .andReturn();
+      assertEquals(404, outsider.getResponse().getStatus());
+    } finally {
+      deleteLibraryTestData(ownerId);
+      deleteLibraryUserData(ownerId, workId);
+      deleteLibraryUserData(outsiderId, null);
+      deleteSessionTestUser(outsiderId);
+      deleteSessionTestUser(ownerId);
+    }
+  }
+
+  @Test
   void sourceOnlyReaderRechecksOwnerPaginatesAndNeverPutsBodyInManifest() throws Exception {
     UUID ownerId = createSessionTestUser("Reader API Owner");
     UUID outsiderId = createSessionTestUser("Reader API Outsider");
@@ -3878,6 +4097,7 @@ class PostgresSchemaIntegrationTests {
             "workspace_members",
             "workspaces",
             "library_collection_works",
+            "reader_progress",
             "library_reading_states",
             "library_collections",
             "libraries",
@@ -5598,6 +5818,13 @@ class PostgresSchemaIntegrationTests {
 
   private void deleteLibraryTestData(UUID ownerId) throws SQLException {
     try (Connection connection = dataSource.getConnection()) {
+      try (PreparedStatement deleteProgress =
+          connection.prepareStatement(
+              "DELETE FROM reader_progress p USING works w "
+                  + "WHERE p.work_id = w.id AND w.owner_user_id = ?")) {
+        deleteProgress.setObject(1, ownerId);
+        deleteProgress.executeUpdate();
+      }
       try (PreparedStatement deleteWorkTags =
           connection.prepareStatement(
               "DELETE FROM work_tags WHERE owner_user_id = ? OR assigned_by_user_id = ?")) {
@@ -6844,6 +7071,11 @@ class PostgresSchemaIntegrationTests {
 
   private void deleteLibraryUserData(UUID userId, UUID workId) throws SQLException {
     try (Connection connection = dataSource.getConnection()) {
+      try (PreparedStatement deleteProgress =
+          connection.prepareStatement("DELETE FROM reader_progress WHERE user_id = ?")) {
+        deleteProgress.setObject(1, userId);
+        deleteProgress.executeUpdate();
+      }
       try (PreparedStatement deleteAssignments =
           connection.prepareStatement(
               "DELETE FROM library_collection_works WHERE owner_user_id = ?")) {

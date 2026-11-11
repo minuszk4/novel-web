@@ -45,11 +45,28 @@ export interface ReaderContentPage {
   nextSegmentCursor: string | null;
 }
 
+export interface ReaderProgress {
+  workId: string;
+  chapterId: string | null;
+  segmentAnchor: string | null;
+  scrollRatio: number;
+  version: number;
+  updatedAt: string | null;
+}
+
+export interface SaveReaderProgressRequest {
+  expectedVersion: number;
+  chapterId: string | null;
+  segmentAnchor: string | null;
+  scrollRatio: number;
+}
+
 export class ReaderApiError extends Error {
   constructor(
     message: string,
     readonly status: number,
     readonly code: string | null,
+    readonly latestProgress: ReaderProgress | null = null,
   ) {
     super(message);
     this.name = 'ReaderApiError';
@@ -58,6 +75,7 @@ export class ReaderApiError extends Error {
 
 const manifestUrl = (workId: string) => `/api/v1/works/${workId}/reader-manifest`;
 const contentUrl = (chapterId: string) => `/api/v1/chapters/${chapterId}/content`;
+const progressUrl = (workId: string) => `/api/v1/works/${workId}/progress`;
 const requestTimeoutMs = 10_000;
 
 @Injectable({ providedIn: 'root' })
@@ -105,6 +123,69 @@ export class ReaderApiService {
       throw toReaderApiError(error);
     }
   }
+
+  async getProgress(workId: string): Promise<ReaderProgress> {
+    if (!isUuid(workId)) throw invalidResponse('INVALID_READER_QUERY');
+    try {
+      const response: unknown = await firstValueFrom(
+        this.http.get<unknown>(progressUrl(workId)).pipe(timeout(requestTimeoutMs)),
+      );
+      return parseProgress(response, workId);
+    } catch (error) {
+      throw toReaderApiError(error, workId);
+    }
+  }
+
+  async saveProgress(workId: string, request: SaveReaderProgressRequest): Promise<ReaderProgress> {
+    if (
+      !isUuid(workId) ||
+      !Number.isSafeInteger(request.expectedVersion) ||
+      request.expectedVersion < 0 ||
+      (request.chapterId !== null && !isUuid(request.chapterId)) ||
+      (request.segmentAnchor !== null && !isStableAnchor(request.segmentAnchor)) ||
+      !Number.isFinite(request.scrollRatio) ||
+      request.scrollRatio < 0 ||
+      request.scrollRatio > 1 ||
+      (request.chapterId === null && (request.segmentAnchor !== null || request.scrollRatio !== 0))
+    ) {
+      throw invalidResponse('INVALID_READER_QUERY');
+    }
+    try {
+      const response: unknown = await firstValueFrom(
+        this.http.put<unknown>(progressUrl(workId), request).pipe(timeout(requestTimeoutMs)),
+      );
+      return parseProgress(response, workId);
+    } catch (error) {
+      throw toReaderApiError(error, workId);
+    }
+  }
+}
+
+function parseProgress(value: unknown, expectedWorkId: string): ReaderProgress {
+  if (
+    !isRecord(value) ||
+    value['workId'] !== expectedWorkId ||
+    !(value['chapterId'] === null || isUuid(value['chapterId'])) ||
+    !(value['segmentAnchor'] === null || isStableAnchor(value['segmentAnchor'])) ||
+    typeof value['scrollRatio'] !== 'number' ||
+    !Number.isFinite(value['scrollRatio']) ||
+    value['scrollRatio'] < 0 ||
+    value['scrollRatio'] > 1 ||
+    !Number.isSafeInteger(value['version']) ||
+    (value['version'] as number) < 0 ||
+    !(value['updatedAt'] === null || isTimestamp(value['updatedAt'])) ||
+    (value['chapterId'] === null && (value['segmentAnchor'] !== null || value['scrollRatio'] !== 0))
+  ) {
+    throw invalidResponse();
+  }
+  return {
+    workId: value['workId'],
+    chapterId: value['chapterId'] as string | null,
+    segmentAnchor: value['segmentAnchor'] as string | null,
+    scrollRatio: value['scrollRatio'],
+    version: value['version'] as number,
+    updatedAt: value['updatedAt'] as string | null,
+  };
 }
 
 function parseManifestPage(
@@ -230,7 +311,7 @@ function parseSegment(value: unknown): ReaderSourceSegment {
   if (
     !isRecord(value) ||
     (value['anchor'] !== null &&
-      (typeof value['anchor'] !== 'string' || value['anchor'].length > 120)) ||
+      (typeof value['anchor'] !== 'string' || value['anchor'].length > 160)) ||
     (value['type'] !== 'paragraph' && value['type'] !== 'heading' && value['type'] !== 'quote') ||
     typeof value['sourceText'] !== 'string' ||
     [...value['sourceText']].length > 4_000
@@ -244,14 +325,22 @@ function parseSegment(value: unknown): ReaderSourceSegment {
   };
 }
 
-function toReaderApiError(error: unknown): ReaderApiError {
+function toReaderApiError(error: unknown, expectedWorkId?: string): ReaderApiError {
   if (error instanceof ReaderApiError) return error;
   if (!(error instanceof HttpErrorResponse)) {
     return new ReaderApiError('NETWORK_OR_INVALID_RESPONSE', 0, null);
   }
   const body = isRecord(error.error) ? error.error : null;
   const code = body && typeof body['code'] === 'string' ? body['code'] : null;
-  return new ReaderApiError(error.message, error.status, code);
+  let latestProgress: ReaderProgress | null = null;
+  if (body && expectedWorkId && body['latestProgress'] !== undefined) {
+    try {
+      latestProgress = parseProgress(body['latestProgress'], expectedWorkId);
+    } catch {
+      latestProgress = null;
+    }
+  }
+  return new ReaderApiError(error.message, error.status, code, latestProgress);
 }
 
 function invalidResponse(code = 'INVALID_READER_RESPONSE'): ReaderApiError {
@@ -284,6 +373,10 @@ function isUuid(value: unknown): value is string {
     typeof value === 'string' &&
     /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
   );
+}
+
+function isStableAnchor(value: unknown): value is string {
+  return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(value);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

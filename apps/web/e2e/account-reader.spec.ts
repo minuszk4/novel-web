@@ -57,6 +57,19 @@ const chapters = [
   { id: chapterIds[2], ordinal: 3, title: 'Qua khỏi dốc', accessState: 'readable' },
 ];
 
+interface MockProgress {
+  workId: string;
+  chapterId: string | null;
+  segmentAnchor: string | null;
+  scrollRatio: number;
+  version: number;
+  updatedAt: string | null;
+}
+
+interface MockProgressWrite extends Omit<MockProgress, 'version' | 'updatedAt' | 'workId'> {
+  expectedVersion: number;
+}
+
 async function json(route: Route, body: unknown, status = 200): Promise<void> {
   await route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
 }
@@ -67,6 +80,9 @@ async function installReaderRoutes(
   includeHostileMarkup = true,
   contentStatus: number | readonly number[] = 200,
   paginatedManifest = false,
+  initialProgress?: MockProgress,
+  onProgressSave?: (request: MockProgressWrite) => void,
+  longThirdChapter = false,
 ): Promise<string[]> {
   const loadedChapters: string[] = [];
   const manifestStatuses =
@@ -74,6 +90,14 @@ async function installReaderRoutes(
   const contentStatuses = typeof contentStatus === 'number' ? [contentStatus] : [...contentStatus];
   let manifestRequestCount = 0;
   let firstChapterContentRequestCount = 0;
+  let progress: MockProgress = initialProgress ?? {
+    workId,
+    chapterId: null,
+    segmentAnchor: null,
+    scrollRatio: 0,
+    version: 0,
+    updatedAt: null,
+  };
   await page.route('**/api/v1/system/status', (route) =>
     json(route, {
       apiVersion: '4.2.1',
@@ -91,6 +115,34 @@ async function installReaderRoutes(
     }),
   );
   await page.route('**/api/v1/auth/me', (route) => json(route, currentUser));
+  await page.route(`**/api/v1/works/${workId}/progress`, async (route) => {
+    if (route.request().method() === 'GET') return json(route, progress);
+    const request = route.request().postDataJSON() as MockProgressWrite;
+    onProgressSave?.(request);
+    if (
+      request.expectedVersion !== progress.version &&
+      (request.chapterId !== progress.chapterId ||
+        request.segmentAnchor !== progress.segmentAnchor ||
+        request.scrollRatio !== progress.scrollRatio)
+    ) {
+      return json(route, { code: 'READER_PROGRESS_VERSION_STALE', latestProgress: progress }, 409);
+    }
+    if (
+      request.chapterId !== progress.chapterId ||
+      request.segmentAnchor !== progress.segmentAnchor ||
+      request.scrollRatio !== progress.scrollRatio
+    ) {
+      progress = {
+        workId,
+        chapterId: request.chapterId,
+        segmentAnchor: request.segmentAnchor,
+        scrollRatio: request.scrollRatio,
+        version: progress.version + 1,
+        updatedAt: '2026-11-11T10:00:00Z',
+      };
+    }
+    return json(route, progress);
+  });
   await page.route('**/api/v1/auth/policies/current', (route) =>
     json(route, {
       terms: {
@@ -186,7 +238,13 @@ async function installReaderRoutes(
       workId,
       sourceRevisionId: revisionId,
       sourceLanguage: 'vi',
-      segments: [{ anchor: 'ch3-p1', type: 'paragraph', sourceText: 'Con đường đã sáng.' }],
+      segments: longThirdChapter
+        ? Array.from({ length: 20 }, (_, index) => ({
+            anchor: `ch3-p${index + 1}`,
+            type: 'paragraph',
+            sourceText: `Đoạn ${index + 1}. ${'Con đường men theo sườn núi và mở ra thung lũng phía trước. '.repeat(8)}`,
+          }))
+        : [{ anchor: 'ch3-p1', type: 'paragraph', sourceText: 'Con đường đã sáng.' }],
       nextSegmentCursor: null,
     });
   });
@@ -216,7 +274,7 @@ for (const viewport of viewports) {
     await expect(page.getByRole('heading', { name: 'Cánh cửa mở' })).toBeVisible();
     await expect(page.getByText('Một đoạn văn bản riêng tư.')).toBeVisible();
     await expect(page.locator('.reader-account-private')).toContainText('THƯ VIỆN TÀI KHOẢN');
-    await expect(page.getByText('Tiến độ và dấu trang chưa đồng bộ')).toBeVisible();
+    await expect(page.getByText(/Tiến độ đã đồng bộ · Dấu trang chưa đồng bộ/)).toBeVisible();
     for (const payload of hostileMarkup) {
       await expect(page.locator('.reader-body').getByText(payload, { exact: true })).toBeVisible();
     }
@@ -253,6 +311,100 @@ for (const viewport of viewports) {
     expect(dimensions.document).toBeLessThanOrEqual(dimensions.viewport);
   });
 }
+
+test('resumes the saved chapter anchor and debounces Reader progress writes', async ({ page }) => {
+  await page.setViewportSize({ width: 360, height: 800 });
+  const saves: MockProgressWrite[] = [];
+  await installReaderRoutes(
+    page,
+    200,
+    false,
+    200,
+    false,
+    {
+      workId,
+      chapterId: chapterIds[2],
+      segmentAnchor: 'ch3-p14',
+      scrollRatio: 0.65,
+      version: 4,
+      updatedAt: '2026-11-11T10:00:00Z',
+    },
+    (request) => saves.push(request),
+    true,
+  );
+  await page.goto(`/app/reader/${workId}`);
+
+  await expect(page.getByRole('heading', { name: 'Qua khỏi dốc' })).toBeVisible();
+  await expect(page.locator('[data-source-anchor="ch3-p14"]')).toBeVisible();
+  await expect(page.getByRole('status')).toContainText('Tiến độ đã đồng bộ');
+  await expect
+    .poll(() => page.locator('.account-reader-content').evaluate((element) => element.scrollTop))
+    .toBeGreaterThan(0);
+
+  await page.locator('.account-reader-content').evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+    element.dispatchEvent(new Event('scroll'));
+  });
+  await expect.poll(() => saves.at(-1)?.segmentAnchor).toBe('ch3-p20');
+  expect(saves[0]).toMatchObject({
+    expectedVersion: 4,
+    chapterId: chapterIds[2],
+  });
+  expect(saves.at(-1)).toMatchObject({
+    chapterId: chapterIds[2],
+    segmentAnchor: 'ch3-p20',
+  });
+  await expect(page.getByRole('status')).toContainText('Tiến độ đã đồng bộ');
+
+  await page.reload();
+  await expect(page.getByRole('heading', { name: 'Qua khỏi dốc' })).toBeVisible();
+  await expect(page.locator('[data-source-anchor="ch3-p20"]')).toBeVisible();
+});
+
+test('uses the saved scroll ratio when a revision no longer contains its anchor', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 360, height: 800 });
+  await installReaderRoutes(
+    page,
+    200,
+    false,
+    200,
+    false,
+    {
+      workId,
+      chapterId: chapterIds[2],
+      segmentAnchor: 'anchor-from-older-revision',
+      scrollRatio: 0.6,
+      version: 2,
+      updatedAt: '2026-11-11T10:00:00Z',
+    },
+    undefined,
+    true,
+  );
+  await page.goto(`/app/reader/${workId}`);
+
+  await expect(page.getByRole('heading', { name: 'Qua khỏi dốc' })).toBeVisible();
+  await expect
+    .poll(() =>
+      page.locator('.account-reader-content').evaluate((element) => {
+        const availableScroll = element.scrollHeight - element.clientHeight;
+        return availableScroll > 0 ? element.scrollTop / availableScroll : 0;
+      }),
+    )
+    .toBeCloseTo(0.6, 1);
+});
+
+test('keeps an explicitly requested unavailable chapter in its recovery state', async ({
+  page,
+}) => {
+  await installReaderRoutes(page, 200, false);
+  await page.goto(`/app/reader/${workId}/${chapterIds[1]}`);
+
+  await expect(page).toHaveURL(new RegExp(`/app/reader/${workId}/${chapterIds[1]}$`));
+  await expect(page.getByRole('heading', { name: 'Chương chưa sẵn sàng' })).toBeVisible();
+  await expect(page.locator('.account-reader-state button')).toContainText('Mở mục lục');
+});
 
 test('account Reader remains usable in an effective 200% mobile viewport', async ({ browser }) => {
   await verifyEffectiveZoom(browser);

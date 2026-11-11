@@ -16,6 +16,8 @@ import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -27,10 +29,15 @@ import org.springframework.web.bind.annotation.RestController;
 public class ReaderController {
 
   private final ReaderService readerService;
+  private final ReaderProgressService progressService;
   private final PolicyService policyService;
 
-  public ReaderController(ReaderService readerService, PolicyService policyService) {
+  public ReaderController(
+      ReaderService readerService,
+      ReaderProgressService progressService,
+      PolicyService policyService) {
     this.readerService = readerService;
+    this.progressService = progressService;
     this.policyService = policyService;
   }
 
@@ -75,6 +82,35 @@ public class ReaderController {
             parseLimit(limit)));
   }
 
+  @GetMapping("/works/{workId}/progress")
+  public ResponseEntity<?> progress(
+      Authentication authentication, @PathVariable UUID workId, HttpServletRequest request) {
+    Optional<UUID> actor = actorUserId(authentication);
+    if (actor.isEmpty()) {
+      return problem(
+          HttpStatus.UNAUTHORIZED, "UNAUTHENTICATED", "Sign in to load reading progress.", request);
+    }
+    ResponseEntity<?> policyGate = policyGate(actor.orElseThrow(), request);
+    if (policyGate != null) return policyGate;
+    return progressResponse(progressService.get(actor.orElseThrow(), workId));
+  }
+
+  @PutMapping("/works/{workId}/progress")
+  public ResponseEntity<?> saveProgress(
+      Authentication authentication,
+      @PathVariable UUID workId,
+      @RequestBody(required = false) ReaderProgressService.SaveProgressRequest body,
+      HttpServletRequest request) {
+    Optional<UUID> actor = actorUserId(authentication);
+    if (actor.isEmpty()) {
+      return problem(
+          HttpStatus.UNAUTHORIZED, "UNAUTHENTICATED", "Sign in to save reading progress.", request);
+    }
+    ResponseEntity<?> policyGate = policyGate(actor.orElseThrow(), request);
+    if (policyGate != null) return policyGate;
+    return progressResponse(progressService.save(actor.orElseThrow(), workId, body));
+  }
+
   @ExceptionHandler(ReaderService.ReaderNotFoundException.class)
   public ResponseEntity<ProblemDetail> notFound(HttpServletRequest request) {
     return problem(
@@ -91,6 +127,44 @@ public class ReaderController {
         "INVALID_READER_CURSOR",
         "The cursor is malformed or belongs to another Reader resource.",
         request);
+  }
+
+  @ExceptionHandler(ReaderProgressRepository.ProgressNotFoundException.class)
+  public ResponseEntity<ProblemDetail> inaccessibleProgress(HttpServletRequest request) {
+    return problem(
+        HttpStatus.NOT_FOUND,
+        "NOT_FOUND",
+        "The requested work or reading progress is unavailable.",
+        request);
+  }
+
+  @ExceptionHandler(ReaderProgressRepository.InvalidProgressException.class)
+  public ResponseEntity<ProblemDetail> invalidProgress(HttpServletRequest request) {
+    return problem(
+        HttpStatus.UNPROCESSABLE_ENTITY,
+        "INVALID_READER_PROGRESS",
+        "The chapter or stable anchor is not part of readable content in this work.",
+        request);
+  }
+
+  @ExceptionHandler(ReaderProgressRepository.ProgressVersionConflictException.class)
+  public ResponseEntity<ProblemDetail> staleProgress(
+      ReaderProgressRepository.ProgressVersionConflictException exception,
+      HttpServletRequest request) {
+    ProblemDetail problem =
+        ProblemDetail.forStatusAndDetail(
+            HttpStatus.CONFLICT,
+            "Reading progress changed elsewhere. Reconcile with the latest server snapshot.");
+    problem.setTitle(HttpStatus.CONFLICT.getReasonPhrase());
+    problem.setProperty("code", "READER_PROGRESS_VERSION_STALE");
+    Object value = request.getAttribute(CorrelationIdFilter.REQUEST_ATTRIBUTE);
+    problem.setProperty("correlationId", value instanceof String id ? id : "unavailable");
+    problem.setProperty("latestProgress", exception.latestProgress());
+    return ResponseEntity.status(HttpStatus.CONFLICT)
+        .header(HttpHeaders.ETAG, progressEtag(exception.latestProgress().version()))
+        .cacheControl(CacheControl.noStore())
+        .header(HttpHeaders.PRAGMA, "no-cache")
+        .body(problem);
   }
 
   @ExceptionHandler(ReaderCursorCodec.SigningUnavailableException.class)
@@ -173,6 +247,19 @@ public class ReaderController {
         .cacheControl(CacheControl.noStore())
         .header(HttpHeaders.PRAGMA, "no-cache")
         .body(body);
+  }
+
+  private static ResponseEntity<?> progressResponse(
+      ReaderProgressRepository.ProgressRecord progress) {
+    return ResponseEntity.ok()
+        .header(HttpHeaders.ETAG, progressEtag(progress.version()))
+        .cacheControl(CacheControl.noStore())
+        .header(HttpHeaders.PRAGMA, "no-cache")
+        .body(progress);
+  }
+
+  private static String progressEtag(long version) {
+    return "\"progress-" + version + "\"";
   }
 
   private static ResponseEntity<ProblemDetail> problem(
