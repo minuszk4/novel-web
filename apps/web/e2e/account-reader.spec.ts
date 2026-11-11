@@ -65,11 +65,14 @@ async function installReaderRoutes(
   page: Page,
   manifestStatus: number | readonly number[] = 200,
   includeHostileMarkup = true,
+  contentStatus: number | readonly number[] = 200,
 ): Promise<string[]> {
   const loadedChapters: string[] = [];
   const manifestStatuses =
     typeof manifestStatus === 'number' ? [manifestStatus] : [...manifestStatus];
+  const contentStatuses = typeof contentStatus === 'number' ? [contentStatus] : [...contentStatus];
   let manifestRequestCount = 0;
+  let firstChapterContentRequestCount = 0;
   await page.route('**/api/v1/system/status', (route) =>
     json(route, {
       apiVersion: '4.2.1',
@@ -130,6 +133,13 @@ async function installReaderRoutes(
     const chapterId = route.request().url().split('/chapters/')[1]?.split('/')[0];
     if (chapterId) loadedChapters.push(chapterId);
     if (chapterId === chapterIds[0]) {
+      const status =
+        contentStatuses[Math.min(firstChapterContentRequestCount, contentStatuses.length - 1)] ??
+        200;
+      firstChapterContentRequestCount += 1;
+      if (status !== 200) {
+        return json(route, { code: 'READER_TEMPORARILY_UNAVAILABLE' }, status);
+      }
       const segments = [
         { anchor: 'ch1-h1', type: 'heading', sourceText: 'Ngày đầu tiên' },
         { anchor: 'ch1-p1', type: 'paragraph', sourceText: 'Một đoạn văn bản riêng tư.' },
@@ -339,6 +349,30 @@ test('account Reader announces a transient manifest failure and recovers with re
   await expect(chapterHeading).toBeVisible();
   await expect(chapterHeading).toBeFocused();
   await expect(error).toHaveCount(0);
+  await expectNoAxeViolations(page);
+});
+
+test('account Reader announces a transient chapter-content failure and recovers with retry', async ({
+  page,
+}) => {
+  const loadedChapters = await installReaderRoutes(page, 200, true, [503, 200]);
+  await page.goto(`/app/reader/${workId}/${chapterIds[0]}`);
+
+  const error = page.getByRole('alert');
+  await expect(error).toBeVisible();
+  await expect(error.getByRole('heading', { name: 'Chưa tải được chương' })).toBeVisible();
+  await expect(error).toContainText('Reader đang tạm thời không khả dụng. Thử lại sau ít phút.');
+  await expect(error.getByRole('link', { name: 'Quay lại thư viện' })).toBeVisible();
+  await expectNoAxeViolations(page);
+
+  await error.getByRole('button', { name: 'Tải lại chương' }).click();
+
+  const chapterHeading = page.getByRole('heading', { name: 'Cánh cửa mở' });
+  await expect(chapterHeading).toBeVisible();
+  await expect(chapterHeading).toBeFocused();
+  await expect(page.getByText('Một đoạn văn bản riêng tư.')).toBeVisible();
+  await expect(error).toHaveCount(0);
+  expect(loadedChapters).toEqual([chapterIds[0], chapterIds[0]]);
   await expectNoAxeViolations(page);
 });
 
