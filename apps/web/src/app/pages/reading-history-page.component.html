@@ -1,0 +1,166 @@
+<section class="page-wrap reading-history-page" aria-labelledby="history-title">
+  <div class="page-heading page-heading-inline">
+    <div>
+      <p class="eyebrow">DẤU TRANG GẦN ĐÂY</p>
+      <h1 #pageHeading id="history-title" tabindex="-1">Lịch sử đọc</h1>
+      <p>Mỗi tác phẩm giữ vị trí đọc gần nhất để bạn quay lại đúng chỗ.</p>
+    </div>
+    @if (phase() === 'ready' && items().length) {
+      <button
+        class="button button-outline history-clear-all"
+        type="button"
+        (click)="requestClearAll()"
+      >
+        Xóa toàn bộ lịch sử
+      </button>
+    }
+  </div>
+
+  <p class="history-retention-note">
+    Lịch sử hiển thị các vị trí đọc trong 365 ngày gần nhất. Xóa lịch sử cũng xóa vị trí tiếp tục
+    đọc đã lưu; tác phẩm không bị xóa khỏi thư viện. Đọc tiếp sau đó sẽ tạo lại mục lịch sử.
+  </p>
+
+  @if (statusMessage(); as message) {
+    <p class="history-status" role="status" aria-live="polite">{{ message }}</p>
+  }
+
+  @if (phase() === 'loading') {
+    <p class="history-state" role="status" aria-live="polite">Đang tải lịch sử đọc…</p>
+  } @else if (phase() === 'error') {
+    <div class="empty-state-panel history-error" role="alert">
+      <h2>Chưa thể mở lịch sử</h2>
+      <p>{{ errorMessage() }}</p>
+      @if (recovery() === 'sign-in') {
+        <a
+          class="button button-primary"
+          routerLink="/sign-in"
+          [queryParams]="{ returnTo: '/app/history' }"
+        >
+          Đăng nhập
+        </a>
+      } @else if (recovery() === 'settings') {
+        <a
+          class="button button-primary"
+          routerLink="/app/setup"
+          [queryParams]="{ returnUrl: '/app/history' }"
+        >
+          Xem chính sách tài khoản
+        </a>
+      } @else {
+        <button class="button button-primary" type="button" (click)="loadFirstPage()">
+          Thử tải lại
+        </button>
+      }
+    </div>
+  } @else if (!items().length) {
+    <div class="empty-state-panel history-empty">
+      <div class="empty-illustration small-empty" aria-hidden="true">
+        <span class="empty-book empty-book-one"></span>
+        <span class="empty-book empty-book-two"></span>
+        <span class="empty-star">✧</span>
+      </div>
+      <h2>Chưa có vị trí đọc gần đây</h2>
+      <p>Khi bạn đọc và lưu tiến độ trong một tác phẩm, mục đó sẽ xuất hiện ở đây.</p>
+      <a class="button button-primary" routerLink="/app/library">Mở thư viện</a>
+      <a class="text-link" routerLink="/app/search">Tìm tác phẩm trong thư viện →</a>
+    </div>
+  } @else {
+    <ol class="history-list" aria-label="Các tác phẩm đọc gần đây">
+      @for (item of items(); track item.work.id) {
+        <li class="history-card">
+          <div class="history-card-main">
+            <div class="history-cover" aria-hidden="true">✧</div>
+            <div class="history-copy">
+              <p class="eyebrow">ĐỌC LẦN CUỐI</p>
+              <h2>{{ item.work.title }}</h2>
+              <p class="history-author">{{ item.work.author || 'Chưa rõ tác giả' }}</p>
+              <p class="history-chapter">
+                Chương {{ item.chapter.ordinal }} · {{ item.chapter.title }}
+              </p>
+              <p class="history-date">
+                <time [attr.datetime]="item.progress.updatedAt">
+                  {{ item.progress.updatedAt | date: "dd/MM/yyyy 'lúc' HH:mm" }}
+                </time>
+                <span aria-hidden="true">·</span>
+                {{ item.work.chapterCount }} chương trong tác phẩm
+              </p>
+            </div>
+          </div>
+          <div class="history-actions">
+            <a class="button button-primary" [routerLink]="readRoute(item)">
+              Tiếp tục đọc <span aria-hidden="true">→</span>
+            </a>
+            <button
+              class="text-button text-button-danger"
+              type="button"
+              [attr.aria-label]="'Xóa lịch sử đọc của ' + item.work.title"
+              (click)="requestDelete(item)"
+            >
+              Xóa lịch sử
+            </button>
+          </div>
+        </li>
+      }
+    </ol>
+
+    @if (errorMessage(); as message) {
+      <div class="library-status-message library-sync-error" role="alert">
+        <span>{{ message }}</span>
+        <button class="text-button" type="button" (click)="loadMore()">Thử lại</button>
+      </div>
+    }
+    @if (nextCursor()) {
+      <div class="history-load-more">
+        <button
+          class="button button-outline"
+          type="button"
+          [disabled]="loadingMore()"
+          (click)="loadMore()"
+        >
+          {{ loadingMore() ? 'Đang tải…' : 'Tải thêm lịch sử' }}
+        </button>
+      </div>
+    }
+  }
+
+  <dialog
+    #confirmDialog
+    class="history-confirm-dialog"
+    aria-labelledby="history-delete-title"
+    aria-describedby="history-delete-description"
+    (close)="cancelDelete()"
+  >
+    <form method="dialog" class="history-confirm-content" (submit)="$event.preventDefault()">
+      <p class="eyebrow">XÓA DỮ LIỆU ĐỌC</p>
+      <h2 id="history-delete-title">{{ deleteTitle() }}</h2>
+      @if (pendingWorkTitle(); as title) {
+        <p class="history-confirm-work">{{ title }}</p>
+      }
+      <p id="history-delete-description">{{ deleteDescription() }}</p>
+      @if (errorMessage(); as message) {
+        <p class="history-inline-error" role="alert">{{ message }}</p>
+      }
+      <div class="history-confirm-actions">
+        <button
+          class="button button-outline"
+          type="button"
+          autofocus
+          [disabled]="deleting()"
+          (click)="confirmDialog.close()"
+        >
+          Giữ lại
+        </button>
+        <button
+          class="button button-danger"
+          type="button"
+          [disabled]="deleting()"
+          [attr.aria-describedby]="'history-delete-description'"
+          (click)="confirmDelete()"
+        >
+          {{ deleting() ? 'Đang xóa…' : 'Xóa lịch sử' }}
+        </button>
+      </div>
+    </form>
+  </dialog>
+</section>

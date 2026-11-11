@@ -5,7 +5,10 @@
       <h1>Thư viện</h1>
       <p>Nơi lưu những câu chuyện bạn muốn giữ lại.</p>
     </div>
-    <a class="button button-primary" routerLink="/app/import">+ Thêm truyện</a>
+    <div class="library-heading-actions">
+      <a class="button button-outline" routerLink="/app/history">Lịch sử đọc</a>
+      <a class="button button-primary" routerLink="/app/import">+ Thêm truyện</a>
+    </div>
   </div>
 
   @if (!isOnline()) {

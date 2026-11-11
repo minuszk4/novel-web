@@ -35,6 +35,7 @@ public class ReaderController {
   private final ReaderProgressService progressService;
   private final ReaderPreferencesService preferencesService;
   private final ReaderBookmarkService bookmarkService;
+  private final ReaderHistoryService historyService;
   private final PolicyService policyService;
 
   public ReaderController(
@@ -42,11 +43,13 @@ public class ReaderController {
       ReaderProgressService progressService,
       ReaderPreferencesService preferencesService,
       ReaderBookmarkService bookmarkService,
+      ReaderHistoryService historyService,
       PolicyService policyService) {
     this.readerService = readerService;
     this.progressService = progressService;
     this.preferencesService = preferencesService;
     this.bookmarkService = bookmarkService;
+    this.historyService = historyService;
     this.policyService = policyService;
   }
 
@@ -212,6 +215,49 @@ public class ReaderController {
         .cacheControl(CacheControl.noStore())
         .header(HttpHeaders.PRAGMA, "no-cache")
         .build();
+  }
+
+  @GetMapping("/me/reading-history")
+  public ResponseEntity<?> readingHistory(
+      Authentication authentication,
+      @RequestParam(required = false) String cursor,
+      @RequestParam(defaultValue = "25") String limit,
+      HttpServletRequest request) {
+    Optional<UUID> actor = actorUserId(authentication);
+    if (actor.isEmpty()) {
+      return problem(
+          HttpStatus.UNAUTHORIZED, "UNAUTHENTICATED", "Sign in to view reading history.", request);
+    }
+    ResponseEntity<?> policyGate = policyGate(actor.orElseThrow(), request);
+    if (policyGate != null) return policyGate;
+    return ok(historyService.list(actor.orElseThrow(), cursor, parseLimit(limit)));
+  }
+
+  @DeleteMapping("/me/reading-history/{workId}")
+  public ResponseEntity<?> deleteReadingHistoryWork(
+      Authentication authentication, @PathVariable UUID workId, HttpServletRequest request) {
+    Optional<UUID> actor = actorUserId(authentication);
+    if (actor.isEmpty()) {
+      return problem(
+          HttpStatus.UNAUTHORIZED,
+          "UNAUTHENTICATED",
+          "Sign in to remove reading history.",
+          request);
+    }
+    historyService.deleteWork(actor.orElseThrow(), workId);
+    return noContent();
+  }
+
+  @DeleteMapping("/me/reading-history")
+  public ResponseEntity<?> clearReadingHistory(
+      Authentication authentication, HttpServletRequest request) {
+    Optional<UUID> actor = actorUserId(authentication);
+    if (actor.isEmpty()) {
+      return problem(
+          HttpStatus.UNAUTHORIZED, "UNAUTHENTICATED", "Sign in to clear reading history.", request);
+    }
+    historyService.deleteAll(actor.orElseThrow());
+    return noContent();
   }
 
   @ExceptionHandler(ReaderService.ReaderNotFoundException.class)
@@ -406,6 +452,13 @@ public class ReaderController {
         .cacheControl(CacheControl.noStore())
         .header(HttpHeaders.PRAGMA, "no-cache")
         .body(body);
+  }
+
+  private static ResponseEntity<?> noContent() {
+    return ResponseEntity.noContent()
+        .cacheControl(CacheControl.noStore())
+        .header(HttpHeaders.PRAGMA, "no-cache")
+        .build();
   }
 
   private static ResponseEntity<?> progressResponse(

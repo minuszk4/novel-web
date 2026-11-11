@@ -41,6 +41,14 @@ export const routes: Routes = [
       { path: 'home', component: HomePageComponent, title: 'Trang chủ — Novel' },
       { path: 'library', component: LibraryPageComponent, title: 'Thư viện — Novel' },
       {
+        path: 'history',
+        loadComponent: () =>
+          import('./pages/reading-history-page.component').then(
+            (page) => page.ReadingHistoryPageComponent,
+          ),
+        title: 'Lịch sử đọc — Novel',
+      },
+      {
         path: 'reader/:workId',
         loadComponent: () =>
           import('./pages/account-reader-page.component').then(

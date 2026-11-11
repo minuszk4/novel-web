@@ -232,6 +232,81 @@ describe('ReaderApiService', () => {
     await expect(deleted).resolves.toBeUndefined();
   });
 
+  it('loads a bounded recent-history page without accepting mismatched progress snapshots', async () => {
+    const lastReadAt = '2026-11-11T10:00:00Z';
+    const result = service.getReadingHistory(undefined, 10);
+    const request = http.expectOne(
+      (candidate) =>
+        candidate.method === 'GET' &&
+        candidate.url === '/api/v1/me/reading-history' &&
+        candidate.params.get('limit') === '10',
+    );
+    request.flush({
+      items: [
+        {
+          work: { ...work, lastReadAt },
+          chapter: { id: chapterId, ordinal: 1, title: 'Chương một' },
+          progress: {
+            workId,
+            chapterId,
+            segmentAnchor: 'chapter-1-p1',
+            scrollRatio: 0.42,
+            version: 3,
+            updatedAt: lastReadAt,
+          },
+        },
+      ],
+      nextCursor: cursor,
+    });
+    await expect(result).resolves.toMatchObject({
+      items: [
+        { work: { id: workId, lastReadAt }, chapter: { ordinal: 1 }, progress: { version: 3 } },
+      ],
+      nextCursor: cursor,
+    });
+
+    const malformed = service.getReadingHistory();
+    http
+      .expectOne(
+        (candidate) =>
+          candidate.method === 'GET' &&
+          candidate.url === '/api/v1/me/reading-history' &&
+          candidate.params.get('limit') === '25',
+      )
+      .flush({
+        items: [
+          {
+            work: { ...work, lastReadAt },
+            chapter: { id: chapterId, ordinal: 1, title: 'Chương một' },
+            progress: {
+              workId,
+              chapterId: revisionId,
+              segmentAnchor: null,
+              scrollRatio: 0,
+              version: 1,
+              updatedAt: lastReadAt,
+            },
+          },
+        ],
+        nextCursor: null,
+      });
+    await expect(malformed).rejects.toMatchObject({ status: 502, code: 'INVALID_READER_RESPONSE' });
+  });
+
+  it('deletes one or all history positions through the authenticated account endpoints', async () => {
+    const one = service.deleteReadingHistoryWork(workId);
+    http
+      .expectOne({ method: 'DELETE', url: `/api/v1/me/reading-history/${workId}` })
+      .flush(null, { status: 204, statusText: 'No Content' });
+    await expect(one).resolves.toBeUndefined();
+
+    const all = service.clearReadingHistory();
+    http
+      .expectOne({ method: 'DELETE', url: '/api/v1/me/reading-history' })
+      .flush(null, { status: 204, statusText: 'No Content' });
+    await expect(all).resolves.toBeUndefined();
+  });
+
   it('rejects unsafe bookmark anchors, invalid page limits, and idempotency keys locally', async () => {
     await expect(service.getBookmarks(workId, undefined, 101)).rejects.toMatchObject({
       status: 502,

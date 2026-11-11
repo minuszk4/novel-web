@@ -84,6 +84,27 @@ export interface ReaderBookmarkPage {
   nextCursor: string | null;
 }
 
+export interface ReaderHistoryChapter {
+  id: string;
+  ordinal: number;
+  title: string;
+}
+
+export interface ReaderHistoryWork extends ReaderWork {
+  lastReadAt: string;
+}
+
+export interface ReaderHistoryItem {
+  work: ReaderHistoryWork;
+  chapter: ReaderHistoryChapter;
+  progress: ReaderProgress;
+}
+
+export interface ReaderHistoryPage {
+  items: ReaderHistoryItem[];
+  nextCursor: string | null;
+}
+
 export interface CreateReaderBookmarkRequest {
   chapterId: string;
   segmentAnchor: string | null;
@@ -108,6 +129,8 @@ const progressUrl = (workId: string) => `/api/v1/works/${workId}/progress`;
 const readerPreferencesUrl = '/api/v1/me/reader-preferences';
 const bookmarksUrl = (workId: string) => `/api/v1/works/${workId}/bookmarks`;
 const bookmarkUrl = (bookmarkId: string) => `/api/v1/bookmarks/${bookmarkId}`;
+const readingHistoryUrl = '/api/v1/me/reading-history';
+const readingHistoryWorkUrl = (workId: string) => `${readingHistoryUrl}/${workId}`;
 const requestTimeoutMs = 10_000;
 
 @Injectable({ providedIn: 'root' })
@@ -188,6 +211,41 @@ export class ReaderApiService {
     try {
       await firstValueFrom(
         this.http.delete<void>(bookmarkUrl(bookmarkId)).pipe(timeout(requestTimeoutMs)),
+      );
+    } catch (error) {
+      throw toReaderApiError(error);
+    }
+  }
+
+  async getReadingHistory(cursor?: string, limit = 25): Promise<ReaderHistoryPage> {
+    if (!isValidPageRequest(cursor, limit, 100)) throw invalidResponse('INVALID_READER_QUERY');
+    try {
+      let params = new HttpParams().set('limit', limit);
+      if (cursor) params = params.set('cursor', cursor);
+      const response: unknown = await firstValueFrom(
+        this.http.get<unknown>(readingHistoryUrl, { params }).pipe(timeout(requestTimeoutMs)),
+      );
+      return parseHistoryPage(response, limit);
+    } catch (error) {
+      throw toReaderApiError(error);
+    }
+  }
+
+  async deleteReadingHistoryWork(workId: string): Promise<void> {
+    if (!isUuid(workId)) throw invalidResponse('INVALID_READER_QUERY');
+    try {
+      await firstValueFrom(
+        this.http.delete<void>(readingHistoryWorkUrl(workId)).pipe(timeout(requestTimeoutMs)),
+      );
+    } catch (error) {
+      throw toReaderApiError(error);
+    }
+  }
+
+  async clearReadingHistory(): Promise<void> {
+    try {
+      await firstValueFrom(
+        this.http.delete<void>(readingHistoryUrl).pipe(timeout(requestTimeoutMs)),
       );
     } catch (error) {
       throw toReaderApiError(error);
@@ -348,6 +406,83 @@ function parseBookmarkPage(
   const items = value['items'].map((item) => parseBookmark(item, expectedWorkId));
   if (new Set(items.map((item) => item.id)).size !== items.length) throw invalidResponse();
   return { items, nextCursor: value['nextCursor'] };
+}
+
+function parseHistoryPage(value: unknown, limit: number): ReaderHistoryPage {
+  if (
+    !isRecord(value) ||
+    Object.keys(value).sort().join(',') !== 'items,nextCursor' ||
+    !Array.isArray(value['items']) ||
+    value['items'].length > limit ||
+    !isCursor(value['nextCursor'])
+  ) {
+    throw invalidResponse();
+  }
+  const items = value['items'].map(parseHistoryItem);
+  if (new Set(items.map(({ work }) => work.id)).size !== items.length) throw invalidResponse();
+  return { items, nextCursor: value['nextCursor'] };
+}
+
+function parseHistoryItem(value: unknown): ReaderHistoryItem {
+  if (
+    !isRecord(value) ||
+    Object.keys(value).sort().join(',') !== 'chapter,progress,work' ||
+    !isRecord(value['work']) ||
+    !isRecord(value['chapter']) ||
+    !isRecord(value['progress'])
+  ) {
+    throw invalidResponse();
+  }
+  const work = value['work'];
+  const chapter = value['chapter'];
+  if (
+    Object.keys(work).sort().join(',') !==
+      'author,chapterCount,createdAt,id,language,lastReadAt,libraryId,title,visibility' ||
+    !isUuid(work['id']) ||
+    !isUuid(work['libraryId']) ||
+    typeof work['title'] !== 'string' ||
+    !work['title'].trim() ||
+    [...work['title']].length > 300 ||
+    typeof work['author'] !== 'string' ||
+    [...work['author']].length > 200 ||
+    !isLanguage(work['language']) ||
+    work['visibility'] !== 'private' ||
+    !Number.isSafeInteger(work['chapterCount']) ||
+    (work['chapterCount'] as number) < 0 ||
+    !isTimestamp(work['createdAt']) ||
+    !isTimestamp(work['lastReadAt']) ||
+    Object.keys(chapter).sort().join(',') !== 'id,ordinal,title' ||
+    !isUuid(chapter['id']) ||
+    !Number.isSafeInteger(chapter['ordinal']) ||
+    (chapter['ordinal'] as number) < 1 ||
+    typeof chapter['title'] !== 'string' ||
+    [...chapter['title']].length > 300
+  ) {
+    throw invalidResponse();
+  }
+  const progress = parseProgress(value['progress'], work['id']);
+  if (progress.chapterId !== chapter['id'] || progress.updatedAt !== work['lastReadAt']) {
+    throw invalidResponse();
+  }
+  return {
+    work: {
+      id: work['id'],
+      libraryId: work['libraryId'],
+      title: work['title'],
+      author: work['author'],
+      language: work['language'],
+      visibility: 'private',
+      chapterCount: work['chapterCount'] as number,
+      createdAt: work['createdAt'],
+      lastReadAt: work['lastReadAt'],
+    },
+    chapter: {
+      id: chapter['id'],
+      ordinal: chapter['ordinal'] as number,
+      title: chapter['title'],
+    },
+    progress,
+  };
 }
 
 function parseBookmark(value: unknown, expectedWorkId: string): ReaderBookmark {

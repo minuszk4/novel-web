@@ -3539,6 +3539,275 @@ class PostgresSchemaIntegrationTests {
   }
 
   @Test
+  void readingHistoryIsPrivateReadableRecentCursorPagedAndDeletesOnlySavedProgress()
+      throws Exception {
+    UUID ownerId = createSessionTestUser("Reader History Owner");
+    UUID outsiderId = createSessionTestUser("Reader History Outsider");
+    UUID pendingPolicyId = createSessionTestUser("Reader History Pending Policy");
+    List<ReaderHistoryFixture> fixtures = new ArrayList<>();
+    try {
+      ReaderHistoryFixture first =
+          createReaderHistoryFixture(ownerId, "History First", "BODY_FIRST_SECRET");
+      ReaderHistoryFixture second =
+          createReaderHistoryFixture(ownerId, "History Second", "BODY_SECOND_SECRET");
+      ReaderHistoryFixture expired =
+          createReaderHistoryFixture(ownerId, "History Expired", "BODY_EXPIRED_SECRET");
+      fixtures.addAll(List.of(first, second, expired));
+      addCurrentPolicyAcceptances(ownerId);
+      addCurrentPolicyAcceptances(outsiderId);
+
+      SessionService.IssuedSession ownerSession = sessionService.create(ownerId).orElseThrow();
+      var ownerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", ownerSession.cookieValue());
+      String ownerCsrf = csrfTokenService.tokenFor(ownerSession.cookieValue());
+      SessionService.IssuedSession outsiderSession =
+          sessionService.create(outsiderId).orElseThrow();
+      var outsiderCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", outsiderSession.cookieValue());
+      String outsiderCsrf = csrfTokenService.tokenFor(outsiderSession.cookieValue());
+      SessionService.IssuedSession pendingPolicySession =
+          sessionService.create(pendingPolicyId).orElseThrow();
+      var pendingPolicyCookie =
+          new jakarta.servlet.http.Cookie(
+              "__Host-novel_session", pendingPolicySession.cookieValue());
+
+      assertEquals(
+          401,
+          mockMvc.perform(get("/api/v1/me/reading-history")).andReturn().getResponse().getStatus());
+      MvcResult empty =
+          mockMvc.perform(get("/api/v1/me/reading-history").cookie(ownerCookie)).andReturn();
+      assertEquals(200, empty.getResponse().getStatus());
+      assertTrue(empty.getResponse().getHeader("Cache-Control").contains("no-store"));
+      assertEquals(
+          0, objectMapper.readTree(empty.getResponse().getContentAsString()).path("items").size());
+      assertEquals(
+          403,
+          mockMvc
+              .perform(get("/api/v1/me/reading-history").cookie(pendingPolicyCookie))
+              .andReturn()
+              .getResponse()
+              .getStatus());
+      MvcResult pendingPolicyDelete =
+          mockMvc
+              .perform(
+                  delete("/api/v1/me/reading-history")
+                      .header(
+                          "X-CSRF-Token",
+                          csrfTokenService.tokenFor(pendingPolicySession.cookieValue()))
+                      .cookie(pendingPolicyCookie))
+              .andReturn();
+      assertEquals(204, pendingPolicyDelete.getResponse().getStatus());
+
+      for (ReaderHistoryFixture fixture : List.of(first, second, expired)) {
+        MvcResult progress =
+            mockMvc
+                .perform(
+                    put("/api/v1/works/{workId}/progress", fixture.workId())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(
+                            "{\"expectedVersion\":0,\"chapterId\":\""
+                                + fixture.chapterId()
+                                + "\",\"segmentAnchor\":\"history-anchor\",\"scrollRatio\":0.37}")
+                        .header("X-CSRF-Token", ownerCsrf)
+                        .cookie(ownerCookie))
+                .andReturn();
+        assertEquals(200, progress.getResponse().getStatus());
+      }
+      Instant now = Instant.now();
+      setReaderProgressTimestamp(ownerId, first.workId(), now.minusSeconds(2 * 24 * 60 * 60));
+      setReaderProgressTimestamp(ownerId, second.workId(), now.minusSeconds(24 * 60 * 60));
+      setReaderProgressTimestamp(ownerId, expired.workId(), now.minusSeconds(366L * 24 * 60 * 60));
+
+      MvcResult firstPage =
+          mockMvc
+              .perform(get("/api/v1/me/reading-history").param("limit", "1").cookie(ownerCookie))
+              .andReturn();
+      assertEquals(200, firstPage.getResponse().getStatus());
+      JsonNode firstBody = objectMapper.readTree(firstPage.getResponse().getContentAsString());
+      assertEquals(1, firstBody.path("items").size());
+      assertEquals(
+          "History Second", firstBody.path("items").get(0).path("work").path("title").asText());
+      assertEquals(
+          "History Second Chapter",
+          firstBody.path("items").get(0).path("chapter").path("title").asText());
+      assertTrue(firstBody.path("items").get(0).path("progress").hasNonNull("updatedAt"));
+      assertFalse(firstPage.getResponse().getContentAsString().contains("BODY_SECOND_SECRET"));
+      assertFalse(firstPage.getResponse().getContentAsString().contains("ownerUserId"));
+      String cursor = firstBody.path("nextCursor").asText();
+      assertFalse(cursor.isBlank());
+
+      MvcResult secondPage =
+          mockMvc
+              .perform(
+                  get("/api/v1/me/reading-history")
+                      .param("limit", "1")
+                      .param("cursor", cursor)
+                      .cookie(ownerCookie))
+              .andReturn();
+      JsonNode secondBody = objectMapper.readTree(secondPage.getResponse().getContentAsString());
+      assertEquals(200, secondPage.getResponse().getStatus());
+      assertEquals(
+          "History First", secondBody.path("items").get(0).path("work").path("title").asText());
+      assertTrue(secondBody.path("nextCursor").isNull());
+      MvcResult cursorReplay =
+          mockMvc
+              .perform(
+                  get("/api/v1/me/reading-history")
+                      .param("limit", "1")
+                      .param("cursor", cursor)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(200, cursorReplay.getResponse().getStatus());
+      assertEquals(
+          secondBody, objectMapper.readTree(cursorReplay.getResponse().getContentAsString()));
+
+      MvcResult actorBoundCursor =
+          mockMvc
+              .perform(
+                  get("/api/v1/me/reading-history").param("cursor", cursor).cookie(outsiderCookie))
+              .andReturn();
+      assertEquals(400, actorBoundCursor.getResponse().getStatus());
+      MvcResult tamperedCursor =
+          mockMvc
+              .perform(
+                  get("/api/v1/me/reading-history")
+                      .param("cursor", cursor.substring(0, cursor.length() - 1) + "A")
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(400, tamperedCursor.getResponse().getStatus());
+      MvcResult outsiderList =
+          mockMvc.perform(get("/api/v1/me/reading-history").cookie(outsiderCookie)).andReturn();
+      assertEquals(200, outsiderList.getResponse().getStatus());
+      assertEquals(
+          0,
+          objectMapper
+              .readTree(outsiderList.getResponse().getContentAsString())
+              .path("items")
+              .size());
+      assertFalse(firstPage.getResponse().getContentAsString().contains("History Expired"));
+      MvcResult expiredResumePosition =
+          mockMvc
+              .perform(get("/api/v1/works/{workId}/progress", expired.workId()).cookie(ownerCookie))
+              .andReturn();
+      assertEquals(200, expiredResumePosition.getResponse().getStatus());
+      assertEquals(
+          1,
+          objectMapper
+              .readTree(expiredResumePosition.getResponse().getContentAsString())
+              .path("version")
+              .asInt());
+
+      deleteReaderHistoryWork(ownerId, first.workId());
+      MvcResult afterWorkDeletion =
+          mockMvc.perform(get("/api/v1/me/reading-history").cookie(ownerCookie)).andReturn();
+      assertEquals(200, afterWorkDeletion.getResponse().getStatus());
+      JsonNode afterDeletionBody =
+          objectMapper.readTree(afterWorkDeletion.getResponse().getContentAsString());
+      assertEquals(1, afterDeletionBody.path("items").size());
+      assertEquals(
+          "History Second",
+          afterDeletionBody.path("items").get(0).path("work").path("title").asText());
+      MvcResult deleteAfterWorkRemoval =
+          mockMvc
+              .perform(
+                  delete("/api/v1/me/reading-history/{workId}", first.workId())
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(204, deleteAfterWorkRemoval.getResponse().getStatus());
+      assertEquals(0, readerProgressCount(ownerId, first.workId()));
+
+      MvcResult missingCsrf =
+          mockMvc
+              .perform(
+                  delete("/api/v1/me/reading-history/{workId}", second.workId())
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(403, missingCsrf.getResponse().getStatus());
+      MvcResult outsiderDelete =
+          mockMvc
+              .perform(
+                  delete("/api/v1/me/reading-history/{workId}", second.workId())
+                      .header("X-CSRF-Token", outsiderCsrf)
+                      .cookie(outsiderCookie))
+              .andReturn();
+      assertEquals(204, outsiderDelete.getResponse().getStatus());
+      assertEquals(
+          1,
+          objectMapper
+              .readTree(
+                  mockMvc
+                      .perform(get("/api/v1/me/reading-history").cookie(ownerCookie))
+                      .andReturn()
+                      .getResponse()
+                      .getContentAsString())
+              .path("items")
+              .size());
+
+      MvcResult deleted =
+          mockMvc
+              .perform(
+                  delete("/api/v1/me/reading-history/{workId}", second.workId())
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(204, deleted.getResponse().getStatus());
+      assertTrue(deleted.getResponse().getHeader("Cache-Control").contains("no-store"));
+      MvcResult idempotentDelete =
+          mockMvc
+              .perform(
+                  delete("/api/v1/me/reading-history/{workId}", second.workId())
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(204, idempotentDelete.getResponse().getStatus());
+      assertEquals(
+          0,
+          objectMapper
+              .readTree(
+                  mockMvc
+                      .perform(get("/api/v1/me/reading-history").cookie(ownerCookie))
+                      .andReturn()
+                      .getResponse()
+                      .getContentAsString())
+              .path("items")
+              .size());
+
+      assertEquals(
+          403,
+          mockMvc
+              .perform(delete("/api/v1/me/reading-history").cookie(ownerCookie))
+              .andReturn()
+              .getResponse()
+              .getStatus());
+      MvcResult cleared =
+          mockMvc
+              .perform(
+                  delete("/api/v1/me/reading-history")
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(204, cleared.getResponse().getStatus());
+      assertEquals(
+          0,
+          objectMapper
+              .readTree(
+                  mockMvc
+                      .perform(get("/api/v1/me/reading-history").cookie(ownerCookie))
+                      .andReturn()
+                      .getResponse()
+                      .getContentAsString())
+              .path("items")
+              .size());
+    } finally {
+      deleteReaderHistoryFixtures(ownerId, fixtures);
+      deleteSessionTestUser(pendingPolicyId);
+      deleteSessionTestUser(outsiderId);
+      deleteSessionTestUser(ownerId);
+    }
+  }
+
+  @Test
   void sourceOnlyReaderRechecksOwnerPaginatesAndNeverPutsBodyInManifest() throws Exception {
     UUID ownerId = createSessionTestUser("Reader API Owner");
     UUID outsiderId = createSessionTestUser("Reader API Outsider");
@@ -7495,6 +7764,137 @@ class PostgresSchemaIntegrationTests {
       }
     }
   }
+
+  private ReaderHistoryFixture createReaderHistoryFixture(UUID ownerId, String title, String body)
+      throws Exception {
+    LibraryRepository.LibraryRecord library =
+        libraryService.createLibrary(ownerId, title + " Shelf");
+    LibraryRepository.WorkRecord work =
+        libraryService.createPrivateImportedWork(
+            ownerId,
+            library.id(),
+            title,
+            "History Author",
+            "vi",
+            sha256("reader-history-" + title));
+    LibraryRepository.VolumeRecord volume =
+        libraryService.createVolume(ownerId, work.id(), 1, "Tập 1");
+    LibraryRepository.ChapterRecord chapter =
+        libraryService.createChapter(ownerId, work.id(), volume.id(), 1, title + " Chapter", "vi");
+    libraryService.appendChapterRevision(
+        ownerId,
+        chapter.id(),
+        "plain_text",
+        body,
+        List.of(new LibraryService.NewSegment(1, "paragraph", body, "history-anchor")));
+    return new ReaderHistoryFixture(work.id(), chapter.id());
+  }
+
+  private void setReaderProgressTimestamp(UUID userId, UUID workId, Instant timestamp)
+      throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement update =
+            connection.prepareStatement(
+                "UPDATE reader_progress SET updated_at = ? WHERE user_id = ? AND work_id = ?")) {
+      update.setObject(1, OffsetDateTime.ofInstant(timestamp, ZoneOffset.UTC));
+      update.setObject(2, userId);
+      update.setObject(3, workId);
+      assertEquals(1, update.executeUpdate());
+    }
+  }
+
+  private void deleteReaderHistoryWork(UUID ownerId, UUID workId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement delete =
+            connection.prepareStatement(
+                "UPDATE works SET status = 'deleted', deleted_at = clock_timestamp() "
+                    + "WHERE owner_user_id = ? AND id = ?")) {
+      delete.setObject(1, ownerId);
+      delete.setObject(2, workId);
+      assertEquals(1, delete.executeUpdate());
+    }
+  }
+
+  private int readerProgressCount(UUID userId, UUID workId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT count(*) FROM reader_progress WHERE user_id = ? AND work_id = ?")) {
+      select.setObject(1, userId);
+      select.setObject(2, workId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getInt(1);
+      }
+    }
+  }
+
+  private void deleteReaderHistoryFixtures(UUID userId, List<ReaderHistoryFixture> fixtures)
+      throws SQLException {
+    try (Connection connection = dataSource.getConnection()) {
+      try (PreparedStatement deleteProgress =
+          connection.prepareStatement("DELETE FROM reader_progress WHERE user_id = ?")) {
+        deleteProgress.setObject(1, userId);
+        deleteProgress.executeUpdate();
+      }
+      for (ReaderHistoryFixture fixture : fixtures) {
+        UUID workId = fixture.workId();
+        try (PreparedStatement deleteBookmarkRetries =
+            connection.prepareStatement(
+                "DELETE FROM reader_bookmark_idempotency WHERE response_work_id = ? OR "
+                    + "response_chapter_id IN (SELECT id FROM chapters WHERE work_id = ?)")) {
+          deleteBookmarkRetries.setObject(1, workId);
+          deleteBookmarkRetries.setObject(2, workId);
+          deleteBookmarkRetries.executeUpdate();
+        }
+        try (PreparedStatement deleteBookmarks =
+            connection.prepareStatement("DELETE FROM reader_bookmarks WHERE work_id = ?")) {
+          deleteBookmarks.setObject(1, workId);
+          deleteBookmarks.executeUpdate();
+        }
+        try (PreparedStatement deleteSegments =
+            connection.prepareStatement(
+                "DELETE FROM segments s USING chapter_revisions r, chapters c "
+                    + "WHERE s.chapter_revision_id = r.id AND r.chapter_id = c.id AND c.work_id = ?")) {
+          deleteSegments.setObject(1, workId);
+          deleteSegments.executeUpdate();
+        }
+        try (PreparedStatement detachRevisions =
+            connection.prepareStatement(
+                "UPDATE chapters SET source_revision_id = NULL WHERE work_id = ?")) {
+          detachRevisions.setObject(1, workId);
+          detachRevisions.executeUpdate();
+        }
+        try (PreparedStatement deleteRevisions =
+            connection.prepareStatement(
+                "DELETE FROM chapter_revisions r USING chapters c "
+                    + "WHERE r.chapter_id = c.id AND c.work_id = ?")) {
+          deleteRevisions.setObject(1, workId);
+          deleteRevisions.executeUpdate();
+        }
+        for (String table : List.of("chapters", "volumes")) {
+          try (PreparedStatement deleteChildren =
+              connection.prepareStatement("DELETE FROM " + table + " WHERE work_id = ?")) {
+            deleteChildren.setObject(1, workId);
+            deleteChildren.executeUpdate();
+          }
+        }
+        try (PreparedStatement deleteWork =
+            connection.prepareStatement("DELETE FROM works WHERE id = ? AND owner_user_id = ?")) {
+          deleteWork.setObject(1, workId);
+          deleteWork.setObject(2, userId);
+          deleteWork.executeUpdate();
+        }
+      }
+      try (PreparedStatement deleteLibraries =
+          connection.prepareStatement("DELETE FROM libraries WHERE owner_user_id = ?")) {
+        deleteLibraries.setObject(1, userId);
+        deleteLibraries.executeUpdate();
+      }
+    }
+  }
+
+  private record ReaderHistoryFixture(UUID workId, UUID chapterId) {}
 
   private void deleteLibraryUserData(UUID userId, UUID workId) throws SQLException {
     try (Connection connection = dataSource.getConnection()) {

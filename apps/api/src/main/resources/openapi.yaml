@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 6.0.0
+  version: 6.1.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -11,8 +11,8 @@ info:
     HTML documents have a 4 MiB source limit and Markdown has a 16 MiB source limit, both lower than the configured general upload limit.
     EPUB 3, bounded UTF-8 TXT and single-document HTML/Markdown parse queue/status, private-preview persistence/edit and atomic private import
     commit are implemented. Markdown uses CommonMark core only, strips raw HTML and link destinations, and derives chapter boundaries from repeated top-level headings.
-    Source-only Reader manifest, chapter-content, progress, reader-preferences and bookmark routes are implemented in the PostgreSQL profile;
-    reading-history operations tagged planned describe the remaining G2 target.
+    Source-only Reader manifest, chapter-content, progress, reader-preferences, bookmarks and private reading-history routes are implemented in the PostgreSQL profile.
+    History is derived from the latest saved progress per accessible readable work, is visible for 365 days, and never returns chapter body text.
 servers:
   - url: http://127.0.0.1:8080
 tags:
@@ -25,7 +25,7 @@ tags:
     description: Library/work listing, personal reading-state/collection, import-rights and local upload-staging operations are available in the PostgreSQL profile; parsing and other operations remain planned for G2.
     x-implementation-status: partial
   - name: Reader
-    description: Source-only reader, progress, preferences and private bookmarks are available in the PostgreSQL profile; reading history remains planned for G2.
+    description: Source-only reader, progress, preferences, private bookmarks and private reading history are available in the PostgreSQL profile.
     x-implementation-status: partial
 paths:
   /api/v1/system/status:
@@ -1876,8 +1876,13 @@ paths:
     get:
       operationId: listCurrentUserReadingHistory
       tags: [Reader]
-      x-implementation-status: planned
-      summary: List recently read owned works without returning chapter content
+      x-implementation-status: implemented-postgres-profile
+      summary: List the current user's recent readable work positions
+      description: >-
+        Returns one latest saved position per accessible work, newest first by progress.updatedAt and work ID.
+        Results older than 365 days, inaccessible works, deleted works, and unavailable or deleted chapters are omitted.
+        The signed keyset cursor is bound to the current actor. Chapter title/ordinal metadata is included; chapter body,
+        segment text and owner identifiers are never returned. Each response is no-store.
       security:
         - appSession: []
       parameters:
@@ -1900,6 +1905,56 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ReadingHistoryResponse'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+    delete:
+      operationId: clearCurrentUserReadingHistory
+      tags: [Reader]
+      x-implementation-status: implemented-postgres-profile
+      summary: Clear all current-user reading history and saved positions
+      description: >-
+        Session-bound CSRF is required; deletion remains available when current policy acceptance is pending. Deletes only the current user's reader progress rows, including rows outside
+        the visible 365-day window. It is idempotent and returns no-store 204. The works remain in their libraries;
+        a subsequent read can create a new history item and saved position.
+      security:
+        - appSession: []
+          csrfToken: []
+      responses:
+        '204':
+          description: All current-user reading history and resume positions were cleared.
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+  /api/v1/me/reading-history/{workId}:
+    delete:
+      operationId: deleteCurrentUserReadingHistoryWork
+      tags: [Reader]
+      x-implementation-status: implemented-postgres-profile
+      summary: Clear one work's current-user history and saved position
+      description: >-
+        Session-bound CSRF is required; deletion remains available when current policy acceptance is pending. Deletes only the current user's reader progress row for this work, even if
+        access to the work has since been revoked. Missing rows are treated as success to avoid revealing history state.
+        The operation is idempotent and returns no-store 204. The work remains in its library.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - name: workId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: The current-user history item and saved position were cleared, if present.
         '401':
           $ref: '#/components/responses/Problem'
         '403':
@@ -2879,8 +2934,25 @@ components:
       properties:
         work:
           $ref: '#/components/schemas/WorkSummary'
+        chapter:
+          $ref: '#/components/schemas/ReadingHistoryChapter'
         progress:
           $ref: '#/components/schemas/ReadingProgress'
+    ReadingHistoryChapter:
+      type: object
+      additionalProperties: false
+      required: [id, ordinal, title]
+      description: Readable chapter metadata only; chapter body and source segments are excluded.
+      properties:
+        id:
+          type: string
+          format: uuid
+        ordinal:
+          type: integer
+          minimum: 1
+        title:
+          type: string
+          maxLength: 300
     Problem:
       type: object
       required: [type, title, status, detail, code, correlationId]
