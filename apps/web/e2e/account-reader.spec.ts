@@ -345,6 +345,43 @@ for (const recovery of [
   });
 }
 
+for (const recovery of [
+  { status: 401, label: 'Đăng nhập lại', query: 'returnTo' },
+  { status: 403, label: 'Xem chính sách tài khoản', query: 'returnUrl' },
+]) {
+  test(`account Reader uses ${recovery.label.toLowerCase()} for paginated TOC recovery`, async ({
+    page,
+  }) => {
+    await installReaderRoutes(page, [recovery.status], true, 200, true);
+    await page.goto(`/app/reader/${workId}`);
+    await page.getByRole('button', { name: 'Mở mục lục' }).click();
+
+    const toc = page.getByRole('dialog', { name: 'Gió qua núi' });
+    await toc.getByRole('button', { name: 'Tải thêm chương' }).click();
+    const error = toc.getByRole('alert');
+    const recoveryLink = error.getByRole('link', { name: recovery.label });
+    await expect(error).toContainText(
+      recovery.status === 401 ? 'Phiên đăng nhập đã hết hạn.' : 'Cần xác nhận chính sách hiện hành',
+    );
+    await expect(recoveryLink).toBeVisible();
+    await expect(recoveryLink).toBeFocused();
+    await expect(error.getByRole('button', { name: 'Thử tải lại' })).toHaveCount(0);
+    await expectNoAxeViolations(page);
+
+    const href = await recoveryLink.getAttribute('href');
+    expect(href).toContain(`${recovery.query}=`);
+    expect(decodeURIComponent(href ?? '')).toContain(`/app/reader/${workId}/${chapterIds[0]}`);
+    if (recovery.status === 403) {
+      await recoveryLink.click();
+      await expect(page).toHaveURL(/\/app\/setup\?returnUrl=/);
+      const continueButton = page.getByRole('button', { name: 'Vào không gian đọc' });
+      await expect(continueButton).toBeEnabled();
+      await continueButton.click();
+      await expect(page).toHaveURL(new RegExp(`/app/reader/${workId}/${chapterIds[0]}$`));
+    }
+  });
+}
+
 test('account Reader announces a transient manifest failure and recovers with retry', async ({
   page,
 }) => {

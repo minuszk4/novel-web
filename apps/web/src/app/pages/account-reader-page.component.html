@@ -93,15 +93,25 @@
         @if (manifestPageError(); as error) {
           <div class="account-reader-inline-error" role="alert">
             <p>{{ manifestBusy() ? 'Đang thử tải lại mục lục…' : statusMessage(error) }}</p>
-            <button
-              id="account-reader-retry-manifest-page"
-              class="text-button"
-              type="button"
-              [disabled]="manifestBusy()"
-              (click)="retryManifestPage()"
-            >
-              {{ manifestBusy() ? 'Đang tải…' : 'Thử tải lại' }}
-            </button>
+            @if (error.status === 401 || error.status === 403) {
+              <a
+                id="account-reader-page-recovery"
+                class="text-link"
+                [routerLink]="recoveryUrl"
+                [queryParams]="recoveryQueryParams"
+                >{{ recoveryLabel }}</a
+              >
+            } @else {
+              <button
+                id="account-reader-retry-manifest-page"
+                class="text-button"
+                type="button"
+                [disabled]="manifestBusy()"
+                (click)="retryManifestPage()"
+              >
+                {{ manifestBusy() ? 'Đang tải…' : 'Thử tải lại' }}
+              </button>
+            }
           </div>
         } @else if (nextManifestCursor()) {
           <button

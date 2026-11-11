@@ -141,11 +141,14 @@ export class AccountReaderPageComponent {
       if (token === this.loadToken) {
         this.manifestPageError.set(asReaderApiError(error));
         if (this.tocOpen()) {
+          const status = this.manifestPageError()?.status;
+          const focusTargetId =
+            status === 401 || status === 403
+              ? 'account-reader-page-recovery'
+              : 'account-reader-retry-manifest-page';
           requestAnimationFrame(() => {
             if (this.tocOpen()) {
-              document
-                .getElementById('account-reader-retry-manifest-page')
-                ?.focus({ preventScroll: true });
+              document.getElementById(focusTargetId)?.focus({ preventScroll: true });
             }
           });
         }
@@ -220,7 +223,11 @@ export class AccountReaderPageComponent {
   }
 
   protected get recoveryUrl(): string {
-    if (this.contentError()?.status === 403 || this.manifestError()?.status === 403) {
+    if (
+      this.contentError()?.status === 403 ||
+      this.manifestError()?.status === 403 ||
+      this.manifestPageError()?.status === 403
+    ) {
       return '/app/setup';
     }
     return '/sign-in';
