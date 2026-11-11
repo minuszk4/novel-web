@@ -129,15 +129,27 @@ export class AccountReaderPageComponent {
     if (!work || !cursor || this.manifestBusy()) return [];
     const token = this.loadToken;
     this.manifestBusy.set(true);
-    this.manifestPageError.set(null);
     try {
       const page = await this.api.getManifestPage(work.id, cursor, manifestPageSize);
       if (token !== this.loadToken) return [];
       const newChapters = this.appendManifestPage(page);
       this.nextManifestCursor.set(page.nextCursor);
+      this.manifestPageError.set(null);
+      if (this.tocOpen()) this.focusManifestPageResult(newChapters);
       return newChapters;
     } catch (error) {
-      if (token === this.loadToken) this.manifestPageError.set(asReaderApiError(error));
+      if (token === this.loadToken) {
+        this.manifestPageError.set(asReaderApiError(error));
+        if (this.tocOpen()) {
+          requestAnimationFrame(() => {
+            if (this.tocOpen()) {
+              document
+                .getElementById('account-reader-retry-manifest-page')
+                ?.focus({ preventScroll: true });
+            }
+          });
+        }
+      }
       return [];
     } finally {
       if (token === this.loadToken) this.manifestBusy.set(false);
@@ -443,6 +455,20 @@ export class AccountReaderPageComponent {
   private focusPanel(panel: HTMLElement): void {
     const initialTarget = panel.querySelector<HTMLElement>('[data-panel-initial-focus]') ?? panel;
     initialTarget.focus({ preventScroll: true });
+  }
+
+  private focusManifestPageResult(newChapters: ReaderChapter[]): void {
+    const chapterId = newChapters.find((chapter) => chapter.accessState === 'readable')?.id;
+    requestAnimationFrame(() => {
+      if (!this.tocOpen()) return;
+      const panel = document.getElementById('account-reader-toc-panel');
+      const chapter = chapterId
+        ? panel?.querySelector<HTMLElement>(`[data-reader-chapter-id="${chapterId}"]`)
+        : null;
+      const nextPage = panel?.querySelector<HTMLElement>('.account-reader-load-more');
+      const closeButton = panel?.querySelector<HTMLElement>('[data-panel-initial-focus]');
+      (chapter ?? nextPage ?? closeButton)?.focus({ preventScroll: true });
+    });
   }
 
   private focusReaderHeading(): void {

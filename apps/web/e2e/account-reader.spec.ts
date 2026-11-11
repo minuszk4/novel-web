@@ -66,6 +66,7 @@ async function installReaderRoutes(
   manifestStatus: number | readonly number[] = 200,
   includeHostileMarkup = true,
   contentStatus: number | readonly number[] = 200,
+  paginatedManifest = false,
 ): Promise<string[]> {
   const loadedChapters: string[] = [];
   const manifestStatuses =
@@ -111,11 +112,25 @@ async function installReaderRoutes(
     route.fulfill({ status: 200, contentType: 'text/markdown', body: '# Privacy' }),
   );
   await page.route(`**/api/v1/works/${workId}/reader-manifest**`, (route) => {
+    const requestUrl = new URL(route.request().url());
+    if (paginatedManifest && !requestUrl.searchParams.has('cursor')) {
+      return json(route, {
+        work,
+        sourceLanguage: 'vi',
+        chapters: chapters.slice(0, 2),
+        nextCursor: 'reader-page-2',
+      });
+    }
     const status =
       manifestStatuses[Math.min(manifestRequestCount, manifestStatuses.length - 1)] ?? 200;
     manifestRequestCount += 1;
     return status === 200
-      ? json(route, { work, sourceLanguage: 'vi', chapters, nextCursor: null })
+      ? json(route, {
+          work,
+          sourceLanguage: 'vi',
+          chapters: paginatedManifest ? chapters.slice(2) : chapters,
+          nextCursor: null,
+        })
       : json(
           route,
           {
@@ -373,6 +388,48 @@ test('account Reader announces a transient chapter-content failure and recovers 
   await expect(page.getByText('Một đoạn văn bản riêng tư.')).toBeVisible();
   await expect(error).toHaveCount(0);
   expect(loadedChapters).toEqual([chapterIds[0], chapterIds[0]]);
+  await expectNoAxeViolations(page);
+});
+
+test('account Reader keeps focus on the new TOC chapter after retrying a failed page', async ({
+  page,
+}) => {
+  await installReaderRoutes(page, [503, 503, 200], true, 200, true);
+  await page.goto(`/app/reader/${workId}`);
+  await page.getByRole('button', { name: 'Mở mục lục' }).click();
+
+  const toc = page.getByRole('dialog', { name: 'Gió qua núi' });
+  await toc.getByRole('button', { name: 'Tải thêm chương' }).click();
+  const error = toc.getByRole('alert');
+  await expect(error).toBeVisible();
+  const retry = error.getByRole('button', { name: 'Thử tải lại' });
+  await expect(retry).toBeFocused();
+  await expectNoAxeViolations(page);
+
+  await retry.click();
+  await expect(error).toBeVisible();
+  await expect(retry).toBeEnabled();
+  await expect(retry).toBeFocused();
+  await retry.click();
+
+  const loadedChapter = toc.getByRole('button', { name: /Qua khỏi dốc/ });
+  await expect(loadedChapter).toBeVisible();
+  await expect(loadedChapter).toBeFocused();
+  await expect(error).toHaveCount(0);
+  await expectNoAxeViolations(page);
+});
+
+test('account Reader moves keyboard focus to newly loaded TOC chapters', async ({ page }) => {
+  await installReaderRoutes(page, 200, true, 200, true);
+  await page.goto(`/app/reader/${workId}`);
+  await page.getByRole('button', { name: 'Mở mục lục' }).click();
+
+  const toc = page.getByRole('dialog', { name: 'Gió qua núi' });
+  await toc.getByRole('button', { name: 'Tải thêm chương' }).click();
+
+  const loadedChapter = toc.getByRole('button', { name: /Qua khỏi dốc/ });
+  await expect(loadedChapter).toBeVisible();
+  await expect(loadedChapter).toBeFocused();
   await expectNoAxeViolations(page);
 });
 
