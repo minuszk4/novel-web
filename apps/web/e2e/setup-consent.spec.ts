@@ -85,9 +85,9 @@ test('mobile setup supports keyboard consent and continuation', async ({ page })
   await expect(privacy).toBeFocused();
   await page.keyboard.press('Space');
   await expect(privacy).toBeChecked();
+  await expect(continueButton).toBeEnabled();
 
   await page.keyboard.press('Tab');
-  await expect(continueButton).toBeEnabled();
   await expect(continueButton).toBeFocused();
   await page.keyboard.press('Enter');
   await expect(page).toHaveURL(/\/app\/home$/);

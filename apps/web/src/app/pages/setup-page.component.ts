@@ -1,4 +1,4 @@
-import { Component, inject, signal } from '@angular/core';
+import { AfterViewInit, Component, ElementRef, ViewChild, inject, signal } from '@angular/core';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { DemoStateService } from '../core/demo-state.service';
 import { PolicyOnboardingService } from '../core/policy-onboarding.service';
@@ -8,7 +8,9 @@ import { PolicyOnboardingService } from '../core/policy-onboarding.service';
   imports: [RouterLink],
   templateUrl: './setup-page.component.html',
 })
-export class SetupPageComponent {
+export class SetupPageComponent implements AfterViewInit {
+  @ViewChild('setupHeading') private setupHeading?: ElementRef<HTMLHeadingElement>;
+
   protected readonly demo = inject(DemoStateService);
   protected readonly policy = inject(PolicyOnboardingService);
   protected readonly termsChecked = signal(false);
@@ -19,6 +21,10 @@ export class SetupPageComponent {
 
   constructor() {
     void this.policy.load();
+  }
+
+  ngAfterViewInit(): void {
+    this.setupHeading?.nativeElement.focus({ preventScroll: true });
   }
 
   get canContinue(): boolean {

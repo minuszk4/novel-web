@@ -59,7 +59,7 @@ async function routeGoogleIdentitySdk(page: Page): Promise<void> {
 for (const viewport of viewports) {
   test(`sign-in keeps demo available when Google is unavailable at ${viewport.name}`, async ({
     page,
-  }) => {
+  }, testInfo) => {
     await routeBootstrap(page, 503);
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
     await page.goto('/sign-in');
@@ -75,7 +75,15 @@ for (const viewport of viewports) {
 
     await page.getByRole('link', { name: 'Tiếp tục với bản demo' }).click();
     await expect(page).toHaveURL(/\/app\/setup$/);
-    await expect(page.getByRole('heading', { name: 'Một vài điều cần biết' })).toBeVisible();
+    const setupHeading = page.getByRole('heading', { name: 'Một vài điều cần biết' });
+    await expect(setupHeading).toBeFocused();
+    await expect(setupHeading).toHaveCSS('outline-style', 'solid');
+    await expectNoAxeViolations(page);
+    if (viewport.width === 360) {
+      await page.screenshot({
+        path: testInfo.outputPath('audit-01-setup-route-heading-focus.png'),
+      });
+    }
   });
 
   test(`sign-in renders the official Google redirect button at ${viewport.name}`, async ({

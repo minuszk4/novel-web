@@ -193,7 +193,7 @@ label:has(input:focus-visible) {
   line-height: 1.18;
   letter-spacing: -0.45px;
 }
-.import-route-heading:focus-visible {
+.route-heading:focus {
   outline: 3px solid var(--focus-ring);
   outline-offset: 4px;
   border-radius: 2px;
