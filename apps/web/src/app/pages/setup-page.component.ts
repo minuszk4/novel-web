@@ -90,6 +90,9 @@ export class SetupPageComponent {
       '/app/cultivation',
       '/app/settings',
     ]);
-    return candidate && allowedPaths.has(candidate) ? candidate : '/app/home';
+    if (candidate && allowedPaths.has(candidate)) return candidate;
+    return candidate && /^\/app\/reader\/[0-9a-f-]{36}(?:\/[0-9a-f-]{36})?$/i.test(candidate)
+      ? candidate
+      : '/app/home';
   }
 }

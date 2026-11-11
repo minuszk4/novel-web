@@ -3106,6 +3106,21 @@ label:has(input:focus-visible) {
   color: #292a2c;
   background: #fbfbf8;
 }
+.app-frame:has(.account-reader-app) > .sidebar,
+.app-pane:has(.account-reader-app) > .topbar,
+.app-pane:has(.account-reader-app) > .demo-banner,
+.app-pane:has(.account-reader-app) > .mobile-nav {
+  display: none;
+}
+.app-pane:has(.account-reader-app) > .app-main {
+  position: fixed;
+  z-index: 30;
+  inset: 0;
+  overflow: hidden;
+}
+.account-reader-app {
+  position: relative;
+}
 .reader-topbar {
   min-height: 64px;
   display: grid;
@@ -3194,6 +3209,35 @@ label:has(input:focus-visible) {
 .reader-demo-bar .sample-tag {
   min-height: 17px;
   font-size: 7px;
+}
+.reader-account-bar {
+  position: relative;
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 5px 20px;
+  border-bottom: 1px solid #e8e7e1;
+  color: var(--muted);
+  background: #f5f4ef;
+  font-family: var(--font-ui);
+  font-size: 9px;
+}
+.reader-account-private {
+  color: #5f604e;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.55px;
+}
+.reader-account-private span {
+  color: #92784e;
+}
+.reader-account-source {
+  color: #626871;
+}
+.reader-account-sync {
+  color: #626871;
 }
 .reader-mode-switch {
   display: flex;
@@ -3292,6 +3336,31 @@ label:has(input:focus-visible) {
   margin: 0 0 1.25em;
   text-indent: 1.4em;
 }
+.account-reader-body h2 {
+  margin: 1.6em 0 0.55em;
+  font-family: var(--font-display);
+  font-size: 1.12em;
+  font-weight: 600;
+  line-height: 1.45;
+}
+.account-reader-body blockquote {
+  margin: 1.1em 0;
+  padding: 0.1em 0 0.1em 1em;
+  border-left: 3px solid #b6a178;
+  color: #55575c;
+  font-style: italic;
+  line-height: 1.8;
+}
+.reader-dark .account-reader-body blockquote {
+  color: #d1cbbc;
+}
+.account-reader-no-segments {
+  margin: 1.5em 0;
+  color: var(--muted);
+  font-family: var(--font-ui);
+  font-size: 0.75em;
+  text-align: center;
+}
 .reader-endnote {
   display: flex;
   justify-content: center;
@@ -3376,6 +3445,106 @@ label:has(input:focus-visible) {
 .reader-latest-label {
   color: var(--muted);
   font-size: 9px;
+}
+.account-reader-app .reader-bottom-center small {
+  font-size: 9px;
+}
+.account-reader-load-more {
+  margin-top: 18px;
+}
+.account-reader-inline-error {
+  margin-top: 16px;
+  padding: 12px;
+  border-radius: 8px;
+  color: #713b2c;
+  background: #fff4ed;
+  font-size: 10px;
+}
+.account-reader-inline-error p {
+  margin: 0 0 8px;
+}
+.account-reader-preference-note {
+  margin: 14px 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.6;
+}
+.account-reader-state {
+  width: min(calc(100% - 32px), 420px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin: auto;
+  padding: 36px 24px;
+  color: #30323a;
+  text-align: center;
+}
+.account-reader-state h1 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 24px;
+  line-height: 1.35;
+}
+.account-reader-state p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.7;
+}
+.account-reader-state .text-link {
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  color: var(--primary);
+  font-size: 12px;
+  font-weight: 700;
+}
+.reader-state-mark {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  border: 1px solid #ded7c8;
+  border-radius: 50%;
+  color: #92784e;
+  font-size: 18px;
+}
+.library-reader-link {
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--primary);
+  font-size: 11px;
+  font-weight: 700;
+}
+.library-reader-link:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 3px;
+  border-radius: 3px;
+}
+.reader-sepia .reader-account-bar {
+  border-color: #e4d9c6;
+  color: #524c40;
+  background: #f1e8d7;
+}
+.reader-sepia .account-reader-state {
+  color: #39352e;
+}
+.reader-dark .reader-account-bar {
+  border-color: #3a3b40;
+  color: #c4c5c8;
+  background: #25262b;
+}
+.reader-dark .reader-account-private,
+.reader-dark .reader-account-source,
+.reader-dark .reader-account-sync {
+  color: #c9c5b9;
+}
+.reader-dark .account-reader-state {
+  color: #eeeae1;
 }
 .reader-panel-backdrop {
   position: fixed;
@@ -4383,8 +4552,37 @@ label:has(input:focus-visible) {
   .reader-chapter-context {
     display: none;
   }
+  .account-reader-app .reader-topbar {
+    grid-template-columns: 40px minmax(0, 1fr) auto;
+    gap: 4px;
+    padding-inline: 8px;
+  }
+  .account-reader-app .reader-chapter-context {
+    display: flex;
+    align-items: flex-start;
+  }
+  .account-reader-app .reader-chapter-context strong {
+    font-size: 9px;
+  }
+  .account-reader-app .reader-chapter-context span {
+    font-size: 6px;
+  }
   .reader-tools {
     gap: 3px;
+  }
+  .reader-account-bar {
+    min-height: 38px;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    gap: 3px 8px;
+    padding: 5px 10px;
+    font-size: 7px;
+  }
+  .reader-account-private {
+    font-size: 7px;
+  }
+  .reader-account-sync {
+    font-size: 7px;
   }
   .reader-demo-bar {
     min-height: 32px;
@@ -4437,6 +4635,11 @@ label:has(input:focus-visible) {
     min-height: 36px;
     padding-inline: 9px;
   }
+  .account-reader-app .reader-bottom-actions .button {
+    min-height: 40px;
+    padding-inline: 7px;
+    font-size: 8px;
+  }
   .bookmark-button {
     min-height: 36px;
     font-size: 8px;
@@ -4447,6 +4650,10 @@ label:has(input:focus-visible) {
   .reader-side-panel {
     top: 58px;
     bottom: 78px;
+  }
+  .account-reader-app .account-reader-state {
+    width: calc(100% - 24px);
+    padding-inline: 12px;
   }
   .settings-layout {
     grid-template-columns: 1fr;

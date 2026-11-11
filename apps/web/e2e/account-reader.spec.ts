@@ -1,0 +1,246 @@
+import { expect, expectNoAxeViolations, test } from './support';
+import type { Browser, Page, Route } from '@playwright/test';
+
+const workId = '66666666-6666-4666-8666-666666666666';
+const libraryId = '33333333-3333-4333-8333-333333333333';
+const chapterIds = [
+  '77777777-7777-4777-8777-777777777777',
+  '88888888-8888-4888-8888-888888888888',
+  '99999999-9999-4999-8999-999999999999',
+];
+const revisionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+
+const currentUser = {
+  user: {
+    id: 'user-1',
+    displayName: 'Độc giả',
+    contactEmail: 'reader@example.test',
+    avatarUrl: null,
+    status: 'ACTIVE',
+  },
+  identityProviders: ['google'],
+  policy: {
+    termsAcceptedVersion: 'terms-1',
+    privacyNoticeAcknowledgedVersion: 'privacy-1',
+    requiredAcceptanceComplete: true,
+  },
+  roles: [],
+  features: {
+    privateLibraryEnabled: true,
+    importEnabled: true,
+    readerEnabled: true,
+    commerceEnabled: false,
+    cultivationEnabled: false,
+  },
+};
+
+const work = {
+  id: workId,
+  libraryId,
+  title: 'Gió qua núi',
+  author: 'Linh An',
+  language: 'vi',
+  visibility: 'private',
+  chapterCount: 3,
+  createdAt: '2026-11-11T00:00:00Z',
+};
+
+const chapters = [
+  { id: chapterIds[0], ordinal: 1, title: 'Cánh cửa mở', accessState: 'readable' },
+  { id: chapterIds[1], ordinal: 2, title: 'Bản nháp', accessState: 'unavailable' },
+  { id: chapterIds[2], ordinal: 3, title: 'Qua khỏi dốc', accessState: 'readable' },
+];
+
+async function json(route: Route, body: unknown, status = 200): Promise<void> {
+  await route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
+}
+
+async function installReaderRoutes(page: Page, manifestStatus = 200): Promise<string[]> {
+  const loadedChapters: string[] = [];
+  await page.route('**/api/v1/system/status', (route) =>
+    json(route, {
+      apiVersion: '4.2.1',
+      environment: 'test',
+      integrations: {
+        googleOidcEnabled: false,
+        momoTestEnabled: false,
+        momoEnvironment: 'disabled',
+      },
+      features: {
+        importProcessingEnabled: false,
+        cultivationEnabled: false,
+        commerceSandboxEnabled: false,
+      },
+    }),
+  );
+  await page.route('**/api/v1/auth/me', (route) => json(route, currentUser));
+  await page.route('**/api/v1/auth/policies/current', (route) =>
+    json(route, {
+      terms: {
+        version: 'terms-1',
+        effectiveAt: '2026-11-01T00:00:00Z',
+        documentUrl: '/api/v1/auth/policies/terms/terms-1',
+      },
+      privacyNotice: {
+        version: 'privacy-1',
+        effectiveAt: '2026-11-01T00:00:00Z',
+        documentUrl: '/api/v1/auth/policies/privacy-notice/privacy-1',
+      },
+    }),
+  );
+  await page.route('**/api/v1/auth/policies/terms/**', (route) =>
+    route.fulfill({ status: 200, contentType: 'text/markdown', body: '# Terms' }),
+  );
+  await page.route('**/api/v1/auth/policies/privacy-notice/**', (route) =>
+    route.fulfill({ status: 200, contentType: 'text/markdown', body: '# Privacy' }),
+  );
+  await page.route(`**/api/v1/works/${workId}/reader-manifest**`, (route) =>
+    manifestStatus === 200
+      ? json(route, { work, sourceLanguage: 'vi', chapters, nextCursor: null })
+      : json(
+          route,
+          { code: manifestStatus === 401 ? 'UNAUTHENTICATED' : 'POLICY_REQUIRED' },
+          manifestStatus,
+        ),
+  );
+  await page.route('**/api/v1/chapters/*/content**', (route) => {
+    const chapterId = route.request().url().split('/chapters/')[1]?.split('/')[0];
+    if (chapterId) loadedChapters.push(chapterId);
+    if (chapterId === chapterIds[0]) {
+      return json(route, {
+        chapterId,
+        workId,
+        sourceRevisionId: revisionId,
+        sourceLanguage: 'vi',
+        segments: [
+          { anchor: 'ch1-h1', type: 'heading', sourceText: 'Ngày đầu tiên' },
+          { anchor: 'ch1-p1', type: 'paragraph', sourceText: 'Một đoạn văn bản riêng tư.' },
+          {
+            anchor: 'ch1-p2',
+            type: 'paragraph',
+            sourceText: '<img src=x onerror="window.readerInjected=true">',
+          },
+        ],
+        nextSegmentCursor: null,
+      });
+    }
+    return json(route, {
+      chapterId,
+      workId,
+      sourceRevisionId: revisionId,
+      sourceLanguage: 'vi',
+      segments: [{ anchor: 'ch3-p1', type: 'paragraph', sourceText: 'Con đường đã sáng.' }],
+      nextSegmentCursor: null,
+    });
+  });
+  return loadedChapters;
+}
+
+const viewports = [
+  { name: 'mobile 360×800', width: 360, height: 800 },
+  { name: 'tablet 768×1024', width: 768, height: 1024 },
+  { name: 'desktop 1280×900', width: 1280, height: 900 },
+] as const;
+
+for (const viewport of viewports) {
+  test(`account Reader supports TOC and safe chapter content at ${viewport.name}`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    const loadedChapters = await installReaderRoutes(page);
+    await page.goto(`/app/reader/${workId}`);
+
+    await expect(page.getByRole('heading', { name: 'Cánh cửa mở' })).toBeVisible();
+    await expect(page.getByText('Một đoạn văn bản riêng tư.')).toBeVisible();
+    await expect(page.locator('.reader-account-private')).toContainText('THƯ VIỆN TÀI KHOẢN');
+    await expect(page.getByText('Tiến độ và dấu trang chưa đồng bộ')).toBeVisible();
+    await expect(page.locator('.reader-body img')).toHaveCount(0);
+    expect(
+      await page.evaluate(() => (window as Window & { readerInjected?: boolean }).readerInjected),
+    ).toBeUndefined();
+    await expectNoAxeViolations(page);
+
+    await page.getByRole('button', { name: 'Mở mục lục' }).click();
+    const toc = page.getByRole('dialog', { name: 'Gió qua núi' });
+    await expect(toc).toBeVisible();
+    await expect(toc.getByRole('button', { name: /Bản nháp/ })).toBeDisabled();
+    await expectNoAxeViolations(page);
+    await toc.getByRole('button', { name: /Qua khỏi dốc/ }).click();
+
+    await expect(page).toHaveURL(new RegExp(`/app/reader/${workId}/${chapterIds[2]}$`));
+    await expect(page.getByRole('heading', { name: 'Qua khỏi dốc' })).toBeVisible();
+    await expect(page.getByText('Con đường đã sáng.')).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Quay lại thư viện tài khoản' })).toBeVisible();
+    expect(loadedChapters).toEqual([chapterIds[0], chapterIds[2]]);
+    await page.screenshot({
+      path: test.info().outputPath(`account-reader-${viewport.width}x${viewport.height}.png`),
+      fullPage: false,
+    });
+
+    const dimensions = await page.evaluate(() => ({
+      document: document.documentElement.scrollWidth,
+      viewport: document.documentElement.clientWidth,
+    }));
+    expect(dimensions.document).toBeLessThanOrEqual(dimensions.viewport);
+  });
+}
+
+test('account Reader remains usable in an effective 200% mobile viewport', async ({ browser }) => {
+  await verifyEffectiveZoom(browser);
+});
+
+for (const recovery of [
+  { status: 401, name: 'sign-in', label: 'Đăng nhập lại', query: 'returnTo' },
+  { status: 403, name: 'policy setup', label: 'Xem chính sách tài khoản', query: 'returnUrl' },
+]) {
+  test(`account Reader preserves its route through ${recovery.name} recovery`, async ({ page }) => {
+    await installReaderRoutes(page, recovery.status);
+    await page.goto(`/app/reader/${workId}/${chapterIds[0]}`);
+    const recoveryLink = page.getByRole('link', { name: recovery.label });
+    await expect(recoveryLink).toBeVisible();
+    const href = await recoveryLink.getAttribute('href');
+    expect(href).toContain(`${recovery.query}=`);
+    expect(decodeURIComponent(href ?? '')).toContain(`/app/reader/${workId}/${chapterIds[0]}`);
+    if (recovery.status === 403) {
+      await recoveryLink.click();
+      await expect(page).toHaveURL(/\/app\/setup\?returnUrl=/);
+      const continueButton = page.getByRole('button', { name: 'Vào không gian đọc' });
+      await expect(continueButton).toBeEnabled();
+      await continueButton.click();
+      await expect(page).toHaveURL(new RegExp(`/app/reader/${workId}/${chapterIds[0]}$`));
+    }
+  });
+}
+
+async function verifyEffectiveZoom(browser: Browser): Promise<void> {
+  const context = await browser.newContext({
+    viewport: { width: 180, height: 400 },
+    deviceScaleFactor: 2,
+  });
+  try {
+    const page = await context.newPage();
+    const pageErrors: string[] = [];
+    page.on('pageerror', (error) => pageErrors.push(error.message));
+    await installReaderRoutes(page);
+    await page.goto(`/app/reader/${workId}`);
+    await expect(page.getByRole('heading', { name: 'Cánh cửa mở' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Chương tiếp' })).toBeVisible();
+    await page.getByRole('button', { name: 'Mở mục lục' }).click();
+    await expect(page.getByRole('dialog', { name: 'Gió qua núi' })).toBeVisible();
+    await page.screenshot({
+      path: test.info().outputPath('account-reader-effective-200-percent.png'),
+      fullPage: false,
+    });
+    const dimensions = await page.evaluate(() => ({
+      document: document.documentElement.scrollWidth,
+      viewport: document.documentElement.clientWidth,
+      dpr: window.devicePixelRatio,
+    }));
+    expect(dimensions.dpr).toBe(2);
+    expect(dimensions.document).toBeLessThanOrEqual(dimensions.viewport);
+    await expectNoAxeViolations(page);
+    expect(pageErrors).toEqual([]);
+  } finally {
+    await context.close();
+  }
+}

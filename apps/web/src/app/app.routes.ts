@@ -40,6 +40,22 @@ export const routes: Routes = [
       },
       { path: 'home', component: HomePageComponent, title: 'Trang chủ — Novel' },
       { path: 'library', component: LibraryPageComponent, title: 'Thư viện — Novel' },
+      {
+        path: 'reader/:workId',
+        loadComponent: () =>
+          import('./pages/account-reader-page.component').then(
+            (page) => page.AccountReaderPageComponent,
+          ),
+        title: 'Đang đọc — Novel',
+      },
+      {
+        path: 'reader/:workId/:chapterId',
+        loadComponent: () =>
+          import('./pages/account-reader-page.component').then(
+            (page) => page.AccountReaderPageComponent,
+          ),
+        title: 'Đang đọc — Novel',
+      },
       { path: 'search', component: SearchPageComponent, title: 'Tìm trong thư viện — Novel' },
       {
         path: 'cultivation',

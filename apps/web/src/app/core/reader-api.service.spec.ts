@@ -1,0 +1,123 @@
+import { provideHttpClient } from '@angular/common/http';
+import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
+import { TestBed } from '@angular/core/testing';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { ReaderApiService } from './reader-api.service';
+
+const workId = '66666666-6666-4666-8666-666666666666';
+const libraryId = '33333333-3333-4333-8333-333333333333';
+const chapterId = '77777777-7777-4777-8777-777777777777';
+const revisionId = '88888888-8888-4888-8888-888888888888';
+const cursor = 'signed-reader-cursor';
+
+const work = {
+  id: workId,
+  libraryId,
+  title: 'Tác phẩm riêng tư',
+  author: 'Tác giả',
+  language: 'vi',
+  visibility: 'private',
+  chapterCount: 2,
+  createdAt: '2026-11-11T00:00:00Z',
+};
+
+describe('ReaderApiService', () => {
+  let service: ReaderApiService;
+  let http: HttpTestingController;
+
+  beforeEach(() => {
+    TestBed.configureTestingModule({
+      providers: [provideHttpClient(), provideHttpClientTesting()],
+    });
+    service = TestBed.inject(ReaderApiService);
+    http = TestBed.inject(HttpTestingController);
+  });
+
+  afterEach(() => http.verify());
+
+  it('requests and validates a bounded account manifest page', async () => {
+    const result = service.getManifestPage(workId, undefined, 50);
+    const request = http.expectOne(
+      (candidate) =>
+        candidate.method === 'GET' &&
+        candidate.url === `/api/v1/works/${workId}/reader-manifest` &&
+        candidate.params.get('limit') === '50',
+    );
+    request.flush({
+      work,
+      sourceLanguage: 'vi',
+      chapters: [
+        { id: chapterId, ordinal: 1, title: 'Chương một', accessState: 'readable' },
+        {
+          id: revisionId,
+          ordinal: 2,
+          title: 'Chương hai',
+          accessState: 'unavailable',
+        },
+      ],
+      nextCursor: cursor,
+    });
+
+    await expect(result).resolves.toMatchObject({
+      work: { id: workId, title: 'Tác phẩm riêng tư' },
+      chapters: [
+        { ordinal: 1, accessState: 'readable' },
+        { ordinal: 2, accessState: 'unavailable' },
+      ],
+      nextCursor: cursor,
+    });
+  });
+
+  it('requests bounded source content with the revision and opaque cursor', async () => {
+    const result = service.getContentPage(chapterId, revisionId, cursor, 250);
+    const request = http.expectOne(
+      (candidate) =>
+        candidate.method === 'GET' &&
+        candidate.url === `/api/v1/chapters/${chapterId}/content` &&
+        candidate.params.get('revision') === revisionId &&
+        candidate.params.get('cursor') === cursor &&
+        candidate.params.get('limit') === '250',
+    );
+    request.flush({
+      chapterId,
+      workId,
+      sourceRevisionId: revisionId,
+      sourceLanguage: 'vi',
+      segments: [
+        { anchor: 'chapter-1-p1', type: 'paragraph', sourceText: 'Một đoạn văn bản.' },
+        { anchor: 'chapter-1-q1', type: 'quote', sourceText: '<em>An toàn như văn bản.</em>' },
+      ],
+      nextSegmentCursor: null,
+    });
+
+    await expect(result).resolves.toMatchObject({
+      chapterId,
+      workId,
+      sourceRevisionId: revisionId,
+      segments: [
+        { type: 'paragraph', sourceText: 'Một đoạn văn bản.' },
+        { type: 'quote', sourceText: '<em>An toàn như văn bản.</em>' },
+      ],
+    });
+  });
+
+  it('rejects malformed response data and preserves safe HTTP status details', async () => {
+    const malformed = service.getManifestPage(workId);
+    http
+      .expectOne((candidate) => candidate.url === `/api/v1/works/${workId}/reader-manifest`)
+      .flush({ work, chapters: [], sourceLanguage: 'vi', nextCursor: 4 });
+    await expect(malformed).rejects.toMatchObject({
+      status: 502,
+      code: 'INVALID_READER_RESPONSE',
+    });
+
+    const unauthorized = service.getContentPage(chapterId);
+    http
+      .expectOne((candidate) => candidate.url === `/api/v1/chapters/${chapterId}/content`)
+      .flush({ code: 'UNAUTHENTICATED' }, { status: 401, statusText: 'Unauthorized' });
+    await expect(unauthorized).rejects.toMatchObject({
+      status: 401,
+      code: 'UNAUTHENTICATED',
+    });
+  });
+});

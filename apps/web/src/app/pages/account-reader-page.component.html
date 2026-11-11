@@ -1,0 +1,338 @@
+<div
+  class="reader-app account-reader-app"
+  [class.reader-sepia]="theme() === 'sepia'"
+  [class.reader-dark]="theme() === 'dark'"
+>
+  <header class="reader-topbar">
+    <a class="reader-back" routerLink="/app/library" aria-label="Quay lại thư viện tài khoản"
+      ><span aria-hidden="true">←</span><span>Thư viện</span></a
+    >
+    <div class="reader-chapter-context">
+      <strong>{{ activeChapter()?.title || work()?.title || 'Đang mở Reader' }}</strong>
+      @if (work(); as currentWork) {
+        <span>{{ currentWork.title }} · NỘI DUNG RIÊNG TƯ</span>
+      }
+    </div>
+    <div class="reader-tools">
+      <button
+        class="reader-tool"
+        type="button"
+        (click)="toggleToc($event)"
+        aria-label="Mở mục lục"
+        aria-haspopup="dialog"
+        title="Mục lục · Alt+Shift+T"
+        [attr.aria-expanded]="tocOpen()"
+        [disabled]="!chapters().length"
+      >
+        <span aria-hidden="true">☷</span><span>Mục lục</span>
+      </button>
+      <button
+        class="reader-tool"
+        type="button"
+        (click)="toggleSettings($event)"
+        aria-label="Cài đặt trình đọc"
+        aria-haspopup="dialog"
+        title="Cài đặt đọc"
+        [attr.aria-expanded]="settingsOpen()"
+      >
+        <span aria-hidden="true">Aa</span>
+      </button>
+    </div>
+  </header>
+
+  <div class="reader-account-bar" aria-label="Thông tin nội dung">
+    <span class="reader-account-private"><span aria-hidden="true">◈</span> THƯ VIỆN TÀI KHOẢN</span>
+    @if (work(); as currentWork) {
+      <span class="reader-account-source">Nguyên tác · {{ currentWork.language }}</span>
+    }
+    <span class="reader-account-sync">Tiến độ và dấu trang chưa đồng bộ</span>
+  </div>
+
+  <div class="reader-main account-reader-main" role="region" aria-label="Reader tài khoản">
+    @if (tocOpen()) {
+      <div class="reader-panel-backdrop" aria-hidden="true" (click)="closePanel()"></div>
+      <div
+        #tocPanel
+        id="account-reader-toc-panel"
+        class="reader-side-panel toc-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="account-reader-toc-title"
+        tabindex="-1"
+      >
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">MỤC LỤC RIÊNG TƯ</p>
+            <h2 id="account-reader-toc-title">{{ work()?.title || 'Các chương' }}</h2>
+          </div>
+          <button class="icon-button" type="button" data-panel-initial-focus (click)="closePanel()">
+            <span aria-hidden="true">×</span><span class="visually-hidden">Đóng mục lục</span>
+          </button>
+        </div>
+        @for (chapter of chapters(); track chapter.id) {
+          <button
+            class="toc-chapter account-toc-chapter"
+            type="button"
+            [class.current]="chapter.id === activeChapter()?.id"
+            [class.unavailable]="chapter.accessState !== 'readable'"
+            [attr.aria-current]="chapter.id === activeChapter()?.id ? 'page' : null"
+            [disabled]="chapter.accessState !== 'readable'"
+            (click)="openChapter(chapter)"
+          >
+            <span>Chương {{ chapter.ordinal }}</span>
+            <strong>{{ chapter.title || 'Chưa có tiêu đề' }}</strong>
+            @if (chapter.accessState !== 'readable') {
+              <span class="visually-hidden">Nội dung chưa sẵn sàng</span>
+            }
+            <span class="toc-current-mark" aria-hidden="true">{{
+              chapter.id === activeChapter()?.id ? '●' : ''
+            }}</span>
+          </button>
+        }
+        @if (manifestPageError(); as error) {
+          <div class="account-reader-inline-error" role="alert">
+            <p>{{ statusMessage(error) }}</p>
+            <button class="text-button" type="button" (click)="retryManifestPage()">
+              Thử tải lại
+            </button>
+          </div>
+        } @else if (nextManifestCursor()) {
+          <button
+            class="button button-outline button-full account-reader-load-more"
+            type="button"
+            [disabled]="manifestBusy()"
+            (click)="loadNextManifestPage()"
+          >
+            {{ manifestBusy() ? 'Đang tải chương…' : 'Tải thêm chương' }}
+          </button>
+        }
+      </div>
+    }
+
+    @if (settingsOpen()) {
+      <div class="reader-panel-backdrop" aria-hidden="true" (click)="closePanel()"></div>
+      <div
+        #settingsPanel
+        id="account-reader-settings-panel"
+        class="reader-side-panel reader-settings-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="account-reader-settings-title"
+        tabindex="-1"
+      >
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">TÙY CHỈNH</p>
+            <h2 id="account-reader-settings-title">Cài đặt đọc</h2>
+          </div>
+          <button class="icon-button" type="button" data-panel-initial-focus (click)="closePanel()">
+            <span aria-hidden="true">×</span><span class="visually-hidden">Đóng cài đặt</span>
+          </button>
+        </div>
+        <div class="reader-setting-row">
+          <span
+            >Cỡ chữ <strong>{{ fontSize() }} px</strong></span
+          >
+          <div class="font-buttons">
+            <button
+              type="button"
+              aria-label="Giảm cỡ chữ"
+              [disabled]="fontSize() <= 16"
+              (click)="changeFont(-1)"
+            >
+              A−</button
+            ><button
+              type="button"
+              aria-label="Tăng cỡ chữ"
+              [disabled]="fontSize() >= 28"
+              (click)="changeFont(1)"
+            >
+              A+
+            </button>
+          </div>
+        </div>
+        <fieldset class="theme-picker">
+          <legend>Màu nền</legend>
+          <div>
+            <button
+              type="button"
+              [class.theme-selected]="theme() === 'light'"
+              [attr.aria-pressed]="theme() === 'light'"
+              (click)="theme.set('light')"
+            >
+              Sáng</button
+            ><button
+              type="button"
+              [class.theme-selected]="theme() === 'sepia'"
+              [attr.aria-pressed]="theme() === 'sepia'"
+              (click)="theme.set('sepia')"
+            >
+              Sepia</button
+            ><button
+              type="button"
+              [class.theme-selected]="theme() === 'dark'"
+              [attr.aria-pressed]="theme() === 'dark'"
+              (click)="theme.set('dark')"
+            >
+              Tối
+            </button>
+          </div>
+        </fieldset>
+        <p class="account-reader-preference-note">
+          Cài đặt chỉ áp dụng trong phiên này; chưa được lưu vào tài khoản.
+        </p>
+        <button class="reset-reader-button" type="button" (click)="resetPreferences()">
+          Đặt lại mặc định
+        </button>
+      </div>
+    }
+
+    @if (manifestState() === 'loading') {
+      <div class="account-reader-state" role="status" aria-live="polite">
+        <span class="reader-state-mark" aria-hidden="true">✧</span>
+        <p>Đang kiểm tra quyền đọc và tải mục lục…</p>
+      </div>
+    } @else if (manifestState() === 'error' && manifestError(); as error) {
+      <div class="account-reader-state" role="alert">
+        <span class="reader-state-mark" aria-hidden="true">!</span>
+        <h1>Chưa mở được tác phẩm</h1>
+        <p>{{ statusMessage(error) }}</p>
+        @if (error.status === 401 || error.status === 403) {
+          <a
+            class="button button-primary"
+            [routerLink]="recoveryUrl"
+            [queryParams]="recoveryQueryParams"
+            >{{ recoveryLabel }}</a
+          >
+        } @else {
+          <button class="button button-primary" type="button" (click)="retry()">Thử lại</button>
+        }
+        <a class="text-link" routerLink="/app/library">Quay lại thư viện</a>
+      </div>
+    } @else if (contentState() === 'loading') {
+      <div class="account-reader-state" role="status" aria-live="polite">
+        <span class="reader-state-mark" aria-hidden="true">✧</span>
+        <p>Đang tải nội dung chương…</p>
+      </div>
+    } @else if (contentState() === 'error' && contentError(); as error) {
+      <div class="account-reader-state" role="alert">
+        <span class="reader-state-mark" aria-hidden="true">!</span>
+        <h1>Chưa tải được chương</h1>
+        <p>{{ statusMessage(error) }}</p>
+        @if (error.status === 401 || error.status === 403) {
+          <a
+            class="button button-primary"
+            [routerLink]="recoveryUrl"
+            [queryParams]="recoveryQueryParams"
+            >{{ recoveryLabel }}</a
+          >
+        } @else {
+          <button class="button button-primary" type="button" (click)="retry()">
+            Tải lại chương
+          </button>
+        }
+        <a class="text-link" routerLink="/app/library">Quay lại thư viện</a>
+      </div>
+    } @else if (contentState() === 'empty') {
+      <div class="account-reader-state">
+        <span class="reader-state-mark" aria-hidden="true">…</span>
+        <h1>Chưa có chương để đọc</h1>
+        <p>Tác phẩm đã vào thư viện riêng, nhưng chưa có nội dung chương sẵn sàng.</p>
+        <a class="text-link" routerLink="/app/library">Quay lại thư viện</a>
+      </div>
+    } @else if (contentState() === 'unavailable') {
+      <div class="account-reader-state">
+        <span class="reader-state-mark" aria-hidden="true">…</span>
+        <h1>Chương chưa sẵn sàng</h1>
+        <p>Chương này chưa có bản nội dung có thể đọc. Chọn chương khác trong mục lục.</p>
+        <button class="button button-outline" type="button" (click)="toggleToc($event)">
+          Mở mục lục
+        </button>
+      </div>
+    } @else if (contentState() === 'ready' && activeChapter(); as chapter) {
+      <div
+        class="reader-content-scroller account-reader-content"
+        role="region"
+        aria-label="Nội dung chương"
+        tabindex="0"
+      >
+        <article
+          class="reader-article"
+          [style.font-size.px]="fontSize()"
+          aria-labelledby="account-reader-title"
+        >
+          <p class="reader-work-label">{{ work()?.title }}</p>
+          <h1 id="account-reader-title" tabindex="-1">{{ chapter.title || 'Chưa có tiêu đề' }}</h1>
+          <p class="reader-byline">Chương {{ chapter.ordinal }} · Nội dung gốc</p>
+          <div class="reader-body account-reader-body">
+            @for (segment of segments(); track $index) {
+              @switch (segment.type) {
+                @case ('heading') {
+                  <h2 [attr.data-source-anchor]="segment.anchor || null">
+                    {{ segment.sourceText }}
+                  </h2>
+                }
+                @case ('quote') {
+                  <blockquote [attr.data-source-anchor]="segment.anchor || null">
+                    {{ segment.sourceText }}
+                  </blockquote>
+                }
+                @default {
+                  <p [attr.data-source-anchor]="segment.anchor || null">{{ segment.sourceText }}</p>
+                }
+              }
+            }
+          </div>
+          @if (!segments().length) {
+            <p class="account-reader-no-segments">
+              Chương này chưa có đoạn văn bản được hỗ trợ để hiển thị.
+            </p>
+          }
+          <div class="reader-endnote">
+            <span aria-hidden="true">✧</span><span>Hết chương</span
+            ><span aria-hidden="true">✧</span>
+          </div>
+        </article>
+      </div>
+    }
+  </div>
+
+  <footer class="reader-bottom-bar account-reader-bottom">
+    @if (previousChapter) {
+      <button class="reader-chapter-nav" type="button" (click)="openChapter(previousChapter)">
+        <span aria-hidden="true">←</span><span>Chương {{ previousChapter.ordinal }}</span>
+      </button>
+    } @else {
+      <span class="reader-chapter-nav nav-disabled"
+        ><span aria-hidden="true">←</span><span>Chương trước</span></span
+      >
+    }
+    <div class="reader-bottom-center">
+      @if (activeChapter(); as chapter) {
+        <small
+          >Chương {{ chapter.ordinal }} / {{ work()?.chapterCount ?? chapters().length }}</small
+        >
+      } @else {
+        <small>Thư viện tài khoản</small>
+      }
+    </div>
+    <div class="reader-bottom-actions">
+      @if (nextChapter) {
+        <button class="button button-primary" type="button" (click)="openChapter(nextChapter)">
+          Chương tiếp <span aria-hidden="true">→</span>
+        </button>
+      } @else if (nextManifestCursor()) {
+        <button
+          class="button button-primary"
+          type="button"
+          [disabled]="manifestBusy()"
+          (click)="openNextChapter()"
+        >
+          {{ manifestBusy() ? 'Đang tải…' : 'Chương tiếp' }} <span aria-hidden="true">→</span>
+        </button>
+      } @else if (activeChapter()) {
+        <span class="reader-latest-label">Bạn đã đến chương mới nhất</span>
+      }
+    </div>
+  </footer>
+</div>

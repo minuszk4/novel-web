@@ -15,7 +15,7 @@ import { PolicyOnboardingService } from '../core/policy-onboarding.service';
 
 type LibraryFilter = 'all' | LibraryReadingStatus;
 type SyncPhase = 'idle' | 'loading' | 'ready' | 'error' | 'saving';
-type LibraryWorkView = Pick<AccountWorkSummary, 'id' | 'title' | 'author'> & {
+type LibraryWorkView = Pick<AccountWorkSummary, 'id' | 'title' | 'author' | 'chapterCount'> & {
   details: string;
   addedAt: string;
   isAccountWork: boolean;
@@ -80,6 +80,7 @@ export class LibraryPageComponent {
           id: work.id,
           title: work.title,
           author: work.author,
+          chapterCount: work.chapterCount,
           details: `${work.language} · ${work.chapterCount} chương`,
           addedAt: work.createdAt,
           isAccountWork: true,
@@ -512,6 +513,7 @@ function demoWorkView(work: PrivateWork): LibraryWorkView {
     id: work.id,
     title: work.title,
     author: work.author,
+    chapterCount: 0,
     details: `Tệp ${work.sourceName} · chưa có chương để đọc`,
     addedAt: work.importedAt,
     isAccountWork: false,

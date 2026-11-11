@@ -189,6 +189,9 @@
               <strong>Đã thêm riêng tư vào thư viện</strong>
               <p>{{ work.title }} · {{ work.chapterCount }} chương</p>
             </div>
+            @if (work.chapterCount > 0) {
+              <a class="button button-primary" [routerLink]="['/app/reader', work.id]">Đọc ngay</a>
+            }
             <a class="button button-primary" routerLink="/app/library">Mở thư viện</a>
           </div>
         }
