@@ -336,6 +336,48 @@ class EpubPackageParserTests {
   }
 
   @Test
+  void returnsOnlyPlainTextForXhtmlContainingExecutableMarkupAndRemoteReferences()
+      throws IOException {
+    String remote = "https://reader-xss.invalid/resource";
+    String chapter =
+        "<html xmlns=\"http://www.w3.org/1999/xhtml\"><head><title>Safe chapter</title>"
+            + "<link rel=\"stylesheet\" href=\""
+            + remote
+            + "\"/></head><body><p>Safe <img src=\""
+            + remote
+            + "\" onerror=\"window.readerInjected=true\"/> text "
+            + "<a href=\"javascript:window.readerInjected=true\">link label</a>.</p>"
+            + "<script>window.readerInjected=true</script>"
+            + "<style>@import url('"
+            + remote
+            + "');</style><svg onload=\"window.readerInjected=true\"><script>"
+            + "window.readerInjected=true</script><image href=\""
+            + remote
+            + "\"/></svg><iframe src=\""
+            + remote
+            + "\">frame text must be discarded</iframe></body></html>";
+    Path epub = writeEpub("hostile-markup.epub", validEntries(null, chapter, null));
+
+    EpubPackageParser.Preview preview =
+        parser.parse(epub, "hostile-markup.epub", "application/epub+zip");
+
+    assertEquals(
+        List.of(new EpubPackageParser.SourceSegment(0, "p", "Safe text link label.")),
+        preview.chapters().getFirst().segments());
+    assertTrue(
+        preview.warnings().stream()
+            .anyMatch(warning -> warning.code().equals("EPUB_SCRIPT_IGNORED")));
+    String serializedText =
+        preview.chapters().stream()
+            .flatMap(chapterPreview -> chapterPreview.segments().stream())
+            .map(EpubPackageParser.SourceSegment::text)
+            .reduce("", (left, right) -> left + right);
+    assertFalse(serializedText.contains("reader-xss.invalid"));
+    assertFalse(serializedText.contains("readerInjected"));
+    assertFalse(serializedText.contains("frame text must be discarded"));
+  }
+
+  @Test
   void rejectsMissingRequiredContainerMetadataAndSpineResources() throws IOException {
     Path missingTitle =
         writeEpub(
