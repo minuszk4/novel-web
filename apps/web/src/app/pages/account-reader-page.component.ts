@@ -140,18 +140,14 @@ export class AccountReaderPageComponent {
     } catch (error) {
       if (token === this.loadToken) {
         this.manifestPageError.set(asReaderApiError(error));
-        if (this.tocOpen()) {
-          const status = this.manifestPageError()?.status;
-          const focusTargetId =
-            status === 401 || status === 403
-              ? 'account-reader-page-recovery'
-              : 'account-reader-retry-manifest-page';
-          requestAnimationFrame(() => {
-            if (this.tocOpen()) {
-              document.getElementById(focusTargetId)?.focus({ preventScroll: true });
-            }
-          });
-        }
+        const status = this.manifestPageError()?.status;
+        const focusTargetId =
+          status === 401 || status === 403
+            ? 'account-reader-page-recovery'
+            : 'account-reader-retry-manifest-page';
+        requestAnimationFrame(() => {
+          document.getElementById(focusTargetId)?.focus({ preventScroll: true });
+        });
       }
       return [];
     } finally {
@@ -165,10 +161,29 @@ export class AccountReaderPageComponent {
       this.navigateToChapter(next);
       return;
     }
+    await this.loadNextManifestChapter();
+  }
+
+  protected async retryNextChapterPage(): Promise<void> {
+    await this.loadNextManifestChapter();
+  }
+
+  private async loadNextManifestChapter(): Promise<void> {
     if (!this.nextManifestCursor() || this.manifestBusy()) return;
     const newChapters = await this.loadNextManifestPage();
+    if (this.manifestPageError()) return;
     const firstReadable = newChapters.find((chapter) => chapter.accessState === 'readable');
-    if (firstReadable) this.navigateToChapter(firstReadable);
+    if (firstReadable) {
+      this.navigateToChapter(firstReadable);
+      return;
+    }
+
+    const focusTargetId = this.nextManifestCursor()
+      ? 'account-reader-next-chapter'
+      : 'account-reader-latest-label';
+    requestAnimationFrame(() => {
+      document.getElementById(focusTargetId)?.focus({ preventScroll: true });
+    });
   }
 
   protected openChapter(chapter: ReaderChapter): void {

@@ -470,6 +470,67 @@ test('account Reader moves keyboard focus to newly loaded TOC chapters', async (
   await expectNoAxeViolations(page);
 });
 
+test('account Reader reports and recovers a failed next-chapter page outside the TOC', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 360, height: 800 });
+  await installReaderRoutes(page, [503, 200], true, 200, true);
+  await page.goto(`/app/reader/${workId}`);
+  await expect(page.getByRole('heading', { name: 'Cánh cửa mở' })).toBeVisible();
+  await page.getByRole('button', { name: 'Chương tiếp' }).click();
+
+  const error = page.getByRole('alert');
+  await expect(error).toBeVisible();
+  await expect(error).toContainText('Reader đang tạm thời không khả dụng. Thử lại sau ít phút.');
+  const retry = error.getByRole('button', { name: 'Thử lại' });
+  await expect(retry).toBeFocused();
+  const retryBounds = await retry.boundingBox();
+  expect(retryBounds?.height).toBeGreaterThanOrEqual(44);
+  const dimensions = await page.evaluate(() => ({
+    document: document.documentElement.scrollWidth,
+    viewport: document.documentElement.clientWidth,
+  }));
+  expect(dimensions.document).toBeLessThanOrEqual(dimensions.viewport);
+  await expectNoAxeViolations(page);
+
+  await retry.click();
+  await expect(page).toHaveURL(new RegExp(`/app/reader/${workId}/${chapterIds[2]}$`));
+  await expect(page.getByRole('heading', { name: 'Qua khỏi dốc' })).toBeFocused();
+  await expect(error).toHaveCount(0);
+  await expectNoAxeViolations(page);
+});
+
+for (const recovery of [
+  { status: 401, label: 'Đăng nhập lại', query: 'returnTo' },
+  { status: 403, label: 'Xem chính sách tài khoản', query: 'returnUrl' },
+]) {
+  test(`account Reader provides ${recovery.label.toLowerCase()} outside the TOC`, async ({
+    page,
+  }) => {
+    await installReaderRoutes(page, [recovery.status], true, 200, true);
+    await page.goto(`/app/reader/${workId}`);
+    await page.getByRole('button', { name: 'Chương tiếp' }).click();
+
+    const error = page.getByRole('alert');
+    const recoveryLink = error.getByRole('link', { name: recovery.label });
+    await expect(recoveryLink).toBeFocused();
+    await expect(error.getByRole('button', { name: 'Thử lại' })).toHaveCount(0);
+    await expectNoAxeViolations(page);
+
+    const href = await recoveryLink.getAttribute('href');
+    expect(href).toContain(`${recovery.query}=`);
+    expect(decodeURIComponent(href ?? '')).toContain(`/app/reader/${workId}/${chapterIds[0]}`);
+    if (recovery.status === 403) {
+      await recoveryLink.click();
+      await expect(page).toHaveURL(/\/app\/setup\?returnUrl=/);
+      const continueButton = page.getByRole('button', { name: 'Vào không gian đọc' });
+      await expect(continueButton).toBeEnabled();
+      await continueButton.click();
+      await expect(page).toHaveURL(new RegExp(`/app/reader/${workId}/${chapterIds[0]}$`));
+    }
+  });
+}
+
 async function verifyEffectiveZoom(browser: Browser): Promise<void> {
   const context = await browser.newContext({
     viewport: { width: 180, height: 400 },

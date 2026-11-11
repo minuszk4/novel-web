@@ -3467,6 +3467,24 @@ label:has(input:focus-visible) {
 .account-reader-inline-error p {
   margin: 0 0 8px;
 }
+.account-reader-inline-error .text-button {
+  min-height: 44px;
+}
+.account-reader-pagination-banner {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px 16px;
+  margin: 0;
+  padding: 8px 16px;
+  border-top: 1px solid #e2e3e0;
+  border-radius: 0;
+}
+.account-reader-pagination-banner p {
+  margin: 0;
+}
 .account-reader-preference-note {
   margin: 14px 0;
   color: var(--muted);

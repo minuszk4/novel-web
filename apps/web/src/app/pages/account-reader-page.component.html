@@ -314,6 +314,31 @@
     }
   </div>
 
+  @if (!tocOpen() && manifestPageError(); as error) {
+    <div class="account-reader-inline-error account-reader-pagination-banner" role="alert">
+      <p>{{ manifestBusy() ? 'Đang thử tải lại mục lục…' : statusMessage(error) }}</p>
+      @if (error.status === 401 || error.status === 403) {
+        <a
+          id="account-reader-page-recovery"
+          class="button button-primary"
+          [routerLink]="recoveryUrl"
+          [queryParams]="recoveryQueryParams"
+          >{{ recoveryLabel }}</a
+        >
+      } @else {
+        <button
+          id="account-reader-retry-manifest-page"
+          class="button button-primary"
+          type="button"
+          [disabled]="manifestBusy()"
+          (click)="retryNextChapterPage()"
+        >
+          {{ manifestBusy() ? 'Đang tải…' : 'Thử lại' }}
+        </button>
+      }
+    </div>
+  }
+
   <footer class="reader-bottom-bar account-reader-bottom">
     @if (previousChapter) {
       <button class="reader-chapter-nav" type="button" (click)="openChapter(previousChapter)">
@@ -340,6 +365,7 @@
         </button>
       } @else if (nextManifestCursor()) {
         <button
+          id="account-reader-next-chapter"
           class="button button-primary"
           type="button"
           [disabled]="manifestBusy()"
@@ -348,7 +374,9 @@
           {{ manifestBusy() ? 'Đang tải…' : 'Chương tiếp' }} <span aria-hidden="true">→</span>
         </button>
       } @else if (activeChapter()) {
-        <span class="reader-latest-label">Bạn đã đến chương mới nhất</span>
+        <span id="account-reader-latest-label" class="reader-latest-label" tabindex="-1"
+          >Bạn đã đến chương mới nhất</span
+        >
       }
     </div>
   </footer>
