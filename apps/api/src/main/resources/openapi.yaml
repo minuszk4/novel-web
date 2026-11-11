@@ -1929,7 +1929,10 @@ components:
           properties:
             googleOidcEnabled:
               type: boolean
-              const: false
+              description: >-
+                True when a plausible Google web client ID, secure credential callback URI, and
+                32-byte rate-limit HMAC key are configured. This reports local configuration
+                readiness; it does not verify reachability or credentials with Google.
             momoTestEnabled:
               type: boolean
               const: false

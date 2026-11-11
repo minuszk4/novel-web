@@ -79,7 +79,7 @@
         @if (systemStatus.status(); as status) {
           <p>
             <strong>API {{ status.apiVersion }} đang phản hồi.</strong> Google
-            {{ status.integrations.googleOidcEnabled ? 'đã bật' : 'chưa kết nối' }} · MoMo
+            {{ status.integrations.googleOidcEnabled ? 'đã cấu hình' : 'chưa cấu hình' }} · MoMo
             {{
               status.integrations.momoTestEnabled
                 ? status.integrations.momoEnvironment

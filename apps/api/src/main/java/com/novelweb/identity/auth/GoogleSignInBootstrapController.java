@@ -2,8 +2,6 @@ package com.novelweb.identity.auth;
 
 import com.novelweb.platform.web.CorrelationIdFilter;
 import jakarta.servlet.http.HttpServletRequest;
-import java.net.URI;
-import java.net.URISyntaxException;
 import java.time.Instant;
 import java.util.UUID;
 import org.springframework.beans.factory.annotation.Value;
@@ -22,27 +20,19 @@ import org.springframework.web.bind.annotation.RestController;
 @Profile("postgres")
 public class GoogleSignInBootstrapController {
 
-  private static final String CREDENTIAL_CALLBACK_PATH = "/api/v1/auth/google/credential";
-
   private final GoogleAuthAttemptService authAttemptService;
   private final GoogleAuthBootstrapRateLimiter rateLimiter;
-  private final String webClientId;
-  private final String rateLimitHmacKey;
-  private final URI credentialCallbackUri;
+  private final GoogleSignInConfiguration googleSignInConfiguration;
   private final TrustedProxyClientAddressResolver clientAddressResolver;
 
   public GoogleSignInBootstrapController(
       GoogleAuthAttemptService authAttemptService,
       GoogleAuthBootstrapRateLimiter rateLimiter,
-      @Value("${novel.auth.google.web-client-id:}") String webClientId,
-      @Value("${novel.auth.google.credential-callback-uri:}") String credentialCallbackUri,
-      @Value("${novel.auth.google.rate-limit-hmac-key:}") String rateLimitHmacKey,
+      GoogleSignInConfiguration googleSignInConfiguration,
       @Value("${novel.auth.google.trusted-proxies:}") String trustedProxyCidrs) {
     this.authAttemptService = authAttemptService;
     this.rateLimiter = rateLimiter;
-    this.webClientId = webClientId == null ? "" : webClientId.trim();
-    this.rateLimitHmacKey = rateLimitHmacKey == null ? "" : rateLimitHmacKey.trim();
-    this.credentialCallbackUri = parseCredentialCallbackUri(credentialCallbackUri);
+    this.googleSignInConfiguration = googleSignInConfiguration;
     this.clientAddressResolver = new TrustedProxyClientAddressResolver(trustedProxyCidrs);
   }
 
@@ -52,7 +42,7 @@ public class GoogleSignInBootstrapController {
       @RequestParam(required = false, defaultValue = "vi") String locale,
       HttpServletRequest request) {
     UUID correlationId = correlationId(request);
-    if (webClientId.isBlank() || rateLimitHmacKey.isBlank() || credentialCallbackUri == null) {
+    if (!googleSignInConfiguration.isReadyForSignIn()) {
       return problem(
           HttpStatus.SERVICE_UNAVAILABLE,
           "AUTH_PROVIDER_UNAVAILABLE",
@@ -64,7 +54,9 @@ public class GoogleSignInBootstrapController {
     final byte[] clientKeyHash;
     try {
       clientAddress = clientAddressResolver.resolve(request);
-      clientKeyHash = GoogleAuthRateLimitKeyHasher.hash(clientAddress, rateLimitHmacKey);
+      clientKeyHash =
+          GoogleAuthRateLimitKeyHasher.hash(
+              clientAddress, googleSignInConfiguration.rateLimitHmacKey());
     } catch (IllegalArgumentException exception) {
       return problem(
           HttpStatus.SERVICE_UNAVAILABLE,
@@ -104,8 +96,8 @@ public class GoogleSignInBootstrapController {
     String safeLocale = "en".equalsIgnoreCase(locale) ? "en" : "vi";
     GoogleSignInBootstrap response =
         new GoogleSignInBootstrap(
-            webClientId,
-            credentialCallbackUri.toASCIIString(),
+            googleSignInConfiguration.webClientId(),
+            googleSignInConfiguration.credentialCallbackUri().toASCIIString(),
             attempt.nonce(),
             safeLocale,
             attempt.expiresAt());
@@ -138,30 +130,6 @@ public class GoogleSignInBootstrapController {
       }
     }
     return UUID.randomUUID();
-  }
-
-  private static URI parseCredentialCallbackUri(String rawValue) {
-    if (rawValue == null || rawValue.isBlank()) {
-      return null;
-    }
-    try {
-      URI uri = new URI(rawValue.trim());
-      boolean secure = "https".equalsIgnoreCase(uri.getScheme());
-      boolean localDevelopment =
-          "http".equalsIgnoreCase(uri.getScheme()) && "localhost".equalsIgnoreCase(uri.getHost());
-      if ((!secure && !localDevelopment)
-          || !uri.isAbsolute()
-          || uri.getHost() == null
-          || uri.getRawUserInfo() != null
-          || uri.getRawQuery() != null
-          || uri.getRawFragment() != null
-          || !CREDENTIAL_CALLBACK_PATH.equals(uri.getRawPath())) {
-        return null;
-      }
-      return uri;
-    } catch (URISyntaxException exception) {
-      return null;
-    }
   }
 
   public record GoogleSignInBootstrap(

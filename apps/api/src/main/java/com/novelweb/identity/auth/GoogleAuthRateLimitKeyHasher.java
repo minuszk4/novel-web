@@ -20,6 +20,27 @@ final class GoogleAuthRateLimitKeyHasher {
             && clientAddress.length != REQUIRED_ADDRESS_LENGTH_V6)) {
       throw new IllegalArgumentException("Client address must be an IPv4 or IPv6 address");
     }
+    byte[] key = decodeKey(base64UrlKey);
+
+    try {
+      Mac hmac = Mac.getInstance(HMAC_ALGORITHM);
+      hmac.init(new SecretKeySpec(key, HMAC_ALGORITHM));
+      return hmac.doFinal(clientAddress);
+    } catch (GeneralSecurityException exception) {
+      throw new IllegalStateException("Unable to create Google auth rate-limit key", exception);
+    }
+  }
+
+  static boolean isValidKey(String base64UrlKey) {
+    try {
+      decodeKey(base64UrlKey);
+      return true;
+    } catch (IllegalArgumentException exception) {
+      return false;
+    }
+  }
+
+  private static byte[] decodeKey(String base64UrlKey) {
     if (base64UrlKey == null || base64UrlKey.isBlank()) {
       throw new IllegalArgumentException("Google auth rate-limit key is not configured");
     }
@@ -33,13 +54,6 @@ final class GoogleAuthRateLimitKeyHasher {
     if (key.length != REQUIRED_KEY_LENGTH) {
       throw new IllegalArgumentException("Google auth rate-limit key must decode to 32 bytes");
     }
-
-    try {
-      Mac hmac = Mac.getInstance(HMAC_ALGORITHM);
-      hmac.init(new SecretKeySpec(key, HMAC_ALGORITHM));
-      return hmac.doFinal(clientAddress);
-    } catch (GeneralSecurityException exception) {
-      throw new IllegalStateException("Unable to create Google auth rate-limit key", exception);
-    }
+    return key;
   }
 }
