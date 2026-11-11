@@ -57,3 +57,38 @@ test('mobile setup keeps both demo consent rows above the sticky action', async 
   expect(layout.actionTop - layout.lastConsentBottom).toBeGreaterThanOrEqual(8);
   await expectNoAxeViolations(page);
 });
+
+test('mobile setup supports keyboard consent and continuation', async ({ page }) => {
+  await page.setViewportSize({ width: 360, height: 800 });
+  await page.goto('/app/setup');
+
+  const checkboxes = page.getByRole('checkbox');
+  const terms = checkboxes.nth(0);
+  const privacy = checkboxes.nth(1);
+  const continueButton = page.getByRole('button', { name: /Vào không gian đọc/ });
+  await expect(continueButton).toBeDisabled();
+
+  for (let tabCount = 0; tabCount < 20; tabCount += 1) {
+    if (await terms.evaluate((element) => element === document.activeElement)) break;
+    await page.keyboard.press('Tab');
+  }
+  await expect(terms).toBeFocused();
+  expect(
+    await terms.evaluate(
+      (element) => getComputedStyle(element.closest('.consent-row')!).outlineStyle,
+    ),
+  ).toBe('solid');
+
+  await page.keyboard.press('Space');
+  await expect(terms).toBeChecked();
+  await page.keyboard.press('Tab');
+  await expect(privacy).toBeFocused();
+  await page.keyboard.press('Space');
+  await expect(privacy).toBeChecked();
+
+  await page.keyboard.press('Tab');
+  await expect(continueButton).toBeEnabled();
+  await expect(continueButton).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(page).toHaveURL(/\/app\/home$/);
+});
