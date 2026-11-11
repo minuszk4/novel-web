@@ -85,6 +85,24 @@ class ImportCreationServiceTests {
   }
 
   @Test
+  void appliesTheMarkdownParserLimitBeforeCreatingAStagingJob() {
+    long maxUploadBytes = 50L * 1024 * 1024;
+    long markdownLimit = MarkdownDocumentParser.MAX_SOURCE_BYTES;
+
+    assertEquals(
+        Outcome.CREATED,
+        ImportCreationService.validate(
+                command("story.md", "text/markdown", markdownLimit, true, "v1"), maxUploadBytes)
+            .outcome());
+    assertEquals(
+        Outcome.FILE_TOO_LARGE,
+        ImportCreationService.validate(
+                command("story.markdown", "text/markdown", markdownLimit + 1, true, "v1"),
+                maxUploadBytes)
+            .outcome());
+  }
+
+  @Test
   void rejectsPathOnlyControlAndUnknownVersionInputs() {
     var pathOnly =
         ImportCreationService.validate(

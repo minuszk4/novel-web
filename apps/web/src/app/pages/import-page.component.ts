@@ -5,6 +5,7 @@ import {
   AccountImportService,
   maxAccountImportBytes,
   maxHtmlImportBytes,
+  maxMarkdownImportBytes,
 } from '../core/account-import.service';
 import { DemoStateService } from '../core/demo-state.service';
 import { ImportFileMetadata } from '../core/models';
@@ -60,27 +61,32 @@ export class ImportPageComponent implements AfterViewInit {
 
     const extension = file.name.split('.').pop()?.toLowerCase() ?? '';
     const allowedExtensions = this.accountMode()
-      ? ['epub', 'txt', 'html', 'htm']
+      ? ['epub', 'txt', 'html', 'htm', 'md', 'markdown']
       : supportedExtensions;
     if (!allowedExtensions.includes(extension)) {
       this.clearSelectedFile();
       this.errorMessage = this.accountMode()
-        ? 'Tài khoản hiện nhận EPUB 3, TXT UTF-8 và HTML UTF-8. Markdown chưa được bật.'
+        ? 'Tài khoản hiện nhận EPUB 3, TXT UTF-8, HTML UTF-8 và Markdown UTF-8.'
         : 'Định dạng này chưa được hỗ trợ. Hãy chọn EPUB, TXT, HTML hoặc Markdown.';
       input.value = '';
       return;
     }
 
-    const maxFileBytes =
-      this.accountMode() && ['html', 'htm'].includes(extension)
+    const maxFileBytes = this.accountMode()
+      ? ['html', 'htm'].includes(extension)
         ? maxHtmlImportBytes
-        : maxAccountImportBytes;
+        : ['md', 'markdown'].includes(extension)
+          ? maxMarkdownImportBytes
+          : maxAccountImportBytes
+      : maxAccountImportBytes;
     if (this.accountMode() && (file.size < 1 || file.size > maxFileBytes)) {
       this.clearSelectedFile();
       this.errorMessage =
         maxFileBytes === maxHtmlImportBytes
           ? 'Tệp HTML phải lớn hơn 0 byte và không vượt quá 4 MiB.'
-          : 'Tệp phải lớn hơn 0 byte và không vượt quá 50 MiB.';
+          : ['md', 'markdown'].includes(extension)
+            ? 'Tệp Markdown phải lớn hơn 0 byte và không vượt quá 16 MiB.'
+            : 'Tệp phải lớn hơn 0 byte và không vượt quá 50 MiB.';
       input.value = '';
       return;
     }

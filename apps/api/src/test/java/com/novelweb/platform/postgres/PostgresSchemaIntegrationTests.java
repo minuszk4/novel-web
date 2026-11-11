@@ -1730,6 +1730,117 @@ class PostgresSchemaIntegrationTests {
   }
 
   @Test
+  void privateMarkdownImportSplitsHeadingsAndCommitsSafeTextAsMarkdown() throws Exception {
+    UUID actorId = createSessionTestUser("Markdown import owner");
+    UUID approverId = createSessionTestUser("Markdown import approver");
+    var library = libraryService.createLibrary(actorId, "Private Markdown shelf");
+    String version = "private-import-markdown-integration-v1";
+    String statementText =
+        "Synthetic rights copy for private Markdown parser integration coverage.";
+    UUID jobId = UUID.randomUUID();
+    UUID receiptId = UUID.randomUUID();
+    var actorSession = sessionService.create(actorId).orElseThrow();
+    jakarta.servlet.http.Cookie actorCookie =
+        new jakarta.servlet.http.Cookie("__Host-novel_session", actorSession.cookieValue());
+    String actorCsrf = csrfTokenService.tokenFor(actorSession.cookieValue());
+    byte[] sourceMarkdown =
+        ("# Thành phố mưa\n\nLời dẫn riêng tư.\n\n## Chương một\n\n"
+                + "Có [nhãn liên kết](https://private.example/secret), "
+                + "![mô tả bìa](https://private.example/cover.png) và `mã`.\n\n"
+                + "<script>window.secret='không lưu script'</script>\n\n"
+                + "## Chương hai\n\nMưa trở lại.")
+            .getBytes(StandardCharsets.UTF_8);
+
+    try {
+      insertImportRightsStatement(version, statementText, approverId, "APPROVED", -1);
+      addCurrentPolicyAcceptances(actorId);
+      insertUploadedImportFixture(
+          jobId,
+          actorId,
+          library.id(),
+          receiptId,
+          version,
+          statementText,
+          "Private Markdown Novel.md",
+          "text/markdown",
+          sourceMarkdown);
+      importStagingFileStore.store(
+          jobId, new ByteArrayInputStream(sourceMarkdown), sourceMarkdown.length);
+
+      MvcResult accepted =
+          mockMvc
+              .perform(
+                  post("/api/v1/imports/{id}/parse", jobId)
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf))
+              .andReturn();
+      assertEquals(202, accepted.getResponse().getStatus());
+
+      JsonNode readyStatus = awaitImportStatus(actorCookie, jobId, "ready_to_commit");
+      assertEquals("Thành phố mưa", readyStatus.path("previewSummary").path("title").asText());
+      assertEquals(3, readyStatus.path("previewSummary").path("chapterCount").asInt());
+      assertEquals("markdown-v1", importParseParserVersion(jobId));
+      JsonNode stagedPreview = objectMapper.readTree(importParsePreviewJson(jobId));
+      assertEquals("Mở đầu", stagedPreview.path("chapters").get(0).path("title").asText());
+      assertEquals("Chương một", stagedPreview.path("chapters").get(1).path("title").asText());
+      assertEquals("Chương hai", stagedPreview.path("chapters").get(2).path("title").asText());
+      assertEquals(
+          "heading",
+          stagedPreview.path("chapters").get(1).path("segments").get(0).path("kind").asText());
+      assertTrue(importParsePreviewJson(jobId).contains("nhãn liên kết"));
+      assertTrue(importParsePreviewJson(jobId).contains("mô tả bìa"));
+      assertFalse(importParsePreviewJson(jobId).contains("private.example"));
+      assertFalse(importParsePreviewJson(jobId).contains("không lưu script"));
+      assertEquals(
+          "MARKDOWN_FORMATTING_NORMALIZED",
+          stagedPreview.path("warnings").get(0).path("code").asText());
+      assertEquals(
+          "MARKDOWN_CHAPTERS_FROM_HEADINGS",
+          stagedPreview.path("warnings").get(1).path("code").asText());
+
+      MvcResult preview =
+          mockMvc
+              .perform(get("/api/v1/imports/{id}/preview", jobId).cookie(actorCookie))
+              .andReturn();
+      assertEquals(200, preview.getResponse().getStatus());
+      String etag = preview.getResponse().getHeader("ETag");
+      MvcResult committed =
+          mockMvc
+              .perform(
+                  post("/api/v1/imports/{id}/commit", jobId)
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                      .header("If-Match", etag)
+                      .header("Idempotency-Key", "markdown-import-commit-0001"))
+              .andReturn();
+      assertEquals(201, committed.getResponse().getStatus());
+      JsonNode work = objectMapper.readTree(committed.getResponse().getContentAsString());
+      assertEquals("Thành phố mưa", work.path("title").asText());
+      assertEquals(3, work.path("chapterCount").asInt());
+      UUID workId = UUID.fromString(work.path("id").asText());
+      assertEquals(3, revisionCountForWork(workId));
+      assertEquals(5, segmentCountForWork(workId));
+      assertEquals("markdown", revisionSourceFormatForWork(workId));
+      assertTrue(revisionContentForWork(workId).contains("nhãn liên kết"));
+      assertTrue(revisionContentForWork(workId).contains("mô tả bìa"));
+      assertFalse(revisionContentForWork(workId).contains("private.example"));
+      assertFalse(revisionContentForWork(workId).contains("window.secret"));
+      assertEquals("md-c0-s1", firstSegmentAnchorForWork(workId));
+      assertEquals("committed", importJobStatus(jobId));
+      assertEquals("committed", importParseJobStatus(jobId));
+    } finally {
+      importStagingFileStore.delete(jobId);
+      deleteImportJobs(actorId);
+      deleteImportRightsTestAcceptances(actorId);
+      deleteImportedWorksForLibrary(library.id());
+      deleteLibrary(library.id());
+      deleteImportRightsTestStatement(version);
+      deleteSessionTestUser(actorId);
+      deleteSessionTestUser(approverId);
+    }
+  }
+
+  @Test
   void expiredImportStagingIsDeletedAndFailedCleanupCanRetry() throws Exception {
     UUID actorId = createSessionTestUser("Import Retention Owner");
     UUID approverId = createSessionTestUser("Import Retention Approver");

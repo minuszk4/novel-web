@@ -72,7 +72,7 @@ public class ImportContentValidator {
       if (!matchesDeclaredType(declaredContentType, expectedTypes)) {
         throw new InvalidContentException("Declared MIME type does not match the file extension");
       }
-      validateText(path, html);
+      validateText(path, html, extension.equals("txt"));
     } else {
       throw new InvalidContentException("Unsupported import extension");
     }
@@ -86,9 +86,15 @@ public class ImportContentValidator {
     return expectedTypes.contains(normalized);
   }
 
-  private void validateText(Path path, boolean html) throws IOException, InvalidContentException {
+  private void validateText(Path path, boolean html, boolean rejectHtmlForPlainText)
+      throws IOException, InvalidContentException {
     if (html && Files.size(path) > HtmlDocumentParser.MAX_SOURCE_BYTES) {
       throw new InvalidContentException("HTML document exceeds its parser byte limit");
+    }
+    String extension = extension(path.getFileName().toString());
+    if (Set.of("md", "markdown").contains(extension)
+        && Files.size(path) > MarkdownDocumentParser.MAX_SOURCE_BYTES) {
+      throw new InvalidContentException("Markdown document exceeds its parser byte limit");
     }
     long deadline = deadline();
     CharsetDecoder decoder =
@@ -123,7 +129,7 @@ public class ImportContentValidator {
     if (html && !hasHtmlStart(prefix)) {
       throw new InvalidContentException("HTML extension does not match the text content");
     }
-    if (!html && hasHtmlStart(prefix)) {
+    if (rejectHtmlForPlainText && hasHtmlStart(prefix)) {
       throw new InvalidContentException("Text extension does not match HTML content");
     }
   }

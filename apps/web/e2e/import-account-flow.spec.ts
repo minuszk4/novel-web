@@ -61,11 +61,12 @@ function preview(
   chapterOrder = chapterIds,
   singleChapter = false,
   singleChapterWarningCode = 'TXT_SINGLE_CHAPTER',
+  chapterNames = ['Khởi đầu', 'Vào núi'],
+  warningCodes = singleChapter ? [singleChapterWarningCode] : [],
 ) {
-  const chapterNames = new Map([
-    [chapterIds[0], 'Khởi đầu'],
-    [chapterIds[1], 'Vào núi'],
-  ]);
+  const chapterTitles = new Map(
+    chapterIds.map((id, index) => [id, chapterNames[index] ?? 'Chương']),
+  );
   return {
     importId,
     version: title === 'Sơn Hà' ? 1 : 2,
@@ -78,12 +79,10 @@ function preview(
       : chapterOrder.map((id, index) => ({
           id,
           ordinal: index + 1,
-          title: chapterNames.get(id) ?? 'Chương',
+          title: chapterTitles.get(id) ?? 'Chương',
         })),
     nextCursor: null,
-    warnings: singleChapter
-      ? [{ code: singleChapterWarningCode, message: 'One source document stays in one chapter.' }]
-      : [],
+    warnings: warningCodes.map((code) => ({ code, message: 'Markdown structure was normalized.' })),
   };
 }
 
@@ -96,6 +95,8 @@ async function installAccountRoutes(
     parseFailure?: boolean;
     singleChapter?: boolean;
     singleChapterWarningCode?: string;
+    chapterNames?: string[];
+    warningCodes?: string[];
   } = {},
 ): Promise<{
   events: string[];
@@ -271,7 +272,14 @@ async function installAccountRoutes(
     const title = isUpdated ? String(patchBodies.at(-1)?.['title']) : 'Sơn Hà';
     await json(
       route,
-      preview(title, order, options.singleChapter, options.singleChapterWarningCode),
+      preview(
+        title,
+        order,
+        options.singleChapter,
+        options.singleChapterWarningCode,
+        options.chapterNames,
+        options.warningCodes,
+      ),
       200,
       { ETag: isUpdated ? secondEtag : firstEtag },
     );
@@ -605,7 +613,7 @@ test('account import accepts a UTF-8 TXT file and hands it to the private parser
   const api = await installAccountRoutes(page, { singleChapter: true });
   await page.setViewportSize({ width: 360, height: 800 });
   await page.goto('/app/import');
-  await expect(page.getByText('TXT UTF-8 hoặc tài liệu HTML.', { exact: false })).toBeVisible();
+  await expect(page.getByText('TXT, HTML hoặc Markdown UTF-8.', { exact: false })).toBeVisible();
   await expect(page.locator('#work-file')).toHaveAttribute('accept', /\.txt/);
 
   await page.locator('#work-file').setInputFiles({
@@ -642,7 +650,7 @@ test('account import accepts a single HTML document and reviews it as one privat
   });
   await page.setViewportSize({ width: 360, height: 800 });
   await page.goto('/app/import');
-  await expect(page.getByText('hoặc tài liệu HTML.', { exact: false })).toBeVisible();
+  await expect(page.getByText('TXT, HTML hoặc Markdown UTF-8.', { exact: false })).toBeVisible();
   await expect(page.locator('#work-file')).toHaveAttribute('accept', /\.html/);
   await expect(page.locator('#work-file')).toHaveAttribute('accept', /\.htm/);
 
@@ -673,6 +681,62 @@ test('account import accepts a single HTML document and reviews it as one privat
     contentType: 'text/html',
   });
   expect(api.events).toEqual(['rights', 'accept', 'create', 'upload', 'parse']);
+  await expectNoAxeViolations(page);
+});
+
+test('account import accepts Markdown and reviews chapters derived from repeated headings', async ({
+  page,
+}) => {
+  const api = await installAccountRoutes(page, {
+    chapterNames: ['Chapter One', 'Chapter Two'],
+    warningCodes: ['MARKDOWN_FORMATTING_NORMALIZED', 'MARKDOWN_CHAPTERS_FROM_HEADINGS'],
+  });
+  await page.setViewportSize({ width: 360, height: 800 });
+  await page.goto('/app/import');
+  await expect(page.getByText('Markdown UTF-8', { exact: false })).toBeVisible();
+  await expect(page.locator('#work-file')).toHaveAttribute('accept', /\.md/);
+  await expect(page.locator('#work-file')).toHaveAttribute('accept', /\.markdown/);
+
+  await page.locator('#work-file').setInputFiles({
+    name: 'thanh-pho-mua.md',
+    mimeType: 'text/markdown',
+    buffer: Buffer.from(
+      '# Thành phố mưa\n\n## Chapter One\n\nMở đầu.\n\n## Chapter Two\n\nTiếp tục.',
+      'utf8',
+    ),
+  });
+  await expect(page.locator('.selected-file')).toContainText('thanh-pho-mua.md');
+  await page.locator('.account-rights-check').click();
+  await page.getByRole('button', { name: 'Tải lên và phân tích' }).click();
+
+  await expect(page).toHaveURL(/\/app\/import\/review$/);
+  await expect(page.locator('.large-file-type')).toHaveText('MD');
+  await expect(page.locator('.import-chapter-list')).toContainText('Chapter One');
+  await expect(page.locator('.import-chapter-list')).toContainText('Chapter Two');
+  await expect(page.locator('.import-warning-list')).toContainText('được dùng để chia chương');
+  expect(api.createBodies[0]?.['source']).toMatchObject({
+    kind: 'upload',
+    filename: 'thanh-pho-mua.md',
+    contentType: 'text/markdown',
+  });
+  expect(api.events).toEqual(['rights', 'accept', 'create', 'upload', 'parse']);
+  await expectNoAxeViolations(page);
+});
+
+test('account import rejects Markdown larger than the parser limit before upload', async ({
+  page,
+}) => {
+  const api = await installAccountRoutes(page);
+  await page.setViewportSize({ width: 360, height: 800 });
+  await page.goto('/app/import');
+  await page.locator('#work-file').setInputFiles({
+    name: 'oversized.md',
+    mimeType: 'text/markdown',
+    buffer: Buffer.alloc(16 * 1024 * 1024 + 1, 0x20),
+  });
+  await expect(page.locator('.field-error')).toContainText('không vượt quá 16 MiB');
+  await expect(page.locator('.selected-file')).toHaveCount(0);
+  expect(api.createBodies).toHaveLength(0);
   await expectNoAxeViolations(page);
 });
 

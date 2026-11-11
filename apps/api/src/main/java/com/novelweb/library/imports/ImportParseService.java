@@ -28,6 +28,7 @@ public class ImportParseService {
   private final EpubPackageParser epubPackageParser;
   private final PlainTextParser plainTextParser;
   private final HtmlDocumentParser htmlDocumentParser;
+  private final MarkdownDocumentParser markdownDocumentParser;
   private final ObjectMapper objectMapper;
 
   public ImportParseService(
@@ -36,12 +37,14 @@ public class ImportParseService {
       EpubPackageParser epubPackageParser,
       PlainTextParser plainTextParser,
       HtmlDocumentParser htmlDocumentParser,
+      MarkdownDocumentParser markdownDocumentParser,
       ObjectMapper objectMapper) {
     this.repository = repository;
     this.fileStore = fileStore;
     this.epubPackageParser = epubPackageParser;
     this.plainTextParser = plainTextParser;
     this.htmlDocumentParser = htmlDocumentParser;
+    this.markdownDocumentParser = markdownDocumentParser;
     this.objectMapper = objectMapper;
   }
 
@@ -129,6 +132,8 @@ public class ImportParseService {
       fail(claim, exception.code());
     } catch (HtmlDocumentParser.HtmlParseException exception) {
       fail(claim, exception.code());
+    } catch (MarkdownDocumentParser.MarkdownParseException exception) {
+      fail(claim, exception.code());
     } catch (ImportContentValidator.InvalidContentException exception) {
       fail(claim, "IMPORT_CONTENT_INVALID");
     } catch (IOException exception) {
@@ -155,6 +160,10 @@ public class ImportParseService {
       return htmlDocumentParser.parse(
           source, claim.filename(), claim.contentType(), claim.parserVersion());
     }
+    if (filename.endsWith(".md") || filename.endsWith(".markdown")) {
+      return markdownDocumentParser.parse(
+          source, claim.filename(), claim.contentType(), claim.parserVersion());
+    }
     throw new EpubPackageParser.EpubParseException(
         "IMPORT_FORMAT_UNSUPPORTED", "The uploaded file format is not enabled for parsing.");
   }
@@ -166,6 +175,9 @@ public class ImportParseService {
     if (normalized.endsWith(".txt")) return PlainTextParser.PARSER_VERSION;
     if (normalized.endsWith(".html") || normalized.endsWith(".htm")) {
       return HtmlDocumentParser.PARSER_VERSION;
+    }
+    if (normalized.endsWith(".md") || normalized.endsWith(".markdown")) {
+      return MarkdownDocumentParser.PARSER_VERSION;
     }
     return "unsupported-v1";
   }

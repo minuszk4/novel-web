@@ -9,6 +9,7 @@ const importsUrl = '/api/v1/imports';
 const csrfUrl = '/api/v1/auth/csrf';
 export const maxAccountImportBytes = 50 * 1024 * 1024;
 export const maxHtmlImportBytes = 4 * 1024 * 1024;
+export const maxMarkdownImportBytes = 16 * 1024 * 1024;
 const previewPageSize = 100;
 const apiTimeoutMs = 10_000;
 const uploadTimeoutMs = 120_000;
@@ -904,6 +905,11 @@ function parseWarnings(value: unknown): ImportWarning[] {
   const localizedMessages: Record<string, string> = {
     HTML_SINGLE_DOCUMENT:
       'Tài liệu HTML được giữ thành một chương vì một tệp không có ranh giới chương đáng tin cậy.',
+    MARKDOWN_FORMATTING_NORMALIZED:
+      'Định dạng Markdown được chuyển thành văn bản riêng tư; nhãn liên kết và mô tả ảnh được giữ, còn địa chỉ và HTML thô bị loại bỏ.',
+    MARKDOWN_SINGLE_DOCUMENT:
+      'Không tìm thấy tiêu đề lặp để chia chương, nên tài liệu Markdown được giữ thành một chương.',
+    MARKDOWN_CHAPTERS_FROM_HEADINGS: 'Các tiêu đề Markdown lặp cùng cấp được dùng để chia chương.',
     TXT_SINGLE_CHAPTER:
       'Tệp TXT được giữ thành một chương vì không có cấu trúc chương đáng tin cậy.',
   };

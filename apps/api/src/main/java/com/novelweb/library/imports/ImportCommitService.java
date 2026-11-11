@@ -365,6 +365,7 @@ public class ImportCommitService {
         switch (parserVersion) {
           case "txt-v1" -> "plain_text";
           case "html-v1" -> "xhtml";
+          case "markdown-v1" -> "markdown";
           default -> "epub_xhtml";
         };
     try (PreparedStatement insert =
@@ -400,6 +401,7 @@ public class ImportCommitService {
             switch (parserVersion) {
               case "txt-v1" -> "txt";
               case "html-v1" -> "html";
+              case "markdown-v1" -> "md";
               default -> "epub";
             };
         insert.setString(
@@ -426,7 +428,8 @@ public class ImportCommitService {
   private static boolean supportedParser(String parserVersion) {
     return "epub3-v2".equals(parserVersion)
         || "txt-v1".equals(parserVersion)
-        || "html-v1".equals(parserVersion);
+        || "html-v1".equals(parserVersion)
+        || "markdown-v1".equals(parserVersion);
   }
 
   private static List<NormalizedSegment> normalizeSegments(

@@ -278,6 +278,10 @@ public class ImportCreationService {
         && command.source().sizeBytes() > HtmlDocumentParser.MAX_SOURCE_BYTES) {
       return Validation.failure(Outcome.FILE_TOO_LARGE);
     }
+    if (Set.of("md", "markdown").contains(extension)
+        && command.source().sizeBytes() > MarkdownDocumentParser.MAX_SOURCE_BYTES) {
+      return Validation.failure(Outcome.FILE_TOO_LARGE);
+    }
     String contentType = normalizeContentType(command.source().contentType());
     if (contentType != null && contentType.length() > 160) {
       return Validation.failure(Outcome.FILE_METADATA_INVALID);

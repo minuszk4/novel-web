@@ -80,6 +80,30 @@ class ImportContentValidatorTests {
   }
 
   @Test
+  void validatesMarkdownUtf8MimeAndItsParserByteLimit() throws IOException {
+    Path valid =
+        write("story.md", "# Story\n\nA **private** chapter.".getBytes(StandardCharsets.UTF_8));
+    Path rawHtml =
+        write(
+            "raw-html.md",
+            "<script>raw HTML remains inert and is discarded</script>"
+                .getBytes(StandardCharsets.UTF_8));
+    Path oversized = temporaryDirectory.resolve("oversized.md");
+    try (var output = Files.newOutputStream(oversized)) {
+      output.write(new byte[(int) MarkdownDocumentParser.MAX_SOURCE_BYTES + 1]);
+    }
+
+    assertDoesNotThrow(() -> validator.validate(valid, "story.md", "text/markdown; charset=utf-8"));
+    assertDoesNotThrow(() -> validator.validate(rawHtml, "raw-html.md", "text/markdown"));
+    assertThrows(
+        ImportContentValidator.InvalidContentException.class,
+        () -> validator.validate(valid, "story.md", "application/epub+zip"));
+    assertThrows(
+        ImportContentValidator.InvalidContentException.class,
+        () -> validator.validate(oversized, "oversized.md", "text/markdown"));
+  }
+
+  @Test
   void acceptsOnlyEpubWithFirstStoredMimetypeAndContainerDocument() throws IOException {
     Path valid = writeEpub("valid.epub", safeEntries());
     List<ArchiveEntry> missingMimetype =

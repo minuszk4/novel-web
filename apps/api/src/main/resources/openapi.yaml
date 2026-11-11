@@ -1,16 +1,17 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 4.4.0
+  version: 4.5.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
     implemented only in the configured PostgreSQL profile. The import-rights statement read and acceptance routes
     are also implemented in that profile; private job creation and local staging upload are now implemented too.
     Import staging applies actor-scoped active-job/declared-byte quotas and persistent create/upload token buckets;
-    HTML documents have a stricter 4 MiB source limit than the configured general upload limit.
-    EPUB 3, bounded UTF-8 TXT and single-document HTML parse queue/status, private-preview persistence/edit and atomic private import
-    commit are implemented. Source-only Reader manifest and chapter-content routes are implemented in the PostgreSQL profile;
+    HTML documents have a 4 MiB source limit and Markdown has a 16 MiB source limit, both lower than the configured general upload limit.
+    EPUB 3, bounded UTF-8 TXT and single-document HTML/Markdown parse queue/status, private-preview persistence/edit and atomic private import
+    commit are implemented. Markdown uses CommonMark core only, strips raw HTML and link destinations, and derives chapter boundaries from repeated top-level headings.
+    Source-only Reader manifest and chapter-content routes are implemented in the PostgreSQL profile;
     progress, bookmarks, preferences and history operations tagged planned describe the remaining G2 target.
 servers:
   - url: http://127.0.0.1:8080
@@ -1118,7 +1119,7 @@ paths:
         The server derives the actor from the active session, requires current Terms and Privacy acceptance, confirms
         the current approved rights version, locks and consumes an actor-bound one-time receipt, checks library write
         access and validates supported filename/MIME hints and the configured size limit in one PostgreSQL transaction.
-        HTML/HTM documents have an additional 4 MiB cap before a staging job is created.
+        HTML/HTM documents have an additional 4 MiB cap and Markdown files have an additional 16 MiB cap before a staging job is created.
         A PostgreSQL user-row lock serializes active-job and declared-byte quota checks; rejected quota requests do not
         consume the rights receipt. Existing matching receipt retries remain idempotent and rotate the upload token.
         Per-actor create requests use a persistent token bucket. Rate-limited responses include Retry-After.
@@ -1126,7 +1127,7 @@ paths:
         target includes a random one-time token; only its SHA-256 is persisted. Retrying the same receipt and metadata
         returns the same pending job with a rotated target token. A changed request cannot reuse the receipt. Browser
         filename, MIME type and declared size remain untrusted; bytes are checked against the declared length when
-        uploaded. UTF-8 text/HTML content is checked against its extension; EPUB must have the required first stored
+        uploaded. UTF-8 TXT/HTML/Markdown content is checked against its extension; EPUB must have the required first stored
         mimetype entry and container document. ZIP entry count, path traversal/depth, per-entry and total expanded
         bytes, compression ratio and validation time are bounded before the job is marked uploaded. This is a safe
         envelope check, not full EPUB/package parsing. Local filesystem staging is intended for the single-node
@@ -1177,7 +1178,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Problem'
         '413':
-          description: The declared file size exceeds the configured upload maximum or the 4 MiB HTML/HTM parser limit; no job or upload target is created.
+          description: The declared file size exceeds the configured upload maximum, 4 MiB HTML/HTM limit or 16 MiB Markdown limit; no job or upload target is created.
           content:
             application/problem+json:
               schema:
@@ -1275,7 +1276,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Problem'
         '422':
-          description: The byte count mismatches the declaration, text encoding/type does not match, HTML exceeds its 4 MiB parser limit, or EPUB fails archive safety checks. The file is deleted and the one-time target remains available for a corrected retry.
+          description: The byte count mismatches the declaration, text encoding/type does not match, HTML exceeds 4 MiB, Markdown exceeds 16 MiB or EPUB fails archive safety checks. The file is deleted and the one-time target remains available for a corrected retry.
           content:
             application/problem+json:
               schema:
@@ -1331,9 +1332,16 @@ paths:
       description: >-
         Verifies owner access, staged-object availability and the accepted size/SHA-256 before queuing a durable
         PostgreSQL parser job. A separate worker rechecks the digest and content safety bounds, parses outside the
-        request transaction and atomically stores a bounded private EPUB 3, UTF-8 TXT or single-document HTML preview,
+        request transaction and atomically stores a bounded private EPUB 3, UTF-8 TXT, single-document HTML or Markdown preview,
         based on the uploaded extension and immutable parser version. TXT becomes one chapter and emits TXT_SINGLE_CHAPTER;
         HTML becomes one chapter, strips active/non-content markup without executing or fetching it, and emits HTML_SINGLE_DOCUMENT.
+        Markdown uses CommonMark 0.32.0 core without GFM extensions, supports strict UTF-8 Markdown files up to 16 MiB,
+        removes raw HTML and link destinations, keeps link labels/image alt text and uses the shallowest repeated top-level
+        heading level as chapter boundaries. A leading shallower heading supplies the work title and preamble text becomes
+        an opening chapter. Without repeated headings the document remains one chapter and emits MARKDOWN_SINGLE_DOCUMENT.
+        Formatting normalization emits MARKDOWN_FORMATTING_NORMALIZED. Processing bounds include 30 seconds, 50,000 AST
+        nodes, depth 128, 2,000 chapters, 5,000 segments, 4,000 code points/16 KiB per segment, 384 KiB of normalized text
+        and a 1 MiB serialized preview.
         Repeated calls for one import
         return the same parse state. Does not publish or commit a work. Preview data is deleted when the staging
         import expires.
@@ -1510,9 +1518,10 @@ paths:
       summary: Atomically commit a ready import as a private work
       description: >-
         Requires an owned, successfully parsed job, the unchanged strong preview ETag and an Idempotency-Key.
-        The commit path accepts normalized source content from parser schemas epub3-v2, txt-v1 and html-v1; older or
+        The commit path accepts normalized source content from parser schemas epub3-v2, txt-v1, html-v1 and markdown-v1; older or
         unsupported parser results must be imported again. TXT revisions use source_format plain_text and stable
-        txt-* segment anchors; HTML revisions use xhtml and html-* anchors; EPUB revisions use epub_xhtml and epub-* anchors.
+        txt-* segment anchors; HTML revisions use xhtml and html-* anchors; Markdown revisions use markdown and md-* anchors;
+        EPUB revisions use epub_xhtml and epub-* anchors.
         In one PostgreSQL transaction, rechecks current policy, rights receipt/version and library write access;
         copies normalized source segments into private work/chapter/revision rows; records the idempotency result;
         and clears private preview staging JSON. Replaying the same user/key/request returns the same work with
@@ -2531,7 +2540,7 @@ components:
         contentType:
           type: [string, 'null']
           maxLength: 160
-          description: Browser-declared MIME hint; allowlisted during target creation and verified against bytes before parsing.
+          description: Browser-declared MIME hint; Markdown accepts text/markdown, text/x-markdown, text/plain or application/octet-stream, and all hints are checked against the file extension and bytes.
         sizeBytes:
           type: integer
           minimum: 1
