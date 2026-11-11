@@ -2,10 +2,8 @@ package com.novelweb.identity.auth;
 
 import com.novelweb.platform.web.CorrelationIdFilter;
 import jakarta.servlet.http.HttpServletRequest;
-import java.net.InetAddress;
 import java.net.URI;
 import java.net.URISyntaxException;
-import java.net.UnknownHostException;
 import java.time.Instant;
 import java.util.UUID;
 import org.springframework.beans.factory.annotation.Value;
@@ -31,18 +29,21 @@ public class GoogleSignInBootstrapController {
   private final String webClientId;
   private final String rateLimitHmacKey;
   private final URI credentialCallbackUri;
+  private final TrustedProxyClientAddressResolver clientAddressResolver;
 
   public GoogleSignInBootstrapController(
       GoogleAuthAttemptService authAttemptService,
       GoogleAuthBootstrapRateLimiter rateLimiter,
       @Value("${novel.auth.google.web-client-id:}") String webClientId,
       @Value("${novel.auth.google.credential-callback-uri:}") String credentialCallbackUri,
-      @Value("${novel.auth.google.rate-limit-hmac-key:}") String rateLimitHmacKey) {
+      @Value("${novel.auth.google.rate-limit-hmac-key:}") String rateLimitHmacKey,
+      @Value("${novel.auth.google.trusted-proxies:}") String trustedProxyCidrs) {
     this.authAttemptService = authAttemptService;
     this.rateLimiter = rateLimiter;
     this.webClientId = webClientId == null ? "" : webClientId.trim();
     this.rateLimitHmacKey = rateLimitHmacKey == null ? "" : rateLimitHmacKey.trim();
     this.credentialCallbackUri = parseCredentialCallbackUri(credentialCallbackUri);
+    this.clientAddressResolver = new TrustedProxyClientAddressResolver(trustedProxyCidrs);
   }
 
   @GetMapping("/bootstrap")
@@ -62,9 +63,9 @@ public class GoogleSignInBootstrapController {
     final byte[] clientAddress;
     final byte[] clientKeyHash;
     try {
-      clientAddress = InetAddress.getByName(request.getRemoteAddr()).getAddress();
+      clientAddress = clientAddressResolver.resolve(request);
       clientKeyHash = GoogleAuthRateLimitKeyHasher.hash(clientAddress, rateLimitHmacKey);
-    } catch (UnknownHostException | IllegalArgumentException exception) {
+    } catch (IllegalArgumentException exception) {
       return problem(
           HttpStatus.SERVICE_UNAVAILABLE,
           "AUTH_PROVIDER_UNAVAILABLE",

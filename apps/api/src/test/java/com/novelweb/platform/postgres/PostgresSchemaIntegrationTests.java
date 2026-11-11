@@ -105,6 +105,7 @@ import tools.jackson.databind.ObjectMapper;
     properties = {
       "novel.auth.google.rate-limit-refill-interval=24h",
       "novel.auth.google.rate-limit-hmac-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "novel.auth.google.trusted-proxies=10.0.0.0/8",
       "novel.auth.google.web-client-id=novel-web-integration-test.apps.googleusercontent.com",
       "novel.auth.google.credential-callback-uri=https://api.example.test/api/v1/auth/google/credential",
       "novel.security.csrf.hmac-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
@@ -4661,6 +4662,60 @@ class PostgresSchemaIntegrationTests {
                   .asText()
                   .contains("wait"));
         }
+      }
+    } finally {
+      deleteBootstrapFixtures(clientAddress, correlationIds);
+    }
+  }
+
+  @Test
+  void googleBootstrapHttpEndpointUsesForwardedAddressOnlyFromTrustedProxies() throws Exception {
+    String clientAddress = bootstrapTestClientAddress();
+    List<UUID> correlationIds = new ArrayList<>();
+    try {
+      for (int index = 0; index < 11; index++) {
+        String proxyAddress = index % 2 == 0 ? "10.1.0.10" : "10.1.0.11";
+        MvcResult result =
+            mockMvc
+                .perform(
+                    get("/api/v1/auth/google/bootstrap")
+                        .header("X-Forwarded-For", clientAddress)
+                        .with(
+                            request -> {
+                              request.setRemoteAddr(proxyAddress);
+                              return request;
+                            }))
+                .andReturn();
+        UUID correlationId = UUID.fromString(result.getResponse().getHeader("X-Correlation-Id"));
+        correlationIds.add(correlationId);
+        assertEquals(index < 10 ? 200 : 429, result.getResponse().getStatus());
+      }
+    } finally {
+      deleteBootstrapFixtures(clientAddress, correlationIds);
+    }
+  }
+
+  @Test
+  void googleBootstrapHttpEndpointIgnoresSpoofedForwardedAddressFromUntrustedPeer()
+      throws Exception {
+    String clientAddress = bootstrapTestClientAddress();
+    List<UUID> correlationIds = new ArrayList<>();
+    try {
+      for (int index = 0; index < 11; index++) {
+        MvcResult result =
+            mockMvc
+                .perform(
+                    get("/api/v1/auth/google/bootstrap")
+                        .header("X-Forwarded-For", "198.51.100." + (index + 1))
+                        .with(
+                            request -> {
+                              request.setRemoteAddr(clientAddress);
+                              return request;
+                            }))
+                .andReturn();
+        UUID correlationId = UUID.fromString(result.getResponse().getHeader("X-Correlation-Id"));
+        correlationIds.add(correlationId);
+        assertEquals(index < 10 ? 200 : 429, result.getResponse().getStatus());
       }
     } finally {
       deleteBootstrapFixtures(clientAddress, correlationIds);

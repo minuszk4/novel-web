@@ -20,6 +20,7 @@ novel:
     google:
       rate-limit-hmac-key: ${GOOGLE_AUTH_RATE_LIMIT_HMAC_KEY:}
       rate-limit-refill-interval: ${GOOGLE_AUTH_RATE_LIMIT_REFILL_INTERVAL:6s}
+      trusted-proxies: ${GOOGLE_AUTH_TRUSTED_PROXIES:}
       web-client-id: ${GOOGLE_AUTH_WEB_CLIENT_ID:}
       credential-callback-uri: ${GOOGLE_AUTH_CREDENTIAL_CALLBACK_URI:}
   identity:
