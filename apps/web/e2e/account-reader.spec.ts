@@ -9,6 +9,12 @@ const chapterIds = [
   '99999999-9999-4999-8999-999999999999',
 ];
 const revisionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const hostileMarkup = [
+  '<img src="https://reader-xss.invalid/pixel.png" onerror="window.readerInjected=true">',
+  '<svg onload="window.readerInjected=true"><script>window.readerInjected=true</script><image href="https://reader-xss.invalid/vector.svg"></image></svg>',
+  '<iframe src="https://reader-xss.invalid/frame"></iframe>',
+  '<a href="javascript:window.readerInjected=true">run script</a>',
+];
 
 const currentUser = {
   user: {
@@ -115,11 +121,11 @@ async function installReaderRoutes(page: Page, manifestStatus = 200): Promise<st
         segments: [
           { anchor: 'ch1-h1', type: 'heading', sourceText: 'Ngày đầu tiên' },
           { anchor: 'ch1-p1', type: 'paragraph', sourceText: 'Một đoạn văn bản riêng tư.' },
-          {
-            anchor: 'ch1-p2',
+          ...hostileMarkup.map((sourceText, index) => ({
+            anchor: `ch1-xss-${index + 1}`,
             type: 'paragraph',
-            sourceText: '<img src=x onerror="window.readerInjected=true">',
-          },
+            sourceText,
+          })),
         ],
         nextSegmentCursor: null,
       });
@@ -147,6 +153,12 @@ for (const viewport of viewports) {
     page,
   }) => {
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    const unexpectedExternalRequests: string[] = [];
+    page.on('request', (request) => {
+      if (new URL(request.url()).hostname === 'reader-xss.invalid') {
+        unexpectedExternalRequests.push(request.url());
+      }
+    });
     const loadedChapters = await installReaderRoutes(page);
     await page.goto(`/app/reader/${workId}`);
 
@@ -154,7 +166,13 @@ for (const viewport of viewports) {
     await expect(page.getByText('Một đoạn văn bản riêng tư.')).toBeVisible();
     await expect(page.locator('.reader-account-private')).toContainText('THƯ VIỆN TÀI KHOẢN');
     await expect(page.getByText('Tiến độ và dấu trang chưa đồng bộ')).toBeVisible();
-    await expect(page.locator('.reader-body img')).toHaveCount(0);
+    for (const payload of hostileMarkup) {
+      await expect(page.locator('.reader-body').getByText(payload, { exact: true })).toBeVisible();
+    }
+    await expect(
+      page.locator('.reader-body img, .reader-body svg, .reader-body script, .reader-body iframe'),
+    ).toHaveCount(0);
+    expect(unexpectedExternalRequests).toEqual([]);
     expect(
       await page.evaluate(() => (window as Window & { readerInjected?: boolean }).readerInjected),
     ).toBeUndefined();
