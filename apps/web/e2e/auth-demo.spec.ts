@@ -61,6 +61,13 @@ for (const viewport of viewports) {
     page,
   }, testInfo) => {
     await routeBootstrap(page, 503);
+    await page.route('**/api/v1/system/status**', (route) =>
+      route.fulfill({
+        status: 503,
+        contentType: 'application/json',
+        body: JSON.stringify({ code: 'API_UNAVAILABLE' }),
+      }),
+    );
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
     await page.goto('/sign-in');
 
@@ -75,6 +82,11 @@ for (const viewport of viewports) {
 
     await page.getByRole('link', { name: 'Tiếp tục với bản demo' }).click();
     await expect(page).toHaveURL(/\/app\/setup$/);
+    const apiStatusRetry = page.locator('.demo-banner .status-retry');
+    await expect(apiStatusRetry).toBeVisible();
+    const retryBounds = await apiStatusRetry.boundingBox();
+    expect(retryBounds?.width).toBeGreaterThanOrEqual(44);
+    expect(retryBounds?.height).toBeGreaterThanOrEqual(44);
     const setupHeading = page.getByRole('heading', { name: 'Một vài điều cần biết' });
     await expect(setupHeading).toBeFocused();
     await expect(setupHeading).toHaveCSS('outline-style', 'solid');

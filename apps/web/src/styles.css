@@ -1244,9 +1244,11 @@ label:has(input:focus-visible) {
 }
 .demo-banner .status-retry {
   flex: 0 0 auto;
+  min-width: 44px;
+  min-height: 44px;
   border: 1px solid #c8b47e;
   border-radius: 999px;
-  padding: 5px 10px;
+  padding: 8px 10px;
   color: #604d20;
   background: transparent;
   font: inherit;
@@ -4545,7 +4547,7 @@ label:has(input:focus-visible) {
   }
   .consent-row {
     gap: 9px;
-    padding: 13px 11px;
+    padding: 12px 11px;
   }
   .consent-copy strong {
     font-size: 11px;
@@ -4657,7 +4659,7 @@ label:has(input:focus-visible) {
     padding: 6px 10px max(7px, env(safe-area-inset-bottom));
   }
   .reader-chapter-nav {
-    min-height: 36px;
+    min-height: 44px;
   }
   .reader-bottom-center {
     grid-column: 1 / -1;
@@ -4672,16 +4674,16 @@ label:has(input:focus-visible) {
     gap: 4px;
   }
   .reader-bottom-actions .button {
-    min-height: 36px;
+    min-height: 44px;
     padding-inline: 9px;
   }
   .account-reader-app .reader-bottom-actions .button {
-    min-height: 40px;
+    min-height: 44px;
     padding-inline: 7px;
     font-size: 8px;
   }
   .bookmark-button {
-    min-height: 36px;
+    min-height: 44px;
     font-size: 8px;
   }
   .reader-latest-label {
@@ -4690,6 +4692,27 @@ label:has(input:focus-visible) {
   .reader-side-panel {
     top: 58px;
     bottom: 78px;
+  }
+  .reader-side-panel .icon-button {
+    width: 44px;
+    height: 44px;
+  }
+  .font-buttons button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+  .theme-picker button {
+    min-height: 44px;
+  }
+  .reset-reader-button {
+    min-height: 44px;
+  }
+  .reader-tool {
+    min-width: 44px;
+    min-height: 44px;
+  }
+  .reader-mode-switch button {
+    min-height: 44px;
   }
   .account-reader-app .account-reader-state {
     width: calc(100% - 24px);
@@ -4738,8 +4761,8 @@ label:has(input:focus-visible) {
     font-size: 11px;
   }
   .demo-banner {
-    align-items: flex-start;
     padding-inline: 13px;
+    padding-block: 0;
     font-size: 9px;
   }
   .demo-banner a {
@@ -4837,7 +4860,7 @@ label:has(input:focus-visible) {
     gap: 0;
   }
   .reader-tool {
-    min-width: 36px;
+    min-width: 44px;
     padding-inline: 4px;
   }
   .reader-tools .reader-tool:first-child > span:not([aria-hidden='true']) {
@@ -4860,7 +4883,7 @@ label:has(input:focus-visible) {
     gap: 0;
   }
   .reader-mode-switch button {
-    min-height: 26px;
+    min-height: 44px;
     padding-inline: 3px;
     font-size: 6px;
     white-space: nowrap;
@@ -4881,14 +4904,14 @@ label:has(input:focus-visible) {
     gap: 2px;
   }
   .reader-bottom-actions .button {
-    min-height: 36px;
+    min-height: 44px;
     padding-inline: 6px;
     font-size: 8px;
   }
   .reader-bottom-actions .bookmark-button {
-    width: 36px;
-    min-width: 36px;
-    min-height: 36px;
+    width: 44px;
+    min-width: 44px;
+    min-height: 44px;
     padding-inline: 0;
     justify-content: center;
   }

@@ -22,7 +22,14 @@ test('demo Reader controls reflow at a narrow 200%-equivalent viewport', async (
       const element = document.querySelector(selector);
       if (!element) throw new Error(`Missing element: ${selector}`);
       const box = element.getBoundingClientRect();
-      return { left: box.left, right: box.right, top: box.top, bottom: box.bottom };
+      return {
+        left: box.left,
+        right: box.right,
+        top: box.top,
+        bottom: box.bottom,
+        width: box.width,
+        height: box.height,
+      };
     };
     return {
       viewportWidth: innerWidth,
@@ -45,6 +52,8 @@ test('demo Reader controls reflow at a narrow 200%-equivalent viewport', async (
   ]) {
     expect(control.left).toBeGreaterThanOrEqual(0);
     expect(control.right).toBeLessThanOrEqual(bounds.viewportWidth);
+    expect(control.width).toBeGreaterThanOrEqual(44);
+    expect(control.height).toBeGreaterThanOrEqual(44);
   }
   expect(bounds.progress.top).toBeGreaterThanOrEqual(bounds.modeSwitch.bottom);
 
@@ -53,6 +62,30 @@ test('demo Reader controls reflow at a narrow 200%-equivalent viewport', async (
   await expect(
     page.getByRole('button', { name: 'Đã lưu dấu trang, bỏ dấu trang chương' }),
   ).toBeVisible();
+});
+
+test('Reader settings keep mobile touch controls at least 44 by 44 CSS pixels', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 360, height: 800 });
+  await page.goto('/read/demo-story/chapter-1');
+  await page.getByRole('button', { name: 'Cài đặt trình đọc' }).click();
+
+  const controls = [
+    page.getByRole('button', { name: 'Đóng cài đặt' }),
+    page.getByRole('button', { name: 'A−' }),
+    page.getByRole('button', { name: 'A+' }),
+    page.getByRole('button', { name: 'Sáng' }),
+    page.getByRole('button', { name: 'Sepia' }),
+    page.getByRole('button', { name: 'Tối' }),
+    page.getByRole('button', { name: 'Đặt lại mặc định' }),
+  ];
+
+  for (const control of controls) {
+    const bounds = await control.boundingBox();
+    expect(bounds?.width ?? 0).toBeGreaterThanOrEqual(44);
+    expect(bounds?.height ?? 0).toBeGreaterThanOrEqual(44);
+  }
 });
 
 test('empty home exposes the sample Reader without scrolling on mobile', async ({ page }) => {
