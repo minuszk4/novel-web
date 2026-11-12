@@ -7,8 +7,12 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $apiDirectory = Join-Path $repoRoot 'apps\api'
 $webDirectory = Join-Path $repoRoot 'apps\web'
-$evidenceDirectory = Join-Path $repoRoot (Join-Path '.ai\evidence' ("library-live-postgres-{0}" -f (Get-Date -Format 'yyyy-MM-dd')))
+$evidenceRunId = Get-Date -Format 'yyyy-MM-dd-HHmmss'
+$evidenceDirectory = Join-Path $repoRoot (Join-Path '.ai\evidence' ("library-live-postgres-{0}" -f $evidenceRunId))
 New-Item -ItemType Directory -Path $evidenceDirectory -Force | Out-Null
+$changelogDirectory = Join-Path $apiDirectory 'src\main\resources\db\changelog\changes'
+$expectedChangesets = @(Select-String -Path (Join-Path $changelogDirectory '*.sql') -Pattern '^\s*--changeset\s+').Count
+if ($expectedChangesets -lt 1) { throw 'No Liquibase changesets were found in the API source.' }
 
 $dockerCommand = Get-Command docker -ErrorAction SilentlyContinue
 $docker = if ($dockerCommand) { $dockerCommand.Source } else {
@@ -40,7 +44,8 @@ $environmentNames = @(
     'GOOGLE_AUTH_RATE_LIMIT_HMAC_KEY', 'NOVEL_CSRF_HMAC_KEY', 'NOVEL_LIBRARY_CURSOR_HMAC_KEY',
     'NOVEL_WEB_CORS_ALLOWED_ORIGINS', 'LIBRARY_LIVE_TEST_SESSION_TOKEN', 'LIBRARY_LIVE_TEST_LIBRARY_ID',
     'LIBRARY_LIVE_TEST_WORK_IDS', 'LIBRARY_LIVE_TEST_SCREENSHOT', 'READER_LIVE_TEST_WORK_ID',
-    'READER_LIVE_TEST_CHAPTER_ID', 'READER_LIVE_TEST_SCREENSHOT'
+    'READER_LIVE_TEST_CHAPTER_ID', 'READER_LIVE_TEST_SCREENSHOT',
+    'WORK_DETAIL_LIVE_TEST_SCREENSHOT'
 )
 $previousEnvironment = @{}
 foreach ($name in $environmentNames) {
@@ -74,6 +79,7 @@ $readerSourceHash = [Convert]::ToHexString(
 ).ToLowerInvariant()
 $screenshotPath = Join-Path $evidenceDirectory 'account-library-live.png'
 $readerScreenshotPath = Join-Path $evidenceDirectory 'account-reader-live.png'
+$workDetailScreenshotPath = Join-Path $evidenceDirectory 'account-work-detail-live.png'
 $buildLog = Join-Path $evidenceDirectory 'api-build.log'
 $apiStdout = Join-Path $evidenceDirectory 'api-stdout.log'
 $apiStderr = Join-Path $evidenceDirectory 'api-stderr.log'
@@ -139,14 +145,16 @@ try {
     $schemaReady = $false
     for ($attempt = 1; $attempt -le 30; $attempt++) {
         $changeCount = & $docker @composeArguments exec -T postgres psql -tA -U novelweb -d novelweb -c 'SELECT COUNT(*) FROM databasechangelog' 2>$null
-        if ($LASTEXITCODE -eq 0 -and ([string]$changeCount).Trim() -eq '73') {
-            $schemaReady = $true
-            $appliedChangesets = 73
-            break
+        if ($LASTEXITCODE -eq 0) {
+            $appliedChangesets = [int]([string]$changeCount).Trim()
+            if ($appliedChangesets -eq $expectedChangesets) {
+                $schemaReady = $true
+                break
+            }
         }
         Start-Sleep -Seconds 1
     }
-    if (-not $schemaReady) { throw 'The disposable PostgreSQL database did not reach the 73-changeset schema.' }
+    if (-not $schemaReady) { throw "The disposable PostgreSQL database did not reach the source schema with $expectedChangesets changesets." }
 
     $fixtureSql = @"
 BEGIN;
@@ -186,9 +194,10 @@ COMMIT;
     $env:READER_LIVE_TEST_WORK_ID = [string]$firstWorkId
     $env:READER_LIVE_TEST_CHAPTER_ID = [string]$readerChapterId
     $env:READER_LIVE_TEST_SCREENSHOT = $readerScreenshotPath
+    $env:WORK_DETAIL_LIVE_TEST_SCREENSHOT = $workDetailScreenshotPath
     Push-Location $webDirectory
     try {
-        & npm.cmd run test:e2e:postgres -- e2e/library-live-postgres.spec.ts e2e/reader-live-postgres.spec.ts *>&1 | Tee-Object -FilePath $e2eLog
+        & npm.cmd run test:e2e:postgres -- e2e/library-live-postgres.spec.ts e2e/reader-live-postgres.spec.ts e2e/work-detail-live-postgres.spec.ts *>&1 | Tee-Object -FilePath $e2eLog
         $e2eExit = $LASTEXITCODE
     } finally { Pop-Location }
     if ($e2eExit -ne 0) { throw "Live FE/API/PostgreSQL Playwright journey failed (exit $e2eExit)." }
@@ -221,20 +230,20 @@ COMMIT;
     }
     $duration = [math]::Round(((Get-Date) - $startedAt).TotalSeconds, 1)
     @(
-        '# Browser journey: frontend to PostgreSQL library and Reader'
+        '# Browser journey: frontend to PostgreSQL library, Work Detail and Reader'
         ''
         "- Date: $($startedAt.ToString('yyyy-MM-dd HH:mm:ss zzz'))"
         "- Result: $result"
         "- Compose project: $project"
         "- PostgreSQL host port: $hostPort"
         '- API: built from the current workspace and started with the PostgreSQL profile'
-        "- Schema: $appliedChangesets Liquibase changesets applied before fixture setup"
+        "- Schema: $appliedChangesets/$expectedChangesets Liquibase changesets applied before fixture setup"
         '- Browser: Playwright Chromium, Angular dev-server proxy to the real API'
-        '- Journey: session cookie/policy → libraries/works/per-work state → Reader manifest/content → persisted bookmark and reload'
+        '- Journey: session cookie/policy → libraries/works/per-work state → Work Detail manifest/progress → Reader source → persisted bookmark and reload'
         '- API route mocks: none'
         "- Elapsed: $duration seconds"
         "- Cleanup: $cleanup"
-        "- Screenshots: $([System.IO.Path]::GetFileName($screenshotPath)), $([System.IO.Path]::GetFileName($readerScreenshotPath))"
+        "- Screenshots: $([System.IO.Path]::GetFileName($screenshotPath)), $([System.IO.Path]::GetFileName($workDetailScreenshotPath)), $([System.IO.Path]::GetFileName($readerScreenshotPath))"
         '- Logs: api-build.log, api-stdout.log, api-stderr.log, playwright.log'
         $(if ($failure) { "- Failure: $failure" } else { '- Failure: none' })
         ''
