@@ -122,9 +122,11 @@ public class ImportParseJobRepository {
         String parseStatus = row.getString("parse_status");
         boolean live = row.getBoolean("live");
         String status =
-            !live && Set.of("upload_pending", "uploaded").contains(uploadStatus)
-                ? "expired"
-                : parseStatus == null ? uploadStatus : parseStatus;
+            "cancelled".equals(uploadStatus)
+                ? uploadStatus
+                : !live && Set.of("upload_pending", "uploaded").contains(uploadStatus)
+                    ? "expired"
+                    : parseStatus == null ? uploadStatus : parseStatus;
         PreviewSummary summary =
             previewSummary(
                 row.getString("preview_title"),
@@ -151,7 +153,7 @@ public class ImportParseJobRepository {
         PreparedStatement select =
             connection.prepareStatement(
                 """
-                     SELECT (j.expires_at > clock_timestamp()) AS live,
+                     SELECT j.status AS upload_status, (j.expires_at > clock_timestamp()) AS live,
                             p.status AS parse_status, p.preview_data::text AS preview_json,
                             p.preview_etag, p.preview_version, p.warnings::text AS warnings
                      FROM import_jobs AS j
@@ -162,6 +164,9 @@ public class ImportParseJobRepository {
       select.setObject(2, userId);
       try (ResultSet row = select.executeQuery()) {
         if (!row.next()) return PreviewLookup.notFound();
+        if ("cancelled".equals(row.getString("upload_status"))) {
+          return PreviewLookup.cancelled();
+        }
         if (!row.getBoolean("live")) return PreviewLookup.expired();
         if (!"ready_to_commit".equals(row.getString("parse_status"))) {
           return PreviewLookup.notReady(row.getString("parse_status"));
@@ -217,6 +222,7 @@ public class ImportParseJobRepository {
     return switch (latest.outcome()) {
       case NOT_FOUND -> PreviewUpdateResult.notFound();
       case EXPIRED -> PreviewUpdateResult.expired();
+      case CANCELLED -> PreviewUpdateResult.cancelled();
       case NOT_READY -> PreviewUpdateResult.notReady(latest.parseStatus());
       case READY -> PreviewUpdateResult.stale(latest.preview());
     };
@@ -453,6 +459,7 @@ public class ImportParseJobRepository {
     READY,
     NOT_FOUND,
     NOT_READY,
+    CANCELLED,
     EXPIRED
   }
 
@@ -472,6 +479,10 @@ public class ImportParseJobRepository {
       return new PreviewLookup(PreviewLookupOutcome.EXPIRED, null, null);
     }
 
+    static PreviewLookup cancelled() {
+      return new PreviewLookup(PreviewLookupOutcome.CANCELLED, null, null);
+    }
+
     static PreviewLookup notReady(String status) {
       return new PreviewLookup(PreviewLookupOutcome.NOT_READY, null, status);
     }
@@ -481,6 +492,7 @@ public class ImportParseJobRepository {
     UPDATED,
     NOT_FOUND,
     NOT_READY,
+    CANCELLED,
     EXPIRED,
     STALE
   }
@@ -497,6 +509,10 @@ public class ImportParseJobRepository {
 
     static PreviewUpdateResult expired() {
       return new PreviewUpdateResult(PreviewUpdateOutcome.EXPIRED, null, null);
+    }
+
+    static PreviewUpdateResult cancelled() {
+      return new PreviewUpdateResult(PreviewUpdateOutcome.CANCELLED, null, "cancelled");
     }
 
     static PreviewUpdateResult notReady(String status) {

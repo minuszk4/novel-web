@@ -77,9 +77,18 @@ public class ImportStagingCleanupService {
             """
                 SELECT id, status
                 FROM import_jobs
-                WHERE (status IN ('upload_pending', 'uploaded') AND expires_at <= clock_timestamp())
-                   OR (status IN ('failed', 'cancelled', 'expired', 'committed')
-                       AND staging_file_deleted_at IS NULL)
+                WHERE (
+                    (status IN ('upload_pending', 'uploaded') AND expires_at <= clock_timestamp())
+                    OR (status IN ('failed', 'cancelled', 'expired', 'committed')
+                        AND staging_file_deleted_at IS NULL)
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM import_parse_jobs AS active_parse
+                      WHERE active_parse.import_id = import_jobs.id
+                        AND active_parse.status = 'parsing'
+                        AND active_parse.lease_expires_at > clock_timestamp()
+                  )
                 ORDER BY expires_at, id
                 LIMIT ?
                 FOR UPDATE SKIP LOCKED

@@ -238,7 +238,7 @@ class PostgresSchemaIntegrationTests {
             connection.prepareStatement("SELECT COUNT(*) FROM databasechangelog");
         ResultSet changesets = changesetCount.executeQuery()) {
       changesets.next();
-      assertEquals(73, changesets.getInt(1), "unexpected number of applied changesets");
+      assertEquals(74, changesets.getInt(1), "unexpected number of applied changesets");
     }
 
     Set<String> actualTables = new HashSet<>();
@@ -1934,6 +1934,207 @@ class PostgresSchemaIntegrationTests {
       deleteLibrary(library.id());
       deleteImportRightsTestStatement(version);
       deleteSessionTestUser(actorId);
+      deleteSessionTestUser(approverId);
+    }
+  }
+
+  @Test
+  void importCancellationIsOwnerBoundIdempotentAndDefersActiveParserCleanup() throws Exception {
+    UUID actorId = createSessionTestUser("Import Cancellation Owner");
+    UUID otherActorId = createSessionTestUser("Import Cancellation Other Owner");
+    UUID approverId = createSessionTestUser("Import Cancellation Approver");
+    var library = libraryService.createLibrary(actorId, "Cancellation test shelf");
+    String version = "private-import-cancellation-v1";
+    String statementText = "Synthetic test-only import cancellation statement.";
+    UUID pendingJobId = UUID.randomUUID();
+    UUID queuedJobId = UUID.randomUUID();
+    UUID parsingJobId = UUID.randomUUID();
+    UUID expiredJobId = UUID.randomUUID();
+    byte[] content = "temporary private import cancellation bytes".getBytes(StandardCharsets.UTF_8);
+    try {
+      insertImportRightsStatement(version, statementText, approverId, "APPROVED", -10);
+      insertImportJobFixture(
+          pendingJobId,
+          actorId,
+          library.id(),
+          UUID.randomUUID(),
+          version,
+          "upload_pending",
+          content,
+          0);
+      insertImportJobFixture(
+          queuedJobId, actorId, library.id(), UUID.randomUUID(), version, "uploaded", content, 0);
+      insertQueuedParseJobFixture(queuedJobId);
+      importStagingFileStore.store(queuedJobId, new ByteArrayInputStream(content), content.length);
+
+      insertImportJobFixture(
+          parsingJobId, actorId, library.id(), UUID.randomUUID(), version, "uploaded", content, 0);
+      insertParsingParseJobFixture(parsingJobId);
+      importStagingFileStore.store(parsingJobId, new ByteArrayInputStream(content), content.length);
+
+      SessionService.IssuedSession actorSession = sessionService.create(actorId).orElseThrow();
+      SessionService.IssuedSession otherSession = sessionService.create(otherActorId).orElseThrow();
+      jakarta.servlet.http.Cookie actorCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", actorSession.cookieValue());
+      jakarta.servlet.http.Cookie otherCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", otherSession.cookieValue());
+      String actorCsrf = csrfTokenService.tokenFor(actorSession.cookieValue());
+      String otherCsrf = csrfTokenService.tokenFor(otherSession.cookieValue());
+
+      MvcResult unauthenticated =
+          mockMvc.perform(post("/api/v1/imports/{id}/cancel", pendingJobId)).andReturn();
+      assertEquals(403, unauthenticated.getResponse().getStatus());
+      assertTrue(unauthenticated.getResponse().getContentAsString().contains("CSRF_FAILED"));
+      MvcResult missingCsrf =
+          mockMvc
+              .perform(post("/api/v1/imports/{id}/cancel", pendingJobId).cookie(actorCookie))
+              .andReturn();
+      assertEquals(403, missingCsrf.getResponse().getStatus());
+      MvcResult foreignOwner =
+          mockMvc
+              .perform(
+                  post("/api/v1/imports/{id}/cancel", pendingJobId)
+                      .cookie(otherCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, otherCsrf))
+              .andReturn();
+      assertEquals(404, foreignOwner.getResponse().getStatus());
+      assertEquals("upload_pending", importJobStatus(pendingJobId));
+
+      MvcResult pendingCancel =
+          mockMvc
+              .perform(
+                  post("/api/v1/imports/{id}/cancel", pendingJobId)
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf))
+              .andReturn();
+      assertEquals(204, pendingCancel.getResponse().getStatus());
+      assertTrue(pendingCancel.getResponse().getHeader("Cache-Control").contains("no-store"));
+      assertEquals("cancelled", importJobStatus(pendingJobId));
+      assertNull(
+          importJobTokenHash(pendingJobId), "cancellation must revoke an unused upload token");
+      assertEquals(
+          204,
+          mockMvc
+              .perform(
+                  post("/api/v1/imports/{id}/cancel", pendingJobId)
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf))
+              .andReturn()
+              .getResponse()
+              .getStatus(),
+          "repeating cancellation must be idempotent");
+      JsonNode cancelledStatus =
+          objectMapper.readTree(
+              mockMvc
+                  .perform(get("/api/v1/imports/{id}", pendingJobId).cookie(actorCookie))
+                  .andReturn()
+                  .getResponse()
+                  .getContentAsString());
+      assertEquals("cancelled", cancelledStatus.path("status").asText());
+      MvcResult parseCancelled =
+          mockMvc
+              .perform(
+                  post("/api/v1/imports/{id}/parse", pendingJobId)
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf))
+              .andReturn();
+      assertEquals(409, parseCancelled.getResponse().getStatus());
+      assertEquals(
+          "IMPORT_CANCELLED",
+          objectMapper
+              .readTree(parseCancelled.getResponse().getContentAsString())
+              .path("code")
+              .asText());
+      assertEquals(
+          "IMPORT_CANCELLED",
+          objectMapper
+              .readTree(
+                  mockMvc
+                      .perform(
+                          get("/api/v1/imports/{id}/preview", pendingJobId).cookie(actorCookie))
+                      .andReturn()
+                      .getResponse()
+                      .getContentAsString())
+              .path("code")
+              .asText());
+      assertEquals(
+          "IMPORT_CANCELLED",
+          objectMapper
+              .readTree(
+                  mockMvc
+                      .perform(
+                          post("/api/v1/imports/{id}/commit", pendingJobId)
+                              .cookie(actorCookie)
+                              .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                              .header("If-Match", "\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"")
+                              .header("Idempotency-Key", "import-cancel-commit-reject-01"))
+                      .andReturn()
+                      .getResponse()
+                      .getContentAsString())
+              .path("code")
+              .asText());
+      assertEquals(1, importStagingCleanupService.cleanupExpiredStaging());
+      assertNotNull(importJobStagingFileDeletedAt(pendingJobId));
+
+      MvcResult queuedCancel =
+          mockMvc
+              .perform(
+                  post("/api/v1/imports/{id}/cancel", queuedJobId)
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf))
+              .andReturn();
+      assertEquals(204, queuedCancel.getResponse().getStatus());
+      assertEquals(0, importParseJobCount(queuedJobId));
+      assertTrue(Files.exists(importStagingFileStore.targetPath(queuedJobId)));
+      assertEquals(1, importStagingCleanupService.cleanupExpiredStaging());
+      assertFalse(Files.exists(importStagingFileStore.targetPath(queuedJobId)));
+      assertNotNull(importJobStagingFileDeletedAt(queuedJobId));
+
+      MvcResult parsingCancel =
+          mockMvc
+              .perform(
+                  post("/api/v1/imports/{id}/cancel", parsingJobId)
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf))
+              .andReturn();
+      assertEquals(204, parsingCancel.getResponse().getStatus());
+      assertEquals("cancelled", importJobStatus(parsingJobId));
+      assertEquals("parsing", importParseJobStatus(parsingJobId));
+      assertFalse(importParseService.processNext(), "cancelled jobs must not be claimed again");
+      assertEquals(0, importStagingCleanupService.cleanupExpiredStaging());
+      assertNull(
+          importJobStagingFileDeletedAt(parsingJobId),
+          "the janitor must wait for an in-flight parser lease before deleting its source file");
+      assertTrue(Files.exists(importStagingFileStore.targetPath(parsingJobId)));
+
+      insertImportJobFixture(
+          expiredJobId, actorId, library.id(), UUID.randomUUID(), version, "uploaded", content, 1);
+      MvcResult expiredCancel =
+          mockMvc
+              .perform(
+                  post("/api/v1/imports/{id}/cancel", expiredJobId)
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf))
+              .andReturn();
+      assertEquals(409, expiredCancel.getResponse().getStatus());
+      assertEquals(
+          "IMPORT_NOT_CANCELLABLE",
+          objectMapper
+              .readTree(expiredCancel.getResponse().getContentAsString())
+              .path("code")
+              .asText());
+      assertEquals("uploaded", importJobStatus(expiredJobId));
+    } finally {
+      importStagingFileStore.delete(pendingJobId);
+      importStagingFileStore.delete(queuedJobId);
+      importStagingFileStore.delete(parsingJobId);
+      importStagingFileStore.delete(expiredJobId);
+      deleteImportJobs(actorId);
+      deleteImportRightsTestAcceptances(actorId);
+      deleteLibrary(library.id());
+      deleteImportRightsTestStatement(version);
+      deleteSessionTestUser(actorId);
+      deleteSessionTestUser(otherActorId);
       deleteSessionTestUser(approverId);
     }
   }
@@ -7263,6 +7464,20 @@ class PostgresSchemaIntegrationTests {
                 """
                      INSERT INTO import_parse_jobs (import_id, status, attempt, parser_version)
                      VALUES (?, 'queued', 0, 'epub3-v1')
+                     """)) {
+      insert.setObject(1, importId);
+      assertEquals(1, insert.executeUpdate());
+    }
+  }
+
+  private void insertParsingParseJobFixture(UUID importId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement insert =
+            connection.prepareStatement(
+                """
+                     INSERT INTO import_parse_jobs
+                         (import_id, status, attempt, parser_version, lease_expires_at)
+                     VALUES (?, 'parsing', 1, 'txt-v1', clock_timestamp() + INTERVAL '1 minute')
                      """)) {
       insert.setObject(1, importId);
       assertEquals(1, insert.executeUpdate());

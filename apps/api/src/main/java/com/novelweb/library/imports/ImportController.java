@@ -42,16 +42,19 @@ public class ImportController {
   private final ImportParseService importParseService;
   private final ImportPreviewService importPreviewService;
   private final ImportCommitService importCommitService;
+  private final ImportCancellationService importCancellationService;
 
   public ImportController(
       ImportCreationService importCreationService,
       ImportParseService importParseService,
       ImportPreviewService importPreviewService,
-      ImportCommitService importCommitService) {
+      ImportCommitService importCommitService,
+      ImportCancellationService importCancellationService) {
     this.importCreationService = importCreationService;
     this.importParseService = importParseService;
     this.importPreviewService = importPreviewService;
     this.importCommitService = importCommitService;
+    this.importCancellationService = importCancellationService;
   }
 
   @GetMapping("/{importId}")
@@ -79,6 +82,43 @@ public class ImportController {
           HttpStatus.SERVICE_UNAVAILABLE,
           "IMPORT_STATUS_UNAVAILABLE",
           "The import status is temporarily unavailable.",
+          correlationId);
+    }
+  }
+
+  @PostMapping("/{importId}/cancel")
+  public ResponseEntity<?> cancel(
+      Authentication authentication, @PathVariable UUID importId, HttpServletRequest request) {
+    UUID correlationId = correlationId(request);
+    SessionService.SessionPrincipal principal = principal(authentication);
+    if (principal == null) {
+      return problem(
+          HttpStatus.UNAUTHORIZED,
+          "UNAUTHENTICATED",
+          "Sign in with the account that owns this import.",
+          correlationId);
+    }
+    try {
+      return switch (importCancellationService.cancel(principal.userId(), importId)) {
+        case CANCELLED -> noStore(HttpStatus.NO_CONTENT).build();
+        case NOT_FOUND ->
+            problem(
+                HttpStatus.NOT_FOUND,
+                "IMPORT_NOT_FOUND",
+                "This import is unavailable.",
+                correlationId);
+        case NOT_CANCELLABLE ->
+            problem(
+                HttpStatus.CONFLICT,
+                "IMPORT_NOT_CANCELLABLE",
+                "This import has completed, expired or is otherwise no longer cancellable.",
+                correlationId);
+      };
+    } catch (IllegalStateException exception) {
+      return problem(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          "IMPORT_CANCEL_UNAVAILABLE",
+          "The import could not be cancelled right now. Retry the same action.",
           correlationId);
     }
   }
@@ -123,6 +163,12 @@ public class ImportController {
                 HttpStatus.CONFLICT,
                 "IMPORT_NOT_READY_FOR_PARSE",
                 "Upload the file successfully before parsing it.",
+                correlationId);
+        case CANCELLED ->
+            problem(
+                HttpStatus.CONFLICT,
+                "IMPORT_CANCELLED",
+                "This private import has been cancelled.",
                 correlationId);
         case SOURCE_INVALID ->
             problem(
@@ -247,6 +293,12 @@ public class ImportController {
               "IMPORT_PREVIEW_NOT_READY",
               "The import does not have a completed preview yet.",
               correlationId);
+      case CANCELLED ->
+          problem(
+              HttpStatus.CONFLICT,
+              "IMPORT_CANCELLED",
+              "This private import has been cancelled.",
+              correlationId);
       case EXPIRED ->
           problem(
               HttpStatus.GONE,
@@ -338,6 +390,12 @@ public class ImportController {
                 HttpStatus.CONFLICT,
                 "IMPORT_NOT_READY_FOR_COMMIT",
                 "Upload and parse the file before committing it.",
+                correlationId);
+        case CANCELLED ->
+            problem(
+                HttpStatus.CONFLICT,
+                "IMPORT_CANCELLED",
+                "This private import has been cancelled.",
                 correlationId);
         case NOT_READY ->
             problem(

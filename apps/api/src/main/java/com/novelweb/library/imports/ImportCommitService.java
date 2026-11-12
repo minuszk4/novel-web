@@ -77,6 +77,9 @@ public class ImportCommitService {
         if ("committed".equals(job.status())) {
           return finish(connection, CommitResult.outcome(Outcome.ALREADY_COMMITTED));
         }
+        if ("cancelled".equals(job.status())) {
+          return finish(connection, CommitResult.outcome(Outcome.CANCELLED));
+        }
         if (!job.live()) return finish(connection, CommitResult.outcome(Outcome.EXPIRED));
         if (!"uploaded".equals(job.status())) {
           return finish(connection, CommitResult.outcome(Outcome.NOT_UPLOADED));
@@ -751,6 +754,7 @@ public class ImportCommitService {
     COMMITTED,
     NOT_FOUND,
     EXPIRED,
+    CANCELLED,
     NOT_UPLOADED,
     NOT_READY,
     STALE_ETAG,

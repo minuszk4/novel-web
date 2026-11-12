@@ -53,6 +53,7 @@ public class ImportParseService {
         repository.findUploadSource(userId, importId);
     if (source.isEmpty()) return ParseRequestResult.notFound();
     ImportParseJobRepository.UploadSource upload = source.orElseThrow();
+    if ("cancelled".equals(upload.status())) return ParseRequestResult.cancelled();
     if (!upload.live()) return ParseRequestResult.expired();
     if (!"uploaded".equals(upload.status())) return ParseRequestResult.notUploaded(upload.status());
 
@@ -266,6 +267,10 @@ public class ImportParseService {
       return new ParseRequestResult(ParseRequestOutcome.NOT_UPLOADED, null, status);
     }
 
+    static ParseRequestResult cancelled() {
+      return new ParseRequestResult(ParseRequestOutcome.CANCELLED, null, null);
+    }
+
     static ParseRequestResult sourceInvalid() {
       return new ParseRequestResult(ParseRequestOutcome.SOURCE_INVALID, null, null);
     }
@@ -281,6 +286,7 @@ public class ImportParseService {
     NOT_FOUND,
     EXPIRED,
     NOT_UPLOADED,
+    CANCELLED,
     SOURCE_INVALID,
     STORAGE_UNAVAILABLE
   }

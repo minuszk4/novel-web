@@ -123,6 +123,7 @@ public class ApiSecurityConfiguration {
                 authorize.requestMatchers(HttpMethod.POST, "/api/v1/imports").permitAll();
                 authorize.requestMatchers(HttpMethod.PUT, "/api/v1/imports/*/content").permitAll();
                 authorize.requestMatchers(HttpMethod.GET, "/api/v1/imports/*").permitAll();
+                authorize.requestMatchers(HttpMethod.POST, "/api/v1/imports/*/cancel").permitAll();
                 authorize.requestMatchers(HttpMethod.POST, "/api/v1/imports/*/parse").permitAll();
                 authorize.requestMatchers(HttpMethod.GET, "/api/v1/imports/*/preview").permitAll();
                 authorize

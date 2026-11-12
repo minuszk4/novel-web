@@ -104,6 +104,7 @@ public class ImportPreviewService {
       return switch (saved.outcome()) {
         case NOT_FOUND -> PreviewResult.notFound();
         case NOT_READY -> PreviewResult.notReady();
+        case CANCELLED -> PreviewResult.cancelled();
         case EXPIRED -> PreviewResult.expired();
         case STALE -> PreviewResult.stale();
         case UPDATED -> throw new IllegalStateException("Unexpected preview update result");
@@ -315,6 +316,7 @@ public class ImportPreviewService {
           throw new IllegalArgumentException("A ready preview requires a response mapping");
       case NOT_FOUND -> PreviewResult.notFound();
       case NOT_READY -> PreviewResult.notReady();
+      case CANCELLED -> PreviewResult.cancelled();
       case EXPIRED -> PreviewResult.expired();
     };
   }
@@ -351,6 +353,7 @@ public class ImportPreviewService {
     READY,
     NOT_FOUND,
     NOT_READY,
+    CANCELLED,
     EXPIRED,
     INVALID_CURSOR,
     INVALID_REQUEST,
@@ -378,6 +381,10 @@ public class ImportPreviewService {
 
     static PreviewResult expired() {
       return outcome(PreviewOutcome.EXPIRED);
+    }
+
+    static PreviewResult cancelled() {
+      return outcome(PreviewOutcome.CANCELLED);
     }
 
     static PreviewResult invalidCursor() {

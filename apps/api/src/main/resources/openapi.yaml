@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 6.2.0
+  version: 6.3.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -1594,7 +1594,7 @@ paths:
     post:
       operationId: cancelPrivateImport
       tags: [Library]
-      x-implementation-status: planned
+      x-implementation-status: implemented-postgres-profile
       summary: Cancel and schedule deletion of an owned staging import
       description: Idempotent; cancels pending work and schedules deletion of staging objects and parse artifacts according to retention policy.
       security:
@@ -1617,6 +1617,8 @@ paths:
         '404':
           $ref: '#/components/responses/Problem'
         '409':
+          $ref: '#/components/responses/Problem'
+        '503':
           $ref: '#/components/responses/Problem'
   /api/v1/me/reader-preferences:
     get:
