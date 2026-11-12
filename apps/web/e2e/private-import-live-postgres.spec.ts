@@ -2,7 +2,16 @@ import { expect, test } from './support';
 import type { Response } from '@playwright/test';
 
 const baseUrl = 'http://localhost:4300';
-const sourceText = 'Synthetic private source created by the live import journey.';
+const hostileMarkup = [
+  '<img src="https://reader-xss.invalid/pixel.png" onerror="window.readerInjected=true">',
+  '<svg onload="window.readerInjected=true"><script>window.readerInjected=true</script><image href="https://reader-xss.invalid/vector.svg"></image></svg>',
+  '<iframe src="https://reader-xss.invalid/frame"></iframe>',
+  '<a href="javascript:window.readerInjected=true">run script</a>',
+];
+const sourceText = [
+  'Synthetic private source created by the live import journey.',
+  ...hostileMarkup,
+].join('\n');
 const workTitle = 'Live Private Import Novel';
 
 test('private import commit refreshes Library, Work Detail and PostgreSQL Reader source', async ({
@@ -32,10 +41,20 @@ test('private import commit refreshes Library, Work Detail and PostgreSQL Reader
     },
   ]);
 
+  const unexpectedExternalRequests: string[] = [];
+  await page.route('https://reader-xss.invalid/**', async (route) => {
+    unexpectedExternalRequests.push(route.request().url());
+    await route.abort();
+  });
   const apiResponses: Response[] = [];
   page.on('response', (response) => {
     if (new URL(response.url()).pathname.startsWith('/api/v1/')) apiResponses.push(response);
   });
+  const responseFor = (method: string, path: string) =>
+    apiResponses.find(
+      (response) =>
+        response.request().method() === method && new URL(response.url()).pathname === path,
+    );
 
   await page.goto(`${baseUrl}/app/import`);
   await expect(page.getByRole('heading', { name: 'Mang câu chuyện của bạn về đây' })).toBeVisible();
@@ -52,6 +71,13 @@ test('private import commit refreshes Library, Work Detail and PostgreSQL Reader
   await expect(page.getByRole('heading', { name: 'Kiểm tra metadata và mục lục' })).toBeVisible();
   await expect(page.getByRole('list', { name: 'Thứ tự chương sẽ lưu' })).toContainText('Nội dung');
   await expect(page.getByText(sourceText, { exact: true })).toHaveCount(0);
+  for (const payload of hostileMarkup) {
+    await expect(page.getByText(payload, { exact: true })).toHaveCount(0);
+  }
+  const createResponse = responseFor('POST', '/api/v1/imports');
+  expect(createResponse, 'expected an unmocked import-create response').toBeDefined();
+  const createdImport = (await createResponse!.json()) as { job: { id: string } };
+  const importId = createdImport.job.id;
   await page.getByLabel('Tên tác phẩm').fill(workTitle);
   await page.getByRole('button', { name: 'Lưu thay đổi' }).click();
   await expect(page.getByRole('button', { name: 'Lưu thay đổi' })).toBeDisabled();
@@ -84,6 +110,11 @@ test('private import commit refreshes Library, Work Detail and PostgreSQL Reader
   await expect(page.getByRole('heading', { name: workTitle, exact: true })).toBeVisible({
     timeout: 30_000,
   });
+  const workListResponse = responseFor('GET', '/api/v1/works');
+  expect(workListResponse, 'expected an unmocked account catalog response').toBeDefined();
+  const workList = (await workListResponse!.json()) as {
+    items: Array<{ id: string; title: string; visibility: string }>;
+  };
   const workRow = page
     .locator('.library-work-row')
     .filter({ has: page.getByRole('heading', { name: workTitle, exact: true }) });
@@ -94,6 +125,9 @@ test('private import commit refreshes Library, Work Detail and PostgreSQL Reader
   await expect(page.getByRole('heading', { name: workTitle, exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: /Đọc từ đầu/ })).toBeVisible();
   await expect(page.getByText(sourceText, { exact: true })).toHaveCount(0);
+  for (const payload of hostileMarkup) {
+    await expect(page.getByText(payload, { exact: true })).toHaveCount(0);
+  }
   await page.screenshot({
     path: screenshotPath!.replace(
       'private-import-commit-live.png',
@@ -104,7 +138,30 @@ test('private import commit refreshes Library, Work Detail and PostgreSQL Reader
 
   await page.getByRole('button', { name: /Đọc từ đầu/ }).click();
   await expect(page).toHaveURL(new RegExp(`/app/reader/${committedWork.id}/[0-9a-f-]+$`, 'i'));
-  await expect(page.getByText(sourceText, { exact: true })).toBeVisible();
+  for (const payload of hostileMarkup) {
+    await expect(
+      page.locator('.account-reader-body').getByText(payload, { exact: true }),
+    ).toBeVisible();
+  }
+  await expect(
+    page.locator(
+      '.account-reader-body img, .account-reader-body svg, .account-reader-body script, .account-reader-body iframe',
+    ),
+  ).toHaveCount(0);
+  expect(unexpectedExternalRequests).toEqual([]);
+  expect(
+    await page.evaluate(() => (window as Window & { readerInjected?: boolean }).readerInjected),
+  ).toBeUndefined();
+  const chapterId = new URL(page.url()).pathname.split('/').at(-1)!;
+  const contentResponse = responseFor('GET', `/api/v1/chapters/${chapterId}/content`);
+  expect(contentResponse, 'expected a PostgreSQL Reader content response').toBeDefined();
+  expect(contentResponse!.status()).toBe(200);
+  const readerContent = (await contentResponse!.json()) as {
+    segments: Array<{ sourceText: string }>;
+  };
+  expect(readerContent.segments.map((segment) => segment.sourceText)).toEqual(
+    expect.arrayContaining(hostileMarkup),
+  );
   await page.screenshot({
     path: screenshotPath!.replace(
       'private-import-commit-live.png',
@@ -113,11 +170,22 @@ test('private import commit refreshes Library, Work Detail and PostgreSQL Reader
     fullPage: true,
   });
 
-  const responseFor = (method: string, path: string) =>
-    apiResponses.find(
-      (response) =>
-        response.request().method() === method && new URL(response.url()).pathname === path,
-    );
+  await page.reload();
+  for (const payload of hostileMarkup) {
+    await expect(
+      page.locator('.account-reader-body').getByText(payload, { exact: true }),
+    ).toBeVisible();
+  }
+  await expect(
+    page.locator(
+      '.account-reader-body img, .account-reader-body svg, .account-reader-body script, .account-reader-body iframe',
+    ),
+  ).toHaveCount(0);
+  expect(unexpectedExternalRequests).toEqual([]);
+  expect(
+    await page.evaluate(() => (window as Window & { readerInjected?: boolean }).readerInjected),
+  ).toBeUndefined();
+
   const paths = [
     ['GET', '/api/v1/imports/rights-statement/current', 200],
     ['POST', '/api/v1/imports/rights-statement/acceptance', 200],
@@ -130,9 +198,6 @@ test('private import commit refreshes Library, Work Detail and PostgreSQL Reader
     expect(response!.status()).toBe(status);
   }
 
-  const createResponse = responseFor('POST', '/api/v1/imports')!;
-  const createdImport = (await createResponse.json()) as { job: { id: string } };
-  const importId = createdImport.job.id;
   for (const [method, path, status] of [
     ['PUT', `/api/v1/imports/${importId}/content`, 204],
     ['POST', `/api/v1/imports/${importId}/parse`, 202],
@@ -146,11 +211,6 @@ test('private import commit refreshes Library, Work Detail and PostgreSQL Reader
 
   const commitPath = new URL(commitResponse.url()).pathname;
   expect(responseFor('POST', commitPath)?.status()).toBe(201);
-  const workListResponse = responseFor('GET', '/api/v1/works');
-  expect(workListResponse).toBeDefined();
-  const workList = (await workListResponse!.json()) as {
-    items: Array<{ id: string; title: string; visibility: string }>;
-  };
   expect(workList.items).toContainEqual(
     expect.objectContaining({
       id: committedWork.id,
@@ -166,9 +226,4 @@ test('private import commit refreshes Library, Work Detail and PostgreSQL Reader
     expect(response, `expected an unmocked API response for GET ${path}`).toBeDefined();
     expect(response!.status()).toBe(200);
   }
-  const readerPath = new URL(page.url()).pathname;
-  const chapterId = readerPath.split('/').at(-1)!;
-  const contentResponse = responseFor('GET', `/api/v1/chapters/${chapterId}/content`);
-  expect(contentResponse).toBeDefined();
-  expect(contentResponse!.status()).toBe(200);
 });
