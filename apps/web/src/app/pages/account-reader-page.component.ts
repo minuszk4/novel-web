@@ -209,12 +209,12 @@ export class AccountReaderPageComponent {
       }
     });
     this.destroyRef.onDestroy(() => {
+      if (this.activeChapter() && this.hasQueuedProgressWrite()) void this.flushProgress();
       if (this.progressTimer !== null) window.clearTimeout(this.progressTimer);
       if (this.preferencesTimer !== null) window.clearTimeout(this.preferencesTimer);
       for (const timer of this.annotationTimers.values()) window.clearTimeout(timer);
       this.annotationTimers.clear();
       for (const annotation of this.annotations()) void this.flushAnnotationEdit(annotation.id);
-      if (this.activeChapter()) void this.flushProgress();
       void this.flushPreferences();
     });
   }
@@ -271,7 +271,7 @@ export class AccountReaderPageComponent {
   @HostListener('document:visibilitychange')
   protected onVisibilityChange(): void {
     if (document.visibilityState === 'hidden') {
-      void this.flushProgress();
+      if (this.hasQueuedProgressWrite()) void this.flushProgress();
       void this.flushPreferences();
       this.flushAllAnnotationEdits();
     }
@@ -279,7 +279,7 @@ export class AccountReaderPageComponent {
 
   @HostListener('window:pagehide')
   protected onPageHide(): void {
-    void this.flushProgress();
+    if (this.hasQueuedProgressWrite()) void this.flushProgress();
     void this.flushPreferences();
     this.flushAllAnnotationEdits();
   }
@@ -414,6 +414,27 @@ export class AccountReaderPageComponent {
   protected preserveTextSelection(event: PointerEvent): void {
     this.pendingTextSelection = this.readSelectionDraft();
     event.preventDefault();
+  }
+
+  @HostListener('document:selectionchange')
+  protected cacheTextSelection(): void {
+    const draft = this.readSelectionDraft();
+    if (draft) {
+      this.pendingTextSelection = draft;
+      return;
+    }
+    if (!document.activeElement?.closest('.reader-tools')) this.pendingTextSelection = null;
+  }
+
+  @HostListener('document:pointerdown', ['$event'])
+  protected clearPendingSelectionForOtherPointers(event: PointerEvent): void {
+    const target = event.target;
+    if (
+      !(target instanceof Element) ||
+      !target.closest('.reader-tools button[aria-label="Mở ghi chú và đoạn đánh dấu"]')
+    ) {
+      this.pendingTextSelection = null;
+    }
   }
 
   protected toggleAnnotations(event?: Event): void {
@@ -992,6 +1013,7 @@ export class AccountReaderPageComponent {
     if (this.activeChapter() && this.activeChapter()?.id !== chapter.id) {
       void this.flushProgress();
     }
+    this.pendingTextSelection = null;
     this.activeChapter.set(chapter);
     this.segments.set([]);
     this.sourceRevisionId.set(null);
@@ -1646,6 +1668,10 @@ export class AccountReaderPageComponent {
       }
     }
     this.savingProgress = false;
+  }
+
+  private hasQueuedProgressWrite(): boolean {
+    return this.progressTimer !== null || this.pendingProgress !== null;
   }
 
   private keepTabFocusInsidePanel(event: KeyboardEvent, panel: HTMLElement): void {

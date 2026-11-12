@@ -3409,6 +3409,15 @@ label:has(input:focus-visible) {
   color: var(--muted);
   font-size: 9px;
 }
+button.reader-chapter-nav {
+  appearance: none;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
 .reader-chapter-nav span:last-child {
   overflow: hidden;
   text-overflow: ellipsis;

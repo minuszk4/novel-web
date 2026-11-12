@@ -1123,6 +1123,45 @@ test('account Reader consumes a keyboard-style Selection API range on Enter', as
   await expect(panel.locator('blockquote')).toHaveText('Một');
 });
 
+test('account Reader discards a cached text selection after chapter navigation', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 360, height: 800 });
+  await installReaderRoutes(page, 200, false);
+  await page.goto(`/app/reader/${workId}`);
+  await expect(page.getByText('Một đoạn văn bản riêng tư.')).toBeVisible();
+
+  await page.locator('[data-source-anchor="ch1-p1"]').evaluate((paragraph) => {
+    const walker = document.createTreeWalker(paragraph, NodeFilter.SHOW_TEXT);
+    const textNode = walker.nextNode() as Text | null;
+    if (!textNode) throw new Error('Keyboard selection fixture is missing its source text');
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.collapse(textNode, 0);
+    for (let index = 0; index < 'Một'.length; index += 1) {
+      selection?.modify('extend', 'forward', 'character');
+    }
+  });
+  await expect.poll(() => page.evaluate(() => window.getSelection()?.toString() ?? '')).toBe('Một');
+
+  const tocOpener = page.getByRole('button', { name: 'Mở mục lục' });
+  await tocOpener.focus();
+  await page.keyboard.press('Enter');
+  const toc = page.getByRole('dialog', { name: 'Gió qua núi' });
+  const targetChapter = toc.getByRole('button', { name: /Qua khỏi dốc/ });
+  await targetChapter.focus();
+  await page.keyboard.press('Enter');
+  await expect(page).toHaveURL(new RegExp(`/app/reader/${workId}/${chapterIds[2]}$`));
+  await expect(page.getByRole('heading', { name: 'Qua khỏi dốc' })).toBeVisible();
+
+  const annotationOpener = page.getByRole('button', { name: 'Mở ghi chú và đoạn đánh dấu' });
+  await annotationOpener.focus();
+  await page.keyboard.press('Enter');
+  const panel = page.getByRole('dialog', { name: 'Ghi chú & đoạn đánh dấu' });
+  await expect(panel.getByRole('heading', { name: 'Chưa có ghi chú nào' })).toBeVisible();
+  await expect(panel.locator('blockquote')).toHaveCount(0);
+});
+
 test('account Reader saves a Unicode source highlight and synchronizes private notes', async ({
   page,
 }) => {
