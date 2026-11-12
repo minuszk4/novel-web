@@ -174,7 +174,7 @@ INSERT INTO import_rights_statements
     (version, effective_at, display_text, status, approved_at, approved_by)
 VALUES
     ('private-live-e2e-v1', clock_timestamp() - INTERVAL '10 minutes',
-     'Disposable test statement: this synthetic TXT file may be parsed and committed to a private test library.',
+     'Disposable test statement: synthetic TXT, HTML and Markdown files may be parsed and committed to a private test library.',
      'APPROVED', clock_timestamp(), '$userId');
 INSERT INTO sessions (id_hash, user_id, expires_at)
 VALUES (decode('$sessionHash', 'hex'), '$userId', clock_timestamp() + INTERVAL '1 day');
@@ -208,7 +208,7 @@ COMMIT;
     $env:PRIVATE_IMPORT_LIVE_TEST_SCREENSHOT = $privateImportScreenshotPath
     Push-Location $webDirectory
     try {
-        & npm.cmd run test:e2e:postgres -- e2e/library-live-postgres.spec.ts e2e/reader-live-postgres.spec.ts e2e/work-detail-live-postgres.spec.ts e2e/private-import-live-postgres.spec.ts *>&1 | Tee-Object -FilePath $e2eLog
+        & npm.cmd run test:e2e:postgres -- e2e/library-live-postgres.spec.ts e2e/reader-live-postgres.spec.ts e2e/work-detail-live-postgres.spec.ts e2e/private-import-live-postgres.spec.ts e2e/private-import-formats-live-postgres.spec.ts *>&1 | Tee-Object -FilePath $e2eLog
         $e2eExit = $LASTEXITCODE
     } finally { Pop-Location }
     if ($e2eExit -ne 0) { throw "Live FE/API/PostgreSQL Playwright journey failed (exit $e2eExit)." }
@@ -264,7 +264,7 @@ COMMIT;
         "- Elapsed: $duration seconds"
         "- Cleanup: $cleanup"
         "- Staging cleanup: $stagingCleanup"
-        "- Screenshots: $([System.IO.Path]::GetFileName($screenshotPath)), $([System.IO.Path]::GetFileName($workDetailScreenshotPath)), $([System.IO.Path]::GetFileName($readerScreenshotPath)), private-import-commit-live.png, private-import-detail-live.png, private-import-reader-live.png"
+        "- Screenshots: $([System.IO.Path]::GetFileName($screenshotPath)), $([System.IO.Path]::GetFileName($workDetailScreenshotPath)), $([System.IO.Path]::GetFileName($readerScreenshotPath)), private-import-commit-live.png, private-import-detail-live.png, private-import-reader-live.png, private-import-html-commit-live.png, private-import-html-detail-live.png, private-import-html-reader-live.png, private-import-markdown-commit-live.png, private-import-markdown-detail-live.png, private-import-markdown-reader-live.png"
         '- Logs: api-build.log, api-stdout.log, api-stderr.log, playwright.log'
         $(if ($failure) { "- Failure: $failure" } else { '- Failure: none' })
         ''
