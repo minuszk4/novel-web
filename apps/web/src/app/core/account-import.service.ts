@@ -7,6 +7,7 @@ const rightsUrl = '/api/v1/imports/rights-statement/current';
 const rightsAcceptanceUrl = '/api/v1/imports/rights-statement/acceptance';
 const importsUrl = '/api/v1/imports';
 const csrfUrl = '/api/v1/auth/csrf';
+const importJobStorageKey = 'novel-web:account-import-job:v1';
 export const maxAccountImportBytes = 50 * 1024 * 1024;
 export const maxHtmlImportBytes = 4 * 1024 * 1024;
 export const maxMarkdownImportBytes = 16 * 1024 * 1024;
@@ -104,6 +105,15 @@ export class AccountImportService {
   readonly hasActiveJob = computed(() => {
     const status = this.job()?.status;
     return !!status && !['committed', 'failed', 'cancelled', 'expired'].includes(status);
+  });
+  readonly canResume = computed(() => {
+    const status = this.job()?.status;
+    return (
+      !!status &&
+      ['uploaded', 'queued', 'scanning', 'parsing', 'ready_to_commit'].includes(status) &&
+      !(this.state() === 'error' && !this.retryable()) &&
+      !this.isBusy()
+    );
   });
   readonly canCancel = computed(() => {
     const job = this.job();
@@ -231,7 +241,7 @@ export class AccountImportService {
     this.acceptanceKey = newUuid();
     this.commitKey = newUuid();
     this.uploadTarget = null;
-    this.job.set(null);
+    this.setJob(null);
     this.preview.set(null);
     this.previewEtag.set(null);
     this.committedWork.set(null);
@@ -256,7 +266,7 @@ export class AccountImportService {
   async startOrResumeImport(): Promise<boolean> {
     if (!this.canStart()) return false;
     if (this.job() && !this.hasActiveJob()) {
-      this.job.set(null);
+      this.setJob(null);
       this.preview.set(null);
       this.previewEtag.set(null);
       this.committedWork.set(null);
@@ -315,7 +325,7 @@ export class AccountImportService {
     } catch (error) {
       const mapped = toImportError(error);
       if (mapped.code === 'IMPORT_CANCELLED' || this.job()?.status === 'cancelled') {
-        this.job.update((current) => (current ? { ...current, status: 'cancelled' } : current));
+        this.updateJob((current) => (current ? { ...current, status: 'cancelled' } : current));
         this.state.set('cancelled');
         this.stageMessage.set(null);
         this.errorMessage.set(null);
@@ -354,10 +364,11 @@ export class AccountImportService {
           .pipe(timeout(apiTimeoutMs)),
       );
       if (response.status !== 204) throw invalidResponse();
-      this.job.set({ ...job, status: 'cancelled' });
+      this.setJob({ ...job, status: 'cancelled' });
       this.preview.set(null);
       this.previewEtag.set(null);
       this.receiptId = null;
+      this.rightsConfirmed.set(false);
       this.acceptanceKey = newUuid();
       this.commitKey = newUuid();
       this.state.set('cancelled');
@@ -371,7 +382,7 @@ export class AccountImportService {
       const mapped = toImportError(error);
       if (mapped.status === 409) {
         try {
-          this.job.set(await this.getJob(job.id));
+          this.setJob(await this.getJob(job.id));
         } catch {
           // Keep the last known job state if status reconciliation is unavailable.
         }
@@ -380,6 +391,96 @@ export class AccountImportService {
       this.stageMessage.set(null);
       this.errorMessage.set(mapped.message);
       this.retryable.set(mapped.retryable);
+      return false;
+    }
+  }
+
+  async restoreImportFromSession(): Promise<boolean> {
+    if (this.job()) return true;
+    const importId = this.readStoredImportId();
+    if (!importId) return false;
+
+    this.selectedFile.set(null);
+    this.receiptId = null;
+    this.uploadTarget = null;
+    this.preview.set(null);
+    this.previewEtag.set(null);
+    this.committedWork.set(null);
+    this.rightsConfirmed.set(false);
+
+    try {
+      const job = await this.getJob(importId);
+      this.setJob(job);
+      this.applyRestoredJobStatus(job);
+      return true;
+    } catch (error) {
+      if (error instanceof HttpErrorResponse && error.status === 404) {
+        this.removeStoredImportId(importId);
+        this.statusMessage.set(
+          'Lượt nhập trước không còn tồn tại hoặc không thuộc phiên này. Bạn có thể bắt đầu lượt nhập mới.',
+        );
+        this.state.set('ready');
+        return false;
+      }
+      const mapped = toImportError(error);
+      this.setError(mapped);
+      return false;
+    }
+  }
+
+  async resumeExistingImport(): Promise<boolean> {
+    const current = this.job();
+    if (!current) return false;
+    if (current.status === 'upload_pending') {
+      this.statusMessage.set(
+        'Lượt cũ chưa tải tệp lên. Vì tệp và liên kết tải lên không được lưu sau khi tải lại trang, hãy hủy lượt này, chọn lại tệp và xác nhận quyền mới.',
+      );
+      return false;
+    }
+    if (['committed', 'failed', 'cancelled', 'expired'].includes(current.status)) {
+      this.applyRestoredJobStatus(current);
+      return false;
+    }
+
+    this.statusMessage.set(null);
+    this.errorMessage.set(null);
+    this.retryable.set(false);
+    try {
+      if (current.status === 'uploaded') await this.queueParse();
+      const queued = this.job();
+      if (queued && ['queued', 'scanning', 'parsing'].includes(queued.status)) {
+        await this.waitForParser();
+      }
+      if (this.job()?.status !== 'ready_to_commit') {
+        throw new AccountImportError(
+          'Máy chủ chưa sẵn sàng cho bước xem trước. Hãy kiểm tra lại trạng thái lượt nhập.',
+          409,
+          'IMPORT_PREVIEW_NOT_READY',
+          true,
+        );
+      }
+      this.state.set('loading-preview');
+      this.stageMessage.set('Đang tải metadata và mục lục riêng tư…');
+      const { preview, etag } = await this.getCompletePreview(this.job()!.id);
+      this.preview.set(preview);
+      this.previewEtag.set(etag);
+      this.state.set('review');
+      this.stageMessage.set(null);
+      return true;
+    } catch (error) {
+      const mapped = toImportError(error);
+      if (mapped.code === 'IMPORT_CANCELLED' || this.job()?.status === 'cancelled') {
+        this.updateJob((job) => (job ? { ...job, status: 'cancelled' } : job));
+        this.state.set('cancelled');
+        this.stageMessage.set(null);
+        this.errorMessage.set(null);
+        this.retryable.set(false);
+        this.statusMessage.set(
+          'Đã hủy lượt nhập. Tệp vẫn ở trên thiết bị; dữ liệu staging riêng tư được xếp vào hàng dọn.',
+        );
+        return false;
+      }
+      this.setError(mapped);
       return false;
     }
   }
@@ -479,7 +580,7 @@ export class AccountImportService {
       );
       const work = parseCommittedWork(response, this.selectedLibraryId());
       this.committedWork.set(work);
-      this.job.update((current) => (current ? { ...current, status: 'committed' } : current));
+      this.updateJob((current) => (current ? { ...current, status: 'committed' } : current));
       this.state.set('committed');
       this.stageMessage.set(null);
       this.errorMessage.set(null);
@@ -601,7 +702,7 @@ export class AccountImportService {
     const job = parseJob(response['job']);
     const target = parseUploadTarget(response['uploadTarget'], job.id);
     if (job.status !== 'upload_pending') throw invalidResponse();
-    this.job.set(job);
+    this.setJob(job);
     this.uploadTarget = target;
   }
 
@@ -640,16 +741,16 @@ export class AccountImportService {
       );
       if (response.status !== 204) throw invalidResponse();
       this.uploadTarget = null;
-      this.job.update((current) => (current ? { ...current, status: 'uploaded' } : current));
+      this.updateJob((current) => (current ? { ...current, status: 'uploaded' } : current));
     } catch (error) {
       const uploadError = toImportError(error);
       const latest = await this.getJob(job.id).catch(() => null);
       if (latest?.status === 'uploaded') {
-        this.job.set(latest);
+        this.setJob(latest);
         this.uploadTarget = null;
         return;
       }
-      if (latest) this.job.set(latest);
+      if (latest) this.setJob(latest);
       if (uploadError.status === 410) {
         this.uploadTarget = null;
         throw new AccountImportError(
@@ -675,15 +776,18 @@ export class AccountImportService {
           .pipe(timeout(apiTimeoutMs)),
       );
       const parsed = parseJob(response);
-      this.job.set(parsed);
+      this.setJob(parsed);
     } catch (error) {
       const mapped = toImportError(error);
       if (mapped.code === 'IMPORT_PARSE_FAILED' || mapped.code === 'IMPORT_CONTENT_INVALID') {
+        this.updateJob((current) =>
+          current ? { ...current, status: 'failed', failureCode: mapped.code } : current,
+        );
         throw new AccountImportError(mapped.message, mapped.status, mapped.code, false);
       }
       if (mapped.status !== 409) throw mapped;
       const current = await this.getJob(job.id);
-      this.job.set(current);
+      this.setJob(current);
       if (
         current.status !== 'queued' &&
         current.status !== 'scanning' &&
@@ -704,7 +808,7 @@ export class AccountImportService {
     while (Date.now() < deadline) {
       await delay(parserPollMs);
       const current = await this.getJob(job.id);
-      this.job.set(current);
+      this.setJob(current);
       if (current.status === 'ready_to_commit') return;
       if (current.status === 'failed') {
         throw new AccountImportError(
@@ -750,7 +854,93 @@ export class AccountImportService {
     const response: unknown = await firstValueFrom(
       this.http.get<unknown>(`${importsUrl}/${importId}`).pipe(timeout(apiTimeoutMs)),
     );
-    return parseJob(response);
+    const job = parseJob(response);
+    if (job.id !== importId) throw invalidResponse();
+    return job;
+  }
+
+  private setJob(job: ImportJob | null): void {
+    this.job.set(job);
+    if (!job) {
+      this.removeStoredImportId();
+      return;
+    }
+    try {
+      window.sessionStorage.setItem(importJobStorageKey, job.id);
+    } catch {
+      // The current tab can still complete the import when session storage is unavailable.
+    }
+  }
+
+  private updateJob(update: (current: ImportJob | null) => ImportJob | null): void {
+    this.setJob(update(this.job()));
+  }
+
+  private readStoredImportId(): string | null {
+    try {
+      const value = window.sessionStorage.getItem(importJobStorageKey);
+      if (!value) return null;
+      if (isUuid(value)) return value;
+      this.removeStoredImportId();
+    } catch {
+      // Storage can be disabled by browser privacy settings.
+    }
+    return null;
+  }
+
+  private removeStoredImportId(expected?: string): void {
+    try {
+      if (expected && window.sessionStorage.getItem(importJobStorageKey) !== expected) return;
+      window.sessionStorage.removeItem(importJobStorageKey);
+    } catch {
+      // Storage can be disabled by browser privacy settings.
+    }
+  }
+
+  private applyRestoredJobStatus(job: ImportJob): void {
+    this.stageMessage.set(null);
+    this.errorMessage.set(null);
+    this.retryable.set(false);
+    switch (job.status) {
+      case 'upload_pending':
+        this.state.set('ready');
+        this.statusMessage.set(
+          'Đã tìm thấy lượt nhập chưa tải tệp. Tệp và liên kết tải lên không được lưu trong trình duyệt. Hủy lượt cũ, chọn lại tệp và xác nhận quyền mới để bắt đầu lại.',
+        );
+        break;
+      case 'uploaded':
+      case 'queued':
+      case 'scanning':
+      case 'parsing':
+      case 'ready_to_commit':
+        this.state.set('ready');
+        this.statusMessage.set(
+          'Đã khôi phục trạng thái lượt nhập từ máy chủ. Tiếp tục để kiểm tra hoặc tải lại bản xem trước.',
+        );
+        break;
+      case 'committed':
+        this.state.set('committed');
+        this.statusMessage.set('Lượt nhập này đã hoàn tất và tác phẩm đã được lưu riêng tư.');
+        break;
+      case 'failed':
+        this.state.set('error');
+        this.statusMessage.set(
+          'Lượt nhập trước không thành công. Tệp chưa được thêm vào thư viện; chọn lại tệp và xác nhận quyền để thử lượt mới.',
+        );
+        break;
+      case 'cancelled':
+        this.state.set('cancelled');
+        this.statusMessage.set(
+          'Lượt nhập trước đã được hủy. Chọn lại tệp và xác nhận quyền nếu muốn bắt đầu lượt mới.',
+        );
+        break;
+      case 'expired':
+        this.state.set('error');
+        this.statusMessage.set(
+          'Lượt nhập trước đã hết hạn. Chọn lại tệp và xác nhận quyền để bắt đầu lượt mới.',
+        );
+        break;
+    }
   }
 
   private async getCompletePreview(

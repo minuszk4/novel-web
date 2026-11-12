@@ -32,8 +32,10 @@ export class ImportPageComponent implements AfterViewInit {
   );
   protected readonly continueDisabled = computed(() =>
     this.accountMode()
-      ? !this.accountImport.canStart() ||
-        (this.accountImport.state() === 'error' && !this.accountImport.retryable())
+      ? (!this.accountImport.canResume() && !this.accountImport.canStart()) ||
+        (this.accountImport.state() === 'error' &&
+          !this.accountImport.retryable() &&
+          !this.accountImport.canResume())
       : !this.demo.canReviewImport,
   );
   protected errorMessage = '';
@@ -48,7 +50,7 @@ export class ImportPageComponent implements AfterViewInit {
 
   constructor() {
     if (this.accountMode()) {
-      void this.accountImport.loadPrerequisites();
+      void this.initializeAccountImport();
     } else if (!this.demo.canContinueSetup) {
       void this.router.navigateByUrl('/app/setup');
     }
@@ -127,7 +129,12 @@ export class ImportPageComponent implements AfterViewInit {
         await this.router.navigateByUrl('/app/import/review');
         return;
       }
-      const ready = await this.accountImport.startOrResumeImport();
+      const currentJob = this.accountImport.job();
+      const ready = currentJob
+        ? currentJob.status === 'upload_pending' && this.accountImport.canStart()
+          ? await this.accountImport.startOrResumeImport()
+          : await this.accountImport.resumeExistingImport()
+        : await this.accountImport.startOrResumeImport();
       if (ready) await this.router.navigateByUrl('/app/import/review');
       return;
     }
@@ -146,6 +153,20 @@ export class ImportPageComponent implements AfterViewInit {
 
   async retryPrerequisites(): Promise<void> {
     await this.accountImport.loadPrerequisites();
+    if (!this.accountImport.job()) await this.accountImport.restoreImportFromSession();
+  }
+
+  private async initializeAccountImport(): Promise<void> {
+    await this.accountImport.loadPrerequisites();
+    const restored = await this.accountImport.restoreImportFromSession();
+    if (
+      restored &&
+      this.accountImport.job()?.status === 'ready_to_commit' &&
+      !this.accountImport.preview()
+    ) {
+      const ready = await this.accountImport.resumeExistingImport();
+      if (ready) await this.router.navigateByUrl('/app/import/review');
+    }
   }
 
   private clearSelectedFile(): void {

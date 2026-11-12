@@ -87,7 +87,7 @@ export class ImportReviewPageComponent implements AfterViewInit {
     if (this.accountMode()) {
       const preview = this.accountImport.preview();
       if (!preview) {
-        void this.router.navigateByUrl('/app/import');
+        void this.restoreReviewFromSession();
         return;
       }
       this.setFromPreview(preview);
@@ -103,6 +103,20 @@ export class ImportReviewPageComponent implements AfterViewInit {
 
   ngAfterViewInit(): void {
     this.reviewHeading?.nativeElement.focus({ preventScroll: true });
+  }
+
+  private async restoreReviewFromSession(): Promise<void> {
+    const restored = await this.accountImport.restoreImportFromSession();
+    const ready =
+      restored && this.accountImport.job()?.status === 'ready_to_commit'
+        ? await this.accountImport.resumeExistingImport()
+        : false;
+    const preview = ready ? this.accountImport.preview() : null;
+    if (preview) {
+      this.setFromPreview(preview);
+      return;
+    }
+    await this.router.navigateByUrl('/app/import');
   }
 
   updateTitle(event: Event): void {

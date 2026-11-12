@@ -59,6 +59,7 @@
         ? '.epub,.txt,.html,.htm,.md,.markdown,application/epub+zip,text/plain,text/html,application/xhtml+xml,text/markdown,text/x-markdown'
         : '.epub,.txt,.html,.htm,.md,.markdown'
     "
+    [disabled]="accountMode() && accountImport.hasActiveJob()"
     [attr.aria-label]="selectedFile() ? 'Chọn tệp khác' : 'Chọn tệp từ thiết bị'"
     [attr.aria-describedby]="
       errorMessage ? 'file-error' : selectedFile() ? 'selected-file-status' : 'file-help'
@@ -215,6 +216,8 @@
       @if (accountMode()) {
         @if (accountImport.isBusy()) {
           {{ accountImport.stageMessage() }}
+        } @else if (accountImport.canResume()) {
+          Tiếp tục kiểm tra
         } @else if (
           accountImport.state() === 'error' && accountImport.retryable() && accountImport.canStart()
         ) {

@@ -98,17 +98,21 @@ async function installAccountRoutes(
     singleChapterWarningCode?: string;
     chapterNames?: string[];
     warningCodes?: string[];
+    statusSequence?: string[];
   } = {},
 ): Promise<{
   events: string[];
   createBodies: Record<string, unknown>[];
   patchBodies: Record<string, unknown>[];
+  previewReads: () => number;
 }> {
   const events: string[] = [];
   const createBodies: Record<string, unknown>[] = [];
   const patchBodies: Record<string, unknown>[] = [];
   let rightsReads = 0;
   let importCancelled = false;
+  let statusReadIndex = 0;
+  let previewReads = 0;
 
   await page.route('**/api/v1/system/status', (route) =>
     json(route, {
@@ -248,15 +252,18 @@ async function installAccountRoutes(
       202,
     );
   });
-  await page.route(`**/api/v1/imports/${importId}`, (route) =>
-    json(route, {
+  await page.route(`**/api/v1/imports/${importId}`, (route) => {
+    const status =
+      options.statusSequence?.[Math.min(statusReadIndex++, options.statusSequence.length - 1)] ??
+      (importCancelled ? 'cancelled' : options.parsePending ? 'parsing' : 'ready_to_commit');
+    return json(route, {
       id: importId,
-      status: importCancelled ? 'cancelled' : options.parsePending ? 'parsing' : 'ready_to_commit',
+      status,
       createdAt: '2026-11-10T10:00:00Z',
       expiresAt: '2026-11-11T10:00:00Z',
       warnings: [],
-    }),
-  );
+    });
+  });
   await page.route(`**/api/v1/imports/${importId}/preview**`, async (route) => {
     if (route.request().method() === 'PATCH') {
       events.push('save');
@@ -269,6 +276,7 @@ async function installAccountRoutes(
       });
       return;
     }
+    previewReads += 1;
     const isUpdated = patchBodies.length > 0;
     const order = isUpdated ? (patchBodies.at(-1)?.['chapterOrder'] as string[]) : chapterIds;
     const title = isUpdated ? String(patchBodies.at(-1)?.['title']) : 'Sơn Hà';
@@ -312,7 +320,7 @@ async function installAccountRoutes(
     expect(route.request().headers()['x-csrf-token']).toBe('session-import-csrf-token');
     await route.fulfill({ status: 204 });
   });
-  return { events, createBodies, patchBodies };
+  return { events, createBodies, patchBodies, previewReads: () => previewReads };
 }
 
 test('account import uploads only after rights confirmation, reviews, edits and commits privately', async ({
@@ -464,7 +472,7 @@ test('account import cancellation asks for confirmation and never commits the pr
   await dialog.getByRole('button', { name: 'Hủy và xếp hàng dọn' }).click();
 
   await expect(page).toHaveURL(/\/app\/import$/);
-  await expect(page.locator('.import-inline-status')).toContainText('Đã hủy lượt nhập');
+  await expect(page.getByText(/Đã hủy lượt nhập\. Tệp vẫn ở trên thiết bị/)).toBeVisible();
   expect(api.events).toContain('cancel');
   expect(api.events).not.toContain('commit');
 });
@@ -489,6 +497,120 @@ test('account import can cancel an in-flight parser and discards its result', as
   expect(api.events).toContain('cancel');
   expect(api.events).not.toContain('commit');
   expect(api.events).not.toContain('preview');
+});
+
+test('account import restores a parser job using only the job id in session storage', async ({
+  page,
+}) => {
+  const api = await installAccountRoutes(page, {
+    statusSequence: ['parsing', 'ready_to_commit'],
+  });
+  await page.addInitScript(({ key, value }) => window.sessionStorage.setItem(key, value), {
+    key: 'novel-web:account-import-job:v1',
+    value: importId,
+  });
+  await page.goto('/app/import');
+  await expect(page.getByText(/Đã khôi phục trạng thái/)).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Tiếp tục kiểm tra' })).toBeEnabled();
+
+  const stored = await page.evaluate(() => Object.fromEntries(Object.entries(sessionStorage)));
+  expect(stored).toEqual({ 'novel-web:account-import-job:v1': importId });
+
+  await page.getByRole('button', { name: 'Tiếp tục kiểm tra' }).click();
+  await expect(page).toHaveURL(/\/app\/import\/review$/);
+  await expect(page.getByRole('heading', { name: 'Kiểm tra metadata và mục lục' })).toBeVisible();
+  expect(api.previewReads()).toBeGreaterThan(0);
+  expect(api.events).not.toContain('accept');
+  expect(api.events).not.toContain('create');
+  expect(api.events).not.toContain('upload');
+  expect(api.events).not.toContain('parse');
+});
+
+test('account import cancellation remains final when it races resumed parser polling', async ({
+  page,
+}) => {
+  const api = await installAccountRoutes(page, { statusSequence: ['parsing', 'cancelled'] });
+  await page.addInitScript(({ key, value }) => window.sessionStorage.setItem(key, value), {
+    key: 'novel-web:account-import-job:v1',
+    value: importId,
+  });
+  await page.goto('/app/import');
+  await page.getByRole('button', { name: 'Tiếp tục kiểm tra' }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Đang phân tích tệp' })).toBeVisible();
+  await page.getByRole('button', { name: 'Hủy lượt nhập' }).click();
+  await page
+    .getByRole('dialog', { name: 'Hủy lượt nhập này?' })
+    .getByRole('button', { name: 'Hủy và xếp hàng dọn' })
+    .click();
+
+  await expect(page.getByText(/Đã hủy lượt nhập\. Tệp vẫn ở trên thiết bị/)).toBeVisible();
+  expect(api.events).toContain('cancel');
+  expect(api.previewReads()).toBe(0);
+  expect(api.events).not.toContain('commit');
+});
+
+test('account import refresh recovery requires a new file for an upload-pending job', async ({
+  page,
+}) => {
+  const api = await installAccountRoutes(page, {
+    statusSequence: ['upload_pending', 'ready_to_commit'],
+  });
+  await page.addInitScript(({ key, value }) => window.sessionStorage.setItem(key, value), {
+    key: 'novel-web:account-import-job:v1',
+    value: importId,
+  });
+  await page.goto('/app/import');
+
+  await expect(page.getByText(/Đã tìm thấy lượt nhập chưa tải tệp/)).toBeVisible();
+  await expect(page.locator('#work-file')).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Hủy lượt nhập' })).toBeVisible();
+  const stored = await page.evaluate(() => Object.fromEntries(Object.entries(sessionStorage)));
+  expect(stored).toEqual({ 'novel-web:account-import-job:v1': importId });
+  expect(api.events).not.toContain('accept');
+  expect(api.events).not.toContain('create');
+  expect(api.events).not.toContain('upload');
+
+  await page.getByRole('button', { name: 'Hủy lượt nhập' }).click();
+  await page
+    .getByRole('dialog', { name: 'Hủy lượt nhập này?' })
+    .getByRole('button', { name: 'Hủy và xếp hàng dọn' })
+    .click();
+  await expect(page.getByText(/Đã hủy lượt nhập\. Tệp vẫn ở trên thiết bị/)).toBeVisible();
+  await page.locator('#work-file').setInputFiles({
+    name: 'retry-after-refresh.epub',
+    mimeType: 'application/epub+zip',
+    buffer: Buffer.from('reselected private test epub bytes'),
+  });
+  await expect(page.locator('.account-rights-check input')).not.toBeChecked();
+  const startButton = page.getByRole('button', { name: 'Tải lên và phân tích' });
+  await expect(startButton).toBeDisabled();
+  await page.locator('.account-rights-check').click();
+  await startButton.click();
+  await expect(page).toHaveURL(/\/app\/import\/review$/);
+  expect(api.events).toContain('accept');
+  expect(api.events).toContain('create');
+  expect(api.events).toContain('upload');
+});
+
+test('account import restores the review route from the owner-scoped preview after refresh', async ({
+  page,
+}) => {
+  const api = await installAccountRoutes(page, { statusSequence: ['ready_to_commit'] });
+  await page.addInitScript(({ key, value }) => window.sessionStorage.setItem(key, value), {
+    key: 'novel-web:account-import-job:v1',
+    value: importId,
+  });
+  await page.goto('/app/import/review');
+
+  await expect(page.getByRole('heading', { name: 'Kiểm tra metadata và mục lục' })).toBeVisible();
+  await expect(page.getByLabel('Tên tác phẩm')).toHaveValue('Sơn Hà');
+  expect(api.previewReads()).toBeGreaterThan(0);
+  expect(api.events).not.toContain('accept');
+  expect(api.events).not.toContain('create');
+  expect(api.events).not.toContain('upload');
+  expect(api.events).not.toContain('parse');
+  const stored = await page.evaluate(() => Object.fromEntries(Object.entries(sessionStorage)));
+  expect(stored).toEqual({ 'novel-web:account-import-job:v1': importId });
 });
 
 test('mobile account import keeps keyboard focus visible from file selection through review', async ({
