@@ -99,54 +99,94 @@ async function installAcceptedAccountRoutes(page: Page): Promise<void> {
   );
 }
 
-test('reading history resumes the last readable chapter and confirms deletion on mobile', async ({
-  page,
-}) => {
-  await page.setViewportSize({ width: 360, height: 800 });
-  await installAcceptedAccountRoutes(page);
-  let deleted = false;
-  await page.route('**/api/v1/me/reading-history**', async (route) => {
-    if (route.request().method() === 'DELETE') {
-      deleted = true;
-      await route.fulfill({ status: 204 });
-    } else {
-      await json(route, { items: deleted ? [] : [historyItem], nextCursor: null });
+const historyViewports = [
+  { name: 'mobile 360×800', width: 360, height: 800 },
+  { name: 'short landscape 640×360', width: 640, height: 360 },
+  { name: 'desktop 1280×900', width: 1280, height: 900 },
+] as const;
+
+for (const viewport of historyViewports) {
+  test(`reading history resumes, confirms deletion and clears at ${viewport.name}`, async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    await installAcceptedAccountRoutes(page);
+    let deleted = false;
+    await page.route('**/api/v1/me/reading-history**', async (route) => {
+      if (route.request().method() === 'DELETE') {
+        deleted = true;
+        await route.fulfill({ status: 204 });
+      } else {
+        await json(route, { items: deleted ? [] : [historyItem], nextCursor: null });
+      }
+    });
+    await page.route('**/api/v1/me/reading-history/*', async (route) => {
+      if (route.request().method() === 'DELETE') {
+        deleted = true;
+        await route.fulfill({ status: 204 });
+      } else {
+        await route.fallback();
+      }
+    });
+
+    await page.goto('/app/history');
+    await expect(page.getByRole('heading', { name: 'Lịch sử đọc' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Gió qua núi' })).toBeVisible();
+    await expect(page.getByText('Chương 3 · Qua khỏi dốc')).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Tiếp tục đọc' })).toHaveAttribute(
+      'href',
+      `/app/reader/${workId}/${chapterId}`,
+    );
+    await expectNoAxeViolations(page);
+    await page.screenshot({
+      path: testInfo.outputPath(`01-reading-history-${viewport.width}x${viewport.height}.png`),
+      fullPage: false,
+    });
+
+    await page.getByRole('button', { name: 'Xóa lịch sử đọc của Gió qua núi' }).click();
+    const dialog = page.getByRole('dialog', { name: 'Xóa mục này khỏi lịch sử đọc?' });
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toContainText('vị trí đọc đã lưu');
+    await expectNoAxeViolations(page);
+    await page.screenshot({
+      path: testInfo.outputPath(`02-delete-confirmation-${viewport.width}x${viewport.height}.png`),
+      fullPage: false,
+    });
+    await dialog.getByRole('button', { name: 'Xóa lịch sử' }).click();
+    await expect(page.getByRole('heading', { name: 'Chưa có vị trí đọc gần đây' })).toBeVisible();
+    await expect(page.locator('.history-status')).toContainText(
+      'Đã xóa “Gió qua núi” khỏi lịch sử.',
+    );
+    await page.screenshot({
+      path: testInfo.outputPath(`03-empty-history-${viewport.width}x${viewport.height}.png`),
+      fullPage: false,
+    });
+
+    if (viewport.width <= 900) {
+      const searchLink = page.getByRole('link', { name: 'Tìm tác phẩm trong thư viện' });
+      await searchLink.evaluate((element) =>
+        element.scrollIntoView({ block: 'center', behavior: 'instant' }),
+      );
+      const searchLinkBounds = await searchLink.boundingBox();
+      const mobileNavigationBounds = await page.locator('.mobile-nav').boundingBox();
+      expect(searchLinkBounds).not.toBeNull();
+      expect(mobileNavigationBounds).not.toBeNull();
+      expect(searchLinkBounds!.y + searchLinkBounds!.height).toBeLessThanOrEqual(
+        mobileNavigationBounds!.y,
+      );
+      await page.screenshot({
+        path: testInfo.outputPath(
+          `04-empty-history-links-${viewport.width}x${viewport.height}.png`,
+        ),
+        fullPage: false,
+      });
     }
+
+    const dimensions = await page.evaluate(() => ({
+      document: document.documentElement.scrollWidth,
+      viewport: document.documentElement.clientWidth,
+    }));
+    expect(dimensions.document).toBeLessThanOrEqual(dimensions.viewport);
+    await expectNoAxeViolations(page);
   });
-  await page.route('**/api/v1/me/reading-history/*', async (route) => {
-    if (route.request().method() === 'DELETE') {
-      deleted = true;
-      await route.fulfill({ status: 204 });
-    } else {
-      await route.fallback();
-    }
-  });
-
-  await page.goto('/app/history');
-  await expect(page.getByRole('heading', { name: 'Lịch sử đọc' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Gió qua núi' })).toBeVisible();
-  await expect(page.getByText('Chương 3 · Qua khỏi dốc')).toBeVisible();
-  await expect(page.getByRole('link', { name: 'Tiếp tục đọc' })).toHaveAttribute(
-    'href',
-    `/app/reader/${workId}/${chapterId}`,
-  );
-  await expectNoAxeViolations(page);
-
-  await page.getByRole('button', { name: 'Xóa lịch sử đọc của Gió qua núi' }).click();
-  const dialog = page.getByRole('dialog', { name: 'Xóa mục này khỏi lịch sử đọc?' });
-  await expect(dialog).toBeVisible();
-  await expect(dialog).toContainText('vị trí đọc đã lưu');
-  await expectNoAxeViolations(page);
-  await dialog.getByRole('button', { name: 'Xóa lịch sử' }).click();
-  await expect(page.getByRole('heading', { name: 'Chưa có vị trí đọc gần đây' })).toBeVisible();
-  await expect(page.locator('.history-status')).toContainText(
-    'Đã xóa “Gió qua núi” khỏi lịch sử.',
-  );
-
-  const dimensions = await page.evaluate(() => ({
-    document: document.documentElement.scrollWidth,
-    viewport: document.documentElement.clientWidth,
-  }));
-  expect(dimensions.document).toBeLessThanOrEqual(dimensions.viewport);
-  await expectNoAxeViolations(page);
-});
+}
