@@ -9,6 +9,13 @@ const libraryId = '33333333-3333-4333-8333-333333333333';
 const chapterId = '77777777-7777-4777-8777-777777777777';
 const revisionId = '88888888-8888-4888-8888-888888888888';
 const cursor = 'signed-reader-cursor';
+const csrfToken = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+
+async function flushReaderCsrf(http: HttpTestingController): Promise<void> {
+  http.expectOne({ method: 'GET', url: '/api/v1/auth/csrf' }).flush({ token: csrfToken });
+  await Promise.resolve();
+  await Promise.resolve();
+}
 
 const work = {
   id: workId,
@@ -140,7 +147,9 @@ describe('ReaderApiService', () => {
       segmentAnchor: 'chapter-1-p1',
       scrollRatio: 0.42,
     });
+    await flushReaderCsrf(http);
     const saveRequest = http.expectOne({ method: 'PUT', url: `/api/v1/works/${workId}/progress` });
+    expect(saveRequest.request.headers.get('X-CSRF-Token')).toBe(csrfToken);
     expect(saveRequest.request.body).toEqual({
       expectedVersion: 3,
       chapterId,
@@ -165,7 +174,9 @@ describe('ReaderApiService', () => {
     await expect(loaded).resolves.toEqual(preferences);
 
     const saved = service.saveReaderPreferences(preferences);
+    await flushReaderCsrf(http);
     const request = http.expectOne({ method: 'PUT', url: '/api/v1/me/reader-preferences' });
+    expect(request.request.headers.get('X-CSRF-Token')).toBe(csrfToken);
     expect(request.request.body).toEqual(preferences);
     request.flush(preferences);
     await expect(saved).resolves.toEqual(preferences);
@@ -231,10 +242,12 @@ describe('ReaderApiService', () => {
       { chapterId, segmentAnchor: null, label: bookmark.label },
       'client-retry-key-0001',
     );
+    await flushReaderCsrf(http);
     const createRequest = http.expectOne({
       method: 'POST',
       url: `/api/v1/works/${workId}/bookmarks`,
     });
+    expect(createRequest.request.headers.get('X-CSRF-Token')).toBe(csrfToken);
     expect(createRequest.request.headers.get('Idempotency-Key')).toBe('client-retry-key-0001');
     expect(createRequest.request.body).toEqual({
       chapterId,
@@ -245,7 +258,13 @@ describe('ReaderApiService', () => {
     await expect(created).resolves.toEqual(bookmark);
 
     const deleted = service.deleteBookmark(bookmarkId);
-    http.expectOne({ method: 'DELETE', url: `/api/v1/bookmarks/${bookmarkId}` }).flush(null, {
+    await flushReaderCsrf(http);
+    const deleteRequest = http.expectOne({
+      method: 'DELETE',
+      url: `/api/v1/bookmarks/${bookmarkId}`,
+    });
+    expect(deleteRequest.request.headers.get('X-CSRF-Token')).toBe(csrfToken);
+    deleteRequest.flush(null, {
       status: 204,
       statusText: 'No Content',
     });
@@ -288,25 +307,30 @@ describe('ReaderApiService', () => {
       color: 'amber' as const,
     };
     const created = service.createAnnotation(workId, requestBody);
+    await flushReaderCsrf(http);
     const createRequest = http.expectOne({
       method: 'POST',
       url: `/api/v1/works/${workId}/annotations`,
     });
+    expect(createRequest.request.headers.get('X-CSRF-Token')).toBe(csrfToken);
     expect(createRequest.request.body).toEqual(requestBody);
     createRequest.flush(annotation);
     await expect(created).resolves.toEqual(annotation);
 
     const updated = service.updateAnnotation(annotation.id, 3, 'Ghi chú mới', 'sky');
+    await flushReaderCsrf(http);
     const updateRequest = http.expectOne({
       method: 'PATCH',
       url: `/api/v1/annotations/${annotation.id}`,
     });
+    expect(updateRequest.request.headers.get('X-CSRF-Token')).toBe(csrfToken);
     expect(updateRequest.request.headers.get('If-Match')).toBe('"annotation-3"');
     expect(updateRequest.request.body).toEqual({ note: 'Ghi chú mới', color: 'sky' });
     updateRequest.flush({ ...annotation, note: 'Ghi chú mới', color: 'sky', version: 4 });
     await expect(updated).resolves.toMatchObject({ note: 'Ghi chú mới', version: 4 });
 
     const stale = service.updateAnnotation(annotation.id, 3, 'Bản cũ', 'rose');
+    await flushReaderCsrf(http);
     http.expectOne({ method: 'PATCH', url: `/api/v1/annotations/${annotation.id}` }).flush(
       {
         code: 'READER_ANNOTATION_VERSION_STALE',
@@ -321,15 +345,23 @@ describe('ReaderApiService', () => {
     });
 
     const deleted = service.deleteAnnotation(annotation.id);
-    http
-      .expectOne({ method: 'DELETE', url: `/api/v1/annotations/${annotation.id}` })
-      .flush(null, { status: 204, statusText: 'No Content' });
+    await flushReaderCsrf(http);
+    const deleteRequest = http.expectOne({
+      method: 'DELETE',
+      url: `/api/v1/annotations/${annotation.id}`,
+    });
+    expect(deleteRequest.request.headers.get('X-CSRF-Token')).toBe(csrfToken);
+    deleteRequest.flush(null, { status: 204, statusText: 'No Content' });
     await expect(deleted).resolves.toBeUndefined();
 
     const cleared = service.clearAnnotations(workId);
-    http
-      .expectOne({ method: 'DELETE', url: `/api/v1/works/${workId}/annotations` })
-      .flush(null, { status: 204, statusText: 'No Content' });
+    await flushReaderCsrf(http);
+    const clearRequest = http.expectOne({
+      method: 'DELETE',
+      url: `/api/v1/works/${workId}/annotations`,
+    });
+    expect(clearRequest.request.headers.get('X-CSRF-Token')).toBe(csrfToken);
+    clearRequest.flush(null, { status: 204, statusText: 'No Content' });
     await expect(cleared).resolves.toBeUndefined();
   });
 
@@ -396,15 +428,23 @@ describe('ReaderApiService', () => {
 
   it('deletes one or all history positions through the authenticated account endpoints', async () => {
     const one = service.deleteReadingHistoryWork(workId);
-    http
-      .expectOne({ method: 'DELETE', url: `/api/v1/me/reading-history/${workId}` })
-      .flush(null, { status: 204, statusText: 'No Content' });
+    await flushReaderCsrf(http);
+    const deleteOneRequest = http.expectOne({
+      method: 'DELETE',
+      url: `/api/v1/me/reading-history/${workId}`,
+    });
+    expect(deleteOneRequest.request.headers.get('X-CSRF-Token')).toBe(csrfToken);
+    deleteOneRequest.flush(null, { status: 204, statusText: 'No Content' });
     await expect(one).resolves.toBeUndefined();
 
     const all = service.clearReadingHistory();
-    http
-      .expectOne({ method: 'DELETE', url: '/api/v1/me/reading-history' })
-      .flush(null, { status: 204, statusText: 'No Content' });
+    await flushReaderCsrf(http);
+    const deleteAllRequest = http.expectOne({
+      method: 'DELETE',
+      url: '/api/v1/me/reading-history',
+    });
+    expect(deleteAllRequest.request.headers.get('X-CSRF-Token')).toBe(csrfToken);
+    deleteAllRequest.flush(null, { status: 204, statusText: 'No Content' });
     await expect(all).resolves.toBeUndefined();
   });
 
@@ -461,6 +501,7 @@ describe('ReaderApiService', () => {
       segmentAnchor: 'chapter-1-p1',
       scrollRatio: 0.2,
     });
+    await flushReaderCsrf(http);
     http.expectOne({ method: 'PUT', url: `/api/v1/works/${workId}/progress` }).flush(
       {
         code: 'READER_PROGRESS_VERSION_STALE',

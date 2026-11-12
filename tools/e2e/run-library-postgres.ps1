@@ -29,7 +29,7 @@ for ($port = $PostgresPortStart; $port -le $PostgresPortEnd; $port++) {
 }
 if (-not $hostPort) { throw "No free PostgreSQL port in range $PostgresPortStart-$PostgresPortEnd." }
 
-foreach ($port in @(8080, 4300)) {
+foreach ($port in @(8081, 4300)) {
     if (@(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue).Count -gt 0) {
         throw "Port $port is already listening. Stop that process before running this isolated FE/API journey."
     }
@@ -37,9 +37,10 @@ foreach ($port in @(8080, 4300)) {
 
 $environmentNames = @(
     'POSTGRES_PORT', 'POSTGRES_PASSWORD', 'DATABASE_URL', 'DATABASE_USERNAME', 'DATABASE_PASSWORD',
-    'GOOGLE_AUTH_RATE_LIMIT_HMAC_KEY', 'NOVEL_SECURITY_CSRF_HMAC_KEY', 'NOVEL_LIBRARY_CURSOR_HMAC_KEY',
+    'GOOGLE_AUTH_RATE_LIMIT_HMAC_KEY', 'NOVEL_CSRF_HMAC_KEY', 'NOVEL_LIBRARY_CURSOR_HMAC_KEY',
     'NOVEL_WEB_CORS_ALLOWED_ORIGINS', 'LIBRARY_LIVE_TEST_SESSION_TOKEN', 'LIBRARY_LIVE_TEST_LIBRARY_ID',
-    'LIBRARY_LIVE_TEST_WORK_IDS', 'LIBRARY_LIVE_TEST_SCREENSHOT'
+    'LIBRARY_LIVE_TEST_WORK_IDS', 'LIBRARY_LIVE_TEST_SCREENSHOT', 'READER_LIVE_TEST_WORK_ID',
+    'READER_LIVE_TEST_CHAPTER_ID', 'READER_LIVE_TEST_SCREENSHOT'
 )
 $previousEnvironment = @{}
 foreach ($name in $environmentNames) {
@@ -51,6 +52,7 @@ $apiProcess = $null
 $result = 'FAIL'
 $failure = $null
 $cleanup = 'Not started'
+$appliedChangesets = 0
 $startedAt = Get-Date
 $postgresPassword = [guid]::NewGuid().ToString('N')
 $sessionBytes = New-Object byte[] 32
@@ -62,7 +64,16 @@ $userId = [guid]::NewGuid()
 $libraryId = [guid]::NewGuid()
 $firstWorkId = [guid]::NewGuid()
 $secondWorkId = [guid]::NewGuid()
+$readerChapterId = [guid]::NewGuid()
+$readerVolumeId = [guid]::NewGuid()
+$readerRevisionId = [guid]::NewGuid()
+$readerSegmentId = [guid]::NewGuid()
+$readerSourceText = 'Live E2E source text is served from PostgreSQL.'
+$readerSourceHash = [Convert]::ToHexString(
+    [System.Security.Cryptography.SHA256]::HashData([System.Text.Encoding]::UTF8.GetBytes($readerSourceText))
+).ToLowerInvariant()
 $screenshotPath = Join-Path $evidenceDirectory 'account-library-live.png'
+$readerScreenshotPath = Join-Path $evidenceDirectory 'account-reader-live.png'
 $buildLog = Join-Path $evidenceDirectory 'api-build.log'
 $apiStdout = Join-Path $evidenceDirectory 'api-stdout.log'
 $apiStderr = Join-Path $evidenceDirectory 'api-stderr.log'
@@ -75,7 +86,7 @@ try {
     $env:DATABASE_USERNAME = 'novelweb'
     $env:DATABASE_PASSWORD = $postgresPassword
     $env:GOOGLE_AUTH_RATE_LIMIT_HMAC_KEY = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
-    $env:NOVEL_SECURITY_CSRF_HMAC_KEY = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+    $env:NOVEL_CSRF_HMAC_KEY = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
     $env:NOVEL_LIBRARY_CURSOR_HMAC_KEY = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
     $env:NOVEL_WEB_CORS_ALLOWED_ORIGINS = 'http://localhost:4300'
 
@@ -104,7 +115,7 @@ try {
 
     $javaCommand = Get-Command java -ErrorAction Stop
     $apiJar = Join-Path $apiDirectory 'target\api-0.0.1-SNAPSHOT.jar'
-    $apiArguments = @('-jar', ('"{0}"' -f $apiJar), '--spring.profiles.active=postgres')
+    $apiArguments = @('-jar', ('"{0}"' -f $apiJar), '--spring.profiles.active=postgres', '--server.port=8081')
     $apiProcess = Start-Process -FilePath $javaCommand.Source -ArgumentList $apiArguments `
         -WorkingDirectory $apiDirectory -PassThru -WindowStyle Hidden `
         -RedirectStandardOutput $apiStdout -RedirectStandardError $apiStderr
@@ -114,7 +125,7 @@ try {
         $apiProcess.Refresh()
         if ($apiProcess.HasExited) { throw "API exited during startup (code $($apiProcess.ExitCode))." }
         try {
-            $health = Invoke-RestMethod -Uri 'http://127.0.0.1:8080/actuator/health' -TimeoutSec 2
+            $health = Invoke-RestMethod -Uri 'http://127.0.0.1:8081/actuator/health' -TimeoutSec 2
             if ($health.status -eq 'UP') { $apiReady = $true; break }
         } catch { }
         Start-Sleep -Seconds 2
@@ -124,6 +135,18 @@ try {
         Get-Content -LiteralPath $apiStderr -Tail 35 -ErrorAction SilentlyContinue
         throw 'API did not report healthy within 120 seconds.'
     }
+
+    $schemaReady = $false
+    for ($attempt = 1; $attempt -le 30; $attempt++) {
+        $changeCount = & $docker @composeArguments exec -T postgres psql -tA -U novelweb -d novelweb -c 'SELECT COUNT(*) FROM databasechangelog' 2>$null
+        if ($LASTEXITCODE -eq 0 -and ([string]$changeCount).Trim() -eq '73') {
+            $schemaReady = $true
+            $appliedChangesets = 73
+            break
+        }
+        Start-Sleep -Seconds 1
+    }
+    if (-not $schemaReady) { throw 'The disposable PostgreSQL database did not reach the 73-changeset schema.' }
 
     $fixtureSql = @"
 BEGIN;
@@ -143,6 +166,14 @@ INSERT INTO works (id, library_id, owner_user_id, title, author, source_language
 VALUES
 ('$firstWorkId', '$libraryId', '$userId', 'Live E2E Novel One', 'E2E Author', 'vi', 'private', 'active'),
 ('$secondWorkId', '$libraryId', '$userId', 'Live E2E Novel Two', 'E2E Author', 'en', 'private', 'active');
+INSERT INTO volumes (id, work_id, ordinal, title)
+VALUES ('$readerVolumeId', '$firstWorkId', 1, 'Live E2E Volume');
+INSERT INTO chapters (id, work_id, volume_id, ordinal, title, source_language, source_revision_id, status)
+VALUES ('$readerChapterId', '$firstWorkId', '$readerVolumeId', 1, 'Live Reader Chapter', 'en', '$readerRevisionId', 'ready');
+INSERT INTO chapter_revisions (id, chapter_id, revision_no, source_format, normalized_content, content_hash, created_by_user_id)
+VALUES ('$readerRevisionId', '$readerChapterId', 1, 'plain_text', '$readerSourceText', decode('$readerSourceHash', 'hex'), '$userId');
+INSERT INTO segments (id, chapter_revision_id, ordinal, segment_type, source_text, stable_anchor, checksum)
+VALUES ('$readerSegmentId', '$readerRevisionId', 1, 'paragraph', '$readerSourceText', 'live-reader-p1', decode('$readerSourceHash', 'hex'));
 COMMIT;
 "@
     & $docker @composeArguments exec -T postgres psql -v ON_ERROR_STOP=1 -U novelweb -d novelweb -c $fixtureSql
@@ -152,9 +183,12 @@ COMMIT;
     $env:LIBRARY_LIVE_TEST_LIBRARY_ID = [string]$libraryId
     $env:LIBRARY_LIVE_TEST_WORK_IDS = "$firstWorkId,$secondWorkId"
     $env:LIBRARY_LIVE_TEST_SCREENSHOT = $screenshotPath
+    $env:READER_LIVE_TEST_WORK_ID = [string]$firstWorkId
+    $env:READER_LIVE_TEST_CHAPTER_ID = [string]$readerChapterId
+    $env:READER_LIVE_TEST_SCREENSHOT = $readerScreenshotPath
     Push-Location $webDirectory
     try {
-        & npm.cmd run test:e2e -- e2e/library-live-postgres.spec.ts *>&1 | Tee-Object -FilePath $e2eLog
+        & npm.cmd run test:e2e:postgres -- e2e/library-live-postgres.spec.ts e2e/reader-live-postgres.spec.ts *>&1 | Tee-Object -FilePath $e2eLog
         $e2eExit = $LASTEXITCODE
     } finally { Pop-Location }
     if ($e2eExit -ne 0) { throw "Live FE/API/PostgreSQL Playwright journey failed (exit $e2eExit)." }
@@ -187,19 +221,20 @@ COMMIT;
     }
     $duration = [math]::Round(((Get-Date) - $startedAt).TotalSeconds, 1)
     @(
-        '# Browser journey: frontend to PostgreSQL library'
+        '# Browser journey: frontend to PostgreSQL library and Reader'
         ''
         "- Date: $($startedAt.ToString('yyyy-MM-dd HH:mm:ss zzz'))"
         "- Result: $result"
         "- Compose project: $project"
         "- PostgreSQL host port: $hostPort"
         '- API: built from the current workspace and started with the PostgreSQL profile'
+        "- Schema: $appliedChangesets Liquibase changesets applied before fixture setup"
         '- Browser: Playwright Chromium, Angular dev-server proxy to the real API'
-        '- Journey: session cookie → current policy → policy documents → libraries/works → per-work state'
+        '- Journey: session cookie/policy → libraries/works/per-work state → Reader manifest/content → persisted bookmark and reload'
         '- API route mocks: none'
         "- Elapsed: $duration seconds"
         "- Cleanup: $cleanup"
-        "- Screenshot: $([System.IO.Path]::GetFileName($screenshotPath))"
+        "- Screenshots: $([System.IO.Path]::GetFileName($screenshotPath)), $([System.IO.Path]::GetFileName($readerScreenshotPath))"
         '- Logs: api-build.log, api-stdout.log, api-stderr.log, playwright.log'
         $(if ($failure) { "- Failure: $failure" } else { '- Failure: none' })
         ''

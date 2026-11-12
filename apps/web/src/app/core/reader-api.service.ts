@@ -1,4 +1,4 @@
-import { HttpClient, HttpErrorResponse, HttpParams } from '@angular/common/http';
+import { HttpClient, HttpErrorResponse, HttpHeaders, HttpParams } from '@angular/common/http';
 import { Injectable, inject } from '@angular/core';
 import { firstValueFrom, timeout } from 'rxjs';
 
@@ -174,7 +174,9 @@ const annotationsUrl = (workId: string) => `/api/v1/works/${workId}/annotations`
 const annotationUrl = (annotationId: string) => `/api/v1/annotations/${annotationId}`;
 const readingHistoryUrl = '/api/v1/me/reading-history';
 const readingHistoryWorkUrl = (workId: string) => `${readingHistoryUrl}/${workId}`;
+const csrfUrl = '/api/v1/auth/csrf';
 const requestTimeoutMs = 10_000;
+const csrfTokenPattern = /^[A-Za-z0-9_-]{43}$/;
 
 @Injectable({ providedIn: 'root' })
 export class ReaderApiService {
@@ -195,7 +197,9 @@ export class ReaderApiService {
     const validated = parseReaderPreferences(preferences);
     try {
       const response: unknown = await firstValueFrom(
-        this.http.put<unknown>(readerPreferencesUrl, validated).pipe(timeout(requestTimeoutMs)),
+        this.http
+          .put<unknown>(readerPreferencesUrl, validated, { headers: await this.csrfHeaders() })
+          .pipe(timeout(requestTimeoutMs)),
       );
       return parseReaderPreferences(response);
     } catch (error) {
@@ -239,7 +243,7 @@ export class ReaderApiService {
       const response: unknown = await firstValueFrom(
         this.http
           .post<unknown>(bookmarksUrl(workId), request, {
-            headers: { 'Idempotency-Key': idempotencyKey },
+            headers: (await this.csrfHeaders()).set('Idempotency-Key', idempotencyKey),
           })
           .pipe(timeout(requestTimeoutMs)),
       );
@@ -253,7 +257,9 @@ export class ReaderApiService {
     if (!isUuid(bookmarkId)) throw invalidResponse('INVALID_READER_QUERY');
     try {
       await firstValueFrom(
-        this.http.delete<void>(bookmarkUrl(bookmarkId)).pipe(timeout(requestTimeoutMs)),
+        this.http
+          .delete<void>(bookmarkUrl(bookmarkId), { headers: await this.csrfHeaders() })
+          .pipe(timeout(requestTimeoutMs)),
       );
     } catch (error) {
       throw toReaderApiError(error);
@@ -311,7 +317,9 @@ export class ReaderApiService {
     }
     try {
       const response: unknown = await firstValueFrom(
-        this.http.post<unknown>(annotationsUrl(workId), request).pipe(timeout(requestTimeoutMs)),
+        this.http
+          .post<unknown>(annotationsUrl(workId), request, { headers: await this.csrfHeaders() })
+          .pipe(timeout(requestTimeoutMs)),
       );
       return parseReaderAnnotation(response, workId);
     } catch (error) {
@@ -341,7 +349,9 @@ export class ReaderApiService {
           .patch<unknown>(
             annotationUrl(annotationId),
             { note, color },
-            { headers: { 'If-Match': `"annotation-${version}"` } },
+            {
+              headers: (await this.csrfHeaders()).set('If-Match', `"annotation-${version}"`),
+            },
           )
           .pipe(timeout(requestTimeoutMs)),
       );
@@ -355,7 +365,9 @@ export class ReaderApiService {
     if (!isUuid(annotationId)) throw invalidResponse('INVALID_READER_QUERY');
     try {
       await firstValueFrom(
-        this.http.delete<void>(annotationUrl(annotationId)).pipe(timeout(requestTimeoutMs)),
+        this.http
+          .delete<void>(annotationUrl(annotationId), { headers: await this.csrfHeaders() })
+          .pipe(timeout(requestTimeoutMs)),
       );
     } catch (error) {
       throw toReaderApiError(error);
@@ -366,7 +378,9 @@ export class ReaderApiService {
     if (!isUuid(workId)) throw invalidResponse('INVALID_READER_QUERY');
     try {
       await firstValueFrom(
-        this.http.delete<void>(annotationsUrl(workId)).pipe(timeout(requestTimeoutMs)),
+        this.http
+          .delete<void>(annotationsUrl(workId), { headers: await this.csrfHeaders() })
+          .pipe(timeout(requestTimeoutMs)),
       );
     } catch (error) {
       throw toReaderApiError(error);
@@ -391,7 +405,9 @@ export class ReaderApiService {
     if (!isUuid(workId)) throw invalidResponse('INVALID_READER_QUERY');
     try {
       await firstValueFrom(
-        this.http.delete<void>(readingHistoryWorkUrl(workId)).pipe(timeout(requestTimeoutMs)),
+        this.http
+          .delete<void>(readingHistoryWorkUrl(workId), { headers: await this.csrfHeaders() })
+          .pipe(timeout(requestTimeoutMs)),
       );
     } catch (error) {
       throw toReaderApiError(error);
@@ -401,7 +417,9 @@ export class ReaderApiService {
   async clearReadingHistory(): Promise<void> {
     try {
       await firstValueFrom(
-        this.http.delete<void>(readingHistoryUrl).pipe(timeout(requestTimeoutMs)),
+        this.http
+          .delete<void>(readingHistoryUrl, { headers: await this.csrfHeaders() })
+          .pipe(timeout(requestTimeoutMs)),
       );
     } catch (error) {
       throw toReaderApiError(error);
@@ -478,12 +496,28 @@ export class ReaderApiService {
     }
     try {
       const response: unknown = await firstValueFrom(
-        this.http.put<unknown>(progressUrl(workId), request).pipe(timeout(requestTimeoutMs)),
+        this.http
+          .put<unknown>(progressUrl(workId), request, { headers: await this.csrfHeaders() })
+          .pipe(timeout(requestTimeoutMs)),
       );
       return parseProgress(response, workId);
     } catch (error) {
       throw toReaderApiError(error, workId);
     }
+  }
+
+  private async csrfHeaders(): Promise<HttpHeaders> {
+    const response: unknown = await firstValueFrom(
+      this.http.get<unknown>(csrfUrl).pipe(timeout(requestTimeoutMs)),
+    );
+    if (
+      !isRecord(response) ||
+      typeof response['token'] !== 'string' ||
+      !csrfTokenPattern.test(response['token'])
+    ) {
+      throw invalidResponse('INVALID_CSRF_RESPONSE');
+    }
+    return new HttpHeaders({ 'X-CSRF-Token': response['token'] });
   }
 }
 
