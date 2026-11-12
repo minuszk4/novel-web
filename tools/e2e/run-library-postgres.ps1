@@ -10,6 +10,7 @@ $webDirectory = Join-Path $repoRoot 'apps\web'
 $evidenceRunId = Get-Date -Format 'yyyy-MM-dd-HHmmss'
 $evidenceDirectory = Join-Path $repoRoot (Join-Path '.ai\evidence' ("library-live-postgres-{0}" -f $evidenceRunId))
 New-Item -ItemType Directory -Path $evidenceDirectory -Force | Out-Null
+$importStagingRoot = Join-Path $evidenceDirectory 'import-staging'
 $changelogDirectory = Join-Path $apiDirectory 'src\main\resources\db\changelog\changes'
 $expectedChangesets = @(Select-String -Path (Join-Path $changelogDirectory '*.sql') -Pattern '^\s*--changeset\s+').Count
 if ($expectedChangesets -lt 1) { throw 'No Liquibase changesets were found in the API source.' }
@@ -43,9 +44,9 @@ $environmentNames = @(
     'POSTGRES_PORT', 'POSTGRES_PASSWORD', 'DATABASE_URL', 'DATABASE_USERNAME', 'DATABASE_PASSWORD',
     'GOOGLE_AUTH_RATE_LIMIT_HMAC_KEY', 'NOVEL_CSRF_HMAC_KEY', 'NOVEL_LIBRARY_CURSOR_HMAC_KEY',
     'NOVEL_WEB_CORS_ALLOWED_ORIGINS', 'LIBRARY_LIVE_TEST_SESSION_TOKEN', 'LIBRARY_LIVE_TEST_LIBRARY_ID',
-    'LIBRARY_LIVE_TEST_WORK_IDS', 'LIBRARY_LIVE_TEST_SCREENSHOT', 'READER_LIVE_TEST_WORK_ID',
+    'NOVEL_IMPORT_STAGING_ROOT', 'LIBRARY_LIVE_TEST_WORK_IDS', 'LIBRARY_LIVE_TEST_SCREENSHOT', 'READER_LIVE_TEST_WORK_ID',
     'READER_LIVE_TEST_CHAPTER_ID', 'READER_LIVE_TEST_SCREENSHOT',
-    'WORK_DETAIL_LIVE_TEST_SCREENSHOT'
+    'WORK_DETAIL_LIVE_TEST_SCREENSHOT', 'PRIVATE_IMPORT_LIVE_TEST_SCREENSHOT'
 )
 $previousEnvironment = @{}
 foreach ($name in $environmentNames) {
@@ -57,6 +58,7 @@ $apiProcess = $null
 $result = 'FAIL'
 $failure = $null
 $cleanup = 'Not started'
+$stagingCleanup = 'Not created'
 $appliedChangesets = 0
 $startedAt = Get-Date
 $postgresPassword = [guid]::NewGuid().ToString('N')
@@ -80,6 +82,7 @@ $readerSourceHash = [Convert]::ToHexString(
 $screenshotPath = Join-Path $evidenceDirectory 'account-library-live.png'
 $readerScreenshotPath = Join-Path $evidenceDirectory 'account-reader-live.png'
 $workDetailScreenshotPath = Join-Path $evidenceDirectory 'account-work-detail-live.png'
+$privateImportScreenshotPath = Join-Path $evidenceDirectory 'private-import-commit-live.png'
 $buildLog = Join-Path $evidenceDirectory 'api-build.log'
 $apiStdout = Join-Path $evidenceDirectory 'api-stdout.log'
 $apiStderr = Join-Path $evidenceDirectory 'api-stderr.log'
@@ -94,6 +97,7 @@ try {
     $env:GOOGLE_AUTH_RATE_LIMIT_HMAC_KEY = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
     $env:NOVEL_CSRF_HMAC_KEY = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
     $env:NOVEL_LIBRARY_CURSOR_HMAC_KEY = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+    $env:NOVEL_IMPORT_STAGING_ROOT = $importStagingRoot
     $env:NOVEL_WEB_CORS_ALLOWED_ORIGINS = 'http://localhost:4300'
 
     Write-Output "Disposable Compose project: $project"
@@ -166,6 +170,12 @@ INSERT INTO policy_documents (policy_type, version, effective_at, document_markd
 INSERT INTO policy_acceptances (id, user_id, policy_type, version, decision, recorded_at, source) VALUES
 (gen_random_uuid(), '$userId', 'TERMS', 'terms-live-e2e-v1', 'TERMS_ACCEPTED', clock_timestamp(), 'e2e-fixture'),
 (gen_random_uuid(), '$userId', 'PRIVACY_NOTICE', 'privacy-live-e2e-v1', 'PRIVACY_NOTICE_ACKNOWLEDGED', clock_timestamp(), 'e2e-fixture');
+INSERT INTO import_rights_statements
+    (version, effective_at, display_text, status, approved_at, approved_by)
+VALUES
+    ('private-live-e2e-v1', clock_timestamp() - INTERVAL '10 minutes',
+     'Disposable test statement: this synthetic TXT file may be parsed and committed to a private test library.',
+     'APPROVED', clock_timestamp(), '$userId');
 INSERT INTO sessions (id_hash, user_id, expires_at)
 VALUES (decode('$sessionHash', 'hex'), '$userId', clock_timestamp() + INTERVAL '1 day');
 INSERT INTO libraries (id, owner_user_id, name, visibility, is_default)
@@ -195,9 +205,10 @@ COMMIT;
     $env:READER_LIVE_TEST_CHAPTER_ID = [string]$readerChapterId
     $env:READER_LIVE_TEST_SCREENSHOT = $readerScreenshotPath
     $env:WORK_DETAIL_LIVE_TEST_SCREENSHOT = $workDetailScreenshotPath
+    $env:PRIVATE_IMPORT_LIVE_TEST_SCREENSHOT = $privateImportScreenshotPath
     Push-Location $webDirectory
     try {
-        & npm.cmd run test:e2e:postgres -- e2e/library-live-postgres.spec.ts e2e/reader-live-postgres.spec.ts e2e/work-detail-live-postgres.spec.ts *>&1 | Tee-Object -FilePath $e2eLog
+        & npm.cmd run test:e2e:postgres -- e2e/library-live-postgres.spec.ts e2e/reader-live-postgres.spec.ts e2e/work-detail-live-postgres.spec.ts e2e/private-import-live-postgres.spec.ts *>&1 | Tee-Object -FilePath $e2eLog
         $e2eExit = $LASTEXITCODE
     } finally { Pop-Location }
     if ($e2eExit -ne 0) { throw "Live FE/API/PostgreSQL Playwright journey failed (exit $e2eExit)." }
@@ -215,6 +226,15 @@ COMMIT;
             $apiProcess.WaitForExit(5000) | Out-Null
         }
     }
+    if (Test-Path -LiteralPath $importStagingRoot) {
+        $resolvedEvidenceRoot = [System.IO.Path]::GetFullPath($evidenceDirectory).TrimEnd('\') + '\'
+        $resolvedStagingRoot = [System.IO.Path]::GetFullPath($importStagingRoot)
+        if (-not $resolvedStagingRoot.StartsWith($resolvedEvidenceRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Cleanup guard rejected staging path outside this run evidence directory.'
+        }
+        Remove-Item -LiteralPath $resolvedStagingRoot -Recurse -Force
+        $stagingCleanup = 'Removed only this run private staging directory'
+    }
     if ($composeStarted) {
         if ($project -notmatch '^novel-web-disposable-[a-f0-9]{8}$') { throw "Cleanup guard rejected project name: $project" }
         $ownedContainers = @(& $docker ps -a --filter "label=com.docker.compose.project=$project" --format '{{.Names}}')
@@ -230,7 +250,7 @@ COMMIT;
     }
     $duration = [math]::Round(((Get-Date) - $startedAt).TotalSeconds, 1)
     @(
-        '# Browser journey: frontend to PostgreSQL library, Work Detail and Reader'
+        '# Browser journey: frontend to PostgreSQL import, library, Work Detail and Reader'
         ''
         "- Date: $($startedAt.ToString('yyyy-MM-dd HH:mm:ss zzz'))"
         "- Result: $result"
@@ -239,11 +259,12 @@ COMMIT;
         '- API: built from the current workspace and started with the PostgreSQL profile'
         "- Schema: $appliedChangesets/$expectedChangesets Liquibase changesets applied before fixture setup"
         '- Browser: Playwright Chromium, Angular dev-server proxy to the real API'
-        '- Journey: session cookie/policy → libraries/works/per-work state → Work Detail manifest/progress → Reader source → persisted bookmark and reload'
+        '- Journey: session cookie/policy → rights receipt → upload/parse/preview/private commit → refreshed Library → Work Detail → Reader source; plus persisted bookmark and reload'
         '- API route mocks: none'
         "- Elapsed: $duration seconds"
         "- Cleanup: $cleanup"
-        "- Screenshots: $([System.IO.Path]::GetFileName($screenshotPath)), $([System.IO.Path]::GetFileName($workDetailScreenshotPath)), $([System.IO.Path]::GetFileName($readerScreenshotPath))"
+        "- Staging cleanup: $stagingCleanup"
+        "- Screenshots: $([System.IO.Path]::GetFileName($screenshotPath)), $([System.IO.Path]::GetFileName($workDetailScreenshotPath)), $([System.IO.Path]::GetFileName($readerScreenshotPath)), private-import-commit-live.png, private-import-detail-live.png, private-import-reader-live.png"
         '- Logs: api-build.log, api-stdout.log, api-stderr.log, playwright.log'
         $(if ($failure) { "- Failure: $failure" } else { '- Failure: none' })
         ''
