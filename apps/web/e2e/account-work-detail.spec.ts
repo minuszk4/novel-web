@@ -35,6 +35,7 @@ const work = {
 };
 const responsiveViewports = [
   { name: 'mobile-360', width: 360, height: 800 },
+  { name: 'landscape-640x360', width: 640, height: 360 },
   { name: 'tablet-768', width: 768, height: 1024 },
   { name: 'desktop-1280', width: 1280, height: 900 },
 ] as const;
@@ -173,7 +174,7 @@ for (const viewport of responsiveViewports) {
 
     const continueAction = page.getByRole('button', { name: 'Tiếp tục đọc' });
     await page.mouse.move(180, Math.min(500, viewport.height - 100));
-    await page.mouse.wheel(0, 180);
+    await page.mouse.wheel(0, viewport.height <= 400 ? 520 : 180);
     if (viewport.width <= 640) {
       await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
     }
