@@ -3,6 +3,7 @@ import type { Page } from '@playwright/test';
 
 const viewports = [
   { name: 'mobile 360px', width: 360, height: 800 },
+  { name: 'short-height 180px reflow proxy', width: 180, height: 400 },
   { name: 'tablet 768px', width: 768, height: 1024 },
   { name: 'desktop 1280px', width: 1280, height: 900 },
 ] as const;
