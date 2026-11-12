@@ -481,7 +481,9 @@ for (const viewport of viewports) {
     await expect(page).toHaveURL(new RegExp(`/app/reader/${workId}/${chapterIds[2]}$`));
     await expect(page.getByRole('heading', { name: 'Qua khỏi dốc' })).toBeVisible();
     await expect(page.getByText('Con đường đã sáng.')).toBeVisible();
-    await expect(page.getByRole('link', { name: 'Quay lại thư viện tài khoản' })).toBeVisible();
+    const workDetailLink = page.getByRole('link', { name: 'Quay lại chi tiết tác phẩm' });
+    await expect(workDetailLink).toBeVisible();
+    await expect(workDetailLink).toHaveAttribute('href', `/app/works/${workId}`);
     expect(loadedChapters).toEqual([chapterIds[0], chapterIds[2]]);
     await page.screenshot({
       path: test.info().outputPath(`account-reader-${viewport.width}x${viewport.height}.png`),
