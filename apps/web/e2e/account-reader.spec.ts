@@ -164,6 +164,9 @@ async function installReaderRoutes(
       },
     }),
   );
+  await page.route('**/api/v1/auth/csrf', (route) =>
+    json(route, { token: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' }),
+  );
   await page.route('**/api/v1/auth/me', (route) => json(route, currentUser));
   await page.route('**/api/v1/me/reader-preferences', async (route) => {
     if (route.request().method() === 'GET') return json(route, readerPreferences);

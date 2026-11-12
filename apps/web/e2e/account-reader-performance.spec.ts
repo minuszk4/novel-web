@@ -191,6 +191,9 @@ async function installPerformanceRoutes(page: Page): Promise<{
         },
       });
     }
+    if (pathname === '/api/v1/auth/csrf') {
+      return fulfillJson(route, { token: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' });
+    }
     if (pathname === '/api/v1/auth/me') return fulfillJson(route, account);
     if (pathname === '/api/v1/auth/policies/current') {
       return fulfillJson(route, {

@@ -73,6 +73,9 @@ async function installAcceptedAccountRoutes(page: Page): Promise<void> {
       },
     }),
   );
+  await page.route('**/api/v1/auth/csrf', (route) =>
+    json(route, { token: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' }),
+  );
   await page.route('**/api/v1/auth/me', (route) => json(route, account));
   await page.route('**/api/v1/auth/policies/current', (route) =>
     json(route, {
