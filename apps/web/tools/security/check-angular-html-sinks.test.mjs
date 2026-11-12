@@ -9,10 +9,12 @@ test('allows text interpolation and ordinary text bindings', () => {
 });
 
 test('rejects Angular raw HTML bindings', () => {
-  assert.equal(
-    findUnsafeHtmlSinks('<section [innerHTML]="chapter.body"></section>')[0]?.name,
-    'Angular innerHTML binding',
-  );
+  for (const source of [
+    '<section [innerHTML]="chapter.body"></section>',
+    '<section [outerHTML]="chapter.body"></section>',
+  ]) {
+    assert.equal(findUnsafeHtmlSinks(source)[0]?.name, 'Angular raw HTML binding');
+  }
 });
 
 test('rejects DOM HTML assignments and insertion APIs', () => {
@@ -21,11 +23,30 @@ test('rejects DOM HTML assignments and insertion APIs', () => {
     "element['innerHTML'] = chapter.body;",
     'element.outerHTML += chapter.body;',
     '<iframe [srcdoc]="chapter.body"></iframe>',
+    'frame.srcdoc = chapter.body;',
+    "frame.setAttribute('srcdoc', chapter.body);",
     "element.insertAdjacentHTML('beforeend', chapter.body);",
     'range.createContextualFragment(chapter.body);',
+    "new DOMParser().parseFromString(chapter.body, 'text/html');",
+    'element.setHTMLUnsafe(chapter.body);',
     'document.write(chapter.body);',
   ]) {
     assert.equal(findUnsafeHtmlSinks(source).length, 1, source);
+  }
+});
+
+test('rejects inline event handler content', () => {
+  assert.equal(findUnsafeHtmlSinks('<img onerror="run()">', 'fixture.html').length, 1);
+  assert.equal(findUnsafeHtmlSinks("element.setAttribute('onerror', code);").length, 1);
+  assert.deepEqual(findUnsafeHtmlSinks('element.onerror = run;'), []);
+});
+
+test('allows DOM event callbacks that do not parse HTML', () => {
+  for (const source of [
+    'element.onerror = handleError;',
+    "element.addEventListener('error', handleError);",
+  ]) {
+    assert.deepEqual(findUnsafeHtmlSinks(source), [], source);
   }
 });
 

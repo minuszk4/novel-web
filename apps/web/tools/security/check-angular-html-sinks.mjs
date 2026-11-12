@@ -3,27 +3,46 @@ import { dirname, extname, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const SINK_RULES = [
-  { name: 'Angular innerHTML binding', pattern: /\[\s*innerHTML\s*\]/i },
+  { name: 'Angular raw HTML binding', pattern: /\[\s*(?:innerHTML|outerHTML)\s*\]/i },
   {
     name: 'DOM innerHTML/outerHTML assignment',
     pattern:
       /(?:\b(?:innerHTML|outerHTML)\b|\[\s*['"`](?:innerHTML|outerHTML)['"`]\s*\])\s*(?:\+|\|\|)?=/i,
   },
-  { name: 'iframe srcdoc HTML binding', pattern: /(?:\[\s*srcdoc\s*\]|\bsrcdoc\s*=)/i },
-  { name: 'insertAdjacentHTML', pattern: /\binsertAdjacentHTML\s*\(/i },
-  { name: 'createContextualFragment', pattern: /\bcreateContextualFragment\s*\(/i },
+  {
+    name: 'iframe srcdoc HTML assignment',
+    pattern:
+      /(?:\[\s*srcdoc\s*\]|\.\s*srcdoc\s*=|\[\s*['"`]srcdoc['"`]\s*\]\s*=|\.\s*setAttribute\s*\(\s*['"`]srcdoc['"`]|(?:^|\s)srcdoc\s*=)/i,
+  },
+  {
+    name: 'HTML parsing or insertion API',
+    pattern: /\b(?:insertAdjacentHTML|createContextualFragment|setHTMLUnsafe)\s*\(/i,
+  },
+  { name: 'DOMParser HTML parsing', pattern: /\bDOMParser\s*\(\s*\)\s*\.\s*parseFromString\s*\(/i },
+  {
+    name: 'inline event handler insertion',
+    pattern: /\.\s*setAttribute\s*\(\s*['"`]on[a-z]+['"`]/i,
+  },
   { name: 'document.write', pattern: /\bdocument\s*\.\s*write(?:ln)?\s*\(/i },
   { name: 'bypassSecurityTrustHtml', pattern: /\bbypassSecurityTrustHtml\s*\(/i },
   {
     name: 'Renderer2 HTML property assignment',
-    pattern: /\bsetProperty\s*\([^,]+,\s*['"`](?:innerHTML|outerHTML)['"`]/i,
+    pattern: /\bsetProperty\s*\([^,]+,\s*['"`](?:innerHTML|outerHTML|srcdoc)['"`]/i,
   },
 ];
 
-export function findUnsafeHtmlSinks(source) {
+export function findUnsafeHtmlSinks(source, filePath = '') {
   const findings = [];
+  const rules = [...SINK_RULES];
 
-  for (const rule of SINK_RULES) {
+  if (filePath.toLowerCase().endsWith('.html')) {
+    rules.push({
+      name: 'inline event handler HTML attribute',
+      pattern: /\s+on[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/i,
+    });
+  }
+
+  for (const rule of rules) {
     const match = rule.pattern.exec(source);
     if (!match) continue;
 
@@ -66,9 +85,10 @@ export async function scanAngularApplication(applicationRoot) {
 
   for (const file of files) {
     const source = await readFile(file, 'utf8');
-    for (const finding of findUnsafeHtmlSinks(source)) {
+    const relativeFile = relative(applicationRoot, file).split(sep).join('/');
+    for (const finding of findUnsafeHtmlSinks(source, relativeFile)) {
       violations.push({
-        file: relative(applicationRoot, file).split(sep).join('/'),
+        file: relativeFile,
         ...finding,
       });
     }
