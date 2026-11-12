@@ -3629,6 +3629,229 @@ label:has(input:focus-visible) {
 .reader-bookmarks-panel {
   right: 0;
 }
+.reader-annotations-panel {
+  right: 0;
+  width: min(390px, 92vw);
+}
+.reader-annotation-hint,
+.reader-annotation-state,
+.reader-annotation-save-state,
+.reader-annotation-message,
+.reader-annotation-error,
+.reader-annotation-stale {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.reader-annotation-composer {
+  display: grid;
+  gap: 10px;
+  margin: 16px 0 20px;
+  padding: 14px;
+  border: 1px solid #dfd7c7;
+  border-radius: 8px;
+  background: #faf8f2;
+}
+.reader-annotation-composer h3,
+.reader-annotation-list-heading h3 {
+  margin: 0;
+  color: var(--text);
+  font-family: var(--font-display);
+  font-size: 15px;
+}
+.reader-annotation-composer label,
+.reader-annotation-item label {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+.reader-annotation-composer textarea,
+.reader-annotation-item textarea {
+  width: 100%;
+  min-height: 76px;
+  padding: 10px;
+  border: 1px solid #d9dbe0;
+  border-radius: 6px;
+  color: var(--text);
+  background: #fff;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  resize: vertical;
+}
+.reader-annotation-quote {
+  margin: 0;
+  padding: 9px 11px;
+  border-left: 3px solid #c6a05b;
+  border-radius: 3px;
+  color: #303544;
+  background: #f3eddc;
+  font-family: var(--font-display);
+  font-size: 13px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.reader-annotation-quote-amber {
+  border-left-color: #bc8730;
+  background: #f3eddc;
+}
+.reader-annotation-quote-mint {
+  border-left-color: #478665;
+  background: #e7f2e9;
+}
+.reader-annotation-quote-sky {
+  border-left-color: #5179aa;
+  background: #e7eff8;
+}
+.reader-annotation-quote-rose {
+  border-left-color: #b65e72;
+  background: #f7e9ed;
+}
+.reader-annotation-colors {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.reader-annotation-swatch {
+  width: 44px;
+  height: 44px;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  cursor: pointer;
+}
+.reader-annotation-swatch[data-color='amber'] {
+  background: #e7c77e;
+}
+.reader-annotation-swatch[data-color='mint'] {
+  background: #a8d5b3;
+}
+.reader-annotation-swatch[data-color='sky'] {
+  background: #a9c9e8;
+}
+.reader-annotation-swatch[data-color='rose'] {
+  background: #e8adba;
+}
+.reader-annotation-swatch.selected {
+  border-color: #343d5d;
+  box-shadow: inset 0 0 0 3px #fff;
+}
+.reader-annotation-list-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 22px 0 10px;
+}
+.reader-annotation-list {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.reader-annotation-item {
+  display: grid;
+  gap: 9px;
+  min-width: 0;
+  padding: 13px;
+  border: 1px solid #e3e4e8;
+  border-radius: 8px;
+  background: #fff;
+}
+.reader-annotation-open {
+  justify-self: start;
+  padding: 0;
+  border: 0;
+  color: #4e5c89;
+  background: transparent;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  text-align: left;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.reader-annotation-stale {
+  margin: 0;
+  padding: 8px;
+  border-radius: 5px;
+  color: #6b4b16;
+  background: #fbf2df;
+}
+.reader-annotation-save-state {
+  min-height: 18px;
+  margin: 0;
+}
+.reader-annotation-conflict {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid #d9a447;
+  border-radius: 6px;
+  color: #564019;
+  background: #fff8e9;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.reader-annotation-conflict p {
+  margin: 0;
+}
+.reader-annotation-delete {
+  min-height: 44px;
+  justify-self: start;
+  padding: 0 10px;
+  border: 1px solid #d9dbe0;
+  border-radius: 6px;
+  color: #7d3443;
+  background: #fff;
+  cursor: pointer;
+  font-size: 12px;
+}
+.reader-annotation-delete:disabled,
+.reader-annotation-swatch:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+.reader-annotation-empty {
+  padding: 30px 12px;
+  color: var(--muted);
+  text-align: center;
+}
+.reader-annotation-empty > span {
+  color: var(--primary);
+  font-size: 28px;
+}
+.reader-annotation-empty h3 {
+  margin: 9px 0 5px;
+  color: var(--text);
+  font-family: var(--font-display);
+  font-size: 16px;
+}
+.reader-annotation-empty p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.reader-account-highlight {
+  border-radius: 2px;
+  color: inherit;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+.reader-account-highlight[data-highlight-color='amber'] {
+  background: #f5dfaa;
+}
+.reader-account-highlight[data-highlight-color='mint'] {
+  background: #cbe7d1;
+}
+.reader-account-highlight[data-highlight-color='sky'] {
+  background: #cbdcf0;
+}
+.reader-account-highlight[data-highlight-color='rose'] {
+  background: #f2ced6;
+}
 .account-reader-save-bookmark {
   min-height: 44px;
 }
@@ -4014,6 +4237,48 @@ label:has(input:focus-visible) {
   color: #ecebe7;
   border-color: #494f59;
   background: #292d33;
+}
+.reader-dark .reader-annotation-item,
+.reader-dark .reader-annotation-composer {
+  border-color: #3b4048;
+  background: #292d33;
+}
+.reader-dark .reader-annotation-composer textarea,
+.reader-dark .reader-annotation-item textarea {
+  color: #ecebe7;
+  border-color: #494f59;
+  background: #1f2227;
+}
+.reader-dark .reader-annotation-quote-amber,
+.reader-dark .reader-account-highlight[data-highlight-color='amber'] {
+  color: #201a0c;
+  background: #f0d68f;
+}
+.reader-dark .reader-annotation-quote-mint,
+.reader-dark .reader-account-highlight[data-highlight-color='mint'] {
+  color: #112317;
+  background: #bfe1c7;
+}
+.reader-dark .reader-annotation-quote-sky,
+.reader-dark .reader-account-highlight[data-highlight-color='sky'] {
+  color: #102033;
+  background: #bfd4ed;
+}
+.reader-dark .reader-annotation-quote-rose,
+.reader-dark .reader-account-highlight[data-highlight-color='rose'] {
+  color: #32121b;
+  background: #ebc0ca;
+}
+.reader-sepia .reader-annotation-item,
+.reader-sepia .reader-annotation-composer {
+  border-color: #ded2bc;
+  background: #f8f0e1;
+}
+.reader-sepia .reader-annotation-composer textarea,
+.reader-sepia .reader-annotation-item textarea {
+  color: #3e3428;
+  border-color: #d8c9ae;
+  background: #fcf7ed;
 }
 
 /* Preferences */

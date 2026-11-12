@@ -88,6 +88,26 @@ interface MockReaderBookmark {
   createdAt: string;
 }
 
+interface MockReaderAnnotation {
+  id: string;
+  workId: string;
+  chapterId: string;
+  chapterRevisionId: string | null;
+  startAnchor: string;
+  startOffset: number;
+  endAnchor: string;
+  endOffset: number;
+  quoteSnapshot: string;
+  note: string;
+  color: 'amber' | 'mint' | 'sky' | 'rose';
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+  chapterOrdinal: number;
+  chapterTitle: string;
+  anchorState: 'CURRENT' | 'STALE';
+}
+
 async function json(route: Route, body: unknown, status = 200): Promise<void> {
   await route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
 }
@@ -102,6 +122,7 @@ async function installReaderRoutes(
   onProgressSave?: (request: MockProgressWrite) => void,
   longThirdChapter = false,
   initialBookmarks: MockReaderBookmark[] = [],
+  initialAnnotations: MockReaderAnnotation[] = [],
 ): Promise<string[]> {
   const loadedChapters: string[] = [];
   const manifestStatuses =
@@ -126,6 +147,7 @@ async function installReaderRoutes(
     contentWidth: 720,
   };
   const bookmarks: MockReaderBookmark[] = [...initialBookmarks];
+  const annotations: MockReaderAnnotation[] = [...initialAnnotations];
   await page.route('**/api/v1/system/status', (route) =>
     json(route, {
       apiVersion: '4.2.1',
@@ -187,6 +209,95 @@ async function installReaderRoutes(
     if (index < 0) return json(route, { code: 'NOT_FOUND' }, 404);
     bookmarks.splice(index, 1);
     return route.fulfill({ status: 204 });
+  });
+  await page.route(`**/api/v1/works/${workId}/annotations**`, async (route) => {
+    const request = route.request();
+    if (request.method() === 'GET') {
+      const requestUrl = new URL(request.url());
+      const chapterFilter = requestUrl.searchParams.get('chapterId');
+      const filtered = annotations.filter(
+        (item) => chapterFilter === null || item.chapterId === chapterFilter,
+      );
+      const limit = Number(requestUrl.searchParams.get('limit') ?? 50);
+      return json(route, { items: filtered.slice(0, limit), nextCursor: null });
+    }
+    if (request.method() === 'POST') {
+      const body = request.postDataJSON() as {
+        chapterId: string;
+        sourceRevisionId: string;
+        startAnchor: string;
+        startOffset: number;
+        endAnchor: string;
+        endOffset: number;
+        quoteSnapshot: string;
+        note: string;
+        color: MockReaderAnnotation['color'];
+      };
+      const existing = annotations.find(
+        (item) =>
+          item.chapterId === body.chapterId &&
+          item.chapterRevisionId === body.sourceRevisionId &&
+          item.startAnchor === body.startAnchor &&
+          item.startOffset === body.startOffset &&
+          item.endAnchor === body.endAnchor &&
+          item.endOffset === body.endOffset,
+      );
+      if (existing) return json(route, existing, 200);
+      const created: MockReaderAnnotation = {
+        id: `dddddddd-dddd-4ddd-8ddd-${String(annotations.length + 1).padStart(12, '0')}`,
+        workId,
+        chapterId: body.chapterId,
+        chapterRevisionId: body.sourceRevisionId,
+        startAnchor: body.startAnchor,
+        startOffset: body.startOffset,
+        endAnchor: body.endAnchor,
+        endOffset: body.endOffset,
+        quoteSnapshot: body.quoteSnapshot,
+        note: body.note,
+        color: body.color,
+        version: 1,
+        createdAt: '2026-11-11T10:00:00Z',
+        updatedAt: '2026-11-11T10:00:00Z',
+        chapterOrdinal: chapters.find((item) => item.id === body.chapterId)?.ordinal ?? 1,
+        chapterTitle: chapters.find((item) => item.id === body.chapterId)?.title ?? '',
+        anchorState: 'CURRENT',
+      };
+      annotations.unshift(created);
+      return json(route, created, 201);
+    }
+    if (request.method() === 'DELETE') {
+      annotations.splice(0, annotations.length);
+      return route.fulfill({ status: 204 });
+    }
+    return route.fallback();
+  });
+  await page.route('**/api/v1/annotations/*', async (route) => {
+    const request = route.request();
+    const annotationId = request.url().split('/annotations/')[1]?.split('?')[0];
+    const index = annotations.findIndex((item) => item.id === annotationId);
+    if (index < 0) return json(route, { code: 'NOT_FOUND' }, 404);
+    if (request.method() === 'DELETE') {
+      annotations.splice(index, 1);
+      return route.fulfill({ status: 204 });
+    }
+    if (request.method() === 'PATCH') {
+      const annotation = annotations[index];
+      const expectedEtag = `"annotation-${annotation.version}"`;
+      if (request.headers()['if-match'] !== expectedEtag) {
+        return json(
+          route,
+          { code: 'READER_ANNOTATION_VERSION_STALE', latestAnnotation: annotation },
+          409,
+        );
+      }
+      const body = request.postDataJSON() as Pick<MockReaderAnnotation, 'note' | 'color'>;
+      Object.assign(annotation, body, {
+        version: annotation.version + 1,
+        updatedAt: '2026-11-11T10:05:00Z',
+      });
+      return json(route, annotation);
+    }
+    return route.fallback();
   });
   await page.route(`**/api/v1/works/${workId}/progress`, async (route) => {
     if (route.request().method() === 'GET') return json(route, progress);
@@ -935,6 +1046,131 @@ for (const recovery of [
     }
   });
 }
+
+async function selectReaderTextWithMouse(page: Page, anchor: string, quote: string): Promise<void> {
+  const paragraph = page.locator(`[data-source-anchor="${anchor}"]`);
+  const coordinates = await paragraph.evaluate((element, selectedQuote) => {
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    let textNode = walker.nextNode() as Text | null;
+    while (textNode && !textNode.data.includes(selectedQuote)) {
+      textNode = walker.nextNode() as Text | null;
+    }
+    if (!textNode) throw new Error('Selected quote was not found in the source segment');
+    const start = textNode.data.indexOf(selectedQuote);
+    const range = document.createRange();
+    range.setStart(textNode, start);
+    range.setEnd(textNode, start + selectedQuote.length);
+    const rect = range.getBoundingClientRect();
+    return {
+      start: { x: rect.left + 1, y: rect.top + rect.height / 2 },
+      end: { x: rect.right - 1, y: rect.top + rect.height / 2 },
+    };
+  }, quote);
+  await page.mouse.move(coordinates.start.x, coordinates.start.y);
+  await page.mouse.down();
+  await page.mouse.move(coordinates.end.x + 2, coordinates.end.y, { steps: 8 });
+  await page.mouse.up();
+}
+
+test('account Reader opens the annotation composer from a real mouse text selection', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 360, height: 800 });
+  await installReaderRoutes(page, 200, false);
+  await page.goto(`/app/reader/${workId}`);
+  await expect(page.getByText('Một đoạn văn bản riêng tư.')).toBeVisible();
+
+  await selectReaderTextWithMouse(page, 'ch1-p1', 'đoạn văn');
+  await expect
+    .poll(() => page.evaluate(() => window.getSelection()?.toString() ?? ''))
+    .toBe('đoạn văn');
+  await page.getByRole('button', { name: 'Mở ghi chú và đoạn đánh dấu' }).click();
+
+  const panel = page.getByRole('dialog', { name: 'Ghi chú & đoạn đánh dấu' });
+  await expect(panel.locator('blockquote')).toHaveText('đoạn văn');
+});
+
+test('account Reader consumes a keyboard-style Selection API range on Enter', async ({ page }) => {
+  await page.setViewportSize({ width: 360, height: 800 });
+  await installReaderRoutes(page, 200, false);
+  await page.goto(`/app/reader/${workId}`);
+  await expect(page.getByText('Một đoạn văn bản riêng tư.')).toBeVisible();
+
+  const selectedQuote = await page
+    .locator('[data-source-anchor="ch1-p1"]')
+    .evaluate((paragraph) => {
+      const walker = document.createTreeWalker(paragraph, NodeFilter.SHOW_TEXT);
+      let textNode = walker.nextNode() as Text | null;
+      while (textNode && !textNode.data.startsWith('Một')) {
+        textNode = walker.nextNode() as Text | null;
+      }
+      if (!textNode) throw new Error('Keyboard selection fixture is missing its source text');
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.collapse(textNode, 0);
+      for (let index = 0; index < 'Một'.length; index += 1) {
+        selection?.modify('extend', 'forward', 'character');
+      }
+      return selection?.toString() ?? '';
+    });
+  expect(selectedQuote).toBe('Một');
+
+  const openButton = page.getByRole('button', { name: 'Mở ghi chú và đoạn đánh dấu' });
+  await openButton.focus();
+  await expect(openButton).toBeFocused();
+  await page.keyboard.press('Enter');
+  const panel = page.getByRole('dialog', { name: 'Ghi chú & đoạn đánh dấu' });
+  await expect(panel.locator('blockquote')).toHaveText('Một');
+});
+
+test('account Reader saves a Unicode source highlight and synchronizes private notes', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 360, height: 800 });
+  await installReaderRoutes(page, 200, false);
+  await page.goto(`/app/reader/${workId}`);
+  await expect(page.getByText('Một đoạn văn bản riêng tư.')).toBeVisible();
+
+  await page.locator('[data-source-anchor="ch1-p1"]').evaluate((paragraph) => {
+    const walker = document.createTreeWalker(paragraph, NodeFilter.SHOW_TEXT);
+    const textNode = walker.nextNode() as Text;
+    const start = textNode.data.indexOf('đoạn văn');
+    const range = document.createRange();
+    range.setStart(textNode, start);
+    range.setEnd(textNode, start + 'đoạn văn'.length);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  });
+
+  await page.getByRole('button', { name: 'Mở ghi chú và đoạn đánh dấu' }).click();
+  const panel = page.getByRole('dialog', { name: 'Ghi chú & đoạn đánh dấu' });
+  await expect(panel.getByText('đoạn văn', { exact: true })).toBeVisible();
+  await panel.getByLabel('Ghi chú riêng tư (không bắt buộc)').fill('Nhớ chi tiết này');
+  await panel.getByRole('button', { name: 'Xanh trời' }).click();
+  await panel.getByRole('button', { name: 'Lưu ghi chú và đoạn đánh dấu' }).click();
+
+  const highlight = page.locator('mark.reader-account-highlight[data-highlight-color="sky"]');
+  await expect(highlight).toHaveText('đoạn văn');
+  const savedNote = panel.locator('textarea').last();
+  await expect(savedNote).toHaveValue('Nhớ chi tiết này');
+  await savedNote.fill('Đã sửa trên thiết bị hiện tại');
+  await expect(panel.getByRole('status').filter({ hasText: 'Đã lưu' })).toBeVisible({
+    timeout: 5000,
+  });
+  await expectNoAxeViolations(page);
+
+  page.once('dialog', (dialog) => dialog.accept());
+  await panel.getByRole('button', { name: 'Xóa ghi chú này' }).click();
+  await expect(highlight).toHaveCount(0);
+  await expect(panel.getByText('Chưa có ghi chú nào')).toBeVisible();
+  await expectNoAxeViolations(page);
+  const dimensions = await page.evaluate(() => ({
+    document: document.documentElement.scrollWidth,
+    viewport: document.documentElement.clientWidth,
+  }));
+  expect(dimensions.document).toBeLessThanOrEqual(dimensions.viewport);
+});
 
 async function verifyEffectiveZoom(browser: Browser): Promise<void> {
   const context = await browser.newContext({

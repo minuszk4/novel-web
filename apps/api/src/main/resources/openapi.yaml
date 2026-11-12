@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 6.1.0
+  version: 6.2.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -11,7 +11,7 @@ info:
     HTML documents have a 4 MiB source limit and Markdown has a 16 MiB source limit, both lower than the configured general upload limit.
     EPUB 3, bounded UTF-8 TXT and single-document HTML/Markdown parse queue/status, private-preview persistence/edit and atomic private import
     commit are implemented. Markdown uses CommonMark core only, strips raw HTML and link destinations, and derives chapter boundaries from repeated top-level headings.
-    Source-only Reader manifest, chapter-content, progress, reader-preferences, bookmarks and private reading-history routes are implemented in the PostgreSQL profile.
+    Source-only Reader manifest, chapter-content, progress, reader-preferences, bookmarks, private annotations and private reading-history routes are implemented in the PostgreSQL profile.
     History is derived from the latest saved progress per accessible readable work, is visible for 365 days, and never returns chapter body text.
 servers:
   - url: http://127.0.0.1:8080
@@ -25,7 +25,7 @@ tags:
     description: Library/work listing, personal reading-state/collection, import-rights and local upload-staging operations are available in the PostgreSQL profile; parsing and other operations remain planned for G2.
     x-implementation-status: partial
   - name: Reader
-    description: Source-only reader, progress, preferences, private bookmarks and private reading history are available in the PostgreSQL profile.
+    description: Source-only reader, progress, preferences, private bookmarks, source annotations and private reading history are available in the PostgreSQL profile.
     x-implementation-status: partial
 paths:
   /api/v1/system/status:
@@ -1872,6 +1872,228 @@ paths:
           $ref: '#/components/responses/Problem'
         '404':
           $ref: '#/components/responses/Problem'
+  /api/v1/works/{workId}/annotations:
+    get:
+      operationId: listWorkReaderAnnotations
+      tags: [Reader]
+      x-implementation-status: implemented-postgres-profile
+      summary: List the current user's private notes and highlights for a work
+      description: >-
+        Returns only the signed-in user's notes, newest-updated first. An optional chapterId filter is bound into
+        the signed keyset cursor. Current and stale source anchors are included as metadata; source text is never
+        fetched for the response. Each page rechecks current work access, is no-store, and is limited to 100 items.
+      security:
+        - appSession: []
+      parameters:
+        - name: workId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: chapterId
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: cursor
+          in: query
+          schema:
+            type: string
+            maxLength: 2048
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        '200':
+          description: Private actor-owned annotations; source body and owner identifiers are excluded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReaderAnnotationPage'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+    post:
+      operationId: createWorkReaderAnnotation
+      tags: [Reader]
+      x-implementation-status: implemented-postgres-profile
+      summary: Save a private highlight and optional note against source text
+      description: >-
+        The server verifies the chapter is currently readable, the source revision is current, anchors are adjacent
+        within ten segments, code-point offsets are valid, and quoteSnapshot exactly matches the selected source.
+        Repeating the same actor/range returns the existing annotation (200) without overwriting its note. New
+        annotations return 201, version 1 and an ETag. Stale source revisions return 409. CSRF is required and
+        responses are no-store.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - name: workId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateReaderAnnotationRequest'
+      responses:
+        '201':
+          description: New private annotation created.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ReaderAnnotationETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReaderAnnotation'
+        '200':
+          description: Existing annotation for the exact actor-owned range returned unchanged.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ReaderAnnotationETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReaderAnnotation'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '422':
+          $ref: '#/components/responses/Problem'
+    delete:
+      operationId: clearWorkReaderAnnotations
+      tags: [Reader]
+      x-implementation-status: implemented-postgres-profile
+      summary: Delete the current user's annotations for a work
+      description: >-
+        Deletes only actor-owned annotations, even if work access has since been revoked or policy acceptance is
+        pending. Session-bound CSRF is required. The operation is idempotent and returns no-store 204.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - name: workId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: All current-user annotations for this work were deleted, if present.
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+  /api/v1/annotations/{annotationId}:
+    patch:
+      operationId: updateOwnedReaderAnnotation
+      tags: [Reader]
+      x-implementation-status: implemented-postgres-profile
+      summary: Update the note and color of a private annotation
+      description: >-
+        Both note and color are required. If-Match must contain the current annotation ETag; writes increment its
+        version. A stale ETag returns 409 with latestAnnotation and the current ETag, while a missing precondition
+        returns 428. This endpoint is actor-scoped, requires session-bound CSRF, rechecks work access, and is no-store.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - name: annotationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: If-Match
+          in: header
+          required: true
+          schema:
+            type: string
+            pattern: '^"annotation-[1-9][0-9]*"$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateReaderAnnotationRequest'
+      responses:
+        '200':
+          description: Updated annotation and incremented ETag.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ReaderAnnotationETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReaderAnnotation'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          description: Annotation changed concurrently; latestAnnotation and its ETag are returned for reconciliation.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ReaderAnnotationETag'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ReaderAnnotationConflictProblem'
+        '422':
+          $ref: '#/components/responses/Problem'
+        '428':
+          $ref: '#/components/responses/Problem'
+    delete:
+      operationId: deleteOwnedReaderAnnotation
+      tags: [Reader]
+      x-implementation-status: implemented-postgres-profile
+      summary: Delete one of the current user's private annotations
+      description: >-
+        Actor-scoped privacy deletion remains available when policy acceptance is pending or work access has been
+        revoked. Session-bound CSRF is required. A foreign or missing annotation returns 404; success is no-store 204.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - name: annotationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Annotation deleted.
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
   /api/v1/me/reading-history:
     get:
       operationId: listCurrentUserReadingHistory
@@ -1971,6 +2193,12 @@ components:
       in: header
       name: X-CSRF-Token
       description: Short-lived synchronizer token returned by GET /api/v1/auth/csrf; held by the browser in memory.
+  headers:
+    ReaderAnnotationETag:
+      description: Strong entity tag derived from the annotation version; send it verbatim in If-Match for updates.
+      schema:
+        type: string
+        pattern: '^"annotation-[1-9][0-9]*"$'
   schemas:
     Health:
       type: object
@@ -2914,6 +3142,134 @@ components:
           type: string
           minLength: 1
           maxLength: 160
+    ReaderAnnotationPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/ReaderAnnotation'
+        nextCursor:
+          type: [string, 'null']
+          maxLength: 2048
+    ReaderAnnotation:
+      type: object
+      additionalProperties: false
+      required: [id, workId, chapterId, chapterRevisionId, startAnchor, startOffset, endAnchor, endOffset, quoteSnapshot, note, color, version, createdAt, updatedAt, chapterOrdinal, chapterTitle, anchorState]
+      properties:
+        id:
+          type: string
+          format: uuid
+        workId:
+          type: string
+          format: uuid
+        chapterId:
+          type: string
+          format: uuid
+        chapterRevisionId:
+          type: [string, 'null']
+          format: uuid
+        startAnchor:
+          type: string
+          maxLength: 160
+          pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$'
+        startOffset:
+          type: integer
+          minimum: 0
+          description: Unicode code-point offset inside the source segment.
+        endAnchor:
+          type: string
+          maxLength: 160
+          pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$'
+        endOffset:
+          type: integer
+          minimum: 0
+          description: Exclusive Unicode code-point offset inside the source segment.
+        quoteSnapshot:
+          type: string
+          minLength: 1
+          maxLength: 2000
+        note:
+          type: string
+          maxLength: 2000
+        color:
+          type: string
+          enum: [amber, mint, sky, rose]
+        version:
+          type: integer
+          minimum: 1
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        chapterOrdinal:
+          type: integer
+          minimum: 1
+        chapterTitle:
+          type: string
+          maxLength: 300
+        anchorState:
+          type: string
+          enum: [CURRENT, STALE]
+    CreateReaderAnnotationRequest:
+      type: object
+      additionalProperties: false
+      required: [chapterId, sourceRevisionId, startAnchor, startOffset, endAnchor, endOffset, quoteSnapshot, note, color]
+      properties:
+        chapterId:
+          type: string
+          format: uuid
+        sourceRevisionId:
+          type: string
+          format: uuid
+        startAnchor:
+          type: string
+          maxLength: 160
+          pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$'
+        startOffset:
+          type: integer
+          minimum: 0
+        endAnchor:
+          type: string
+          maxLength: 160
+          pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$'
+        endOffset:
+          type: integer
+          minimum: 0
+        quoteSnapshot:
+          type: string
+          minLength: 1
+          maxLength: 2000
+        note:
+          type: string
+          maxLength: 2000
+        color:
+          type: string
+          enum: [amber, mint, sky, rose]
+    UpdateReaderAnnotationRequest:
+      type: object
+      additionalProperties: false
+      required: [note, color]
+      properties:
+        note:
+          type: string
+          maxLength: 2000
+        color:
+          type: string
+          enum: [amber, mint, sky, rose]
+    ReaderAnnotationConflictProblem:
+      allOf:
+        - $ref: '#/components/schemas/Problem'
+        - type: object
+          required: [latestAnnotation]
+          properties:
+            latestAnnotation:
+              $ref: '#/components/schemas/ReaderAnnotation'
     ReadingHistoryResponse:
       type: object
       additionalProperties: false

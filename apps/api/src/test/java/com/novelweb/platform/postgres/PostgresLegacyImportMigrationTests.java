@@ -1,6 +1,7 @@
 package com.novelweb.platform.postgres;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.sql.Connection;
@@ -30,7 +31,7 @@ class PostgresLegacyImportMigrationTests {
 
   private static final int LEGACY_CHANGESET_COUNT = 55;
 
-  private static final int CURRENT_CHANGESET_COUNT = 72;
+  private static final int CURRENT_CHANGESET_COUNT = 73;
 
   private static final int UPGRADE_CHANGESET_COUNT =
       CURRENT_CHANGESET_COUNT - LEGACY_CHANGESET_COUNT;
@@ -66,12 +67,14 @@ class PostgresLegacyImportMigrationTests {
         assertEquals(LEGACY_CHANGESET_COUNT, changesetCount(fixtureConnection));
         assertTrue(tableExists(fixtureConnection, "import_jobs"));
         assertTrue(!tableExists(fixtureConnection, "import_parse_jobs"));
+        assertFalse(tableExists(fixtureConnection, "reader_annotations"));
         assertImportJobRowsPreserved(fixtureConnection, jobIds);
 
         liquibase.update(new Contexts(), new LabelExpression());
         migrationMutationStarted = false;
 
         assertEquals(CURRENT_CHANGESET_COUNT, changesetCount(fixtureConnection));
+        assertTrue(tableExists(fixtureConnection, "reader_annotations"));
         assertTrue(tableExists(fixtureConnection, "import_actor_rate_limits"));
         assertTrue(tableExists(fixtureConnection, "import_parse_jobs"));
         assertTrue(tableExists(fixtureConnection, "import_commits"));

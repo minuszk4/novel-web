@@ -128,6 +128,38 @@ class ReaderCursorCodecTests {
                 cursor, ReaderCursorCodec.manifestContext(actorId, UUID.randomUUID())));
   }
 
+  @Test
+  void bindsAnnotationKeysetsToActorWorkAndOptionalChapterFilter() {
+    ReaderCursorCodec codec = new ReaderCursorCodec(HMAC_KEY);
+    UUID actorId = UUID.randomUUID();
+    UUID workId = UUID.randomUUID();
+    UUID chapterId = UUID.randomUUID();
+    ReaderCursorCodec.Context chapterContext =
+        ReaderCursorCodec.annotationsContext(actorId, workId, chapterId);
+    ReaderCursorCodec.KeysetPosition position =
+        new ReaderCursorCodec.KeysetPosition(
+            Instant.parse("2026-11-11T00:00:00Z"), UUID.randomUUID());
+    String cursor = codec.encodeKeyset(chapterContext, position);
+
+    assertEquals(position, codec.decodeKeyset(cursor, chapterContext));
+    assertThrows(
+        ReaderCursorCodec.InvalidCursorException.class,
+        () ->
+            codec.decodeKeyset(
+                cursor, ReaderCursorCodec.annotationsContext(actorId, workId, UUID.randomUUID())));
+    assertThrows(
+        ReaderCursorCodec.InvalidCursorException.class,
+        () ->
+            codec.decodeKeyset(
+                cursor, ReaderCursorCodec.annotationsContext(actorId, workId, null)));
+    assertThrows(
+        ReaderCursorCodec.InvalidCursorException.class,
+        () ->
+            codec.decodeKeyset(
+                cursor,
+                ReaderCursorCodec.annotationsContext(UUID.randomUUID(), workId, chapterId)));
+  }
+
   private static String tamperLastCharacter(String cursor) {
     char last = cursor.charAt(cursor.length() - 1);
     char replacement = last == 'A' ? 'B' : 'A';

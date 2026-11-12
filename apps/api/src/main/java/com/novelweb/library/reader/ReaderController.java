@@ -16,6 +16,7 @@ import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
@@ -35,6 +36,7 @@ public class ReaderController {
   private final ReaderProgressService progressService;
   private final ReaderPreferencesService preferencesService;
   private final ReaderBookmarkService bookmarkService;
+  private final ReaderAnnotationService annotationService;
   private final ReaderHistoryService historyService;
   private final PolicyService policyService;
 
@@ -43,12 +45,14 @@ public class ReaderController {
       ReaderProgressService progressService,
       ReaderPreferencesService preferencesService,
       ReaderBookmarkService bookmarkService,
+      ReaderAnnotationService annotationService,
       ReaderHistoryService historyService,
       PolicyService policyService) {
     this.readerService = readerService;
     this.progressService = progressService;
     this.preferencesService = preferencesService;
     this.bookmarkService = bookmarkService;
+    this.annotationService = annotationService;
     this.historyService = historyService;
     this.policyService = policyService;
   }
@@ -217,6 +221,99 @@ public class ReaderController {
         .build();
   }
 
+  @GetMapping("/works/{workId}/annotations")
+  public ResponseEntity<?> annotations(
+      Authentication authentication,
+      @PathVariable UUID workId,
+      @RequestParam(required = false) String chapterId,
+      @RequestParam(required = false) String cursor,
+      @RequestParam(defaultValue = "50") String limit,
+      HttpServletRequest request) {
+    Optional<UUID> actor = actorUserId(authentication);
+    if (actor.isEmpty()) {
+      return problem(
+          HttpStatus.UNAUTHORIZED, "UNAUTHENTICATED", "Sign in to view Reader notes.", request);
+    }
+    ResponseEntity<?> policyGate = policyGate(actor.orElseThrow(), request);
+    if (policyGate != null) return policyGate;
+    return ok(
+        annotationService.list(
+            actor.orElseThrow(),
+            workId,
+            parseOptionalUuid(chapterId, "chapterId"),
+            cursor,
+            parseLimit(limit)));
+  }
+
+  @PostMapping("/works/{workId}/annotations")
+  public ResponseEntity<?> createAnnotation(
+      Authentication authentication,
+      @PathVariable UUID workId,
+      @RequestBody(required = false) ReaderAnnotationService.CreateAnnotationRequest body,
+      HttpServletRequest request) {
+    Optional<UUID> actor = actorUserId(authentication);
+    if (actor.isEmpty()) {
+      return problem(
+          HttpStatus.UNAUTHORIZED, "UNAUTHENTICATED", "Sign in to save this Reader note.", request);
+    }
+    ResponseEntity<?> policyGate = policyGate(actor.orElseThrow(), request);
+    if (policyGate != null) return policyGate;
+    ReaderAnnotationRepository.CreateResult result =
+        annotationService.create(actor.orElseThrow(), workId, body);
+    return annotationResponse(
+        result.annotation(), result.created() ? HttpStatus.CREATED : HttpStatus.OK);
+  }
+
+  @PatchMapping("/annotations/{annotationId}")
+  public ResponseEntity<?> updateAnnotation(
+      Authentication authentication,
+      @PathVariable UUID annotationId,
+      @RequestHeader(value = HttpHeaders.IF_MATCH, required = false) String ifMatch,
+      @RequestBody(required = false) ReaderAnnotationService.UpdateAnnotationRequest body,
+      HttpServletRequest request) {
+    Optional<UUID> actor = actorUserId(authentication);
+    if (actor.isEmpty()) {
+      return problem(
+          HttpStatus.UNAUTHORIZED,
+          "UNAUTHENTICATED",
+          "Sign in to update this Reader note.",
+          request);
+    }
+    ResponseEntity<?> policyGate = policyGate(actor.orElseThrow(), request);
+    if (policyGate != null) return policyGate;
+    long expectedVersion = parseAnnotationEtag(ifMatch);
+    return annotationResponse(
+        annotationService.update(actor.orElseThrow(), annotationId, expectedVersion, body),
+        HttpStatus.OK);
+  }
+
+  @DeleteMapping("/annotations/{annotationId}")
+  public ResponseEntity<?> deleteAnnotation(
+      Authentication authentication, @PathVariable UUID annotationId, HttpServletRequest request) {
+    Optional<UUID> actor = actorUserId(authentication);
+    if (actor.isEmpty()) {
+      return problem(
+          HttpStatus.UNAUTHORIZED,
+          "UNAUTHENTICATED",
+          "Sign in to delete this Reader note.",
+          request);
+    }
+    annotationService.delete(actor.orElseThrow(), annotationId);
+    return noContent();
+  }
+
+  @DeleteMapping("/works/{workId}/annotations")
+  public ResponseEntity<?> clearAnnotationsForWork(
+      Authentication authentication, @PathVariable UUID workId, HttpServletRequest request) {
+    Optional<UUID> actor = actorUserId(authentication);
+    if (actor.isEmpty()) {
+      return problem(
+          HttpStatus.UNAUTHORIZED, "UNAUTHENTICATED", "Sign in to clear Reader notes.", request);
+    }
+    annotationService.deleteForWork(actor.orElseThrow(), workId);
+    return noContent();
+  }
+
   @GetMapping("/me/reading-history")
   public ResponseEntity<?> readingHistory(
       Authentication authentication,
@@ -333,6 +430,63 @@ public class ReaderController {
         request);
   }
 
+  @ExceptionHandler(ReaderAnnotationRepository.AnnotationNotFoundException.class)
+  public ResponseEntity<ProblemDetail> unavailableAnnotation(HttpServletRequest request) {
+    return problem(
+        HttpStatus.NOT_FOUND,
+        "NOT_FOUND",
+        "The requested work or Reader annotation is unavailable.",
+        request);
+  }
+
+  @ExceptionHandler(ReaderAnnotationRepository.InvalidAnnotationException.class)
+  public ResponseEntity<ProblemDetail> invalidAnnotation(HttpServletRequest request) {
+    return problem(
+        HttpStatus.UNPROCESSABLE_ENTITY,
+        "INVALID_READER_ANNOTATION",
+        "The selected range is not part of readable source content.",
+        request);
+  }
+
+  @ExceptionHandler(ReaderAnnotationRepository.StaleAnchorException.class)
+  public ResponseEntity<ProblemDetail> staleAnnotationAnchor(HttpServletRequest request) {
+    return problem(
+        HttpStatus.CONFLICT,
+        "READER_ANNOTATION_ANCHOR_STALE",
+        "The chapter changed while this selection was being saved. Reload it and select the source text again.",
+        request);
+  }
+
+  @ExceptionHandler(ReaderAnnotationService.InvalidAnnotationRequestException.class)
+  public ResponseEntity<ProblemDetail> invalidAnnotationRequest(
+      ReaderAnnotationService.InvalidAnnotationRequestException exception,
+      HttpServletRequest request) {
+    return problem(
+        HttpStatus.UNPROCESSABLE_ENTITY,
+        "INVALID_READER_ANNOTATION",
+        exception.getMessage(),
+        request);
+  }
+
+  @ExceptionHandler(ReaderAnnotationRepository.VersionConflictException.class)
+  public ResponseEntity<ProblemDetail> staleAnnotation(
+      ReaderAnnotationRepository.VersionConflictException exception, HttpServletRequest request) {
+    ProblemDetail problem =
+        ProblemDetail.forStatusAndDetail(
+            HttpStatus.CONFLICT,
+            "Reader note changed elsewhere. Compare both drafts before choosing which to keep.");
+    problem.setTitle(HttpStatus.CONFLICT.getReasonPhrase());
+    problem.setProperty("code", "READER_ANNOTATION_VERSION_STALE");
+    Object value = request.getAttribute(CorrelationIdFilter.REQUEST_ATTRIBUTE);
+    problem.setProperty("correlationId", value instanceof String id ? id : "unavailable");
+    problem.setProperty("latestAnnotation", exception.latest());
+    return ResponseEntity.status(HttpStatus.CONFLICT)
+        .header(HttpHeaders.ETAG, annotationEtag(exception.latest().version()))
+        .cacheControl(CacheControl.noStore())
+        .header(HttpHeaders.PRAGMA, "no-cache")
+        .body(problem);
+  }
+
   @ExceptionHandler(ReaderPreferencesService.InvalidPreferencesException.class)
   public ResponseEntity<ProblemDetail> invalidPreferences(
       ReaderPreferencesService.InvalidPreferencesException exception, HttpServletRequest request) {
@@ -439,6 +593,23 @@ public class ReaderController {
     }
   }
 
+  private static long parseAnnotationEtag(String ifMatch) {
+    if (ifMatch == null || ifMatch.isBlank()) {
+      throw new AnnotationPreconditionRequiredException();
+    }
+    if (!ifMatch.startsWith("\"annotation-") || !ifMatch.endsWith("\"")) {
+      throw new IllegalArgumentException("If-Match must contain the current annotation ETag");
+    }
+    String version = ifMatch.substring(12, ifMatch.length() - 1);
+    try {
+      long parsed = Long.parseLong(version);
+      if (parsed < 1) throw new NumberFormatException("annotation version must be positive");
+      return parsed;
+    } catch (NumberFormatException exception) {
+      throw new IllegalArgumentException("If-Match must contain the current annotation ETag");
+    }
+  }
+
   private static Optional<UUID> actorUserId(Authentication authentication) {
     if (authentication == null
         || !(authentication.getPrincipal() instanceof SessionService.SessionPrincipal principal)) {
@@ -469,6 +640,30 @@ public class ReaderController {
         .header(HttpHeaders.PRAGMA, "no-cache")
         .body(progress);
   }
+
+  private static ResponseEntity<?> annotationResponse(
+      ReaderAnnotationRepository.AnnotationRecord annotation, HttpStatus status) {
+    return ResponseEntity.status(status)
+        .header(HttpHeaders.ETAG, annotationEtag(annotation.version()))
+        .cacheControl(CacheControl.noStore())
+        .header(HttpHeaders.PRAGMA, "no-cache")
+        .body(annotation);
+  }
+
+  private static String annotationEtag(long version) {
+    return "\"annotation-" + version + "\"";
+  }
+
+  @ExceptionHandler(AnnotationPreconditionRequiredException.class)
+  public ResponseEntity<ProblemDetail> annotationPreconditionRequired(HttpServletRequest request) {
+    return problem(
+        HttpStatus.PRECONDITION_REQUIRED,
+        "ANNOTATION_VERSION_REQUIRED",
+        "If-Match with the current Reader annotation ETag is required.",
+        request);
+  }
+
+  private static final class AnnotationPreconditionRequiredException extends RuntimeException {}
 
   private static String progressEtag(long version) {
     return "\"progress-" + version + "\"";

@@ -1,5 +1,6 @@
 import {
   Component,
+  computed,
   DestroyRef,
   ElementRef,
   HostListener,
@@ -11,8 +12,11 @@ import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import {
   ReaderApiError,
+  ReaderAnnotation,
+  ReaderAnnotationColor,
   ReaderBookmark,
   ReaderApiService,
+  CreateReaderAnnotationRequest,
   ReaderChapter,
   ReaderContentPage,
   ReaderManifestPage,
@@ -41,6 +45,26 @@ type PendingReaderProgress = Omit<SaveReaderProgressRequest, 'expectedVersion'> 
   workId: string;
 };
 
+interface ReaderSelectionDraft extends Omit<CreateReaderAnnotationRequest, 'note' | 'color'> {}
+
+interface ReaderTextPiece {
+  text: string;
+  color: ReaderAnnotationColor | null;
+  annotationId: string | null;
+}
+
+interface ReaderRenderedSegment extends ReaderSourceSegment {
+  pieces: ReaderTextPiece[];
+}
+
+interface ReaderAnnotationConflict {
+  annotationId: string;
+  latest: ReaderAnnotation;
+}
+
+const annotationPageSize = 100;
+const maxAnnotationPages = 20;
+
 @Component({
   selector: 'app-account-reader-page',
   imports: [RouterLink],
@@ -56,6 +80,8 @@ export class AccountReaderPageComponent {
   protected readonly chapters = signal<ReaderChapter[]>([]);
   protected readonly activeChapter = signal<ReaderChapter | null>(null);
   protected readonly segments = signal<ReaderSourceSegment[]>([]);
+  protected readonly renderedSegments = computed(() => this.buildRenderedSegments());
+  protected readonly sourceRevisionId = signal<string | null>(null);
   protected readonly manifestState = signal<'loading' | 'ready' | 'error'>('loading');
   protected readonly contentState = signal<
     'idle' | 'loading' | 'ready' | 'empty' | 'unavailable' | 'error'
@@ -68,6 +94,35 @@ export class AccountReaderPageComponent {
   protected readonly tocOpen = signal(false);
   protected readonly settingsOpen = signal(false);
   protected readonly bookmarksOpen = signal(false);
+  protected readonly annotationsOpen = signal(false);
+  protected readonly annotations = signal<ReaderAnnotation[]>([]);
+  protected readonly chapterAnnotations = signal<ReaderAnnotation[]>([]);
+  protected readonly annotationCursor = signal<string | null>(null);
+  protected readonly annotationPanelState = signal<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  protected readonly annotationPageBusy = signal(false);
+  protected readonly annotationError = signal<ReaderApiError | null>(null);
+  protected readonly annotationMessage = signal('');
+  protected readonly annotationDraft = signal<ReaderSelectionDraft | null>(null);
+  protected readonly annotationDraftNote = signal('');
+  protected readonly annotationDraftColor = signal<ReaderAnnotationColor>('amber');
+  protected readonly annotationEdits = signal<
+    Record<string, { note: string; color: ReaderAnnotationColor }>
+  >({});
+  protected readonly annotationEditStates = signal<
+    Record<string, 'idle' | 'saving' | 'saved' | 'pending' | 'conflict'>
+  >({});
+  protected readonly annotationConflict = signal<ReaderAnnotationConflict | null>(null);
+  protected readonly deletingAnnotationIds = signal<ReadonlySet<string>>(new Set());
+  protected readonly clearingAnnotations = signal(false);
+  protected readonly annotationColors: ReadonlyArray<{
+    value: ReaderAnnotationColor;
+    label: string;
+  }> = [
+    { value: 'amber', label: 'Hổ phách' },
+    { value: 'mint', label: 'Ngọc lục bảo' },
+    { value: 'sky', label: 'Xanh trời' },
+    { value: 'rose', label: 'Hồng' },
+  ];
   protected readonly bookmarks = signal<ReaderBookmark[]>([]);
   protected readonly nextBookmarkCursor = signal<string | null>(null);
   protected readonly bookmarkOpenRetry = signal<ReaderBookmark | null>(null);
@@ -95,6 +150,9 @@ export class AccountReaderPageComponent {
   private panelReturnFocus: HTMLElement | null = null;
   private pendingBookmarkPosition: { chapterId: string; segmentAnchor: string | null } | null =
     null;
+  private pendingTextSelection: ReaderSelectionDraft | null = null;
+  private readonly annotationTimers = new Map<string, number>();
+  private readonly savingAnnotationIds = new Set<string>();
   private readonly progressVersions = new Map<string, number>();
   private progressTimer: number | null = null;
   private pendingProgress: PendingReaderProgress | null = null;
@@ -119,6 +177,12 @@ export class AccountReaderPageComponent {
     if (panel) this.focusPanel(panel.nativeElement);
   }
 
+  @ViewChild('annotationsPanel') private set annotationsPanel(
+    panel: ElementRef<HTMLElement> | undefined,
+  ) {
+    if (panel) this.focusPanel(panel.nativeElement);
+  }
+
   constructor() {
     this.route.paramMap.pipe(takeUntilDestroyed(this.destroyRef)).subscribe((params) => {
       const workId = params.get('workId');
@@ -130,6 +194,7 @@ export class AccountReaderPageComponent {
       this.tocOpen.set(false);
       this.settingsOpen.set(false);
       this.bookmarksOpen.set(false);
+      this.annotationsOpen.set(false);
       this.panelReturnFocus = null;
       if (!workId) {
         this.setManifestError(
@@ -146,6 +211,9 @@ export class AccountReaderPageComponent {
     this.destroyRef.onDestroy(() => {
       if (this.progressTimer !== null) window.clearTimeout(this.progressTimer);
       if (this.preferencesTimer !== null) window.clearTimeout(this.preferencesTimer);
+      for (const timer of this.annotationTimers.values()) window.clearTimeout(timer);
+      this.annotationTimers.clear();
+      for (const annotation of this.annotations()) void this.flushAnnotationEdit(annotation.id);
       if (this.activeChapter()) void this.flushProgress();
       void this.flushPreferences();
     });
@@ -205,6 +273,7 @@ export class AccountReaderPageComponent {
     if (document.visibilityState === 'hidden') {
       void this.flushProgress();
       void this.flushPreferences();
+      this.flushAllAnnotationEdits();
     }
   }
 
@@ -212,6 +281,7 @@ export class AccountReaderPageComponent {
   protected onPageHide(): void {
     void this.flushProgress();
     void this.flushPreferences();
+    this.flushAllAnnotationEdits();
   }
 
   protected get previousChapter(): ReaderChapter | null {
@@ -341,6 +411,207 @@ export class AccountReaderPageComponent {
     if (this.bookmarkPanelState() === 'idle') void this.loadBookmarks();
   }
 
+  protected preserveTextSelection(event: PointerEvent): void {
+    this.pendingTextSelection = this.readSelectionDraft();
+    event.preventDefault();
+  }
+
+  protected toggleAnnotations(event?: Event): void {
+    if (this.annotationsOpen()) {
+      this.closePanel();
+      return;
+    }
+    const selection = this.pendingTextSelection ?? this.readSelectionDraft();
+    this.pendingTextSelection = null;
+    if (selection) {
+      this.annotationDraft.set(selection);
+      this.annotationDraftNote.set('');
+      this.annotationDraftColor.set('amber');
+      this.annotationError.set(null);
+    }
+    this.openPanel('annotations', event);
+    this.annotationMessage.set('');
+    if (this.annotationPanelState() === 'idle') void this.loadAnnotations();
+  }
+
+  protected onAnnotationDraftNoteInput(event: Event): void {
+    this.annotationDraftNote.set((event.target as HTMLTextAreaElement).value);
+  }
+
+  protected setAnnotationDraftColor(color: ReaderAnnotationColor): void {
+    this.annotationDraftColor.set(color);
+  }
+
+  protected async saveAnnotationDraft(): Promise<void> {
+    const draft = this.annotationDraft();
+    const work = this.work();
+    if (!draft || !work || !this.sourceRevisionId()) return;
+    this.annotationError.set(null);
+    this.annotationMessage.set('Đang lưu ghi chú và đánh dấu…');
+    try {
+      const saved = await this.api.createAnnotation(work.id, {
+        ...draft,
+        note: this.annotationDraftNote(),
+        color: this.annotationDraftColor(),
+      });
+      if (work.id !== this.work()?.id) return;
+      this.upsertAnnotation(saved);
+      this.annotationDraft.set(null);
+      this.annotationDraftNote.set('');
+      window.getSelection()?.removeAllRanges();
+      this.annotationMessage.set(
+        'Đã lưu. Nếu đoạn này đã có đánh dấu, ghi chú trước đó được giữ nguyên.',
+      );
+    } catch (error) {
+      const apiError = asReaderApiError(error);
+      this.annotationError.set(apiError);
+      this.annotationMessage.set(this.annotationStatusMessage(apiError));
+    }
+  }
+
+  protected async retryAnnotations(): Promise<void> {
+    this.annotationPanelState.set('idle');
+    await this.loadAnnotations();
+  }
+
+  protected async loadMoreAnnotations(): Promise<void> {
+    const workId = this.work()?.id;
+    const cursor = this.annotationCursor();
+    if (!workId || !cursor || this.annotationPageBusy()) return;
+    this.annotationPageBusy.set(true);
+    try {
+      const page = await this.api.getAnnotations(workId, undefined, cursor, 50);
+      if (workId !== this.work()?.id) return;
+      const ids = new Set(this.annotations().map((item) => item.id));
+      this.annotations.update((items) => [
+        ...items,
+        ...page.items.filter((item) => !ids.has(item.id)),
+      ]);
+      this.annotationCursor.set(page.nextCursor);
+      this.annotationPanelState.set('ready');
+      this.annotationError.set(null);
+    } catch (error) {
+      this.annotationError.set(asReaderApiError(error));
+    } finally {
+      this.annotationPageBusy.set(false);
+    }
+  }
+
+  protected annotationNoteFor(annotation: ReaderAnnotation): string {
+    return this.annotationEdits()[annotation.id]?.note ?? annotation.note;
+  }
+
+  protected annotationColorFor(annotation: ReaderAnnotation): ReaderAnnotationColor {
+    return this.annotationEdits()[annotation.id]?.color ?? annotation.color;
+  }
+
+  protected onAnnotationNoteInput(annotation: ReaderAnnotation, event: Event): void {
+    this.setAnnotationEdit(annotation, (event.target as HTMLTextAreaElement).value, undefined);
+  }
+
+  protected setSavedAnnotationColor(
+    annotation: ReaderAnnotation,
+    color: ReaderAnnotationColor,
+  ): void {
+    this.setAnnotationEdit(annotation, undefined, color);
+  }
+
+  protected annotationSaveLabel(annotation: ReaderAnnotation): string {
+    const conflict = this.annotationConflict();
+    if (conflict?.annotationId === annotation.id) return 'Cần giải quyết xung đột';
+    switch (this.annotationEditStates()[annotation.id]) {
+      case 'saving':
+        return 'Đang lưu ghi chú…';
+      case 'pending':
+        return 'Chưa đồng bộ';
+      case 'saved':
+        return 'Đã lưu';
+      default:
+        return '';
+    }
+  }
+
+  protected useLatestAnnotation(annotation: ReaderAnnotation): void {
+    const conflict = this.annotationConflict();
+    if (!conflict || conflict.annotationId !== annotation.id) return;
+    this.upsertAnnotation(conflict.latest);
+    this.annotationEdits.update(({ [annotation.id]: _discarded, ...rest }) => rest);
+    this.annotationEditStates.update((states) => ({ ...states, [annotation.id]: 'saved' }));
+    this.annotationConflict.set(null);
+  }
+
+  protected keepMyAnnotationDraft(annotation: ReaderAnnotation): void {
+    const conflict = this.annotationConflict();
+    if (!conflict || conflict.annotationId !== annotation.id) return;
+    this.upsertAnnotation(conflict.latest);
+    this.annotationConflict.set(null);
+    this.annotationEditStates.update((states) => ({ ...states, [annotation.id]: 'pending' }));
+    this.scheduleAnnotationEdit(annotation.id, 0);
+  }
+
+  protected async deleteAnnotation(annotation: ReaderAnnotation): Promise<void> {
+    if (this.deletingAnnotationIds().has(annotation.id)) return;
+    const confirmed = window.confirm('Xóa ghi chú và đánh dấu riêng tư này?');
+    if (!confirmed) return;
+    this.deletingAnnotationIds.update((items) => new Set(items).add(annotation.id));
+    try {
+      await this.api.deleteAnnotation(annotation.id);
+      this.removeAnnotation(annotation.id);
+      this.annotationMessage.set('Đã xóa ghi chú và đánh dấu.');
+    } catch (error) {
+      this.annotationError.set(asReaderApiError(error));
+    } finally {
+      this.deletingAnnotationIds.update((items) => {
+        const next = new Set(items);
+        next.delete(annotation.id);
+        return next;
+      });
+    }
+  }
+
+  protected async clearAnnotations(): Promise<void> {
+    const workId = this.work()?.id;
+    if (!workId || this.clearingAnnotations() || !this.annotations().length) return;
+    const confirmed = window.confirm(
+      'Xóa tất cả ghi chú và đánh dấu của tác phẩm này trên tài khoản? Thao tác không thể hoàn tác.',
+    );
+    if (!confirmed) return;
+    this.clearingAnnotations.set(true);
+    try {
+      await this.api.clearAnnotations(workId);
+      this.annotations.set([]);
+      this.chapterAnnotations.set([]);
+      this.annotationEdits.set({});
+      this.annotationEditStates.set({});
+      this.annotationConflict.set(null);
+      this.annotationCursor.set(null);
+      this.annotationMessage.set('Đã xóa toàn bộ ghi chú và đánh dấu của tác phẩm.');
+    } catch (error) {
+      this.annotationError.set(asReaderApiError(error));
+    } finally {
+      this.clearingAnnotations.set(false);
+    }
+  }
+
+  protected openAnnotationChapter(annotation: ReaderAnnotation): void {
+    const chapter = this.chapters().find((item) => item.id === annotation.chapterId);
+    if (!chapter || chapter.accessState !== 'readable') {
+      this.annotationMessage.set(
+        'Chương này hiện không còn quyền đọc. Bạn vẫn có thể xóa ghi chú.',
+      );
+      return;
+    }
+    if (chapter.id !== this.activeChapter()?.id) {
+      this.navigateToChapter(chapter);
+      return;
+    }
+    const element = Array.from(document.querySelectorAll<HTMLElement>('[data-source-anchor]')).find(
+      (item) => item.dataset['sourceAnchor'] === annotation.startAnchor,
+    );
+    element?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    this.closePanel(false);
+  }
+
   protected retryBookmarks(): void {
     void this.loadBookmarks();
   }
@@ -465,6 +736,7 @@ export class AccountReaderPageComponent {
     this.tocOpen.set(false);
     this.settingsOpen.set(false);
     this.bookmarksOpen.set(false);
+    this.annotationsOpen.set(false);
     this.panelReturnFocus = null;
     if (restoreFocus && returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
   }
@@ -524,7 +796,8 @@ export class AccountReaderPageComponent {
       this.contentError()?.status === 403 ||
       this.manifestError()?.status === 403 ||
       this.manifestPageError()?.status === 403 ||
-      this.bookmarkError()?.status === 403
+      this.bookmarkError()?.status === 403 ||
+      this.annotationError()?.status === 403
     ) {
       return '/app/setup';
     }
@@ -587,6 +860,17 @@ export class AccountReaderPageComponent {
     this.bookmarkSyncState.set('idle');
     this.bookmarkError.set(null);
     this.bookmarkMessage.set('');
+    this.annotations.set([]);
+    this.chapterAnnotations.set([]);
+    this.annotationCursor.set(null);
+    this.annotationPanelState.set('idle');
+    this.annotationError.set(null);
+    this.annotationMessage.set('');
+    this.annotationDraft.set(null);
+    this.annotationEdits.set({});
+    this.annotationEditStates.set({});
+    this.annotationConflict.set(null);
+    this.sourceRevisionId.set(null);
     this.manifestPageError.set(null);
     this.manifestState.set('loading');
     this.contentState.set('idle');
@@ -710,6 +994,8 @@ export class AccountReaderPageComponent {
     }
     this.activeChapter.set(chapter);
     this.segments.set([]);
+    this.sourceRevisionId.set(null);
+    this.chapterAnnotations.set([]);
     this.contentError.set(null);
     this.manifestError.set(null);
     if (chapter.accessState !== 'readable') {
@@ -760,8 +1046,13 @@ export class AccountReaderPageComponent {
       if (workId !== this.work()?.id) {
         throw new ReaderApiError('INVALID_READER_RESPONSE', 502, 'INVALID_READER_RESPONSE');
       }
+      if (!revisionId || !workId) {
+        throw new ReaderApiError('INVALID_READER_RESPONSE', 502, 'INVALID_READER_RESPONSE');
+      }
       this.segments.set(segments);
+      this.sourceRevisionId.set(revisionId);
       this.contentState.set('ready');
+      void this.loadChapterAnnotations(workId, chapter.id, token);
       if (restoreProgress?.chapterId === chapter.id) {
         this.restoreProgressPosition(restoreProgress);
       } else if (this.pendingBookmarkPosition?.chapterId === chapter.id) {
@@ -801,13 +1092,22 @@ export class AccountReaderPageComponent {
     this.contentState.set('idle');
   }
 
-  private openPanel(panelName: 'toc' | 'settings' | 'bookmarks', event?: Event): void {
-    if (!this.tocOpen() && !this.settingsOpen() && !this.bookmarksOpen()) {
+  private openPanel(
+    panelName: 'toc' | 'settings' | 'bookmarks' | 'annotations',
+    event?: Event,
+  ): void {
+    if (
+      !this.tocOpen() &&
+      !this.settingsOpen() &&
+      !this.bookmarksOpen() &&
+      !this.annotationsOpen()
+    ) {
       this.panelReturnFocus = this.getPanelOpener(event);
     }
     this.tocOpen.set(panelName === 'toc');
     this.settingsOpen.set(panelName === 'settings');
     this.bookmarksOpen.set(panelName === 'bookmarks');
+    this.annotationsOpen.set(panelName === 'annotations');
   }
 
   private getPanelOpener(event?: Event): HTMLElement | null {
@@ -822,6 +1122,7 @@ export class AccountReaderPageComponent {
     if (this.tocOpen()) return document.getElementById('account-reader-toc-panel');
     if (this.settingsOpen()) return document.getElementById('account-reader-settings-panel');
     if (this.bookmarksOpen()) return document.getElementById('account-reader-bookmarks-panel');
+    if (this.annotationsOpen()) return document.getElementById('account-reader-annotations-panel');
     return null;
   }
 
@@ -843,6 +1144,297 @@ export class AccountReaderPageComponent {
       this.bookmarkPanelState.set('error');
       this.bookmarkSyncState.set('pending');
     }
+  }
+
+  private async loadAnnotations(): Promise<void> {
+    const workId = this.work()?.id;
+    if (!workId) return;
+    this.annotationPanelState.set('loading');
+    this.annotationError.set(null);
+    try {
+      const page = await this.api.getAnnotations(workId, undefined, undefined, 50);
+      if (workId !== this.work()?.id) return;
+      this.annotations.set(page.items);
+      this.annotationCursor.set(page.nextCursor);
+      this.annotationPanelState.set('ready');
+    } catch (error) {
+      if (workId !== this.work()?.id) return;
+      this.annotationError.set(asReaderApiError(error));
+      this.annotationPanelState.set('error');
+    }
+  }
+
+  private async loadChapterAnnotations(
+    workId: string,
+    chapterId: string,
+    token: number,
+  ): Promise<void> {
+    try {
+      let cursor: string | undefined;
+      const items: ReaderAnnotation[] = [];
+      for (let pageIndex = 0; pageIndex < maxAnnotationPages; pageIndex += 1) {
+        const page = await this.api.getAnnotations(workId, chapterId, cursor, annotationPageSize);
+        if (token !== this.loadToken || chapterId !== this.activeChapter()?.id) return;
+        items.push(...page.items);
+        if (!page.nextCursor) {
+          this.chapterAnnotations.set(items);
+          this.annotationError.set(null);
+          return;
+        }
+        cursor = page.nextCursor;
+      }
+      this.chapterAnnotations.set(items);
+      this.annotationError.set(
+        new ReaderApiError(
+          'READER_ANNOTATION_LIMIT_REACHED',
+          413,
+          'READER_ANNOTATION_LIMIT_REACHED',
+        ),
+      );
+    } catch (error) {
+      if (token !== this.loadToken || chapterId !== this.activeChapter()?.id) return;
+      this.chapterAnnotations.set([]);
+      this.annotationError.set(asReaderApiError(error));
+    }
+  }
+
+  private readSelectionDraft(): ReaderSelectionDraft | null {
+    const chapter = this.activeChapter();
+    const revisionId = this.sourceRevisionId();
+    if (!chapter || !revisionId || this.contentState() !== 'ready') return null;
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed || selection.rangeCount !== 1) return null;
+    const range = selection.getRangeAt(0);
+    const startElement = this.sourceSegmentForNode(range.startContainer);
+    const endElement = this.sourceSegmentForNode(range.endContainer);
+    if (!startElement || !endElement) return null;
+    const sourceElements = Array.from(
+      document.querySelectorAll<HTMLElement>('.account-reader-body [data-source-anchor]'),
+    );
+    const startIndex = sourceElements.indexOf(startElement);
+    const endIndex = sourceElements.indexOf(endElement);
+    if (startIndex < 0 || endIndex < startIndex || endIndex - startIndex + 1 > 10) return null;
+    const startAnchor = startElement.dataset['sourceAnchor'];
+    const endAnchor = endElement.dataset['sourceAnchor'];
+    if (!startAnchor || !endAnchor) return null;
+    try {
+      const startOffset = this.codePointOffsetAt(
+        startElement,
+        range.startContainer,
+        range.startOffset,
+      );
+      const endOffset = this.codePointOffsetAt(endElement, range.endContainer, range.endOffset);
+      const quoteSnapshot = range.toString();
+      if (!quoteSnapshot.trim() || [...quoteSnapshot].length > 2000) return null;
+      const expectedQuote = sourceElements
+        .slice(startIndex, endIndex + 1)
+        .map((element, index) => {
+          const points = Array.from(element.textContent ?? '');
+          const from = index === 0 ? startOffset : 0;
+          const to = index === endIndex - startIndex ? endOffset : points.length;
+          return points.slice(from, to).join('');
+        })
+        .join('');
+      if (quoteSnapshot !== expectedQuote || !expectedQuote) return null;
+      return {
+        chapterId: chapter.id,
+        sourceRevisionId: revisionId,
+        startAnchor,
+        startOffset,
+        endAnchor,
+        endOffset,
+        quoteSnapshot,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private sourceSegmentForNode(node: Node): HTMLElement | null {
+    const element = node instanceof Element ? node : node.parentElement;
+    return element?.closest<HTMLElement>('.account-reader-body [data-source-anchor]') ?? null;
+  }
+
+  private codePointOffsetAt(segment: HTMLElement, node: Node, offset: number): number {
+    const prefix = document.createRange();
+    prefix.selectNodeContents(segment);
+    prefix.setEnd(node, offset);
+    return [...prefix.toString()].length;
+  }
+
+  private buildRenderedSegments(): ReaderRenderedSegment[] {
+    const source = this.segments();
+    const revisionId = this.sourceRevisionId();
+    const annotations = this.chapterAnnotations().filter(
+      (item) => item.anchorState === 'CURRENT' && item.chapterRevisionId === revisionId,
+    );
+    return source.map((segment, segmentIndex) => {
+      const points = Array.from(segment.sourceText);
+      const intervals: Array<{
+        start: number;
+        end: number;
+        annotationId: string;
+        color: ReaderAnnotationColor;
+      }> = [];
+      for (const annotation of annotations) {
+        const startIndex = source.findIndex((item) => item.anchor === annotation.startAnchor);
+        const endIndex = source.findIndex((item) => item.anchor === annotation.endAnchor);
+        if (
+          startIndex < 0 ||
+          endIndex < startIndex ||
+          segmentIndex < startIndex ||
+          segmentIndex > endIndex
+        ) {
+          continue;
+        }
+        const start = segmentIndex === startIndex ? annotation.startOffset : 0;
+        const end = segmentIndex === endIndex ? annotation.endOffset : points.length;
+        if (start < end && start >= 0 && end <= points.length) {
+          intervals.push({ start, end, annotationId: annotation.id, color: annotation.color });
+        }
+      }
+      const pieces: ReaderTextPiece[] = [];
+      for (let index = 0; index < points.length; index += 1) {
+        const active = intervals.find((item) => item.start <= index && index < item.end);
+        const color = active?.color ?? null;
+        const annotationId = active?.annotationId ?? null;
+        const last = pieces.at(-1);
+        if (last && last.color === color && last.annotationId === annotationId) {
+          last.text += points[index];
+        } else {
+          pieces.push({ text: points[index], color, annotationId });
+        }
+      }
+      if (!pieces.length) pieces.push({ text: '', color: null, annotationId: null });
+      return { ...segment, pieces };
+    });
+  }
+
+  private setAnnotationEdit(
+    annotation: ReaderAnnotation,
+    note: string | undefined,
+    color: ReaderAnnotationColor | undefined,
+  ): void {
+    const current = this.annotationEdits()[annotation.id] ?? {
+      note: annotation.note,
+      color: annotation.color,
+    };
+    const edit = { note: note ?? current.note, color: color ?? current.color };
+    this.annotationEdits.update((edits) => ({ ...edits, [annotation.id]: edit }));
+    this.annotationEditStates.update((states) => ({ ...states, [annotation.id]: 'pending' }));
+    this.scheduleAnnotationEdit(annotation.id, 700);
+  }
+
+  private scheduleAnnotationEdit(annotationId: string, delayMs: number): void {
+    const previous = this.annotationTimers.get(annotationId);
+    if (previous !== undefined) window.clearTimeout(previous);
+    this.annotationTimers.set(
+      annotationId,
+      window.setTimeout(() => {
+        this.annotationTimers.delete(annotationId);
+        void this.flushAnnotationEdit(annotationId);
+      }, delayMs),
+    );
+  }
+
+  private async flushAnnotationEdit(annotationId: string): Promise<void> {
+    if (this.savingAnnotationIds.has(annotationId)) return;
+    const edit = this.annotationEdits()[annotationId];
+    const annotation = this.findAnnotation(annotationId);
+    if (!edit || !annotation) return;
+    if (edit.note === annotation.note && edit.color === annotation.color) {
+      this.annotationEdits.update(({ [annotationId]: _discarded, ...rest }) => rest);
+      this.annotationEditStates.update((states) => ({ ...states, [annotationId]: 'saved' }));
+      return;
+    }
+    this.savingAnnotationIds.add(annotationId);
+    this.annotationEditStates.update((states) => ({ ...states, [annotationId]: 'saving' }));
+    try {
+      const saved = await this.api.updateAnnotation(
+        annotationId,
+        annotation.version,
+        edit.note,
+        edit.color,
+      );
+      this.upsertAnnotation(saved);
+      const currentEdit = this.annotationEdits()[annotationId];
+      if (currentEdit?.note === edit.note && currentEdit.color === edit.color) {
+        this.annotationEdits.update(({ [annotationId]: _discarded, ...rest }) => rest);
+        this.annotationEditStates.update((states) => ({ ...states, [annotationId]: 'saved' }));
+      } else {
+        this.annotationEditStates.update((states) => ({ ...states, [annotationId]: 'pending' }));
+      }
+    } catch (error) {
+      const apiError = asReaderApiError(error);
+      if (apiError.status === 409 && apiError.latestAnnotation) {
+        this.upsertAnnotation(apiError.latestAnnotation);
+        this.annotationConflict.set({ annotationId, latest: apiError.latestAnnotation });
+        this.annotationEditStates.update((states) => ({ ...states, [annotationId]: 'conflict' }));
+      } else {
+        this.annotationError.set(apiError);
+        this.annotationEditStates.update((states) => ({ ...states, [annotationId]: 'pending' }));
+      }
+    } finally {
+      this.savingAnnotationIds.delete(annotationId);
+      const currentEdit = this.annotationEdits()[annotationId];
+      const latest = this.findAnnotation(annotationId);
+      if (
+        currentEdit &&
+        latest &&
+        (currentEdit.note !== latest.note || currentEdit.color !== latest.color) &&
+        this.annotationConflict()?.annotationId !== annotationId
+      ) {
+        this.scheduleAnnotationEdit(annotationId, 0);
+      }
+    }
+  }
+
+  private flushAllAnnotationEdits(): void {
+    for (const timer of this.annotationTimers.values()) window.clearTimeout(timer);
+    this.annotationTimers.clear();
+    for (const annotationId of Object.keys(this.annotationEdits())) {
+      void this.flushAnnotationEdit(annotationId);
+    }
+  }
+
+  private findAnnotation(annotationId: string): ReaderAnnotation | null {
+    return (
+      this.annotations().find((item) => item.id === annotationId) ??
+      this.chapterAnnotations().find((item) => item.id === annotationId) ??
+      null
+    );
+  }
+
+  private upsertAnnotation(annotation: ReaderAnnotation): void {
+    const upsert = (items: ReaderAnnotation[]) => {
+      const next = [annotation, ...items.filter((item) => item.id !== annotation.id)];
+      return next.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+    };
+    this.annotations.update(upsert);
+    if (annotation.chapterId === this.activeChapter()?.id) {
+      this.chapterAnnotations.update(upsert);
+    }
+  }
+
+  private removeAnnotation(annotationId: string): void {
+    this.annotations.update((items) => items.filter((item) => item.id !== annotationId));
+    this.chapterAnnotations.update((items) => items.filter((item) => item.id !== annotationId));
+    const timer = this.annotationTimers.get(annotationId);
+    if (timer !== undefined) window.clearTimeout(timer);
+    this.annotationTimers.delete(annotationId);
+    this.annotationEdits.update(({ [annotationId]: _discarded, ...rest }) => rest);
+    this.annotationEditStates.update(({ [annotationId]: _discarded, ...rest }) => rest);
+    if (this.annotationConflict()?.annotationId === annotationId) this.annotationConflict.set(null);
+  }
+
+  protected annotationStatusMessage(error: ReaderApiError): string {
+    if (error.code === 'READER_ANNOTATION_ANCHOR_STALE') {
+      return 'Nội dung chương vừa thay đổi. Hãy tải lại chương rồi chọn đoạn văn bản hiện tại.';
+    }
+    if (error.code === 'READER_ANNOTATION_LIMIT_REACHED') {
+      return 'Chương có quá nhiều đánh dấu để tải trong một lần. Mở danh sách ghi chú để tiếp tục tải.';
+    }
+    return this.statusMessage(error);
   }
 
   private currentSegmentAnchor(): string | null {

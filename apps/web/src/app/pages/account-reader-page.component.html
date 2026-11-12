@@ -56,6 +56,19 @@
       >
         <span aria-hidden="true">♧</span><span>Dấu trang</span>
       </button>
+      <button
+        class="reader-tool"
+        type="button"
+        (pointerdown)="preserveTextSelection($event)"
+        (click)="toggleAnnotations($event)"
+        aria-label="Mở ghi chú và đoạn đánh dấu"
+        aria-haspopup="dialog"
+        title="Ghi chú riêng tư và tô sáng"
+        [attr.aria-expanded]="annotationsOpen()"
+        [disabled]="!work()"
+      >
+        <span aria-hidden="true">▧</span><span>Ghi chú</span>
+      </button>
     </div>
   </header>
 
@@ -407,6 +420,216 @@
       </section>
     }
 
+    @if (annotationsOpen()) {
+      <div class="reader-panel-backdrop" aria-hidden="true" (click)="closePanel()"></div>
+      <section
+        #annotationsPanel
+        id="account-reader-annotations-panel"
+        class="reader-side-panel reader-annotations-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="account-reader-annotations-title"
+        tabindex="-1"
+      >
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">GHI CHÚ RIÊNG TƯ</p>
+            <h2 id="account-reader-annotations-title">Ghi chú &amp; đoạn đánh dấu</h2>
+          </div>
+          <button class="icon-button" type="button" data-panel-initial-focus (click)="closePanel()">
+            <span aria-hidden="true">×</span><span class="visually-hidden">Đóng ghi chú</span>
+          </button>
+        </div>
+
+        @if (annotationDraft(); as draft) {
+          <div class="reader-annotation-composer" aria-labelledby="reader-annotation-compose-title">
+            <h3 id="reader-annotation-compose-title">Đánh dấu đoạn đang chọn</h3>
+            <blockquote class="reader-annotation-quote">{{ draft.quoteSnapshot }}</blockquote>
+            <label for="reader-annotation-draft-note">Ghi chú riêng tư (không bắt buộc)</label>
+            <textarea
+              id="reader-annotation-draft-note"
+              maxlength="2000"
+              rows="3"
+              [value]="annotationDraftNote()"
+              (input)="onAnnotationDraftNoteInput($event)"
+            ></textarea>
+            <div class="reader-annotation-colors" role="group" aria-label="Màu đoạn đánh dấu">
+              @for (color of annotationColors; track color.value) {
+                <button
+                  class="reader-annotation-swatch"
+                  type="button"
+                  [attr.data-color]="color.value"
+                  [attr.aria-label]="color.label"
+                  [attr.aria-pressed]="annotationDraftColor() === color.value"
+                  [class.selected]="annotationDraftColor() === color.value"
+                  (click)="setAnnotationDraftColor(color.value)"
+                ></button>
+              }
+            </div>
+            <button
+              class="button button-primary button-full"
+              type="button"
+              [disabled]="!sourceRevisionId()"
+              (click)="saveAnnotationDraft()"
+            >
+              Lưu ghi chú và đoạn đánh dấu
+            </button>
+          </div>
+        } @else {
+          <p class="reader-annotation-hint">
+            Bôi chọn một đoạn trong nội dung rồi mở bảng này để tô sáng và thêm ghi chú. Mỗi lựa
+            chọn có thể đi qua tối đa 10 đoạn văn bản liên tiếp.
+          </p>
+        }
+
+        @if (annotationMessage()) {
+          <p class="reader-annotation-message" role="status" aria-live="polite">
+            {{ annotationMessage() }}
+          </p>
+        }
+        @if (annotationError(); as error) {
+          <div class="reader-annotation-error" role="alert">
+            <p>{{ annotationStatusMessage(error) }}</p>
+            @if (error.status === 401 || error.status === 403) {
+              <a class="text-link" [routerLink]="recoveryUrl" [queryParams]="recoveryQueryParams">
+                {{ recoveryLabel }}
+              </a>
+            } @else if (annotationPanelState() === 'error') {
+              <button class="text-button" type="button" (click)="retryAnnotations()">
+                Thử tải lại ghi chú
+              </button>
+            }
+          </div>
+        }
+
+        @if (annotationPanelState() === 'loading') {
+          <p class="reader-annotation-state" role="status" aria-live="polite">Đang tải ghi chú…</p>
+        } @else if (annotationPanelState() === 'ready' && annotations().length === 0) {
+          <div class="reader-annotation-empty">
+            <span aria-hidden="true">▧</span>
+            <h3>Chưa có ghi chú nào</h3>
+            <p>Đánh dấu một đoạn văn bản để lưu lại suy nghĩ riêng tư của bạn.</p>
+          </div>
+        } @else if (annotations().length > 0) {
+          <div class="reader-annotation-list-heading">
+            <h3>Ghi chú trong tác phẩm</h3>
+            <button
+              class="text-button"
+              type="button"
+              [disabled]="clearingAnnotations()"
+              (click)="clearAnnotations()"
+            >
+              {{ clearingAnnotations() ? 'Đang xóa…' : 'Xóa tất cả' }}
+            </button>
+          </div>
+          <ol class="reader-annotation-list" aria-label="Ghi chú và đoạn đánh dấu trong tác phẩm">
+            @for (annotation of annotations(); track annotation.id) {
+              <li class="reader-annotation-item" [attr.data-annotation-id]="annotation.id">
+                <button
+                  class="reader-annotation-open"
+                  type="button"
+                  (click)="openAnnotationChapter(annotation)"
+                >
+                  Chương {{ annotation.chapterOrdinal }} ·
+                  {{ annotation.chapterTitle || 'Chưa có tiêu đề' }}
+                </button>
+                @if (annotation.anchorState === 'STALE') {
+                  <p class="reader-annotation-stale" role="status">
+                    Nội dung gốc đã thay đổi. Đoạn này không còn được tô sáng. Chọn đoạn hiện tại để
+                    tạo dấu mới, sau đó xóa dấu cũ nếu không còn cần.
+                  </p>
+                }
+                <blockquote
+                  class="reader-annotation-quote"
+                  [class.reader-annotation-quote-amber]="annotation.color === 'amber'"
+                  [class.reader-annotation-quote-mint]="annotation.color === 'mint'"
+                  [class.reader-annotation-quote-sky]="annotation.color === 'sky'"
+                  [class.reader-annotation-quote-rose]="annotation.color === 'rose'"
+                >
+                  {{ annotation.quoteSnapshot }}
+                </blockquote>
+                <label [for]="'reader-annotation-note-' + annotation.id">Ghi chú riêng tư</label>
+                <textarea
+                  [id]="'reader-annotation-note-' + annotation.id"
+                  maxlength="2000"
+                  rows="3"
+                  [value]="annotationNoteFor(annotation)"
+                  [attr.aria-describedby]="'reader-annotation-state-' + annotation.id"
+                  (input)="onAnnotationNoteInput(annotation, $event)"
+                ></textarea>
+                <div class="reader-annotation-colors" role="group" aria-label="Màu đoạn đánh dấu">
+                  @for (color of annotationColors; track color.value) {
+                    <button
+                      class="reader-annotation-swatch"
+                      type="button"
+                      [attr.data-color]="color.value"
+                      [attr.aria-label]="color.label"
+                      [attr.aria-pressed]="annotationColorFor(annotation) === color.value"
+                      [class.selected]="annotationColorFor(annotation) === color.value"
+                      (click)="setSavedAnnotationColor(annotation, color.value)"
+                    ></button>
+                  }
+                </div>
+                <p
+                  class="reader-annotation-save-state"
+                  [id]="'reader-annotation-state-' + annotation.id"
+                  role="status"
+                  aria-live="polite"
+                >
+                  {{ annotationSaveLabel(annotation) }}
+                </p>
+                @if (annotationConflict()?.annotationId === annotation.id) {
+                  <div class="reader-annotation-conflict" role="alert">
+                    <p>Ghi chú đã được sửa ở một thiết bị khác. Chọn phiên bản cần giữ.</p>
+                    <p>
+                      <strong>Phiên bản mới nhất:</strong>
+                      {{ annotationConflict()?.latest?.note || 'Chưa có ghi chú' }}
+                    </p>
+                    <p>
+                      <strong>Bản đang sửa trên thiết bị này:</strong>
+                      {{ annotationNoteFor(annotation) || 'Chưa có ghi chú' }}
+                    </p>
+                    <button
+                      class="button button-outline button-full"
+                      type="button"
+                      (click)="useLatestAnnotation(annotation)"
+                    >
+                      Dùng bản mới nhất
+                    </button>
+                    <button
+                      class="button button-primary button-full"
+                      type="button"
+                      (click)="keepMyAnnotationDraft(annotation)"
+                    >
+                      Lưu lại bản của tôi
+                    </button>
+                  </div>
+                }
+                <button
+                  class="reader-annotation-delete"
+                  type="button"
+                  [disabled]="deletingAnnotationIds().has(annotation.id)"
+                  (click)="deleteAnnotation(annotation)"
+                >
+                  {{ deletingAnnotationIds().has(annotation.id) ? 'Đang xóa…' : 'Xóa ghi chú này' }}
+                </button>
+              </li>
+            }
+          </ol>
+          @if (annotationCursor()) {
+            <button
+              class="button button-outline button-full reader-annotation-more"
+              type="button"
+              [disabled]="annotationPageBusy()"
+              (click)="loadMoreAnnotations()"
+            >
+              {{ annotationPageBusy() ? 'Đang tải…' : 'Tải thêm ghi chú' }}
+            </button>
+          }
+        }
+      </section>
+    }
+
     @if (manifestState() === 'loading') {
       <div class="account-reader-state" role="status" aria-live="polite">
         <span class="reader-state-mark" aria-hidden="true">✧</span>
@@ -486,20 +709,55 @@
           <h1 id="account-reader-title" tabindex="-1">{{ chapter.title || 'Chưa có tiêu đề' }}</h1>
           <p class="reader-byline">Chương {{ chapter.ordinal }} · Nội dung gốc</p>
           <div class="reader-body account-reader-body">
-            @for (segment of segments(); track $index) {
+            @for (segment of renderedSegments(); track $index) {
               @switch (segment.type) {
                 @case ('heading') {
                   <h2 [attr.data-source-anchor]="segment.anchor || null">
-                    {{ segment.sourceText }}
+                    @for (piece of segment.pieces; track $index) {
+                      @if (piece.annotationId) {
+                        <mark
+                          class="reader-account-highlight"
+                          [attr.data-highlight-color]="piece.color"
+                          [attr.data-annotation-id]="piece.annotationId"
+                          >{{ piece.text }}</mark
+                        >
+                      } @else {
+                        <span>{{ piece.text }}</span>
+                      }
+                    }
                   </h2>
                 }
                 @case ('quote') {
                   <blockquote [attr.data-source-anchor]="segment.anchor || null">
-                    {{ segment.sourceText }}
+                    @for (piece of segment.pieces; track $index) {
+                      @if (piece.annotationId) {
+                        <mark
+                          class="reader-account-highlight"
+                          [attr.data-highlight-color]="piece.color"
+                          [attr.data-annotation-id]="piece.annotationId"
+                          >{{ piece.text }}</mark
+                        >
+                      } @else {
+                        <span>{{ piece.text }}</span>
+                      }
+                    }
                   </blockquote>
                 }
                 @default {
-                  <p [attr.data-source-anchor]="segment.anchor || null">{{ segment.sourceText }}</p>
+                  <p [attr.data-source-anchor]="segment.anchor || null">
+                    @for (piece of segment.pieces; track $index) {
+                      @if (piece.annotationId) {
+                        <mark
+                          class="reader-account-highlight"
+                          [attr.data-highlight-color]="piece.color"
+                          [attr.data-annotation-id]="piece.annotationId"
+                          >{{ piece.text }}</mark
+                        >
+                      } @else {
+                        <span>{{ piece.text }}</span>
+                      }
+                    }
+                  </p>
                 }
               }
             }

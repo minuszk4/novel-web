@@ -54,6 +54,16 @@ public class ReaderCursorCodec {
     return new Context(Kind.READING_HISTORY, actorUserId, actorUserId, NO_REVISION);
   }
 
+  public static Context annotationsContext(UUID actorUserId, UUID workId, UUID chapterId) {
+    UUID scopedWorkId =
+        chapterId == null
+            ? workId
+            : UUID.nameUUIDFromBytes(
+                ("novel-reader-annotations:" + workId + ":" + chapterId)
+                    .getBytes(StandardCharsets.UTF_8));
+    return new Context(Kind.ANNOTATIONS, actorUserId, scopedWorkId, NO_REVISION);
+  }
+
   public void requireConfigured() {
     if (hmacKey == null) throw new SigningUnavailableException();
   }
@@ -121,7 +131,9 @@ public class ReaderCursorCodec {
   public String encodeKeyset(Context context, KeysetPosition position) {
     Objects.requireNonNull(context, "cursor context is required");
     Objects.requireNonNull(position, "cursor position is required");
-    if (context.kind() != Kind.BOOKMARKS && context.kind() != Kind.READING_HISTORY) {
+    if (context.kind() != Kind.BOOKMARKS
+        && context.kind() != Kind.READING_HISTORY
+        && context.kind() != Kind.ANNOTATIONS) {
       throw new IllegalArgumentException("keyset cursor requires a bookmark or history context");
     }
     requireConfigured();
@@ -151,7 +163,8 @@ public class ReaderCursorCodec {
   public KeysetPosition decodeKeyset(String token, Context expectedContext) {
     Objects.requireNonNull(expectedContext, "expected cursor context is required");
     if (expectedContext.kind() != Kind.BOOKMARKS
-        && expectedContext.kind() != Kind.READING_HISTORY) {
+        && expectedContext.kind() != Kind.READING_HISTORY
+        && expectedContext.kind() != Kind.ANNOTATIONS) {
       throw new IllegalArgumentException("keyset cursor requires a bookmark or history context");
     }
     requireConfigured();
@@ -278,7 +291,10 @@ public class ReaderCursorCodec {
       Objects.requireNonNull(actorUserId, "cursor actor is required");
       Objects.requireNonNull(resourceId, "cursor resource is required");
       Objects.requireNonNull(revisionId, "cursor revision is required");
-      if ((kind == Kind.MANIFEST || kind == Kind.BOOKMARKS || kind == Kind.READING_HISTORY)
+      if ((kind == Kind.MANIFEST
+              || kind == Kind.BOOKMARKS
+              || kind == Kind.READING_HISTORY
+              || kind == Kind.ANNOTATIONS)
           && !revisionId.equals(NO_REVISION)) {
         throw new IllegalArgumentException("manifest cursor cannot include a revision");
       }
@@ -299,7 +315,8 @@ public class ReaderCursorCodec {
     MANIFEST(1),
     CONTENT(2),
     BOOKMARKS(3),
-    READING_HISTORY(4);
+    READING_HISTORY(4),
+    ANNOTATIONS(5);
 
     private final int code;
 

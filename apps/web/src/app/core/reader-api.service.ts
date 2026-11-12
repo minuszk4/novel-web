@@ -84,6 +84,46 @@ export interface ReaderBookmarkPage {
   nextCursor: string | null;
 }
 
+export type ReaderAnnotationColor = 'amber' | 'mint' | 'sky' | 'rose';
+export type ReaderAnnotationAnchorState = 'CURRENT' | 'STALE';
+
+export interface ReaderAnnotation {
+  id: string;
+  workId: string;
+  chapterId: string;
+  chapterRevisionId: string | null;
+  startAnchor: string;
+  startOffset: number;
+  endAnchor: string;
+  endOffset: number;
+  quoteSnapshot: string;
+  note: string;
+  color: ReaderAnnotationColor;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+  chapterOrdinal: number;
+  chapterTitle: string;
+  anchorState: ReaderAnnotationAnchorState;
+}
+
+export interface ReaderAnnotationPage {
+  items: ReaderAnnotation[];
+  nextCursor: string | null;
+}
+
+export interface CreateReaderAnnotationRequest {
+  chapterId: string;
+  sourceRevisionId: string;
+  startAnchor: string;
+  startOffset: number;
+  endAnchor: string;
+  endOffset: number;
+  quoteSnapshot: string;
+  note: string;
+  color: ReaderAnnotationColor;
+}
+
 export interface ReaderHistoryChapter {
   id: string;
   ordinal: number;
@@ -117,6 +157,7 @@ export class ReaderApiError extends Error {
     readonly status: number,
     readonly code: string | null,
     readonly latestProgress: ReaderProgress | null = null,
+    readonly latestAnnotation: ReaderAnnotation | null = null,
   ) {
     super(message);
     this.name = 'ReaderApiError';
@@ -129,6 +170,8 @@ const progressUrl = (workId: string) => `/api/v1/works/${workId}/progress`;
 const readerPreferencesUrl = '/api/v1/me/reader-preferences';
 const bookmarksUrl = (workId: string) => `/api/v1/works/${workId}/bookmarks`;
 const bookmarkUrl = (bookmarkId: string) => `/api/v1/bookmarks/${bookmarkId}`;
+const annotationsUrl = (workId: string) => `/api/v1/works/${workId}/annotations`;
+const annotationUrl = (annotationId: string) => `/api/v1/annotations/${annotationId}`;
 const readingHistoryUrl = '/api/v1/me/reading-history';
 const readingHistoryWorkUrl = (workId: string) => `${readingHistoryUrl}/${workId}`;
 const requestTimeoutMs = 10_000;
@@ -211,6 +254,119 @@ export class ReaderApiService {
     try {
       await firstValueFrom(
         this.http.delete<void>(bookmarkUrl(bookmarkId)).pipe(timeout(requestTimeoutMs)),
+      );
+    } catch (error) {
+      throw toReaderApiError(error);
+    }
+  }
+
+  async getAnnotations(
+    workId: string,
+    chapterId?: string,
+    cursor?: string,
+    limit = 100,
+  ): Promise<ReaderAnnotationPage> {
+    if (
+      !isUuid(workId) ||
+      (chapterId !== undefined && !isUuid(chapterId)) ||
+      !isValidPageRequest(cursor, limit, 100)
+    ) {
+      throw invalidResponse('INVALID_READER_QUERY');
+    }
+    try {
+      let params = new HttpParams().set('limit', limit);
+      if (chapterId) params = params.set('chapterId', chapterId);
+      if (cursor) params = params.set('cursor', cursor);
+      const response: unknown = await firstValueFrom(
+        this.http.get<unknown>(annotationsUrl(workId), { params }).pipe(timeout(requestTimeoutMs)),
+      );
+      return parseAnnotationPage(response, workId, chapterId, limit);
+    } catch (error) {
+      throw toReaderApiError(error);
+    }
+  }
+
+  async createAnnotation(
+    workId: string,
+    request: CreateReaderAnnotationRequest,
+  ): Promise<ReaderAnnotation> {
+    if (
+      !isUuid(workId) ||
+      !isUuid(request.chapterId) ||
+      !isUuid(request.sourceRevisionId) ||
+      !isStableAnchor(request.startAnchor) ||
+      !isStableAnchor(request.endAnchor) ||
+      !Number.isSafeInteger(request.startOffset) ||
+      request.startOffset < 0 ||
+      !Number.isSafeInteger(request.endOffset) ||
+      request.endOffset < 0 ||
+      typeof request.quoteSnapshot !== 'string' ||
+      [...request.quoteSnapshot].length < 1 ||
+      [...request.quoteSnapshot].length > 2000 ||
+      typeof request.note !== 'string' ||
+      [...request.note].length > 2000 ||
+      !isAnnotationColor(request.color)
+    ) {
+      throw invalidResponse('INVALID_READER_QUERY');
+    }
+    try {
+      const response: unknown = await firstValueFrom(
+        this.http.post<unknown>(annotationsUrl(workId), request).pipe(timeout(requestTimeoutMs)),
+      );
+      return parseReaderAnnotation(response, workId);
+    } catch (error) {
+      throw toReaderApiError(error, undefined, workId);
+    }
+  }
+
+  async updateAnnotation(
+    annotationId: string,
+    version: number,
+    note: string,
+    color: ReaderAnnotationColor,
+  ): Promise<ReaderAnnotation> {
+    if (
+      !isUuid(annotationId) ||
+      !Number.isSafeInteger(version) ||
+      version < 1 ||
+      typeof note !== 'string' ||
+      [...note].length > 2000 ||
+      !isAnnotationColor(color)
+    ) {
+      throw invalidResponse('INVALID_READER_QUERY');
+    }
+    try {
+      const response: unknown = await firstValueFrom(
+        this.http
+          .patch<unknown>(
+            annotationUrl(annotationId),
+            { note, color },
+            { headers: { 'If-Match': `"annotation-${version}"` } },
+          )
+          .pipe(timeout(requestTimeoutMs)),
+      );
+      return parseReaderAnnotation(response);
+    } catch (error) {
+      throw toReaderApiError(error);
+    }
+  }
+
+  async deleteAnnotation(annotationId: string): Promise<void> {
+    if (!isUuid(annotationId)) throw invalidResponse('INVALID_READER_QUERY');
+    try {
+      await firstValueFrom(
+        this.http.delete<void>(annotationUrl(annotationId)).pipe(timeout(requestTimeoutMs)),
+      );
+    } catch (error) {
+      throw toReaderApiError(error);
+    }
+  }
+
+  async clearAnnotations(workId: string): Promise<void> {
+    if (!isUuid(workId)) throw invalidResponse('INVALID_READER_QUERY');
+    try {
+      await firstValueFrom(
+        this.http.delete<void>(annotationsUrl(workId)).pipe(timeout(requestTimeoutMs)),
       );
     } catch (error) {
       throw toReaderApiError(error);
@@ -510,6 +666,94 @@ function parseBookmark(value: unknown, expectedWorkId: string): ReaderBookmark {
   };
 }
 
+function parseAnnotationPage(
+  value: unknown,
+  expectedWorkId: string,
+  expectedChapterId: string | undefined,
+  limit: number,
+): ReaderAnnotationPage {
+  if (
+    !isRecord(value) ||
+    Object.keys(value).sort().join(',') !== 'items,nextCursor' ||
+    !Array.isArray(value['items']) ||
+    value['items'].length > limit ||
+    !isCursor(value['nextCursor'])
+  ) {
+    throw invalidResponse();
+  }
+  const items = value['items'].map((item) => parseReaderAnnotation(item, expectedWorkId));
+  if (
+    new Set(items.map((item) => item.id)).size !== items.length ||
+    (expectedChapterId !== undefined && items.some((item) => item.chapterId !== expectedChapterId))
+  ) {
+    throw invalidResponse();
+  }
+  return { items, nextCursor: value['nextCursor'] };
+}
+
+function parseReaderAnnotation(value: unknown, expectedWorkId?: string): ReaderAnnotation {
+  if (
+    !isRecord(value) ||
+    Object.keys(value).sort().join(',') !==
+      'anchorState,chapterId,chapterOrdinal,chapterRevisionId,chapterTitle,color,createdAt,endAnchor,endOffset,id,note,quoteSnapshot,startAnchor,startOffset,updatedAt,version,workId'
+  ) {
+    throw invalidResponse();
+  }
+  if (
+    !isUuid(value['id']) ||
+    !isUuid(value['workId']) ||
+    (expectedWorkId !== undefined && value['workId'] !== expectedWorkId) ||
+    !isUuid(value['chapterId']) ||
+    !(value['chapterRevisionId'] === null || isUuid(value['chapterRevisionId'])) ||
+    !isStableAnchor(value['startAnchor']) ||
+    !Number.isSafeInteger(value['startOffset']) ||
+    (value['startOffset'] as number) < 0 ||
+    !isStableAnchor(value['endAnchor']) ||
+    !Number.isSafeInteger(value['endOffset']) ||
+    (value['endOffset'] as number) < 0 ||
+    typeof value['quoteSnapshot'] !== 'string' ||
+    !value['quoteSnapshot'].trim() ||
+    [...value['quoteSnapshot']].length > 2000 ||
+    typeof value['note'] !== 'string' ||
+    [...value['note']].length > 2000 ||
+    !isAnnotationColor(value['color']) ||
+    !Number.isSafeInteger(value['version']) ||
+    (value['version'] as number) < 1 ||
+    !isTimestamp(value['createdAt']) ||
+    !isTimestamp(value['updatedAt']) ||
+    !Number.isSafeInteger(value['chapterOrdinal']) ||
+    (value['chapterOrdinal'] as number) < 1 ||
+    typeof value['chapterTitle'] !== 'string' ||
+    [...value['chapterTitle']].length > 300 ||
+    (value['anchorState'] !== 'CURRENT' && value['anchorState'] !== 'STALE')
+  ) {
+    throw invalidResponse();
+  }
+  return {
+    id: value['id'],
+    workId: value['workId'],
+    chapterId: value['chapterId'],
+    chapterRevisionId: value['chapterRevisionId'] as string | null,
+    startAnchor: value['startAnchor'],
+    startOffset: value['startOffset'] as number,
+    endAnchor: value['endAnchor'],
+    endOffset: value['endOffset'] as number,
+    quoteSnapshot: value['quoteSnapshot'],
+    note: value['note'],
+    color: value['color'],
+    version: value['version'] as number,
+    createdAt: value['createdAt'],
+    updatedAt: value['updatedAt'],
+    chapterOrdinal: value['chapterOrdinal'] as number,
+    chapterTitle: value['chapterTitle'],
+    anchorState: value['anchorState'],
+  };
+}
+
+function isAnnotationColor(value: unknown): value is ReaderAnnotationColor {
+  return value === 'amber' || value === 'mint' || value === 'sky' || value === 'rose';
+}
+
 function parseManifestPage(
   value: unknown,
   expectedWorkId: string,
@@ -647,7 +891,11 @@ function parseSegment(value: unknown): ReaderSourceSegment {
   };
 }
 
-function toReaderApiError(error: unknown, expectedWorkId?: string): ReaderApiError {
+function toReaderApiError(
+  error: unknown,
+  expectedWorkId?: string,
+  expectedAnnotationWorkId?: string,
+): ReaderApiError {
   if (error instanceof ReaderApiError) return error;
   if (!(error instanceof HttpErrorResponse)) {
     return new ReaderApiError('NETWORK_OR_INVALID_RESPONSE', 0, null);
@@ -662,7 +910,15 @@ function toReaderApiError(error: unknown, expectedWorkId?: string): ReaderApiErr
       latestProgress = null;
     }
   }
-  return new ReaderApiError(error.message, error.status, code, latestProgress);
+  let latestAnnotation: ReaderAnnotation | null = null;
+  if (body && body['latestAnnotation'] !== undefined) {
+    try {
+      latestAnnotation = parseReaderAnnotation(body['latestAnnotation'], expectedAnnotationWorkId);
+    } catch {
+      latestAnnotation = null;
+    }
+  }
+  return new ReaderApiError(error.message, error.status, code, latestProgress, latestAnnotation);
 }
 
 function invalidResponse(code = 'INVALID_READER_RESPONSE'): ReaderApiError {

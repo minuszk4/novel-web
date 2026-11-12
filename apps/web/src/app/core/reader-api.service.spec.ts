@@ -21,6 +21,26 @@ const work = {
   createdAt: '2026-11-11T00:00:00Z',
 };
 
+const annotation = {
+  id: '99999999-9999-4999-8999-999999999999',
+  workId,
+  chapterId,
+  chapterRevisionId: revisionId,
+  startAnchor: 'chapter-1-p1',
+  startOffset: 2,
+  endAnchor: 'chapter-1-p1',
+  endOffset: 12,
+  quoteSnapshot: 'ây ☁️ mở cửa',
+  note: 'Đoạn cần nhớ',
+  color: 'amber',
+  version: 3,
+  createdAt: '2026-11-11T10:00:00Z',
+  updatedAt: '2026-11-11T10:05:00Z',
+  chapterOrdinal: 1,
+  chapterTitle: 'Chương một',
+  anchorState: 'CURRENT',
+};
+
 describe('ReaderApiService', () => {
   let service: ReaderApiService;
   let http: HttpTestingController;
@@ -230,6 +250,87 @@ describe('ReaderApiService', () => {
       statusText: 'No Content',
     });
     await expect(deleted).resolves.toBeUndefined();
+  });
+
+  it('loads private annotations using the chapter filter and a filter-bound cursor', async () => {
+    const result = service.getAnnotations(workId, chapterId, cursor, 20);
+    const request = http.expectOne(
+      (candidate) =>
+        candidate.method === 'GET' &&
+        candidate.url === `/api/v1/works/${workId}/annotations` &&
+        candidate.params.get('chapterId') === chapterId &&
+        candidate.params.get('cursor') === cursor &&
+        candidate.params.get('limit') === '20',
+    );
+    request.flush({ items: [annotation], nextCursor: null });
+    await expect(result).resolves.toEqual({ items: [annotation], nextCursor: null });
+
+    const malformed = service.getAnnotations(workId, chapterId);
+    http
+      .expectOne((candidate) => candidate.url === `/api/v1/works/${workId}/annotations`)
+      .flush({ items: [{ ...annotation, chapterId: revisionId }], nextCursor: null });
+    await expect(malformed).rejects.toMatchObject({
+      status: 502,
+      code: 'INVALID_READER_RESPONSE',
+    });
+  });
+
+  it('creates annotations, updates with If-Match, reconciles a stale note and deletes privately', async () => {
+    const requestBody = {
+      chapterId,
+      sourceRevisionId: revisionId,
+      startAnchor: 'chapter-1-p1',
+      startOffset: 2,
+      endAnchor: 'chapter-1-p1',
+      endOffset: 12,
+      quoteSnapshot: annotation.quoteSnapshot,
+      note: annotation.note,
+      color: 'amber' as const,
+    };
+    const created = service.createAnnotation(workId, requestBody);
+    const createRequest = http.expectOne({
+      method: 'POST',
+      url: `/api/v1/works/${workId}/annotations`,
+    });
+    expect(createRequest.request.body).toEqual(requestBody);
+    createRequest.flush(annotation);
+    await expect(created).resolves.toEqual(annotation);
+
+    const updated = service.updateAnnotation(annotation.id, 3, 'Ghi chú mới', 'sky');
+    const updateRequest = http.expectOne({
+      method: 'PATCH',
+      url: `/api/v1/annotations/${annotation.id}`,
+    });
+    expect(updateRequest.request.headers.get('If-Match')).toBe('"annotation-3"');
+    expect(updateRequest.request.body).toEqual({ note: 'Ghi chú mới', color: 'sky' });
+    updateRequest.flush({ ...annotation, note: 'Ghi chú mới', color: 'sky', version: 4 });
+    await expect(updated).resolves.toMatchObject({ note: 'Ghi chú mới', version: 4 });
+
+    const stale = service.updateAnnotation(annotation.id, 3, 'Bản cũ', 'rose');
+    http.expectOne({ method: 'PATCH', url: `/api/v1/annotations/${annotation.id}` }).flush(
+      {
+        code: 'READER_ANNOTATION_VERSION_STALE',
+        latestAnnotation: { ...annotation, note: 'Ghi chú mới', color: 'sky', version: 4 },
+      },
+      { status: 409, statusText: 'Conflict' },
+    );
+    await expect(stale).rejects.toMatchObject({
+      status: 409,
+      code: 'READER_ANNOTATION_VERSION_STALE',
+      latestAnnotation: { note: 'Ghi chú mới', version: 4 },
+    });
+
+    const deleted = service.deleteAnnotation(annotation.id);
+    http
+      .expectOne({ method: 'DELETE', url: `/api/v1/annotations/${annotation.id}` })
+      .flush(null, { status: 204, statusText: 'No Content' });
+    await expect(deleted).resolves.toBeUndefined();
+
+    const cleared = service.clearAnnotations(workId);
+    http
+      .expectOne({ method: 'DELETE', url: `/api/v1/works/${workId}/annotations` })
+      .flush(null, { status: 204, statusText: 'No Content' });
+    await expect(cleared).resolves.toBeUndefined();
   });
 
   it('loads a bounded recent-history page without accepting mismatched progress snapshots', async () => {

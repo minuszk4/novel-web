@@ -157,6 +157,7 @@ class PostgresSchemaIntegrationTests {
           "reader_preferences",
           "reader_bookmarks",
           "reader_bookmark_idempotency",
+          "reader_annotations",
           "library_collections",
           "library_collection_works",
           "import_rights_statements",
@@ -237,7 +238,7 @@ class PostgresSchemaIntegrationTests {
             connection.prepareStatement("SELECT COUNT(*) FROM databasechangelog");
         ResultSet changesets = changesetCount.executeQuery()) {
       changesets.next();
-      assertEquals(72, changesets.getInt(1), "unexpected number of applied changesets");
+      assertEquals(73, changesets.getInt(1), "unexpected number of applied changesets");
     }
 
     Set<String> actualTables = new HashSet<>();
@@ -3493,7 +3494,7 @@ class PostgresSchemaIntegrationTests {
           mockMvc
               .perform(
                   get("/api/v1/works/{workId}/bookmarks", workId)
-                      .param("cursor", cursor.substring(0, cursor.length() - 1) + "A")
+                      .param("cursor", tamperCursor(cursor))
                       .cookie(ownerCookie))
               .andReturn();
       assertEquals(400, tamperedCursor.getResponse().getStatus());
@@ -3530,6 +3531,332 @@ class PostgresSchemaIntegrationTests {
                       .cookie(ownerCookie))
               .andReturn();
       assertEquals(404, missingAfterDelete.getResponse().getStatus());
+    } finally {
+      deleteLibraryUserData(ownerId, workId);
+      deleteSessionTestUser(pendingPolicyId);
+      deleteSessionTestUser(outsiderId);
+      deleteSessionTestUser(ownerId);
+    }
+  }
+
+  @Test
+  void readerAnnotationsArePrivateUnicodeBoundRevisionAwareAndOptimisticallyUpdated()
+      throws Exception {
+    UUID ownerId = createSessionTestUser("Reader Annotation Owner");
+    UUID outsiderId = createSessionTestUser("Reader Annotation Outsider");
+    UUID pendingPolicyId = createSessionTestUser("Reader Annotation Pending Policy");
+    UUID workId = null;
+    try {
+      LibraryRepository.LibraryRecord library =
+          libraryService.createLibrary(ownerId, "Annotation Shelf");
+      LibraryRepository.WorkRecord work =
+          libraryService.createPrivateImportedWork(
+              ownerId,
+              library.id(),
+              "Annotation Story",
+              "Synthetic Author",
+              "vi",
+              sha256("reader-annotation-work"));
+      workId = work.id();
+      LibraryRepository.VolumeRecord volume =
+          libraryService.createVolume(ownerId, workId, 1, "Volume 1");
+      LibraryRepository.ChapterRecord firstChapter =
+          libraryService.createChapter(ownerId, workId, volume.id(), 1, "Chapter 1", "vi");
+      LibraryRepository.ChapterRecord secondChapter =
+          libraryService.createChapter(ownerId, workId, volume.id(), 2, "Chapter 2", "vi");
+      String firstText = "Mây ☁️ mở cửa";
+      String secondText = "Tầng 2 khép lại";
+      LibraryRepository.RevisionRecord firstRevision =
+          libraryService.appendChapterRevision(
+              ownerId,
+              firstChapter.id(),
+              "plain_text",
+              firstText + "\n" + secondText,
+              List.of(
+                  new LibraryService.NewSegment(1, "paragraph", firstText, "first-anchor"),
+                  new LibraryService.NewSegment(2, "paragraph", secondText, "second-anchor")));
+      LibraryRepository.RevisionRecord secondRevision =
+          libraryService.appendChapterRevision(
+              ownerId,
+              secondChapter.id(),
+              "plain_text",
+              "Chương thứ hai có nắng.",
+              List.of(
+                  new LibraryService.NewSegment(
+                      1, "paragraph", "Chương thứ hai có nắng.", "other-chapter-anchor")));
+      addCurrentPolicyAcceptances(ownerId);
+      addCurrentPolicyAcceptances(outsiderId);
+
+      SessionService.IssuedSession ownerSession = sessionService.create(ownerId).orElseThrow();
+      var ownerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", ownerSession.cookieValue());
+      String ownerCsrf = csrfTokenService.tokenFor(ownerSession.cookieValue());
+      SessionService.IssuedSession outsiderSession =
+          sessionService.create(outsiderId).orElseThrow();
+      var outsiderCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", outsiderSession.cookieValue());
+      SessionService.IssuedSession pendingSession =
+          sessionService.create(pendingPolicyId).orElseThrow();
+      var pendingCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", pendingSession.cookieValue());
+      String pendingCsrf = csrfTokenService.tokenFor(pendingSession.cookieValue());
+
+      assertEquals(
+          401,
+          mockMvc
+              .perform(get("/api/v1/works/{workId}/annotations", workId))
+              .andReturn()
+              .getResponse()
+              .getStatus());
+      assertEquals(
+          403,
+          mockMvc
+              .perform(get("/api/v1/works/{workId}/annotations", workId).cookie(pendingCookie))
+              .andReturn()
+              .getResponse()
+              .getStatus());
+      MvcResult pendingDelete =
+          mockMvc
+              .perform(
+                  delete("/api/v1/works/{workId}/annotations", workId)
+                      .header("X-CSRF-Token", pendingCsrf)
+                      .cookie(pendingCookie))
+              .andReturn();
+      assertEquals(204, pendingDelete.getResponse().getStatus());
+
+      String crossSegmentQuote = "ây ☁️ mở cửaTầng";
+      String firstRequest =
+          objectMapper.writeValueAsString(
+              Map.of(
+                  "chapterId",
+                  firstChapter.id(),
+                  "sourceRevisionId",
+                  firstRevision.id(),
+                  "startAnchor",
+                  "first-anchor",
+                  "startOffset",
+                  1,
+                  "endAnchor",
+                  "second-anchor",
+                  "endOffset",
+                  4,
+                  "quoteSnapshot",
+                  crossSegmentQuote,
+                  "note",
+                  "Ghi chú riêng tư",
+                  "color",
+                  "amber"));
+      MvcResult missingCsrf =
+          mockMvc
+              .perform(
+                  post("/api/v1/works/{workId}/annotations", workId)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(firstRequest)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(403, missingCsrf.getResponse().getStatus());
+
+      MvcResult created =
+          mockMvc
+              .perform(
+                  post("/api/v1/works/{workId}/annotations", workId)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(firstRequest)
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(201, created.getResponse().getStatus());
+      assertTrue(created.getResponse().getHeader("Cache-Control").contains("no-store"));
+      assertEquals("\"annotation-1\"", created.getResponse().getHeader("ETag"));
+      JsonNode firstAnnotation = objectMapper.readTree(created.getResponse().getContentAsString());
+      String annotationId = firstAnnotation.path("id").asText();
+      assertEquals(
+          firstRevision.id().toString(), firstAnnotation.path("chapterRevisionId").asText());
+      assertEquals(crossSegmentQuote, firstAnnotation.path("quoteSnapshot").asText());
+      assertEquals("CURRENT", firstAnnotation.path("anchorState").asText());
+      assertEquals("Ghi chú riêng tư", firstAnnotation.path("note").asText());
+      assertFalse(firstAnnotation.has("userId"));
+      assertFalse(
+          created.getResponse().getContentAsString().contains(firstText + "\\n" + secondText));
+
+      MvcResult duplicate =
+          mockMvc
+              .perform(
+                  post("/api/v1/works/{workId}/annotations", workId)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(firstRequest.replace("Ghi chú riêng tư", "Không ghi đè"))
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(200, duplicate.getResponse().getStatus());
+      assertEquals(
+          "Ghi chú riêng tư",
+          objectMapper
+              .readTree(duplicate.getResponse().getContentAsString())
+              .path("note")
+              .asText());
+
+      String secondRequest =
+          objectMapper.writeValueAsString(
+              Map.of(
+                  "chapterId", firstChapter.id(),
+                  "sourceRevisionId", firstRevision.id(),
+                  "startAnchor", "second-anchor",
+                  "startOffset", 0,
+                  "endAnchor", "second-anchor",
+                  "endOffset", 4,
+                  "quoteSnapshot", "Tầng",
+                  "note", "",
+                  "color", "mint"));
+      MvcResult secondCreated =
+          mockMvc
+              .perform(
+                  post("/api/v1/works/{workId}/annotations", workId)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(secondRequest)
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(201, secondCreated.getResponse().getStatus());
+
+      MvcResult badQuote =
+          mockMvc
+              .perform(
+                  post("/api/v1/works/{workId}/annotations", workId)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(firstRequest.replace(crossSegmentQuote, "Không phải nguyên tác"))
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(422, badQuote.getResponse().getStatus());
+
+      MvcResult firstPage =
+          mockMvc
+              .perform(
+                  get("/api/v1/works/{workId}/annotations", workId)
+                      .param("chapterId", firstChapter.id().toString())
+                      .param("limit", "1")
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(200, firstPage.getResponse().getStatus());
+      assertTrue(firstPage.getResponse().getHeader("Cache-Control").contains("no-store"));
+      JsonNode firstPageBody = objectMapper.readTree(firstPage.getResponse().getContentAsString());
+      assertEquals(1, firstPageBody.path("items").size());
+      String cursor = firstPageBody.path("nextCursor").asText();
+      assertFalse(cursor.isBlank());
+      assertEquals(
+          400,
+          mockMvc
+              .perform(
+                  get("/api/v1/works/{workId}/annotations", workId)
+                      .param("chapterId", secondChapter.id().toString())
+                      .param("cursor", cursor)
+                      .cookie(ownerCookie))
+              .andReturn()
+              .getResponse()
+              .getStatus());
+      assertEquals(
+          404,
+          mockMvc
+              .perform(get("/api/v1/works/{workId}/annotations", workId).cookie(outsiderCookie))
+              .andReturn()
+              .getResponse()
+              .getStatus());
+
+      MvcResult missingIfMatch =
+          mockMvc
+              .perform(
+                  patch("/api/v1/annotations/{annotationId}", annotationId)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"note\":\"Sửa mới\",\"color\":\"sky\"}")
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(428, missingIfMatch.getResponse().getStatus());
+
+      MvcResult updated =
+          mockMvc
+              .perform(
+                  patch("/api/v1/annotations/{annotationId}", annotationId)
+                      .header("If-Match", "\"annotation-1\"")
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"note\":\"Sửa mới\",\"color\":\"sky\"}")
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(200, updated.getResponse().getStatus());
+      assertEquals("\"annotation-2\"", updated.getResponse().getHeader("ETag"));
+      MvcResult staleUpdate =
+          mockMvc
+              .perform(
+                  patch("/api/v1/annotations/{annotationId}", annotationId)
+                      .header("If-Match", "\"annotation-1\"")
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"note\":\"Draft cũ\",\"color\":\"rose\"}")
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(409, staleUpdate.getResponse().getStatus());
+      assertEquals("\"annotation-2\"", staleUpdate.getResponse().getHeader("ETag"));
+      assertTrue(
+          objectMapper
+              .readTree(staleUpdate.getResponse().getContentAsString())
+              .path("latestAnnotation")
+              .path("note")
+              .asText()
+              .equals("Sửa mới"));
+
+      MvcResult staleRevision =
+          mockMvc
+              .perform(
+                  post("/api/v1/works/{workId}/annotations", workId)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          firstRequest.replace(
+                              firstRevision.id().toString(), secondRevision.id().toString()))
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(409, staleRevision.getResponse().getStatus());
+
+      libraryService.appendChapterRevision(
+          ownerId,
+          firstChapter.id(),
+          "plain_text",
+          "Một phiên bản nội dung mới.",
+          List.of(
+              new LibraryService.NewSegment(
+                  1, "paragraph", "Một phiên bản nội dung mới.", "new-revision-anchor")));
+      MvcResult staleList =
+          mockMvc
+              .perform(
+                  get("/api/v1/works/{workId}/annotations", workId)
+                      .param("chapterId", firstChapter.id().toString())
+                      .cookie(ownerCookie))
+              .andReturn();
+      JsonNode staleItems =
+          objectMapper.readTree(staleList.getResponse().getContentAsString()).path("items");
+      assertEquals(2, staleItems.size());
+      assertTrue(staleItems.toString().contains("STALE"));
+
+      MvcResult outsiderDelete =
+          mockMvc
+              .perform(
+                  delete("/api/v1/annotations/{annotationId}", annotationId)
+                      .header(
+                          "X-CSRF-Token", csrfTokenService.tokenFor(outsiderSession.cookieValue()))
+                      .cookie(outsiderCookie))
+              .andReturn();
+      assertEquals(404, outsiderDelete.getResponse().getStatus());
+      MvcResult deleteAll =
+          mockMvc
+              .perform(
+                  delete("/api/v1/works/{workId}/annotations", workId)
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(204, deleteAll.getResponse().getStatus());
+      assertEquals(0, annotationCount(ownerId, workId));
     } finally {
       deleteLibraryUserData(ownerId, workId);
       deleteSessionTestUser(pendingPolicyId);
@@ -3671,7 +3998,7 @@ class PostgresSchemaIntegrationTests {
           mockMvc
               .perform(
                   get("/api/v1/me/reading-history")
-                      .param("cursor", cursor.substring(0, cursor.length() - 1) + "A")
+                      .param("cursor", tamperCursor(cursor))
                       .cookie(ownerCookie))
               .andReturn();
       assertEquals(400, tamperedCursor.getResponse().getStatus());
@@ -7217,6 +7544,25 @@ class PostgresSchemaIntegrationTests {
     }
   }
 
+  private static String tamperCursor(String cursor) {
+    String replacement = cursor.endsWith("A") ? "B" : "A";
+    return cursor.substring(0, cursor.length() - 1) + replacement;
+  }
+
+  private int annotationCount(UUID userId, UUID workId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT COUNT(*) FROM reader_annotations WHERE user_id = ? AND work_id = ?")) {
+      select.setObject(1, userId);
+      select.setObject(2, workId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getInt(1);
+      }
+    }
+  }
+
   private int chapterCountForLibrary(UUID libraryId) throws SQLException {
     try (Connection connection = dataSource.getConnection();
         PreparedStatement select =
@@ -7837,6 +8183,11 @@ class PostgresSchemaIntegrationTests {
         deleteProgress.setObject(1, userId);
         deleteProgress.executeUpdate();
       }
+      try (PreparedStatement deleteAnnotations =
+          connection.prepareStatement("DELETE FROM reader_annotations WHERE user_id = ?")) {
+        deleteAnnotations.setObject(1, userId);
+        deleteAnnotations.executeUpdate();
+      }
       for (ReaderHistoryFixture fixture : fixtures) {
         UUID workId = fixture.workId();
         try (PreparedStatement deleteBookmarkRetries =
@@ -7898,6 +8249,11 @@ class PostgresSchemaIntegrationTests {
 
   private void deleteLibraryUserData(UUID userId, UUID workId) throws SQLException {
     try (Connection connection = dataSource.getConnection()) {
+      try (PreparedStatement deleteAnnotations =
+          connection.prepareStatement("DELETE FROM reader_annotations WHERE user_id = ?")) {
+        deleteAnnotations.setObject(1, userId);
+        deleteAnnotations.executeUpdate();
+      }
       try (PreparedStatement deleteProgress =
           connection.prepareStatement("DELETE FROM reader_progress WHERE user_id = ?")) {
         deleteProgress.setObject(1, userId);
