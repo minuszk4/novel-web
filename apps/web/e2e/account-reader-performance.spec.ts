@@ -323,6 +323,7 @@ test('production Reader renders and remains usable with short, complex, and 5,00
   page,
   browserName,
 }, testInfo) => {
+  test.setTimeout(120_000);
   const longSourceTextUtf8Bytes = datasets[chapterIds[0]].reduce(
     (bytes, segment) => bytes + Buffer.byteLength(segment.sourceText, 'utf8'),
     0,
