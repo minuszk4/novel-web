@@ -10,8 +10,8 @@
   [style.--account-reader-content-width]="contentWidth() + 'px'"
 >
   <header class="reader-topbar">
-    <a class="reader-back" routerLink="/app/library" aria-label="Quay lại thư viện tài khoản"
-      ><span aria-hidden="true">←</span><span>Thư viện</span></a
+    <a class="reader-back" [routerLink]="workDetailUrl()" aria-label="Quay lại chi tiết tác phẩm"
+      ><span aria-hidden="true">←</span><span>Chi tiết</span></a
     >
     <div class="reader-chapter-context">
       <strong>{{ activeChapter()?.title || work()?.title || 'Đang mở Reader' }}</strong>

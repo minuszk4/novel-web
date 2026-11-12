@@ -3087,6 +3087,44 @@ label:has(input:focus-visible) {
 .detail-chapter-row:hover {
   background: #fbfbf8;
 }
+.account-work-detail-page .work-detail-hero {
+  grid-template-columns: 205px minmax(0, 1fr);
+  align-items: start;
+}
+.account-detail-cover {
+  min-height: 270px;
+}
+.account-work-detail-description {
+  margin: 17px 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.7;
+}
+.account-work-progress-note {
+  margin: 9px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.account-detail-toc .section-heading h2 {
+  margin: 3px 0 0;
+  font-family: var(--font-display);
+  font-size: 22px;
+}
+.account-detail-chapter-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.account-detail-chapter-list li:last-child .detail-chapter-row {
+  border-bottom: 1px solid #e8e8e4;
+}
+.account-chapter-unavailable {
+  color: var(--muted);
+  background: #f8f8f5;
+}
+.account-detail-load-more {
+  margin-top: 15px;
+}
 .chapter-ordinal {
   flex: 0 0 66px;
   color: var(--subtle);
@@ -5010,6 +5048,9 @@ button.reader-chapter-nav {
     gap: 21px;
     margin-top: 18px;
     padding: 17px;
+  }
+  .account-work-detail-page .work-detail-hero {
+    grid-template-columns: 1fr;
   }
   .detail-cover {
     width: min(100%, 210px);

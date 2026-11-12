@@ -113,9 +113,9 @@
                 <span class="private-tag">RIÊNG TƯ · ĐANG ĐỒNG BỘ</span>
               }
               <h2>{{ work.title }}</h2>
-              @if (work.isAccountWork && work.chapterCount > 0) {
-                <a class="library-reader-link" [routerLink]="['/app/reader', work.id]">
-                  Mở trình đọc <span aria-hidden="true">→</span>
+              @if (work.isAccountWork) {
+                <a class="library-reader-link" [routerLink]="['/app/works', work.id]">
+                  Chi tiết tác phẩm <span aria-hidden="true">→</span>
                 </a>
               }
               <p>{{ work.author }} <span>·</span> {{ work.details }}</p>

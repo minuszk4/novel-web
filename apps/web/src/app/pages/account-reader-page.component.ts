@@ -77,6 +77,10 @@ export class AccountReaderPageComponent {
   protected readonly lineHeight = signal(1.8);
   protected readonly contentWidth = signal(720);
   protected readonly work = signal<ReaderWork | null>(null);
+  protected readonly workDetailUrl = computed(() => {
+    const workId = this.work()?.id;
+    return workId ? ['/app/works', workId] : ['/app/library'];
+  });
   protected readonly chapters = signal<ReaderChapter[]>([]);
   protected readonly activeChapter = signal<ReaderChapter | null>(null);
   protected readonly segments = signal<ReaderSourceSegment[]>([]);

@@ -49,6 +49,14 @@ export const routes: Routes = [
         title: 'Lịch sử đọc — Novel',
       },
       {
+        path: 'works/:workId',
+        loadComponent: () =>
+          import('./pages/account-work-detail-page.component').then(
+            (page) => page.AccountWorkDetailPageComponent,
+          ),
+        title: 'Chi tiết tác phẩm — Novel',
+      },
+      {
         path: 'reader/:workId',
         loadComponent: () =>
           import('./pages/account-reader-page.component').then(
