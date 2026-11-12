@@ -1,4 +1,6 @@
 import { expect, test } from './support';
+import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import type { Page, Response } from '@playwright/test';
 
 const baseUrl = 'http://localhost:4300';
@@ -14,11 +16,17 @@ const fixtures = [
 <p>HTML safe sentence survives.</p>
 <p><img src="https://reader-xss.invalid/image.png" onerror="window.readerInjected=true" alt="remote image alt"></p>
 <p><a href="javascript:window.readerInjected=true">HTML safe link label</a></p>
+<p style="background-image:url('https://reader-xss.invalid/html-style.png')">HTML CSS style text survives.</p>
+<style>@import url('https://reader-xss.invalid/html-import.css');</style>
 <svg onload="window.readerInjected=true"><script>window.readerInjected=true</script><image href="https://reader-xss.invalid/vector.svg"></image></svg>
 <iframe src="https://reader-xss.invalid/frame">iframe hidden text</iframe>
 <script>window.readerInjected=true</script>
 </article></body></html>`,
-    visibleReaderText: ['HTML safe sentence survives.', 'HTML safe link label'],
+    visibleReaderText: [
+      'HTML safe sentence survives.',
+      'HTML safe link label',
+      'HTML CSS style text survives.',
+    ],
     forbiddenText: [
       'reader-xss.invalid',
       'onerror',
@@ -46,6 +54,8 @@ Markdown safe sentence survives.
 
 <img src="https://reader-xss.invalid/markdown.png" onerror="window.readerInjected=true">
 
+<style>@import url('https://reader-xss.invalid/markdown-import.css');</style>
+
 <svg onload="window.readerInjected=true"><script>window.readerInjected=true</script></svg>
 
 <iframe src="https://reader-xss.invalid/frame">iframe hidden text</iframe>`,
@@ -59,9 +69,30 @@ Markdown safe sentence survives.
       'onerror',
       'javascript:',
       '<img',
+      '<style',
+      '@import',
       '<script',
       '<svg',
       '<iframe',
+      'window.readerInjected',
+    ],
+  },
+  {
+    id: 'epub',
+    name: 'EPUB',
+    filename: 'live-private-hostile.epub',
+    mimeType: 'application/epub+zip',
+    fixturePath: 'e2e/fixtures/security-hostile.epub',
+    visibleReaderText: ['EPUB safe sentence survives.', 'EPUB safe link label'],
+    forbiddenText: [
+      'reader-xss.invalid',
+      'onerror',
+      'javascript:',
+      '<script',
+      '<svg',
+      '<iframe',
+      'remote image alt',
+      'frame text must be discarded',
       'window.readerInjected',
     ],
   },
@@ -72,7 +103,8 @@ interface ImportFixture {
   name: string;
   filename: string;
   mimeType: string;
-  sourceText: string;
+  sourceText?: string;
+  fixturePath?: string;
   visibleReaderText: readonly string[];
   forbiddenText: readonly string[];
 }
@@ -132,10 +164,13 @@ async function runFormatJourney(page: Page, fixture: ImportFixture): Promise<voi
   await page.goto(`${baseUrl}/app/import`);
   await expect(page.getByRole('heading', { name: 'Mang câu chuyện của bạn về đây' })).toBeVisible();
   await expect(page.getByText(/Disposable test statement/)).toBeVisible();
+  const sourceBuffer = fixture.fixturePath
+    ? await readFile(resolve(fixture.fixturePath))
+    : Buffer.from(fixture.sourceText ?? '', 'utf8');
   await page.locator('#work-file').setInputFiles({
     name: fixture.filename,
     mimeType: fixture.mimeType,
-    buffer: Buffer.from(fixture.sourceText, 'utf8'),
+    buffer: sourceBuffer,
   });
   await page.locator('.account-rights-check').click();
   const createResponsePromise = page.waitForResponse(
@@ -213,7 +248,7 @@ async function runFormatJourney(page: Page, fixture: ImportFixture): Promise<voi
   await assertBodyOmits(page, fixture.forbiddenText);
   await expect(
     page.locator(
-      '.account-reader-body img, .account-reader-body svg, .account-reader-body script, .account-reader-body iframe',
+      '.account-reader-body img, .account-reader-body svg, .account-reader-body script, .account-reader-body iframe, .account-reader-body style, .account-reader-body link, .account-reader-body object, .account-reader-body embed',
     ),
   ).toHaveCount(0);
   expect(unexpectedExternalRequests).toEqual([]);
@@ -247,7 +282,7 @@ async function runFormatJourney(page: Page, fixture: ImportFixture): Promise<voi
   await assertBodyOmits(page, fixture.forbiddenText);
   await expect(
     page.locator(
-      '.account-reader-body img, .account-reader-body svg, .account-reader-body script, .account-reader-body iframe',
+      '.account-reader-body img, .account-reader-body svg, .account-reader-body script, .account-reader-body iframe, .account-reader-body style, .account-reader-body link, .account-reader-body object, .account-reader-body embed',
     ),
   ).toHaveCount(0);
   expect(unexpectedExternalRequests).toEqual([]);

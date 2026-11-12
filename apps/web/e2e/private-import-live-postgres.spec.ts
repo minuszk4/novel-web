@@ -145,7 +145,7 @@ test('private import commit refreshes Library, Work Detail and PostgreSQL Reader
   }
   await expect(
     page.locator(
-      '.account-reader-body img, .account-reader-body svg, .account-reader-body script, .account-reader-body iframe',
+      '.account-reader-body img, .account-reader-body svg, .account-reader-body script, .account-reader-body iframe, .account-reader-body style, .account-reader-body link, .account-reader-body object, .account-reader-body embed',
     ),
   ).toHaveCount(0);
   expect(unexpectedExternalRequests).toEqual([]);
@@ -178,7 +178,7 @@ test('private import commit refreshes Library, Work Detail and PostgreSQL Reader
   }
   await expect(
     page.locator(
-      '.account-reader-body img, .account-reader-body svg, .account-reader-body script, .account-reader-body iframe',
+      '.account-reader-body img, .account-reader-body svg, .account-reader-body script, .account-reader-body iframe, .account-reader-body style, .account-reader-body link, .account-reader-body object, .account-reader-body embed',
     ),
   ).toHaveCount(0);
   expect(unexpectedExternalRequests).toEqual([]);
