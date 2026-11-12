@@ -45,6 +45,7 @@
           {{ accountImport.stageMessage() }}
         </p>
       }
+      <app-import-cancel-control />
 
       <div class="field-stack account-import-fields">
         <label for="work-title">Tên tác phẩm <span class="required-mark">*</span></label>
@@ -223,14 +224,14 @@
           <button
             class="text-link"
             type="button"
-            [disabled]="accountImport.isBusy()"
+            [disabled]="accountImport.isBusy() || accountImport.hasActiveJob()"
             (click)="startDifferentImport()"
           >
             Chọn tệp khác
           </button>
           <small class="import-abandon-note"
-            >Chọn tệp khác sẽ bỏ lượt nhập chưa lưu. Tệp staging riêng tư được hệ thống tự dọn khi
-            hết hạn.</small
+            >Hủy lượt nhập trước khi chọn tệp khác. Tệp staging riêng tư được hệ thống tự dọn sau
+            khi lượt nhập kết thúc.</small
           >
         </div>
       }

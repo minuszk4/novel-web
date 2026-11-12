@@ -93,6 +93,7 @@ async function installAccountRoutes(
     libraryFailures?: number;
     rightsVersionChangeOnRetry?: boolean;
     parseFailure?: boolean;
+    parsePending?: boolean;
     singleChapter?: boolean;
     singleChapterWarningCode?: string;
     chapterNames?: string[];
@@ -107,6 +108,7 @@ async function installAccountRoutes(
   const createBodies: Record<string, unknown>[] = [];
   const patchBodies: Record<string, unknown>[] = [];
   let rightsReads = 0;
+  let importCancelled = false;
 
   await page.route('**/api/v1/system/status', (route) =>
     json(route, {
@@ -213,7 +215,7 @@ async function installAccountRoutes(
             'Content-Type': 'application/octet-stream',
             'X-Import-Upload-Token': `one-time-upload-token-${'x'.repeat(48)}`,
           },
-          expiresAt: '2026-11-12T10:01:00Z',
+          expiresAt: '2030-01-01T10:01:00Z',
         },
       },
       201,
@@ -249,7 +251,7 @@ async function installAccountRoutes(
   await page.route(`**/api/v1/imports/${importId}`, (route) =>
     json(route, {
       id: importId,
-      status: 'ready_to_commit',
+      status: importCancelled ? 'cancelled' : options.parsePending ? 'parsing' : 'ready_to_commit',
       createdAt: '2026-11-10T10:00:00Z',
       expiresAt: '2026-11-11T10:00:00Z',
       warnings: [],
@@ -303,6 +305,12 @@ async function installAccountRoutes(
       },
       201,
     );
+  });
+  await page.route(`**/api/v1/imports/${importId}/cancel`, async (route) => {
+    events.push('cancel');
+    importCancelled = true;
+    expect(route.request().headers()['x-csrf-token']).toBe('session-import-csrf-token');
+    await route.fulfill({ status: 204 });
   });
   return { events, createBodies, patchBodies };
 }
@@ -431,6 +439,56 @@ test('account import uploads only after rights confirmation, reviews, edits and 
     viewport: document.documentElement.clientWidth,
   }));
   expect(dimensions.document).toBeLessThanOrEqual(dimensions.viewport);
+});
+
+test('account import cancellation asks for confirmation and never commits the private work', async ({
+  page,
+}) => {
+  const api = await installAccountRoutes(page);
+  await page.setViewportSize({ width: 360, height: 800 });
+  await page.goto('/app/import');
+  await page.locator('#work-file').setInputFiles({
+    name: 'son-ha.epub',
+    mimeType: 'application/epub+zip',
+    buffer: Buffer.from('private test epub bytes'),
+  });
+  await page.locator('.account-rights-check').click();
+  await page.getByRole('button', { name: 'Tải lên và phân tích' }).click();
+  await expect(page).toHaveURL(/\/app\/import\/review$/);
+
+  await page.getByRole('button', { name: 'Hủy lượt nhập' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Hủy lượt nhập này?' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText('không thể hoàn tác');
+  await expectNoAxeViolations(page);
+  await dialog.getByRole('button', { name: 'Hủy và xếp hàng dọn' }).click();
+
+  await expect(page).toHaveURL(/\/app\/import$/);
+  await expect(page.locator('.import-inline-status')).toContainText('Đã hủy lượt nhập');
+  expect(api.events).toContain('cancel');
+  expect(api.events).not.toContain('commit');
+});
+
+test('account import can cancel an in-flight parser and discards its result', async ({ page }) => {
+  const api = await installAccountRoutes(page, { parsePending: true });
+  await page.setViewportSize({ width: 360, height: 800 });
+  await page.goto('/app/import');
+  await page.locator('#work-file').setInputFiles({
+    name: 'son-ha.epub',
+    mimeType: 'application/epub+zip',
+    buffer: Buffer.from('private test epub bytes'),
+  });
+  await page.locator('.account-rights-check').click();
+  await page.getByRole('button', { name: 'Tải lên và phân tích' }).click();
+  await expect(page.locator('.import-inline-status')).toContainText('Đang phân tích cấu trúc');
+  await page.getByRole('button', { name: 'Hủy lượt nhập' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Hủy lượt nhập này?' });
+  await dialog.getByRole('button', { name: 'Hủy và xếp hàng dọn' }).click();
+
+  await expect(page.locator('.import-inline-status')).toContainText('Đã hủy lượt nhập');
+  expect(api.events).toContain('cancel');
+  expect(api.events).not.toContain('commit');
+  expect(api.events).not.toContain('preview');
 });
 
 test('mobile account import keeps keyboard focus visible from file selection through review', async ({

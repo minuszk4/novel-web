@@ -69,6 +69,8 @@ export type AccountImportState =
   | 'saving'
   | 'committing'
   | 'committed'
+  | 'cancelling'
+  | 'cancelled'
   | 'error';
 
 export class AccountImportError extends Error {
@@ -95,9 +97,30 @@ export class AccountImportService {
   readonly rightsConfirmed = signal(false);
   readonly state = signal<AccountImportState>('idle');
   readonly errorMessage = signal<string | null>(null);
+  readonly statusMessage = signal<string | null>(null);
   readonly retryable = signal(false);
   readonly stageMessage = signal<string | null>(null);
   readonly job = signal<ImportJob | null>(null);
+  readonly hasActiveJob = computed(() => {
+    const status = this.job()?.status;
+    return !!status && !['committed', 'failed', 'cancelled', 'expired'].includes(status);
+  });
+  readonly canCancel = computed(() => {
+    const job = this.job();
+    return (
+      !!job &&
+      !['committed', 'failed', 'cancelled', 'expired'].includes(job.status) &&
+      ![
+        'accepting',
+        'creating',
+        'uploading',
+        'loading-preview',
+        'saving',
+        'committing',
+        'cancelling',
+      ].includes(this.state())
+    );
+  });
   readonly preview = signal<ImportPreview | null>(null);
   readonly previewEtag = signal<string | null>(null);
   readonly committedWork = signal<CommittedImportWork | null>(null);
@@ -121,6 +144,7 @@ export class AccountImportService {
       'loading-preview',
       'saving',
       'committing',
+      'cancelling',
     ].includes(this.state()),
   );
   readonly canStart = computed(
@@ -199,7 +223,9 @@ export class AccountImportService {
   }
 
   selectFile(file: File | null): void {
+    if (this.hasActiveJob()) return;
     this.selectedFile.set(file);
+    this.statusMessage.set(null);
     this.rightsConfirmed.set(false);
     this.receiptId = null;
     this.acceptanceKey = newUuid();
@@ -229,6 +255,13 @@ export class AccountImportService {
 
   async startOrResumeImport(): Promise<boolean> {
     if (!this.canStart()) return false;
+    if (this.job() && !this.hasActiveJob()) {
+      this.job.set(null);
+      this.preview.set(null);
+      this.previewEtag.set(null);
+      this.committedWork.set(null);
+    }
+    this.statusMessage.set(null);
     this.errorMessage.set(null);
     this.retryable.set(false);
 
@@ -281,6 +314,14 @@ export class AccountImportService {
       return true;
     } catch (error) {
       const mapped = toImportError(error);
+      if (mapped.code === 'IMPORT_CANCELLED' || this.job()?.status === 'cancelled') {
+        this.job.update((current) => (current ? { ...current, status: 'cancelled' } : current));
+        this.state.set('cancelled');
+        this.stageMessage.set(null);
+        this.errorMessage.set(null);
+        this.retryable.set(false);
+        return false;
+      }
       if (mapped.code === 'IMPORT_RIGHTS_STATEMENT_STALE') {
         this.rightsConfirmed.set(false);
         this.receiptId = null;
@@ -288,6 +329,57 @@ export class AccountImportService {
         await this.refreshRightsStatement();
       }
       this.setError(mapped);
+      return false;
+    }
+  }
+
+  async cancelCurrentImport(): Promise<boolean> {
+    const job = this.job();
+    if (!job || !this.canCancel()) return false;
+    this.state.set('cancelling');
+    this.stageMessage.set('Đang hủy lượt nhập và xếp dữ liệu riêng tư vào hàng dọn…');
+    this.errorMessage.set(null);
+    this.retryable.set(false);
+    try {
+      const response = await firstValueFrom(
+        this.http
+          .post<unknown>(
+            `${importsUrl}/${job.id}/cancel`,
+            {},
+            {
+              headers: await this.csrfHeaders(),
+              observe: 'response',
+            },
+          )
+          .pipe(timeout(apiTimeoutMs)),
+      );
+      if (response.status !== 204) throw invalidResponse();
+      this.job.set({ ...job, status: 'cancelled' });
+      this.preview.set(null);
+      this.previewEtag.set(null);
+      this.receiptId = null;
+      this.acceptanceKey = newUuid();
+      this.commitKey = newUuid();
+      this.state.set('cancelled');
+      this.stageMessage.set(null);
+      this.errorMessage.set(null);
+      this.statusMessage.set(
+        'Đã hủy lượt nhập. Tệp vẫn ở trên thiết bị; bạn có thể bắt đầu một lượt mới khi sẵn sàng.',
+      );
+      return true;
+    } catch (error) {
+      const mapped = toImportError(error);
+      if (mapped.status === 409) {
+        try {
+          this.job.set(await this.getJob(job.id));
+        } catch {
+          // Keep the last known job state if status reconciliation is unavailable.
+        }
+      }
+      this.state.set('error');
+      this.stageMessage.set(null);
+      this.errorMessage.set(mapped.message);
+      this.retryable.set(mapped.retryable);
       return false;
     }
   }
@@ -622,7 +714,15 @@ export class AccountImportService {
           false,
         );
       }
-      if (current.status === 'expired' || current.status === 'cancelled') {
+      if (current.status === 'cancelled') {
+        throw new AccountImportError(
+          'Lượt nhập đã được hủy. Dữ liệu riêng tư sẽ được dọn khỏi vùng staging.',
+          409,
+          'IMPORT_CANCELLED',
+          false,
+        );
+      }
+      if (current.status === 'expired') {
         throw new AccountImportError(
           'Lượt nhập đã hết hạn. Chọn lại tệp và xác nhận quyền để bắt đầu lượt mới.',
           410,
@@ -1026,6 +1126,9 @@ function toImportError(error: unknown): AccountImportError {
     IDEMPOTENCY_KEY_REUSED:
       'Lượt lưu trước đã dùng mã thử lại này cho yêu cầu khác. Tải lại trạng thái trước khi tiếp tục.',
     IMPORT_ALREADY_COMMITTED: 'Tác phẩm đã được thêm vào thư viện.',
+    IMPORT_CANCELLED: 'Lượt nhập đã được hủy. Dữ liệu riêng tư sẽ được dọn khỏi vùng staging.',
+    IMPORT_NOT_CANCELLABLE:
+      'Lượt nhập đã hoàn tất hoặc hết hạn nên không thể hủy. Hãy tải lại trạng thái.',
   };
   if (error.status === 401) {
     return new AccountImportError(

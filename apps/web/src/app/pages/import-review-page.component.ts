@@ -16,10 +16,11 @@ import {
 } from '../core/account-import.service';
 import { DemoStateService } from '../core/demo-state.service';
 import { PolicyOnboardingService } from '../core/policy-onboarding.service';
+import { ImportCancelControlComponent } from '../shared/import-cancel-control.component';
 
 @Component({
   selector: 'app-import-review-page',
-  imports: [DecimalPipe, RouterLink],
+  imports: [DecimalPipe, ImportCancelControlComponent, RouterLink],
   templateUrl: './import-review-page.component.html',
 })
 export class ImportReviewPageComponent implements AfterViewInit {
@@ -176,6 +177,7 @@ export class ImportReviewPageComponent implements AfterViewInit {
   }
 
   startDifferentImport(): void {
+    if (this.accountMode() && this.accountImport.hasActiveJob()) return;
     this.accountImport.selectFile(null);
     void this.router.navigateByUrl('/app/import');
   }

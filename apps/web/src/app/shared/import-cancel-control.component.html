@@ -1,0 +1,41 @@
+@if (accountImport.canCancel()) {
+  <div class="import-cancel-control">
+    <button class="text-link" type="button" (click)="requestCancellation()">Hủy lượt nhập</button>
+  </div>
+}
+
+<dialog
+  #confirmDialog
+  class="history-confirm-dialog"
+  aria-labelledby="import-cancel-title"
+  aria-describedby="import-cancel-description"
+>
+  <form method="dialog" class="history-confirm-content" (submit)="$event.preventDefault()">
+    <p class="eyebrow">NHẬP TÁC PHẨM</p>
+    <h2 id="import-cancel-title">Hủy lượt nhập này?</h2>
+    <p id="import-cancel-description">
+      Lượt nhập sẽ bị hủy ngay. Nếu tệp đang được phân tích, kết quả đang chạy sẽ bị bỏ và không
+      được lưu. Tệp riêng tư được xếp hàng dọn; thao tác này không thể hoàn tác.
+    </p>
+    <div class="history-confirm-actions">
+      <button
+        class="button button-outline"
+        type="button"
+        autofocus
+        [disabled]="accountImport.state() === 'cancelling'"
+        (click)="confirmDialog.close()"
+      >
+        Tiếp tục nhập
+      </button>
+      <button
+        class="button button-danger"
+        type="button"
+        aria-describedby="import-cancel-description"
+        [disabled]="accountImport.state() === 'cancelling'"
+        (click)="confirmCancellation()"
+      >
+        {{ accountImport.state() === 'cancelling' ? 'Đang hủy…' : 'Hủy và xếp hàng dọn' }}
+      </button>
+    </div>
+  </form>
+</dialog>

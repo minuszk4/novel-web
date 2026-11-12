@@ -23,6 +23,11 @@
         {{ accountImport.stageMessage() }}
       </p>
     }
+    @if (accountImport.statusMessage(); as message) {
+      <p class="import-inline-status" role="status" aria-live="polite">
+        {{ message }}
+      </p>
+    }
     @if (accountImport.errorMessage(); as message) {
       <div class="import-inline-error" role="alert">
         <p>{{ message }}</p>
@@ -33,6 +38,7 @@
         }
       </div>
     }
+    <app-import-cancel-control />
   } @else {
     <div class="demo-callout" role="note">
       <span class="callout-icon" aria-hidden="true">i</span>
@@ -71,7 +77,12 @@
         ><strong>{{ file.name }}</strong
         ><small>{{ formatSize(file.size) }} · {{ file.type }}</small></span
       ><span class="selected-ok" role="img" aria-label="Đã chọn">✓</span
-      ><button class="selected-file-replace" type="button" (click)="chooseDifferentFile()">
+      ><button
+        class="selected-file-replace"
+        type="button"
+        [disabled]="accountMode() && accountImport.hasActiveJob()"
+        (click)="chooseDifferentFile()"
+      >
         Đổi tệp
       </button>
     </div>

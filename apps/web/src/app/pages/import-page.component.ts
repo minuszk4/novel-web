@@ -10,12 +10,13 @@ import {
 import { DemoStateService } from '../core/demo-state.service';
 import { ImportFileMetadata } from '../core/models';
 import { PolicyOnboardingService } from '../core/policy-onboarding.service';
+import { ImportCancelControlComponent } from '../shared/import-cancel-control.component';
 
 const supportedExtensions = ['epub', 'txt', 'html', 'htm', 'md', 'markdown'];
 
 @Component({
   selector: 'app-import-page',
-  imports: [DatePipe, RouterLink],
+  imports: [DatePipe, ImportCancelControlComponent, RouterLink],
   templateUrl: './import-page.component.html',
 })
 export class ImportPageComponent implements AfterViewInit {
@@ -134,6 +135,7 @@ export class ImportPageComponent implements AfterViewInit {
   }
 
   chooseDifferentFile(): void {
+    if (this.accountMode() && this.accountImport.hasActiveJob()) return;
     const input = this.workFileInput?.nativeElement;
     if (!input) return;
     if (this.accountMode()) this.accountImport.selectFile(null);
