@@ -33,6 +33,11 @@ const work = {
   chapterCount: chapters.length,
   createdAt: '2026-11-12T10:00:00Z',
 };
+const responsiveViewports = [
+  { name: 'mobile-360', width: 360, height: 800 },
+  { name: 'tablet-768', width: 768, height: 1024 },
+  { name: 'desktop-1280', width: 1280, height: 900 },
+] as const;
 
 async function json(route: Route, body: unknown, status = 200): Promise<void> {
   await route.fulfill({
@@ -132,34 +137,84 @@ async function installAccountSession(
   };
 }
 
-test('account Work Detail loads private metadata and paginates into the saved readable chapter', async ({
-  page,
-}) => {
-  const api = await installAccountSession(page);
-  await page.setViewportSize({ width: 360, height: 800 });
-  await page.goto(`/app/works/${workId}`);
+for (const viewport of responsiveViewports) {
+  test(`account Work Detail preserves private chapter access and saved progress at ${viewport.name}`, async ({
+    page,
+  }, testInfo) => {
+    const api = await installAccountSession(page);
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    await page.goto(`/app/works/${workId}`);
 
-  await expect(page.getByRole('heading', { name: 'Sơn Hà' })).toBeVisible();
-  await expect(page.getByText('Minh An')).toBeVisible();
-  await expect(page.getByText(/Mục lục không chứa nội dung chương/)).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Tiếp tục đọc' })).toBeEnabled();
-  await expect(page.getByRole('link', { name: /Rời khỏi thôn/ })).toBeVisible();
-  await expect(page.getByRole('link', { name: /Chương chưa khả dụng/ })).toHaveCount(0);
-  await expectNoAxeViolations(page);
+    const workHeading = page.getByRole('heading', { name: 'Sơn Hà' });
+    await expect(workHeading).toBeVisible();
+    await expect(workHeading).toBeFocused();
+    await expect(workHeading).toHaveCSS('outline-style', 'solid');
+    await expect(workHeading).toHaveCSS('outline-width', '3px');
+    await expect(workHeading).toHaveCSS('outline-offset', '4px');
+    await expect(page.getByText('Minh An')).toBeVisible();
+    await expect(page.getByText(/Mục lục không chứa nội dung chương/)).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Tiếp tục đọc' })).toBeEnabled();
+    await expect(page.getByRole('link', { name: /Rời khỏi thôn/ })).toBeVisible();
+    await expect(page.getByRole('link', { name: /Chương chưa khả dụng/ })).toHaveCount(0);
+    await expectNoAxeViolations(page);
 
-  await page.getByRole('button', { name: 'Tải thêm chương' }).click();
-  await expect(page.getByRole('link', { name: /Đến chân núi/ })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Tải thêm chương' })).toHaveCount(0);
-  const dimensions = await page.evaluate(() => ({
-    document: document.documentElement.scrollWidth,
-    viewport: document.documentElement.clientWidth,
-  }));
-  expect(dimensions.document).toBeLessThanOrEqual(dimensions.viewport);
+    const initialDimensions = await page.evaluate(() => ({
+      document: document.documentElement.scrollWidth,
+      viewport: document.documentElement.clientWidth,
+    }));
+    expect(initialDimensions.document).toBeLessThanOrEqual(initialDimensions.viewport);
+    const continueBounds = await page.getByRole('button', { name: 'Tiếp tục đọc' }).boundingBox();
+    expect(continueBounds).not.toBeNull();
+    expect(continueBounds!.width).toBeGreaterThanOrEqual(44);
+    expect(continueBounds!.height).toBeGreaterThanOrEqual(44);
+    await page.screenshot({
+      path: testInfo.outputPath(`01-work-detail-${viewport.name}.png`),
+    });
 
-  await page.getByRole('button', { name: 'Tiếp tục đọc' }).click();
-  await expect(page).toHaveURL(new RegExp(`/app/reader/${workId}/${chapters[2].id}$`));
-  expect(api.manifestReads).toBeGreaterThanOrEqual(2);
-});
+    const continueAction = page.getByRole('button', { name: 'Tiếp tục đọc' });
+    await page.mouse.move(180, Math.min(500, viewport.height - 100));
+    await page.mouse.wheel(0, 180);
+    if (viewport.width <= 640) {
+      await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+    }
+    const visibleContinueBounds = await continueAction.boundingBox();
+    expect(visibleContinueBounds).not.toBeNull();
+    if (viewport.width <= 640) {
+      const mobileNavBounds = await page.locator('.mobile-nav').boundingBox();
+      expect(mobileNavBounds).not.toBeNull();
+      expect(visibleContinueBounds!.y + visibleContinueBounds!.height).toBeLessThanOrEqual(
+        mobileNavBounds!.y - 8,
+      );
+    }
+    await page.screenshot({
+      path: testInfo.outputPath(`02-continue-action-visible-${viewport.name}.png`),
+    });
+
+    const loadMore = page.getByRole('button', { name: 'Tải thêm chương' });
+    await expect(loadMore).toBeVisible();
+    const loadMoreBounds = await loadMore.boundingBox();
+    expect(loadMoreBounds).not.toBeNull();
+    expect(loadMoreBounds!.width).toBeGreaterThanOrEqual(44);
+    expect(loadMoreBounds!.height).toBeGreaterThanOrEqual(44);
+    await loadMore.click();
+    await expect(page.getByRole('link', { name: /Đến chân núi/ })).toBeVisible();
+    await expect(loadMore).toHaveCount(0);
+    await expectNoAxeViolations(page);
+
+    const expandedDimensions = await page.evaluate(() => ({
+      document: document.documentElement.scrollWidth,
+      viewport: document.documentElement.clientWidth,
+    }));
+    expect(expandedDimensions.document).toBeLessThanOrEqual(expandedDimensions.viewport);
+    await page.screenshot({
+      path: testInfo.outputPath(`03-chapter-list-expanded-${viewport.name}.png`),
+    });
+
+    await page.getByRole('button', { name: 'Tiếp tục đọc' }).click();
+    await expect(page).toHaveURL(new RegExp(`/app/reader/${workId}/${chapters[2].id}$`));
+    expect(api.manifestReads).toBeGreaterThanOrEqual(2);
+  });
+}
 
 test('account Work Detail offers sign-in recovery and preserves its return route', async ({
   page,

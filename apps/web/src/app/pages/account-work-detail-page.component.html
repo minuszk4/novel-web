@@ -29,7 +29,9 @@
       </div>
       <div class="work-detail-copy">
         <p class="eyebrow">TÁC PHẨM TRONG TÀI KHOẢN</p>
-        <h1 #workHeading id="workHeading" tabindex="-1">{{ currentWork.title }}</h1>
+        <h1 #workHeading id="workHeading" class="route-heading" tabindex="-1">
+          {{ currentWork.title }}
+        </h1>
         <p class="detail-author">{{ currentWork.author || 'Chưa có thông tin tác giả' }}</p>
         <div class="detail-tags">
           <span>{{ currentWork.language }}</span>

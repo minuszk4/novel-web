@@ -3068,7 +3068,7 @@ label:has(input:focus-visible) {
   font-size: 9px;
 }
 .work-detail-copy > .button {
-  min-height: 41px;
+  min-height: 46px;
 }
 .detail-toc {
   margin-top: 15px;
