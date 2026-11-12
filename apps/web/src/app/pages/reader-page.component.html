@@ -141,18 +141,21 @@
           <div>
             <button
               type="button"
+              [attr.aria-pressed]="demo.readerTheme() === 'light'"
               [class.theme-selected]="demo.readerTheme() === 'light'"
               (click)="demo.setReaderTheme('light')"
             >
               Sáng</button
             ><button
               type="button"
+              [attr.aria-pressed]="demo.readerTheme() === 'sepia'"
               [class.theme-selected]="demo.readerTheme() === 'sepia'"
               (click)="demo.setReaderTheme('sepia')"
             >
               Sepia</button
             ><button
               type="button"
+              [attr.aria-pressed]="demo.readerTheme() === 'dark'"
               [class.theme-selected]="demo.readerTheme() === 'dark'"
               (click)="demo.setReaderTheme('dark')"
             >

@@ -35,18 +35,21 @@
           <div>
             <button
               type="button"
+              [attr.aria-pressed]="demo.readerTheme() === 'light'"
               [class.theme-selected]="demo.readerTheme() === 'light'"
               (click)="demo.setReaderTheme('light')"
             >
               <span class="theme-swatch swatch-light"></span>Sáng</button
             ><button
               type="button"
+              [attr.aria-pressed]="demo.readerTheme() === 'sepia'"
               [class.theme-selected]="demo.readerTheme() === 'sepia'"
               (click)="demo.setReaderTheme('sepia')"
             >
               <span class="theme-swatch swatch-sepia"></span>Sepia</button
             ><button
               type="button"
+              [attr.aria-pressed]="demo.readerTheme() === 'dark'"
               [class.theme-selected]="demo.readerTheme() === 'dark'"
               (click)="demo.setReaderTheme('dark')"
             >
