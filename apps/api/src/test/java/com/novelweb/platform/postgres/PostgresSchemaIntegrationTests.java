@@ -39,7 +39,9 @@ import com.novelweb.library.imports.ImportStagingCleanupService;
 import com.novelweb.library.imports.ImportStagingRateLimiter;
 import com.novelweb.progression.cultivation.CultivationRepository;
 import com.novelweb.progression.cultivation.CultivationService;
+import com.novelweb.translation.glossary.GlossaryMatcher;
 import com.novelweb.translation.glossary.GlossaryRepository;
+import com.novelweb.translation.glossary.GlossaryRevisionWriteRepository;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -207,6 +209,8 @@ class PostgresSchemaIntegrationTests {
   @Autowired private CultivationRepository cultivationRepository;
 
   @Autowired private GlossaryRepository glossaryRepository;
+
+  @Autowired private GlossaryRevisionWriteRepository glossaryRevisionWriteRepository;
 
   @Autowired private CultivationService cultivationService;
 
@@ -501,6 +505,211 @@ class PostgresSchemaIntegrationTests {
               0, row.getLong(1), "account erasure must cascade private glossary snapshots");
         }
       }
+    }
+  }
+
+  @Test
+  void glossaryDraftWritesAreAuthorizedVersionedAndDoNotPublish() throws Exception {
+    UUID ownerId = createSessionTestUser("Glossary Draft Workspace Owner");
+    UUID editorId = createSessionTestUser("Glossary Draft Editor");
+    UUID readerId = createSessionTestUser("Glossary Draft Reader");
+    UUID suspendedEditorId = createSessionTestUser("Glossary Draft Suspended Editor");
+    UUID outsiderId = createSessionTestUser("Glossary Draft Outsider");
+    UUID libraryGlossaryId = UUID.randomUUID();
+    UUID userGlossaryId = UUID.randomUUID();
+    UUID workspaceId = null;
+    UUID libraryId = null;
+
+    try {
+      workspaceId = workspaceService.createWorkspace(ownerId, "Glossary Draft Workspace").id();
+      workspaceService.addMember(ownerId, workspaceId, editorId, WorkspaceRepository.Role.EDITOR);
+      workspaceService.addMember(ownerId, workspaceId, readerId, WorkspaceRepository.Role.READER);
+      workspaceService.addMember(
+          ownerId, workspaceId, suspendedEditorId, WorkspaceRepository.Role.EDITOR);
+      libraryId =
+          libraryService
+              .createWorkspaceLibrary(ownerId, workspaceId, "Draft Glossary Library")
+              .id();
+      try (Connection connection = dataSource.getConnection()) {
+        try (PreparedStatement insertLibraryGlossary =
+            connection.prepareStatement(
+                """
+                    INSERT INTO glossaries
+                        (id, name, scope_type, library_id, source_language, target_language)
+                    VALUES (?, 'Shared draft', 'LIBRARY', ?, 'zh-Hans', 'vi')
+                    """)) {
+          insertLibraryGlossary.setObject(1, libraryGlossaryId);
+          insertLibraryGlossary.setObject(2, libraryId);
+          assertEquals(1, insertLibraryGlossary.executeUpdate());
+        }
+        try (PreparedStatement insertUserGlossary =
+            connection.prepareStatement(
+                """
+                    INSERT INTO glossaries
+                        (id, owner_user_id, name, scope_type, source_language, target_language)
+                    VALUES (?, ?, 'Personal draft', 'USER_GLOBAL', 'zh-Hans', 'vi')
+                    """)) {
+          insertUserGlossary.setObject(1, userGlossaryId);
+          insertUserGlossary.setObject(2, ownerId);
+          assertEquals(1, insertUserGlossary.executeUpdate());
+        }
+      }
+
+      UUID stableTermId = UUID.randomUUID();
+      var firstTerm =
+          new GlossaryRevisionWriteRepository.TermDraft(
+              stableTermId,
+              "金丹",
+              "Kim Đan",
+              10,
+              GlossaryMatcher.CasePolicy.INSENSITIVE,
+              GlossaryMatcher.MatchMode.WHOLE_PHRASE,
+              false,
+              "cultivation rank",
+              List.of("Golden Core", "Core of Gold"));
+      var firstDraft =
+          glossaryRevisionWriteRepository.createDraftRevision(
+              editorId, libraryGlossaryId, 1, List.of(firstTerm));
+      assertEquals(1, firstDraft.revisionNumber());
+      assertNull(firstDraft.parentRevisionId());
+      assertEquals(2, firstDraft.glossaryVersion());
+      assertTrue(glossaryRepository.loadActiveRevision(editorId, libraryGlossaryId).isEmpty());
+
+      assertThrows(
+          GlossaryRevisionWriteRepository.GlossaryNotFoundException.class,
+          () ->
+              glossaryRevisionWriteRepository.createDraftRevision(
+                  readerId, libraryGlossaryId, 2, List.of(firstTerm)));
+      assertThrows(
+          GlossaryRevisionWriteRepository.GlossaryNotFoundException.class,
+          () ->
+              glossaryRevisionWriteRepository.createDraftRevision(
+                  outsiderId, libraryGlossaryId, 2, List.of(firstTerm)));
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement suspend =
+              connection.prepareStatement("UPDATE users SET status = 'suspended' WHERE id = ?")) {
+        suspend.setObject(1, suspendedEditorId);
+        assertEquals(1, suspend.executeUpdate());
+      }
+      assertThrows(
+          GlossaryRevisionWriteRepository.GlossaryNotFoundException.class,
+          () ->
+              glossaryRevisionWriteRepository.createDraftRevision(
+                  suspendedEditorId, libraryGlossaryId, 2, List.of(firstTerm)));
+
+      var secondTerm =
+          new GlossaryRevisionWriteRepository.TermDraft(
+              stableTermId,
+              "金丹",
+              "Jindan",
+              10,
+              GlossaryMatcher.CasePolicy.INSENSITIVE,
+              GlossaryMatcher.MatchMode.WHOLE_PHRASE,
+              false,
+              "updated translation",
+              List.of("Golden Core"));
+      var secondDraft =
+          glossaryRevisionWriteRepository.createDraftRevision(
+              editorId, libraryGlossaryId, 2, List.of(secondTerm));
+      assertEquals(2, secondDraft.revisionNumber());
+      assertEquals(firstDraft.revisionId(), secondDraft.parentRevisionId());
+      assertEquals(3, secondDraft.glossaryVersion());
+      assertThrows(
+          GlossaryRevisionWriteRepository.VersionConflictException.class,
+          () ->
+              glossaryRevisionWriteRepository.createDraftRevision(
+                  editorId, libraryGlossaryId, 2, List.of(secondTerm)));
+
+      var personalDraft =
+          glossaryRevisionWriteRepository.createDraftRevision(
+              ownerId, userGlossaryId, 1, List.of(firstTerm));
+      assertEquals(1, personalDraft.revisionNumber());
+      assertTrue(glossaryRepository.loadActiveRevision(ownerId, userGlossaryId).isEmpty());
+      assertThrows(
+          GlossaryRevisionWriteRepository.GlossaryNotFoundException.class,
+          () ->
+              glossaryRevisionWriteRepository.createDraftRevision(
+                  editorId, userGlossaryId, 2, List.of(firstTerm)));
+
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement selectTerms =
+              connection.prepareStatement(
+                  """
+                      SELECT r.revision_no, t.ordinal AS term_ordinal, t.id AS term_id,
+                             t.target_term, a.ordinal AS alias_ordinal, a.alias_text
+                      FROM glossary_revisions r
+                      JOIN glossary_terms t ON t.revision_id = r.id
+                      LEFT JOIN glossary_aliases a ON a.revision_id = t.revision_id
+                          AND a.term_id = t.id
+                      WHERE r.glossary_id = ?
+                      ORDER BY r.revision_no, t.ordinal, a.ordinal
+                      """);
+          PreparedStatement selectGlossary =
+              connection.prepareStatement(
+                  """
+                      SELECT g.version, g.active_revision_id,
+                             (SELECT count(*) FROM glossary_revisions r WHERE r.glossary_id = g.id)
+                      FROM glossaries g WHERE g.id = ?
+                      """)) {
+        selectTerms.setObject(1, libraryGlossaryId);
+        try (ResultSet rows = selectTerms.executeQuery()) {
+          assertTrue(rows.next());
+          assertEquals(1, rows.getInt("revision_no"));
+          assertEquals(1, rows.getInt("term_ordinal"));
+          assertEquals(stableTermId, rows.getObject("term_id", UUID.class));
+          assertEquals("Kim Đan", rows.getString("target_term"));
+          assertEquals(1, rows.getInt("alias_ordinal"));
+          assertEquals("Golden Core", rows.getString("alias_text"));
+          assertTrue(rows.next());
+          assertEquals(1, rows.getInt("revision_no"));
+          assertEquals(2, rows.getInt("alias_ordinal"));
+          assertEquals("Core of Gold", rows.getString("alias_text"));
+          assertTrue(rows.next());
+          assertEquals(2, rows.getInt("revision_no"));
+          assertEquals(1, rows.getInt("term_ordinal"));
+          assertEquals(stableTermId, rows.getObject("term_id", UUID.class));
+          assertEquals("Jindan", rows.getString("target_term"));
+          assertEquals(1, rows.getInt("alias_ordinal"));
+          assertEquals("Golden Core", rows.getString("alias_text"));
+          assertFalse(rows.next());
+        }
+
+        selectGlossary.setObject(1, libraryGlossaryId);
+        try (ResultSet row = selectGlossary.executeQuery()) {
+          assertTrue(row.next());
+          assertEquals(3, row.getLong("version"));
+          assertNull(row.getObject("active_revision_id"));
+          assertEquals(2, row.getLong("count"), "stale and unauthorized writes must be atomic");
+        }
+      }
+    } finally {
+      try (Connection connection = dataSource.getConnection()) {
+        try (PreparedStatement deleteGlossaries =
+            connection.prepareStatement("DELETE FROM glossaries WHERE id IN (?, ?)")) {
+          deleteGlossaries.setObject(1, libraryGlossaryId);
+          deleteGlossaries.setObject(2, userGlossaryId);
+          deleteGlossaries.executeUpdate();
+        }
+        if (libraryId != null) {
+          try (PreparedStatement deleteLibrary =
+              connection.prepareStatement("DELETE FROM libraries WHERE id = ?")) {
+            deleteLibrary.setObject(1, libraryId);
+            deleteLibrary.executeUpdate();
+          }
+        }
+        if (workspaceId != null) {
+          try (PreparedStatement deleteWorkspace =
+              connection.prepareStatement("DELETE FROM workspaces WHERE id = ?")) {
+            deleteWorkspace.setObject(1, workspaceId);
+            deleteWorkspace.executeUpdate();
+          }
+        }
+      }
+      deleteSessionTestUser(ownerId);
+      deleteSessionTestUser(editorId);
+      deleteSessionTestUser(readerId);
+      deleteSessionTestUser(suspendedEditorId);
+      deleteSessionTestUser(outsiderId);
     }
   }
 
