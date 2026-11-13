@@ -151,6 +151,34 @@ export interface CreateReaderBookmarkRequest {
   label: string;
 }
 
+export interface CultivationReadingSessionStart {
+  sessionId: string;
+  startedAt: string;
+  expiresAt: string;
+  lastSequence: number;
+  totalActiveSeconds: number;
+  heartbeatIntervalSeconds: number;
+  idleTimeoutSeconds: number;
+}
+
+export interface CultivationReadingSessionHeartbeat {
+  sequence: number;
+  creditedSeconds: number;
+  totalActiveSeconds: number;
+  awardedXp: number;
+  receivedAt: string;
+  expiresAt: string;
+}
+
+export interface CultivationReadingSessionClose {
+  state: 'closed' | 'expired' | 'revoked';
+  startedAt: string;
+  closedAt: string;
+  totalActiveSeconds: number;
+  lastSequence: number;
+  awardedXp: number;
+}
+
 export class ReaderApiError extends Error {
   constructor(
     message: string,
@@ -174,9 +202,13 @@ const annotationsUrl = (workId: string) => `/api/v1/works/${workId}/annotations`
 const annotationUrl = (annotationId: string) => `/api/v1/annotations/${annotationId}`;
 const readingHistoryUrl = '/api/v1/me/reading-history';
 const readingHistoryWorkUrl = (workId: string) => `${readingHistoryUrl}/${workId}`;
+const cultivationReadingSessionsUrl = '/api/v1/me/reading-sessions';
+const cultivationReadingSessionUrl = (sessionId: string) =>
+  `${cultivationReadingSessionsUrl}/${sessionId}`;
 const csrfUrl = '/api/v1/auth/csrf';
 const requestTimeoutMs = 10_000;
 const csrfTokenPattern = /^[A-Za-z0-9_-]{43}$/;
+const idempotencyKeyPattern = /^[A-Za-z0-9._~-]{16,128}$/;
 
 @Injectable({ providedIn: 'root' })
 export class ReaderApiService {
@@ -468,6 +500,81 @@ export class ReaderApiService {
     }
   }
 
+  async startCultivationReadingSession(
+    workId: string,
+    chapterId: string,
+    idempotencyKey: string,
+  ): Promise<CultivationReadingSessionStart> {
+    if (!isUuid(workId) || !isUuid(chapterId) || !idempotencyKeyPattern.test(idempotencyKey)) {
+      throw invalidResponse('INVALID_READER_QUERY');
+    }
+    try {
+      const response: unknown = await firstValueFrom(
+        this.http
+          .post<unknown>(
+            cultivationReadingSessionsUrl,
+            { workId, chapterId, active: true },
+            {
+              headers: (await this.csrfHeaders()).set('Idempotency-Key', idempotencyKey),
+            },
+          )
+          .pipe(timeout(requestTimeoutMs)),
+      );
+      return parseCultivationReadingSessionStart(response);
+    } catch (error) {
+      throw toReaderApiError(error);
+    }
+  }
+
+  async heartbeatCultivationReadingSession(
+    sessionId: string,
+    sequence: number,
+    active: boolean,
+    idempotencyKey: string,
+  ): Promise<CultivationReadingSessionHeartbeat> {
+    if (
+      !isUuid(sessionId) ||
+      !Number.isSafeInteger(sequence) ||
+      sequence < 1 ||
+      typeof active !== 'boolean' ||
+      !idempotencyKeyPattern.test(idempotencyKey)
+    ) {
+      throw invalidResponse('INVALID_READER_QUERY');
+    }
+    try {
+      const response: unknown = await firstValueFrom(
+        this.http
+          .post<unknown>(
+            `${cultivationReadingSessionUrl(sessionId)}:heartbeat`,
+            { sequence, active },
+            {
+              headers: (await this.csrfHeaders()).set('Idempotency-Key', idempotencyKey),
+            },
+          )
+          .pipe(timeout(requestTimeoutMs)),
+      );
+      return parseCultivationReadingSessionHeartbeat(response, sessionId, sequence);
+    } catch (error) {
+      throw toReaderApiError(error);
+    }
+  }
+
+  async closeCultivationReadingSession(sessionId: string): Promise<CultivationReadingSessionClose> {
+    if (!isUuid(sessionId)) throw invalidResponse('INVALID_READER_QUERY');
+    try {
+      const response: unknown = await firstValueFrom(
+        this.http
+          .post<unknown>(`${cultivationReadingSessionUrl(sessionId)}:close`, null, {
+            headers: await this.csrfHeaders(),
+          })
+          .pipe(timeout(requestTimeoutMs)),
+      );
+      return parseCultivationReadingSessionClose(response, sessionId);
+    } catch (error) {
+      throw toReaderApiError(error);
+    }
+  }
+
   async getProgress(workId: string): Promise<ReaderProgress> {
     if (!isUuid(workId)) throw invalidResponse('INVALID_READER_QUERY');
     try {
@@ -519,6 +626,107 @@ export class ReaderApiService {
     }
     return new HttpHeaders({ 'X-CSRF-Token': response['token'] });
   }
+}
+
+function parseCultivationReadingSessionStart(value: unknown): CultivationReadingSessionStart {
+  if (
+    !isRecord(value) ||
+    Object.keys(value).sort().join(',') !==
+      'expiresAt,heartbeatIntervalSeconds,idleTimeoutSeconds,lastSequence,sessionId,startedAt,state,totalActiveSeconds' ||
+    !isUuid(value['sessionId']) ||
+    value['state'] !== 'active' ||
+    !isTimestamp(value['startedAt']) ||
+    !isTimestamp(value['expiresAt']) ||
+    value['expiresAt'] <= value['startedAt'] ||
+    value['lastSequence'] !== 0 ||
+    value['totalActiveSeconds'] !== 0 ||
+    !Number.isSafeInteger(value['heartbeatIntervalSeconds']) ||
+    (value['heartbeatIntervalSeconds'] as number) < 1 ||
+    (value['heartbeatIntervalSeconds'] as number) > 60 ||
+    !Number.isSafeInteger(value['idleTimeoutSeconds']) ||
+    (value['idleTimeoutSeconds'] as number) <= (value['heartbeatIntervalSeconds'] as number) ||
+    (value['idleTimeoutSeconds'] as number) > 300
+  ) {
+    throw invalidResponse('INVALID_READING_SESSION_RESPONSE');
+  }
+  return {
+    sessionId: value['sessionId'],
+    startedAt: value['startedAt'],
+    expiresAt: value['expiresAt'],
+    lastSequence: 0,
+    totalActiveSeconds: 0,
+    heartbeatIntervalSeconds: value['heartbeatIntervalSeconds'] as number,
+    idleTimeoutSeconds: value['idleTimeoutSeconds'] as number,
+  };
+}
+
+function parseCultivationReadingSessionHeartbeat(
+  value: unknown,
+  sessionId: string,
+  expectedSequence: number,
+): CultivationReadingSessionHeartbeat {
+  if (
+    !isRecord(value) ||
+    Object.keys(value).sort().join(',') !==
+      'awardedXp,creditedSeconds,expiresAt,receivedAt,sequence,sessionId,state,totalActiveSeconds' ||
+    value['sessionId'] !== sessionId ||
+    value['state'] !== 'active' ||
+    value['sequence'] !== expectedSequence ||
+    !Number.isSafeInteger(value['creditedSeconds']) ||
+    (value['creditedSeconds'] as number) < 0 ||
+    (value['creditedSeconds'] as number) > 60 ||
+    !Number.isSafeInteger(value['totalActiveSeconds']) ||
+    (value['totalActiveSeconds'] as number) < 0 ||
+    !Number.isSafeInteger(value['awardedXp']) ||
+    (value['awardedXp'] as number) < 0 ||
+    (value['awardedXp'] as number) > 120 ||
+    !isTimestamp(value['receivedAt']) ||
+    !isTimestamp(value['expiresAt']) ||
+    value['expiresAt'] <= value['receivedAt']
+  ) {
+    throw invalidResponse('INVALID_READING_SESSION_RESPONSE');
+  }
+  return {
+    sequence: expectedSequence,
+    creditedSeconds: value['creditedSeconds'] as number,
+    totalActiveSeconds: value['totalActiveSeconds'] as number,
+    awardedXp: value['awardedXp'] as number,
+    receivedAt: value['receivedAt'],
+    expiresAt: value['expiresAt'],
+  };
+}
+
+function parseCultivationReadingSessionClose(
+  value: unknown,
+  sessionId: string,
+): CultivationReadingSessionClose {
+  if (
+    !isRecord(value) ||
+    Object.keys(value).sort().join(',') !==
+      'awardedXp,closedAt,lastSequence,sessionId,startedAt,state,totalActiveSeconds' ||
+    value['sessionId'] !== sessionId ||
+    (value['state'] !== 'closed' && value['state'] !== 'expired' && value['state'] !== 'revoked') ||
+    !isTimestamp(value['startedAt']) ||
+    !isTimestamp(value['closedAt']) ||
+    value['closedAt'] < value['startedAt'] ||
+    !Number.isSafeInteger(value['totalActiveSeconds']) ||
+    (value['totalActiveSeconds'] as number) < 0 ||
+    !Number.isSafeInteger(value['lastSequence']) ||
+    (value['lastSequence'] as number) < 0 ||
+    !Number.isSafeInteger(value['awardedXp']) ||
+    (value['awardedXp'] as number) < 0 ||
+    (value['awardedXp'] as number) > 120
+  ) {
+    throw invalidResponse('INVALID_READING_SESSION_RESPONSE');
+  }
+  return {
+    state: value['state'],
+    startedAt: value['startedAt'],
+    closedAt: value['closedAt'],
+    totalActiveSeconds: value['totalActiveSeconds'] as number,
+    lastSequence: value['lastSequence'] as number,
+    awardedXp: value['awardedXp'] as number,
+  };
 }
 
 function parseProgress(value: unknown, expectedWorkId: string): ReaderProgress {

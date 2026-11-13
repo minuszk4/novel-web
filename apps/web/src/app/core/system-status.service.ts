@@ -11,6 +11,7 @@ export class SystemStatusService {
   readonly connection = signal<'checking' | 'online' | 'offline'>('checking');
   readonly status = signal<ApiSystemStatus | null>(null);
   private request?: Subscription;
+  private readonly statusWaiters: Array<(status: ApiSystemStatus | null) => void> = [];
 
   constructor() {
     this.refresh();
@@ -25,18 +26,26 @@ export class SystemStatusService {
       .subscribe({
         next: (payload) => {
           if (!isApiSystemStatus(payload)) {
-            this.status.set(null);
-            this.connection.set('offline');
+            this.settled(null);
             return;
           }
-          this.status.set(payload);
-          this.connection.set('online');
+          this.settled(payload);
         },
         error: () => {
-          this.status.set(null);
-          this.connection.set('offline');
+          this.settled(null);
         },
       });
+  }
+
+  waitForStatus(): Promise<ApiSystemStatus | null> {
+    if (this.connection() !== 'checking') return Promise.resolve(this.status());
+    return new Promise((resolve) => this.statusWaiters.push(resolve));
+  }
+
+  private settled(status: ApiSystemStatus | null): void {
+    this.status.set(status);
+    this.connection.set(status ? 'online' : 'offline');
+    for (const resolve of this.statusWaiters.splice(0)) resolve(status);
   }
 }
 

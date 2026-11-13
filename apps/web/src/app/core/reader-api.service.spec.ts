@@ -182,6 +182,81 @@ describe('ReaderApiService', () => {
     await expect(saved).resolves.toEqual(preferences);
   });
 
+  it('starts, heartbeats, and closes server-timed cultivation reader sessions', async () => {
+    const sessionId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const start = service.startCultivationReadingSession(
+      workId,
+      chapterId,
+      'reader-start-idempotency-01',
+    );
+    await flushReaderCsrf(http);
+    const startRequest = http.expectOne({
+      method: 'POST',
+      url: '/api/v1/me/reading-sessions',
+    });
+    expect(startRequest.request.headers.get('X-CSRF-Token')).toBe(csrfToken);
+    expect(startRequest.request.headers.get('Idempotency-Key')).toBe('reader-start-idempotency-01');
+    expect(startRequest.request.body).toEqual({ workId, chapterId, active: true });
+    startRequest.flush({
+      sessionId,
+      state: 'active',
+      startedAt: '2026-11-14T10:00:00Z',
+      expiresAt: '2026-11-14T10:01:30Z',
+      lastSequence: 0,
+      totalActiveSeconds: 0,
+      heartbeatIntervalSeconds: 30,
+      idleTimeoutSeconds: 90,
+    });
+    await expect(start).resolves.toMatchObject({ sessionId, heartbeatIntervalSeconds: 30 });
+
+    const heartbeat = service.heartbeatCultivationReadingSession(
+      sessionId,
+      1,
+      false,
+      'reader-heartbeat-idempotency-01',
+    );
+    await flushReaderCsrf(http);
+    const heartbeatRequest = http.expectOne({
+      method: 'POST',
+      url: `/api/v1/me/reading-sessions/${sessionId}:heartbeat`,
+    });
+    expect(heartbeatRequest.request.headers.get('X-CSRF-Token')).toBe(csrfToken);
+    expect(heartbeatRequest.request.headers.get('Idempotency-Key')).toBe(
+      'reader-heartbeat-idempotency-01',
+    );
+    expect(heartbeatRequest.request.body).toEqual({ sequence: 1, active: false });
+    heartbeatRequest.flush({
+      sessionId,
+      state: 'active',
+      sequence: 1,
+      creditedSeconds: 30,
+      totalActiveSeconds: 30,
+      awardedXp: 0,
+      receivedAt: '2026-11-14T10:00:30Z',
+      expiresAt: '2026-11-14T10:02:00Z',
+    });
+    await expect(heartbeat).resolves.toMatchObject({ sequence: 1, creditedSeconds: 30 });
+
+    const close = service.closeCultivationReadingSession(sessionId);
+    await flushReaderCsrf(http);
+    const closeRequest = http.expectOne({
+      method: 'POST',
+      url: `/api/v1/me/reading-sessions/${sessionId}:close`,
+    });
+    expect(closeRequest.request.headers.get('X-CSRF-Token')).toBe(csrfToken);
+    expect(closeRequest.request.body).toBeNull();
+    closeRequest.flush({
+      sessionId,
+      state: 'closed',
+      startedAt: '2026-11-14T10:00:00Z',
+      closedAt: '2026-11-14T10:00:31Z',
+      totalActiveSeconds: 30,
+      lastSequence: 1,
+      awardedXp: 0,
+    });
+    await expect(close).resolves.toMatchObject({ state: 'closed', lastSequence: 1 });
+  });
+
   it('loads a bounded bookmark page and validates bookmark ownership shape', async () => {
     const result = service.getBookmarks(workId, undefined, 25);
     const request = http.expectOne(

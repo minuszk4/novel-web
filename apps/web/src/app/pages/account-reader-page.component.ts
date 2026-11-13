@@ -26,6 +26,8 @@ import {
   SaveReaderProgressRequest,
   ReaderWork,
 } from '../core/reader-api.service';
+import { CultivationApiService } from '../core/cultivation-api.service';
+import { SystemStatusService } from '../core/system-status.service';
 
 const manifestPageSize = 100;
 const contentPageSize = 1000;
@@ -60,6 +62,35 @@ interface ReaderRenderedSegment extends ReaderSourceSegment {
 interface ReaderAnnotationConflict {
   annotationId: string;
   latest: ReaderAnnotation;
+}
+
+interface CultivationSessionTarget {
+  workId: string;
+  chapterId: string;
+  loadToken: number;
+  startIdempotencyKey: string;
+}
+
+interface PendingCultivationHeartbeat {
+  sequence: number;
+  active: boolean;
+  idempotencyKey: string;
+  requestVersion: number;
+}
+
+interface ActiveCultivationSession {
+  sessionId: string;
+  heartbeatIntervalMs: number;
+  sequence: number;
+  lastAcceptedActive: boolean;
+  desiredActive: boolean;
+  requestVersion: number;
+  completedRequestVersion: number;
+  pendingHeartbeat: PendingCultivationHeartbeat | null;
+  heartbeatQueue: Promise<void>;
+  heartbeatTimer: number | null;
+  retryTimer: number | null;
+  closing: boolean;
 }
 
 const annotationPageSize = 100;
@@ -144,6 +175,8 @@ export class AccountReaderPageComponent {
   );
 
   private readonly api = inject(ReaderApiService);
+  private readonly cultivationApi = inject(CultivationApiService);
+  private readonly systemStatus = inject(SystemStatusService);
   private readonly route = inject(ActivatedRoute);
   private readonly router = inject(Router);
   private readonly destroyRef = inject(DestroyRef);
@@ -164,6 +197,10 @@ export class AccountReaderPageComponent {
   private preferencesTimer: number | null = null;
   private pendingPreferences: ReaderPreferences | null = null;
   private savingPreferences = false;
+  private cultivationTarget: CultivationSessionTarget | null = null;
+  private cultivationStartQueuedTarget: CultivationSessionTarget | null = null;
+  private cultivationSession: ActiveCultivationSession | null = null;
+  private cultivationTransition: Promise<void> = Promise.resolve();
 
   @ViewChild('tocPanel') private set tocPanel(panel: ElementRef<HTMLElement> | undefined) {
     if (panel) this.focusPanel(panel.nativeElement);
@@ -189,6 +226,7 @@ export class AccountReaderPageComponent {
 
   constructor() {
     this.route.paramMap.pipe(takeUntilDestroyed(this.destroyRef)).subscribe((params) => {
+      this.stopCultivationSession();
       const workId = params.get('workId');
       const chapterId = params.get('chapterId');
       if (this.activeChapter()) void this.flushProgress();
@@ -220,6 +258,7 @@ export class AccountReaderPageComponent {
       this.annotationTimers.clear();
       for (const annotation of this.annotations()) void this.flushAnnotationEdit(annotation.id);
       void this.flushPreferences();
+      this.stopCultivationSession();
     });
   }
 
@@ -279,6 +318,17 @@ export class AccountReaderPageComponent {
       void this.flushPreferences();
       this.flushAllAnnotationEdits();
     }
+    this.syncCultivationSessionActivity();
+  }
+
+  @HostListener('window:blur')
+  protected onWindowBlur(): void {
+    this.setCultivationSessionActivity(false);
+  }
+
+  @HostListener('window:focus')
+  protected onWindowFocus(): void {
+    this.syncCultivationSessionActivity();
   }
 
   @HostListener('window:pagehide')
@@ -286,6 +336,7 @@ export class AccountReaderPageComponent {
     if (this.hasQueuedProgressWrite()) void this.flushProgress();
     void this.flushPreferences();
     this.flushAllAnnotationEdits();
+    this.stopCultivationSession();
   }
 
   protected get previousChapter(): ReaderChapter | null {
@@ -309,6 +360,7 @@ export class AccountReaderPageComponent {
 
   protected async retry(): Promise<void> {
     if (!this.requestedWorkId) return;
+    this.stopCultivationSession();
     this.loadedWorkId = null;
     const token = ++this.loadToken;
     await this.loadWork(this.requestedWorkId, this.requestedChapterId, token);
@@ -1078,6 +1130,7 @@ export class AccountReaderPageComponent {
       this.segments.set(segments);
       this.sourceRevisionId.set(revisionId);
       this.contentState.set('ready');
+      this.startCultivationSession(workId, chapter.id, token);
       void this.loadChapterAnnotations(workId, chapter.id, token);
       if (restoreProgress?.chapterId === chapter.id) {
         this.restoreProgressPosition(restoreProgress);
@@ -1110,6 +1163,207 @@ export class AccountReaderPageComponent {
     if (!workId || chapter.accessState !== 'readable') return;
     this.closePanel(false);
     void this.router.navigate(['/app/reader', workId, chapter.id]);
+  }
+
+  private startCultivationSession(workId: string, chapterId: string, loadToken: number): void {
+    const target: CultivationSessionTarget = {
+      workId,
+      chapterId,
+      loadToken,
+      startIdempotencyKey: crypto.randomUUID(),
+    };
+    this.cultivationTarget = target;
+    this.queueCultivationStart(target);
+  }
+
+  private queueCultivationStart(target: CultivationSessionTarget): void {
+    if (this.cultivationStartQueuedTarget === target) return;
+    this.cultivationStartQueuedTarget = target;
+    this.queueCultivationTransition(async () => {
+      try {
+        await this.closeCurrentCultivationSession();
+        if (!this.isCurrentCultivationTarget(target)) return;
+        const status = await this.systemStatus.waitForStatus();
+        if (
+          !this.isCurrentCultivationTarget(target) ||
+          status?.features.cultivationEnabled !== true
+        ) {
+          return;
+        }
+        const profile = await this.cultivationApi.getProfile();
+        if (!profile.enabled || !this.isCurrentCultivationTarget(target)) return;
+        if (!this.isReaderSessionVisible()) return;
+        const started = await this.api.startCultivationReadingSession(
+          target.workId,
+          target.chapterId,
+          target.startIdempotencyKey,
+        );
+        if (!this.isCurrentCultivationTarget(target)) {
+          await this.api.closeCultivationReadingSession(started.sessionId).catch(() => undefined);
+          return;
+        }
+        this.cultivationSession = {
+          sessionId: started.sessionId,
+          heartbeatIntervalMs: started.heartbeatIntervalSeconds * 1000,
+          sequence: started.lastSequence,
+          lastAcceptedActive: true,
+          desiredActive: true,
+          requestVersion: 0,
+          completedRequestVersion: 0,
+          pendingHeartbeat: null,
+          heartbeatQueue: Promise.resolve(),
+          heartbeatTimer: null,
+          retryTimer: null,
+          closing: false,
+        };
+        this.syncCultivationSessionActivity();
+      } catch {
+        // Cultivation is optional in Reader; API outages and disabled features must not interrupt reading.
+      } finally {
+        if (this.cultivationStartQueuedTarget === target) {
+          this.cultivationStartQueuedTarget = null;
+        }
+      }
+    });
+  }
+
+  private stopCultivationSession(): void {
+    this.cultivationTarget = null;
+    this.queueCultivationTransition(() => this.closeCurrentCultivationSession());
+  }
+
+  private queueCultivationTransition(task: () => Promise<void>): void {
+    this.cultivationTransition = this.cultivationTransition.then(task).catch(() => undefined);
+  }
+
+  private async closeCurrentCultivationSession(): Promise<void> {
+    const session = this.cultivationSession;
+    if (!session) return;
+    this.cultivationSession = null;
+    session.closing = true;
+    if (session.heartbeatTimer !== null) window.clearTimeout(session.heartbeatTimer);
+    if (session.retryTimer !== null) window.clearTimeout(session.retryTimer);
+    session.heartbeatTimer = null;
+    session.retryTimer = null;
+    this.requestCultivationHeartbeat(session, false, false);
+    await session.heartbeatQueue;
+    await this.api.closeCultivationReadingSession(session.sessionId).catch(() => undefined);
+  }
+
+  private isCurrentCultivationTarget(target: CultivationSessionTarget): boolean {
+    return (
+      this.cultivationTarget === target &&
+      target.loadToken === this.loadToken &&
+      this.work()?.id === target.workId &&
+      this.activeChapter()?.id === target.chapterId &&
+      this.contentState() === 'ready'
+    );
+  }
+
+  private isReaderSessionVisible(): boolean {
+    return document.visibilityState === 'visible' && document.hasFocus();
+  }
+
+  private syncCultivationSessionActivity(): void {
+    const active = this.isReaderSessionVisible();
+    if (this.cultivationSession) {
+      this.setCultivationSessionActivity(active);
+    } else if (active && this.cultivationTarget) {
+      this.queueCultivationStart(this.cultivationTarget);
+    }
+  }
+
+  private setCultivationSessionActivity(active: boolean): void {
+    const session = this.cultivationSession;
+    if (!session || session.closing) return;
+    if (session.heartbeatTimer !== null) window.clearTimeout(session.heartbeatTimer);
+    session.heartbeatTimer = null;
+    this.requestCultivationHeartbeat(session, active, false);
+    if (active) this.scheduleCultivationHeartbeat(session);
+  }
+
+  private scheduleCultivationHeartbeat(session: ActiveCultivationSession): void {
+    if (session.closing || !session.desiredActive || this.cultivationSession !== session) return;
+    if (session.heartbeatTimer !== null) window.clearTimeout(session.heartbeatTimer);
+    session.heartbeatTimer = window.setTimeout(() => {
+      session.heartbeatTimer = null;
+      if (this.cultivationSession !== session || !this.isReaderSessionVisible()) return;
+      this.requestCultivationHeartbeat(session, true, true);
+      this.scheduleCultivationHeartbeat(session);
+    }, session.heartbeatIntervalMs);
+  }
+
+  private requestCultivationHeartbeat(
+    session: ActiveCultivationSession,
+    active: boolean,
+    force: boolean,
+  ): void {
+    if (session.closing && active) return;
+    const stateChanged = session.desiredActive !== active;
+    session.desiredActive = active;
+    if (force || stateChanged) session.requestVersion += 1;
+    if (
+      session.pendingHeartbeat === null &&
+      session.completedRequestVersion === session.requestVersion &&
+      session.lastAcceptedActive === active
+    ) {
+      return;
+    }
+    session.heartbeatQueue = session.heartbeatQueue
+      .then(() => this.pumpCultivationHeartbeats(session))
+      .catch(() => undefined);
+  }
+
+  private async pumpCultivationHeartbeats(session: ActiveCultivationSession): Promise<void> {
+    while (
+      session.completedRequestVersion < session.requestVersion ||
+      session.pendingHeartbeat !== null
+    ) {
+      if (!session.pendingHeartbeat) {
+        session.pendingHeartbeat = {
+          sequence: session.sequence + 1,
+          active: session.desiredActive,
+          idempotencyKey: crypto.randomUUID(),
+          requestVersion: session.requestVersion,
+        };
+      }
+      const pending = session.pendingHeartbeat;
+      let acknowledged = false;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          await this.api.heartbeatCultivationReadingSession(
+            session.sessionId,
+            pending.sequence,
+            pending.active,
+            pending.idempotencyKey,
+          );
+          acknowledged = true;
+          break;
+        } catch {
+          // Retry once with the same sequence and key so a lost response cannot double-credit XP.
+        }
+      }
+      if (!acknowledged) {
+        if (!session.closing) {
+          session.retryTimer = window.setTimeout(() => {
+            session.retryTimer = null;
+            session.heartbeatQueue = session.heartbeatQueue
+              .then(() => this.pumpCultivationHeartbeats(session))
+              .catch(() => undefined);
+          }, 2_000);
+        }
+        return;
+      }
+      if (session.retryTimer !== null) window.clearTimeout(session.retryTimer);
+      session.retryTimer = null;
+      session.sequence = pending.sequence;
+      session.lastAcceptedActive = pending.active;
+      session.completedRequestVersion = Math.max(
+        session.completedRequestVersion,
+        pending.requestVersion,
+      );
+      session.pendingHeartbeat = null;
+    }
   }
 
   private setManifestError(error: ReaderApiError): void {

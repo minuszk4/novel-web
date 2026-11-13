@@ -41,6 +41,14 @@ describe('SystemStatusService', () => {
     expect(service.status()).toEqual(validStatus);
   });
 
+  it('lets feature consumers wait for the current status check to settle', async () => {
+    const service = TestBed.inject(SystemStatusService);
+    const result = service.waitForStatus();
+    http.expectOne('/api/v1/system/status').flush(validStatus);
+
+    await expect(result).resolves.toEqual(validStatus);
+  });
+
   it('treats a malformed response as offline and clears status', () => {
     const service = TestBed.inject(SystemStatusService);
 

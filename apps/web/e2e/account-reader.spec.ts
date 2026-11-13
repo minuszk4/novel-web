@@ -438,6 +438,149 @@ async function installReaderRoutes(
   return loadedChapters;
 }
 
+async function installCultivationSessionRoutes(
+  page: Page,
+  featureEnabled: boolean,
+  profileEnabled: boolean,
+  retryFirstHeartbeat = false,
+): Promise<string[]> {
+  const sessionEvents: string[] = [];
+  let sessionNumber = 0;
+  let sequence = 0;
+  let didFailHeartbeat = false;
+  let pendingFailedHeartbeat: { sequence: number; idempotencyKey: string } | null = null;
+  let activeSessionId: string | null = null;
+  await page.unroute('**/api/v1/system/status');
+  await page.route('**/api/v1/system/status', (route) =>
+    json(route, {
+      apiVersion: '4.2.1',
+      environment: 'test',
+      integrations: {
+        googleOidcEnabled: false,
+        momoTestEnabled: false,
+        momoEnvironment: 'disabled',
+      },
+      features: {
+        importProcessingEnabled: false,
+        cultivationEnabled: featureEnabled,
+        commerceSandboxEnabled: false,
+      },
+    }),
+  );
+  await page.route('**/api/v1/me/cultivation', (route) =>
+    json(route, {
+      enabled: profileEnabled,
+      profileVersion: 1,
+      totalXp: 0,
+      todayXpEarned: 0,
+      currentRank: {
+        key: 'mortal',
+        group: 'Nhập môn',
+        name: 'Phàm nhân',
+        thresholdXp: 0,
+        sortOrder: 0,
+      },
+      nextRank: null,
+      xpToNextRank: 0,
+      progressRatio: 0,
+      rankCatalogVersion: 'cultivation-v1',
+      policyVersion: 'xp-v1',
+      locale: 'vi-VN',
+      xpPerActiveMinute: 1,
+      dailyXpCap: 120,
+      nextDailyResetAt: '2026-11-15T00:00:00Z',
+      rankCatalog: [
+        { key: 'mortal', group: 'Nhập môn', name: 'Phàm nhân', thresholdXp: 0, sortOrder: 0 },
+      ],
+    }),
+  );
+  await page.route('**/api/v1/me/reading-sessions**', async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (request.method() !== 'POST') return route.fallback();
+    if (path === '/api/v1/me/reading-sessions') {
+      if (!request.headers()['idempotency-key']) {
+        return json(route, { code: 'IDEMPOTENCY_KEY_REQUIRED' }, 400);
+      }
+      const body = request.postDataJSON() as { workId: string; chapterId: string; active: boolean };
+      if (body.workId !== workId || body.active !== true || activeSessionId !== null) {
+        return json(route, { code: 'INVALID_READING_SESSION_START' }, 409);
+      }
+      sessionNumber += 1;
+      sequence = 0;
+      activeSessionId = `aaaaaaaa-aaaa-4aaa-8aaa-${String(sessionNumber).padStart(12, '0')}`;
+      sessionEvents.push(`start:${body.chapterId}`);
+      return json(
+        route,
+        {
+          sessionId: activeSessionId,
+          state: 'active',
+          startedAt: '2026-11-14T10:00:00Z',
+          expiresAt: '2026-11-14T10:01:30Z',
+          lastSequence: 0,
+          totalActiveSeconds: 0,
+          heartbeatIntervalSeconds: 30,
+          idleTimeoutSeconds: 90,
+        },
+        201,
+      );
+    }
+    const sessionId = path.split('/').at(-1)?.split(':')[0];
+    if (!sessionId || sessionId !== activeSessionId) {
+      return json(route, { code: 'READING_SESSION_NOT_FOUND' }, 404);
+    }
+    if (path.endsWith(':heartbeat')) {
+      const body = request.postDataJSON() as { sequence: number; active: boolean };
+      const idempotencyKey = request.headers()['idempotency-key'];
+      if (body.sequence !== sequence + 1 || !idempotencyKey) {
+        return json(route, { code: 'READING_SESSION_SEQUENCE_CONFLICT' }, 409);
+      }
+      if (retryFirstHeartbeat && !didFailHeartbeat) {
+        didFailHeartbeat = true;
+        pendingFailedHeartbeat = { sequence: body.sequence, idempotencyKey };
+        return json(route, { code: 'TEMPORARY_READING_SESSION_ERROR' }, 503);
+      }
+      if (pendingFailedHeartbeat) {
+        if (
+          pendingFailedHeartbeat.sequence !== body.sequence ||
+          pendingFailedHeartbeat.idempotencyKey !== idempotencyKey
+        ) {
+          return json(route, { code: 'RETRY_CHANGED_IDEMPOTENCY_KEY' }, 409);
+        }
+        sessionEvents.push('heartbeat-retried-same-key');
+        pendingFailedHeartbeat = null;
+      }
+      sequence = body.sequence;
+      sessionEvents.push(`heartbeat:${sequence}:${body.active}`);
+      return json(route, {
+        sessionId,
+        state: 'active',
+        sequence,
+        creditedSeconds: 0,
+        totalActiveSeconds: 0,
+        awardedXp: 0,
+        receivedAt: '2026-11-14T10:00:30Z',
+        expiresAt: '2026-11-14T10:02:00Z',
+      });
+    }
+    if (path.endsWith(':close')) {
+      sessionEvents.push(`close:${sessionId}`);
+      activeSessionId = null;
+      return json(route, {
+        sessionId,
+        state: 'closed',
+        startedAt: '2026-11-14T10:00:00Z',
+        closedAt: '2026-11-14T10:00:31Z',
+        totalActiveSeconds: 0,
+        lastSequence: sequence,
+        awardedXp: 0,
+      });
+    }
+    return route.fallback();
+  });
+  return sessionEvents;
+}
+
 const viewports = [
   { name: 'mobile 360×800', width: 360, height: 800 },
   { name: 'tablet 768×1024', width: 768, height: 1024 },
@@ -498,6 +641,125 @@ for (const viewport of viewports) {
       viewport: document.documentElement.clientWidth,
     }));
     expect(dimensions.document).toBeLessThanOrEqual(dimensions.viewport);
+  });
+}
+
+test('cultivation Reader sessions follow content, focus, chapter changes, and server policy', async ({
+  page,
+}) => {
+  await installReaderRoutes(page, 200, false);
+  const events = await installCultivationSessionRoutes(page, true, true, true);
+  await page.addInitScript(() => {
+    let readerFocused = false;
+    Object.defineProperty(document, 'hasFocus', {
+      configurable: true,
+      value: () => readerFocused,
+    });
+    Object.defineProperty(window, 'setReaderPageFocus', {
+      configurable: true,
+      value: (focused: boolean) => {
+        readerFocused = focused;
+      },
+    });
+  });
+  const networkOrder: string[] = [];
+  page.on('requestfinished', (request) => {
+    if (new URL(request.url()).pathname.startsWith('/api/v1/chapters/')) {
+      networkOrder.push('chapter-content-finished');
+    }
+  });
+  page.on('request', (request) => {
+    if (request.method() === 'POST' && request.url().endsWith('/api/v1/me/reading-sessions')) {
+      networkOrder.push('session-start-requested');
+    }
+  });
+  const profileResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'GET' &&
+      new URL(response.url()).pathname === '/api/v1/me/cultivation',
+  );
+  await page.goto(`/app/reader/${workId}`);
+
+  await expect(page.getByRole('heading', { name: 'Cánh cửa mở' })).toBeVisible();
+  await profileResponse;
+  await page.waitForTimeout(100);
+  expect(events.filter((event) => event.startsWith('start:'))).toEqual([]);
+  await page.evaluate(() => {
+    (window as Window & { setReaderPageFocus: (focused: boolean) => void }).setReaderPageFocus(
+      true,
+    );
+    window.dispatchEvent(new Event('focus'));
+  });
+  await expect
+    .poll(() => events.filter((event) => event.startsWith('start:')))
+    .toEqual([`start:${chapterIds[0]}`]);
+  expect(events[0]).toBe(`start:${chapterIds[0]}`);
+  expect(networkOrder.indexOf('chapter-content-finished')).toBeLessThan(
+    networkOrder.indexOf('session-start-requested'),
+  );
+
+  await page.evaluate(() => {
+    (window as Window & { setReaderPageFocus: (focused: boolean) => void }).setReaderPageFocus(
+      false,
+    );
+    window.dispatchEvent(new Event('blur'));
+  });
+  await expect.poll(() => events).toContain('heartbeat-retried-same-key');
+  await expect.poll(() => events).toContain('heartbeat:1:false');
+  await page.evaluate(() => {
+    (window as Window & { setReaderPageFocus: (focused: boolean) => void }).setReaderPageFocus(
+      true,
+    );
+    window.dispatchEvent(new Event('focus'));
+  });
+  await expect.poll(() => events).toContain('heartbeat:2:true');
+
+  await page.getByRole('button', { name: 'Mở mục lục' }).click();
+  await page
+    .getByRole('dialog', { name: 'Gió qua núi' })
+    .getByRole('button', { name: /Qua khỏi dốc/ })
+    .click();
+  await expect(page.getByRole('heading', { name: 'Qua khỏi dốc' })).toBeVisible();
+  await expect
+    .poll(() => events.filter((event) => event.startsWith('start:')))
+    .toEqual([`start:${chapterIds[0]}`, `start:${chapterIds[2]}`]);
+  expect(events.indexOf('heartbeat:3:false')).toBeLessThan(
+    events.findIndex((event) => event.startsWith('close:')),
+  );
+  expect(events.findIndex((event) => event.startsWith('close:'))).toBeLessThan(
+    events.lastIndexOf(`start:${chapterIds[2]}`),
+  );
+});
+
+for (const scenario of [
+  { label: 'global feature is off', featureEnabled: false, profileEnabled: true, expectedPosts: 0 },
+  { label: 'reader opted out', featureEnabled: true, profileEnabled: false, expectedPosts: 0 },
+]) {
+  test(`cultivation Reader does not start a session when ${scenario.label}`, async ({ page }) => {
+    await installReaderRoutes(page, 200, false);
+    await installCultivationSessionRoutes(page, scenario.featureEnabled, scenario.profileEnabled);
+    const sessionPosts: string[] = [];
+    let profileResponseCount = 0;
+    let systemStatusResponseCount = 0;
+    page.on('request', (request) => {
+      if (request.method() === 'POST' && request.url().includes('/api/v1/me/reading-sessions')) {
+        sessionPosts.push(request.url());
+      }
+    });
+    page.on('response', (response) => {
+      if (response.request().method() !== 'GET') return;
+      const path = new URL(response.url()).pathname;
+      if (path === '/api/v1/system/status') systemStatusResponseCount += 1;
+      if (path === '/api/v1/me/cultivation') profileResponseCount += 1;
+    });
+    await page.goto(`/app/reader/${workId}`);
+    await expect(page.getByRole('heading', { name: 'Cánh cửa mở' })).toBeVisible();
+    await expect.poll(() => systemStatusResponseCount).toBe(1);
+    await expect.poll(() => profileResponseCount).toBe(scenario.featureEnabled ? 1 : 0);
+    expect(sessionPosts).toHaveLength(scenario.expectedPosts);
+    if (!scenario.featureEnabled) {
+      await expect(page.getByText('Một đoạn văn bản riêng tư.')).toBeVisible();
+    }
   });
 }
 
