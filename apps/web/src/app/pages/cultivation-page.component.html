@@ -8,167 +8,403 @@
     <span class="private-tag">RIÊNG TƯ · KHÔNG BXH</span>
   </div>
 
-  <div class="cultivation-demo-notice" role="note">
-    <span aria-hidden="true">i</span>
-    <p>
-      <strong>Số liệu mẫu để minh họa giao diện.</strong> Chưa có Reader hoặc backend để ghi nhận XP
-      cá nhân. Trong bản thật, máy chủ tính XP từ phiên đọc hợp lệ.
-    </p>
-  </div>
+  @if (isAccountMode()) {
+    @if (profilePhase() === 'loading') {
+      <p class="library-status-message library-sync-message" role="status" aria-live="polite">
+        Đang tải tiến trình tu luyện từ tài khoản…
+      </p>
+    } @else if (profilePhase() === 'unavailable' || profilePhase() === 'error') {
+      <div
+        class="library-status-message"
+        [class.library-sync-error]="profilePhase() === 'error'"
+        [class.library-sync-message]="profilePhase() === 'unavailable'"
+        [attr.role]="profilePhase() === 'error' ? 'alert' : 'status'"
+      >
+        <span>{{ profileMessage() }}</span>
+        <button class="text-button" type="button" (click)="retryProfile()">Thử tải lại</button>
+      </div>
+    } @else if (profile(); as state) {
+      <section class="cultivation-control-card" aria-labelledby="account-cultivation-title">
+        <div class="cultivation-control-icon" aria-hidden="true">✧</div>
+        <div class="cultivation-control-copy">
+          <p class="eyebrow">TÙY CHỌN CỦA BẠN</p>
+          <h2 id="account-cultivation-title">
+            {{ state.enabled ? 'Hành trình tu luyện đang bật' : 'Hành trình đang tạm dừng' }}
+          </h2>
+          <p>
+            {{
+              state.enabled
+                ? 'Máy chủ chỉ tính XP trong phiên Reader hợp lệ. Bạn có thể tạm dừng bất cứ lúc nào.'
+                : 'XP đã đạt và lịch sử theo ngày vẫn được giữ. Bật lại khi bạn muốn tiếp tục.'
+            }}
+          </p>
+        </div>
+        <button
+          class="button"
+          [class.button-outline]="state.enabled"
+          [class.button-primary]="!state.enabled"
+          type="button"
+          [disabled]="isSavingSettings()"
+          [attr.aria-busy]="isSavingSettings()"
+          (click)="toggleAccountProgression()"
+        >
+          {{
+            isSavingSettings()
+              ? 'Đang lưu…'
+              : state.enabled
+                ? 'Tạm dừng tích lũy'
+                : 'Bật hành trình'
+          }}
+        </button>
+      </section>
+      @if (actionMessage()) {
+        <div class="library-status-message library-sync-error" role="alert">
+          <span>{{ actionMessage() }}</span>
+        </div>
+      }
 
-  <section class="cultivation-control-card" aria-labelledby="cultivation-control-title">
-    <div class="cultivation-control-icon" aria-hidden="true">✧</div>
-    <div class="cultivation-control-copy">
-      <p class="eyebrow">TÙY CHỌN CỦA BẠN</p>
-      <h2 id="cultivation-control-title">
-        {{
-          demo.cultivationEnabled()
-            ? 'Hành trình đang bật trong demo'
-            : 'Bật hành trình khi bạn sẵn sàng'
-        }}
-      </h2>
+      <section class="sample-progression" aria-labelledby="account-progression-title">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">TIẾN TRÌNH CỦA BẠN</p>
+            <h2 id="account-progression-title">Cấp bậc hiện tại</h2>
+          </div>
+          <span class="sample-tag">DANH MỤC {{ state.rankCatalogVersion }}</span>
+        </div>
+        <article class="rank-progress-card">
+          <div class="rank-medallion" aria-hidden="true"><span>✧</span></div>
+          <div class="rank-progress-main">
+            <div class="rank-label-row">
+              <span class="rank-label">XP TÍCH LŨY</span
+              ><span class="rank-xp"
+                ><strong>{{ formatXp(state.totalXp) }}</strong> XP</span
+              >
+            </div>
+            <h3>{{ state.currentRank.name }}</h3>
+            @if (state.nextRank) {
+              <p>
+                Tiến tới <strong>{{ state.nextRank.name }}</strong>
+              </p>
+              <div
+                class="progress-track"
+                role="progressbar"
+                [attr.aria-valuenow]="rankProgressPercent()"
+                aria-valuemin="0"
+                aria-valuemax="100"
+                [attr.aria-label]="'Tiến độ tới ' + state.nextRank.name"
+              >
+                <span [style.width.%]="rankProgressPercent()"></span>
+              </div>
+              <div class="progress-foot">
+                <span>{{ formatXp(state.totalXp) }} XP hiện có</span
+                ><strong>Còn {{ formatXp(state.xpToNextRank) }} XP</strong>
+              </div>
+            } @else {
+              <p>Bạn đã đạt cấp cao nhất trong danh mục hiện tại.</p>
+            }
+          </div>
+          <div class="rank-next-box">
+            <small>{{ state.nextRank ? 'CẤP TIẾP THEO' : 'CẤP CAO NHẤT' }}</small>
+            <strong>{{ state.nextRank?.name ?? state.currentRank.name }}</strong>
+            <span
+              >{{ formatXp(state.nextRank?.thresholdXp ?? state.currentRank.thresholdXp) }} XP</span
+            >
+          </div>
+        </article>
+        <div class="sample-daily account-daily">
+          <div>
+            <span class="daily-icon" aria-hidden="true">◷</span>
+            <p>
+              <strong>XP đã đạt hôm nay</strong>
+              <small
+                >{{ formatXp(state.todayXpEarned) }} / {{ formatXp(state.dailyXpCap) }} XP · giới
+                hạn UTC</small
+              >
+            </p>
+          </div>
+          <div
+            class="daily-progress"
+            role="progressbar"
+            [attr.aria-valuenow]="dailyProgressPercent()"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            [attr.aria-label]="
+              'XP hôm nay: ' + formatXp(state.todayXpEarned) + ' trên ' + formatXp(state.dailyXpCap)
+            "
+          >
+            <span [style.width.%]="dailyProgressPercent()"></span>
+          </div>
+          <span class="daily-reset">Đặt lại {{ formatResetAt(state.nextDailyResetAt) }} UTC</span>
+        </div>
+      </section>
+
+      <section class="rank-ladder-section" aria-labelledby="account-ladder-title">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">CÁC CẢNH GIỚI</p>
+            <h2 id="account-ladder-title">Thang cấp bậc</h2>
+          </div>
+          <p class="section-aside">Mốc đang dùng: {{ state.rankCatalogVersion }}</p>
+        </div>
+        <div class="rank-ladder">
+          @for (rank of state.rankCatalog; track rank.key) {
+            <article
+              class="rank-ladder-row"
+              [class.example-rank]="rank.key === state.currentRank.key"
+              [attr.aria-current]="rank.key === state.currentRank.key ? 'step' : null"
+            >
+              <span class="rank-node" aria-hidden="true">{{ rank.sortOrder + 1 }}</span>
+              <div class="rank-ladder-copy">
+                <span class="rank-group">{{ rank.group }}</span
+                ><strong>{{ rank.name }}</strong>
+              </div>
+              <span class="rank-threshold">{{ formatXp(rank.thresholdXp) }} XP</span>
+              @if (rank.key === state.currentRank.key) {
+                <span class="current-rank-tag">CẤP HIỆN TẠI</span>
+              }
+            </article>
+          }
+        </div>
+      </section>
+
+      <div class="cultivation-details-grid">
+        <section class="detail-card">
+          <div class="detail-icon" aria-hidden="true">◷</div>
+          <p class="eyebrow">CÁCH TÍNH</p>
+          <h2>Chỉ thời gian đọc hợp lệ mới tạo XP</h2>
+          <ul>
+            <li>{{ state.xpPerActiveMinute }} XP cho mỗi phút hoạt động trong Reader.</li>
+            <li>Tối đa {{ formatXp(state.dailyXpCap) }} XP mỗi ngày UTC.</li>
+            <li>Phút lẻ chỉ cộng trong ngày đó; nạp credit và mở khóa không cộng XP.</li>
+          </ul>
+        </section>
+        <section class="detail-card">
+          <div class="detail-icon" aria-hidden="true">◉</div>
+          <p class="eyebrow">QUYỀN RIÊNG TƯ</p>
+          <h2>Hoạt động chỉ hiển thị theo ngày</h2>
+          <ul>
+            <li>Danh sách này không chứa tên truyện, chương hay nội dung.</li>
+            <li>Không có bảng xếp hạng công khai.</li>
+            <li>Tạm dừng không xóa XP, cấp bậc hoặc lịch sử đã đạt.</li>
+          </ul>
+        </section>
+      </div>
+
+      <section class="activity-section" aria-labelledby="account-activity-title">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">LỊCH SỬ CÁ NHÂN</p>
+            <h2 id="account-activity-title">XP theo ngày</h2>
+          </div>
+          <span class="private-tag">RIÊNG TƯ</span>
+        </div>
+        @if (activityPhase() === 'loading') {
+          <p class="library-status-message library-sync-message" role="status" aria-live="polite">
+            Đang tải lịch sử XP…
+          </p>
+        } @else if (activityPhase() === 'error' && activities().length === 0) {
+          <div class="library-status-message library-sync-error" role="alert">
+            <span>{{ activityMessage() }}</span>
+            <button class="text-button" type="button" (click)="retryActivity()">Thử lại</button>
+          </div>
+        } @else if (activities().length === 0) {
+          <div class="activity-empty">
+            <span aria-hidden="true">◷</span>
+            <div>
+              <strong>Chưa có XP được ghi nhận</strong>
+              <p>Khi bạn đọc bằng Reader và bật hành trình, tổng XP sẽ xuất hiện theo ngày UTC.</p>
+            </div>
+          </div>
+        } @else {
+          <ul class="cultivation-activity-list">
+            @for (activity of activities(); track activity.activityDate) {
+              <li class="cultivation-activity-row">
+                <span>{{ formatActivityDate(activity.activityDate) }}</span>
+                <strong>{{ formatXp(activity.xpEarned) }} XP</strong>
+              </li>
+            }
+          </ul>
+          @if (activityPhase() === 'error') {
+            <div class="library-status-message library-sync-error" role="alert">
+              <span>{{ activityMessage() }}</span>
+              <button class="text-button" type="button" (click)="retryActivity()">Thử lại</button>
+            </div>
+          } @else if (nextActivityCursor()) {
+            <button
+              class="button button-outline cultivation-load-more"
+              type="button"
+              [disabled]="activityPhase() === 'loading-more'"
+              (click)="loadMoreActivity()"
+            >
+              {{ activityPhase() === 'loading-more' ? 'Đang tải…' : 'Xem ngày cũ hơn' }}
+            </button>
+          }
+        }
+      </section>
+    }
+  } @else {
+    <div class="cultivation-demo-notice" role="note">
+      <span aria-hidden="true">i</span>
       <p>
-        {{
-          demo.cultivationEnabled()
-            ? demo.cultivationPaused()
-              ? 'Đang tạm dừng. Dữ liệu đã đạt trong sản phẩm thật sẽ được giữ nguyên.'
-              : 'Đang bật. Phiên demo không tự cộng XP và chưa lưu trạng thái lên máy chủ.'
-            : 'Tính năng này mặc định tắt. Không có streak, áp lực hay quyền lợi trả phí gắn với cấp bậc.'
-        }}
+        <strong>Số liệu mẫu để minh họa giao diện.</strong> Chưa có Reader hoặc backend để ghi nhận
+        XP cá nhân. Trong bản thật, máy chủ tính XP từ phiên đọc hợp lệ.
       </p>
     </div>
-    @if (!demo.cultivationEnabled()) {
-      <button class="button button-primary" type="button" (click)="demo.toggleCultivation()">
-        Bật trong bản demo
-      </button>
-    } @else {
-      <button class="button button-outline" type="button" (click)="demo.toggleCultivationPause()">
-        {{ demo.cultivationPaused() ? 'Tiếp tục' : 'Tạm dừng tích lũy' }}
-      </button>
-    }
-  </section>
 
-  <section class="sample-progression" aria-labelledby="sample-progression-title">
-    <div class="section-heading">
-      <div>
-        <p class="eyebrow">VÍ DỤ GIAO DIỆN</p>
-        <h2 id="sample-progression-title">Cách một mốc tiến triển</h2>
-      </div>
-      <span class="sample-tag">MINH HỌA · KHÔNG PHẢI XP CỦA BẠN</span>
-    </div>
-    <article class="rank-progress-card">
-      <div class="rank-medallion" aria-hidden="true"><span>✧</span></div>
-      <div class="rank-progress-main">
-        <div class="rank-label-row">
-          <span class="rank-label">CẤP BẬC MẪU</span
-          ><span class="rank-xp"
-            ><strong>{{ formatXp(exampleXp) }}</strong> XP</span
-          >
-        </div>
-        <h3>{{ sampleRank }}</h3>
+    <section class="cultivation-control-card" aria-labelledby="cultivation-control-title">
+      <div class="cultivation-control-icon" aria-hidden="true">✧</div>
+      <div class="cultivation-control-copy">
+        <p class="eyebrow">TÙY CHỌN CỦA BẠN</p>
+        <h2 id="cultivation-control-title">
+          {{
+            demo.cultivationEnabled()
+              ? 'Hành trình đang bật trong demo'
+              : 'Bật hành trình khi bạn sẵn sàng'
+          }}
+        </h2>
         <p>
-          Tiến tới <strong>{{ sampleNextRank }}</strong>
-        </p>
-        <div
-          class="progress-track"
-          role="progressbar"
-          [attr.aria-valuenow]="sampleProgress"
-          aria-valuemin="0"
-          aria-valuemax="100"
-          [attr.aria-label]="'Ví dụ tiến độ tới ' + sampleNextRank"
-        >
-          <span [style.width.%]="sampleProgress"></span>
-        </div>
-        <div class="progress-foot">
-          <span>{{ formatXp(exampleXp) }} XP tích lũy trong ví dụ</span
-          ><strong>Còn {{ formatXp(sampleNextThreshold - exampleXp) }} XP</strong>
-        </div>
-      </div>
-      <div class="rank-next-box">
-        <small>CẤP TIẾP THEO</small><strong>{{ sampleNextRank }}</strong
-        ><span>{{ formatXp(sampleNextThreshold) }} XP</span>
-      </div>
-    </article>
-    <div class="sample-daily">
-      <div>
-        <span class="daily-icon" aria-hidden="true">◷</span>
-        <p>
-          <strong>Ví dụ hoạt động trong ngày</strong
-          ><small>34 / {{ dailyCap }} XP · giới hạn UTC</small>
+          {{
+            demo.cultivationEnabled()
+              ? demo.cultivationPaused()
+                ? 'Đang tạm dừng. Dữ liệu đã đạt trong sản phẩm thật sẽ được giữ nguyên.'
+                : 'Đang bật. Phiên demo không tự cộng XP và chưa lưu trạng thái lên máy chủ.'
+              : 'Tính năng này mặc định tắt. Không có streak, áp lực hay quyền lợi trả phí gắn với cấp bậc.'
+          }}
         </p>
       </div>
-      <div class="daily-progress"><span></span></div>
-      <span class="sample-tag">MINH HỌA</span>
-    </div>
-  </section>
-
-  <section class="rank-ladder-section" aria-labelledby="ladder-title">
-    <div class="section-heading">
-      <div>
-        <p class="eyebrow">CÁC CẢNH GIỚI</p>
-        <h2 id="ladder-title">Từ nhập môn đến Độ Kiếp</h2>
-      </div>
-      <p class="section-aside">Mốc khởi điểm đề xuất · cấu hình thật sẽ do máy chủ quản lý</p>
-    </div>
-    <div class="rank-ladder">
-      @for (rank of demo.cultivationRanks; track rank.key; let index = $index) {
-        <article class="rank-ladder-row" [class.example-rank]="index === sampleRankIndex">
-          <span class="rank-node" aria-hidden="true">{{
-            index === sampleRankIndex ? '✧' : index + 1
-          }}</span>
-          <div class="rank-ladder-copy">
-            <span class="rank-group">{{ rank.group }}</span
-            ><strong>{{ rank.name }}</strong>
-          </div>
-          <span class="rank-threshold">{{ formatXp(rank.threshold) }} XP</span>
-          @if (index === sampleRankIndex) {
-            <span class="sample-current-tag">MỐC TRONG VÍ DỤ</span>
-          }
-        </article>
+      @if (!demo.cultivationEnabled()) {
+        <button class="button button-primary" type="button" (click)="demo.toggleCultivation()">
+          Bật trong bản demo
+        </button>
+      } @else {
+        <button class="button button-outline" type="button" (click)="demo.toggleCultivationPause()">
+          {{ demo.cultivationPaused() ? 'Tiếp tục' : 'Tạm dừng tích lũy' }}
+        </button>
       }
-    </div>
-  </section>
-
-  <div class="cultivation-details-grid">
-    <section class="detail-card">
-      <div class="detail-icon" aria-hidden="true">◷</div>
-      <p class="eyebrow">CÁCH TÍNH</p>
-      <h2>Thời gian đọc mới tạo XP</h2>
-      <ul>
-        <li>1 XP cho mỗi phút đọc hợp lệ trong Reader.</li>
-        <li>Tối đa 120 XP mỗi ngày UTC.</li>
-        <li>Nạp credit hay mở khóa không cộng điểm.</li>
-      </ul>
     </section>
-    <section class="detail-card">
-      <div class="detail-icon" aria-hidden="true">◉</div>
-      <p class="eyebrow">QUYỀN RIÊNG TƯ</p>
-      <h2>Không theo dõi bạn đọc gì</h2>
-      <ul>
-        <li>Hoạt động chỉ hiển thị theo ngày.</li>
-        <li>Không đưa tên truyện/chương vào bảng hoạt động.</li>
-        <li>Tắt tính năng vẫn giữ cấp và lịch sử đã đạt.</li>
-      </ul>
-    </section>
-  </div>
 
-  <section class="activity-section">
-    <div class="section-heading">
-      <div>
-        <p class="eyebrow">LỊCH SỬ CÁ NHÂN</p>
-        <h2>Hoạt động theo ngày</h2>
+    <section class="sample-progression" aria-labelledby="sample-progression-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">VÍ DỤ GIAO DIỆN</p>
+          <h2 id="sample-progression-title">Cách một mốc tiến triển</h2>
+        </div>
+        <span class="sample-tag">MINH HỌA · KHÔNG PHẢI XP CỦA BẠN</span>
       </div>
-      <span class="sample-tag">CHƯA CÓ DỮ LIỆU DEMO</span>
-    </div>
-    <div class="activity-empty">
-      <span aria-hidden="true">◷</span>
-      <div>
-        <strong>Chưa có hoạt động nào được ghi nhận</strong>
-        <p>
-          Demo chưa có Reader và không tự tạo XP giả. Khi dùng sản phẩm thật, mục này chỉ hiển thị
-          tổng hợp theo ngày.
-        </p>
+      <article class="rank-progress-card">
+        <div class="rank-medallion" aria-hidden="true"><span>✧</span></div>
+        <div class="rank-progress-main">
+          <div class="rank-label-row">
+            <span class="rank-label">CẤP BẬC MẪU</span
+            ><span class="rank-xp"
+              ><strong>{{ formatXp(exampleXp) }}</strong> XP</span
+            >
+          </div>
+          <h3>{{ sampleRank }}</h3>
+          <p>
+            Tiến tới <strong>{{ sampleNextRank }}</strong>
+          </p>
+          <div
+            class="progress-track"
+            role="progressbar"
+            [attr.aria-valuenow]="sampleProgress"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            [attr.aria-label]="'Ví dụ tiến độ tới ' + sampleNextRank"
+          >
+            <span [style.width.%]="sampleProgress"></span>
+          </div>
+          <div class="progress-foot">
+            <span>{{ formatXp(exampleXp) }} XP tích lũy trong ví dụ</span
+            ><strong>Còn {{ formatXp(sampleNextThreshold - exampleXp) }} XP</strong>
+          </div>
+        </div>
+        <div class="rank-next-box">
+          <small>CẤP TIẾP THEO</small><strong>{{ sampleNextRank }}</strong
+          ><span>{{ formatXp(sampleNextThreshold) }} XP</span>
+        </div>
+      </article>
+      <div class="sample-daily">
+        <div>
+          <span class="daily-icon" aria-hidden="true">◷</span>
+          <p>
+            <strong>Ví dụ hoạt động trong ngày</strong
+            ><small>34 / {{ dailyCap }} XP · giới hạn UTC</small>
+          </p>
+        </div>
+        <div class="daily-progress"><span></span></div>
+        <span class="sample-tag">MINH HỌA</span>
       </div>
+    </section>
+
+    <section class="rank-ladder-section" aria-labelledby="ladder-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">CÁC CẢNH GIỚI</p>
+          <h2 id="ladder-title">Từ nhập môn đến Độ Kiếp</h2>
+        </div>
+        <p class="section-aside">Mốc khởi điểm đề xuất · cấu hình thật sẽ do máy chủ quản lý</p>
+      </div>
+      <div class="rank-ladder">
+        @for (rank of demo.cultivationRanks; track rank.key; let index = $index) {
+          <article class="rank-ladder-row" [class.example-rank]="index === sampleRankIndex">
+            <span class="rank-node" aria-hidden="true">{{
+              index === sampleRankIndex ? '✧' : index + 1
+            }}</span>
+            <div class="rank-ladder-copy">
+              <span class="rank-group">{{ rank.group }}</span
+              ><strong>{{ rank.name }}</strong>
+            </div>
+            <span class="rank-threshold">{{ formatXp(rank.threshold) }} XP</span>
+            @if (index === sampleRankIndex) {
+              <span class="sample-current-tag">MỐC TRONG VÍ DỤ</span>
+            }
+          </article>
+        }
+      </div>
+    </section>
+
+    <div class="cultivation-details-grid">
+      <section class="detail-card">
+        <div class="detail-icon" aria-hidden="true">◷</div>
+        <p class="eyebrow">CÁCH TÍNH</p>
+        <h2>Thời gian đọc mới tạo XP</h2>
+        <ul>
+          <li>1 XP cho mỗi phút đọc hợp lệ trong Reader.</li>
+          <li>Tối đa 120 XP mỗi ngày UTC.</li>
+          <li>Nạp credit hay mở khóa không cộng điểm.</li>
+        </ul>
+      </section>
+      <section class="detail-card">
+        <div class="detail-icon" aria-hidden="true">◉</div>
+        <p class="eyebrow">QUYỀN RIÊNG TƯ</p>
+        <h2>Không theo dõi bạn đọc gì</h2>
+        <ul>
+          <li>Hoạt động chỉ hiển thị theo ngày.</li>
+          <li>Không đưa tên truyện/chương vào bảng hoạt động.</li>
+          <li>Tắt tính năng vẫn giữ cấp và lịch sử đã đạt.</li>
+        </ul>
+      </section>
     </div>
-  </section>
+
+    <section class="activity-section">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">LỊCH SỬ CÁ NHÂN</p>
+          <h2>Hoạt động theo ngày</h2>
+        </div>
+        <span class="sample-tag">CHƯA CÓ DỮ LIỆU DEMO</span>
+      </div>
+      <div class="activity-empty">
+        <span aria-hidden="true">◷</span>
+        <div>
+          <strong>Chưa có hoạt động nào được ghi nhận</strong>
+          <p>
+            Demo chưa có Reader và không tự tạo XP giả. Khi dùng sản phẩm thật, mục này chỉ hiển thị
+            tổng hợp theo ngày.
+          </p>
+        </div>
+      </div>
+    </section>
+  }
 </section>

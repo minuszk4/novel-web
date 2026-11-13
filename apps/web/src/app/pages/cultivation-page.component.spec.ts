@@ -1,9 +1,20 @@
+import { provideHttpClient } from '@angular/common/http';
 import { TestBed } from '@angular/core/testing';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  CultivationApiError,
+  CultivationApiService,
+  CultivationProfile,
+} from '../core/cultivation-api.service';
 import { DemoStateService } from '../core/demo-state.service';
+import { PolicyOnboardingService } from '../core/policy-onboarding.service';
 import { CultivationPageComponent } from './cultivation-page.component';
 
 describe('CultivationPageComponent', () => {
+  beforeEach(() => {
+    TestBed.configureTestingModule({ providers: [provideHttpClient()] });
+  });
+
   it('shows the example rank, next threshold, and accessible progress', () => {
     const fixture = TestBed.createComponent(CultivationPageComponent);
     fixture.detectChanges();
@@ -79,4 +90,118 @@ describe('CultivationPageComponent', () => {
 
     expect(demo.cultivationPaused()).toBe(false);
   });
+
+  it('uses real account rank and daily activity without showing demo XP', async () => {
+    const currentProfile = accountProfile();
+    const api = {
+      getProfile: vi.fn().mockResolvedValue(currentProfile),
+      getActivity: vi.fn().mockResolvedValue({
+        items: [{ activityDate: '2026-11-12', xpEarned: 45 }],
+        nextCursor: null,
+      }),
+      setEnabled: vi.fn().mockImplementation(async (enabled: boolean) => ({
+        ...currentProfile,
+        enabled,
+        profileVersion: 2,
+      })),
+    };
+    TestBed.overrideProvider(CultivationApiService, { useValue: api });
+    const policy = TestBed.inject(PolicyOnboardingService);
+    policy.status.set('accepted');
+    policy.accountIdentity.set({ displayName: 'Reader', contactEmail: null });
+
+    const fixture = TestBed.createComponent(CultivationPageComponent);
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    const element: HTMLElement = fixture.nativeElement;
+    expect(api.getProfile).toHaveBeenCalledOnce();
+    expect(api.getActivity).toHaveBeenCalledOnce();
+    expect(element.querySelector('.cultivation-demo-notice')).toBeNull();
+    expect(element.textContent).toContain('125 XP');
+    expect(element.textContent).toContain('Luyện Khí tầng 1');
+    expect(element.textContent).toContain('45 XP');
+    expect(element.textContent).not.toContain('620 XP');
+    expect(element.textContent).not.toContain('private title');
+    expect(element.textContent).not.toContain('workId');
+
+    const pauseButton = element.querySelector(
+      '.cultivation-control-card button',
+    ) as HTMLButtonElement;
+    expect(pauseButton.textContent?.trim()).toBe('Tạm dừng tích lũy');
+    pauseButton.click();
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    expect(api.setEnabled).toHaveBeenCalledWith(false);
+    expect(element.textContent).toContain('Hành trình đang tạm dừng');
+    expect(element.textContent).toContain('45 XP');
+    expect(
+      (element.querySelector('.cultivation-control-card button') as HTMLButtonElement).textContent,
+    ).toContain('Bật hành trình');
+  });
+
+  it('fails closed when the global feature flag keeps account cultivation unavailable', async () => {
+    const api = {
+      getProfile: vi
+        .fn()
+        .mockRejectedValue(new CultivationApiError('Unavailable', 503, 'CULTIVATION_NOT_ENABLED')),
+      getActivity: vi.fn(),
+      setEnabled: vi.fn(),
+    };
+    TestBed.overrideProvider(CultivationApiService, { useValue: api });
+    const policy = TestBed.inject(PolicyOnboardingService);
+    policy.status.set('accepted');
+    policy.accountIdentity.set({ displayName: 'Reader', contactEmail: null });
+
+    const fixture = TestBed.createComponent(CultivationPageComponent);
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    expect(fixture.nativeElement.textContent).toContain('Tính năng tu luyện chưa được bật');
+    expect(fixture.nativeElement.textContent).not.toContain('620 XP');
+    expect(api.getActivity).not.toHaveBeenCalled();
+    expect(fixture.nativeElement.querySelector('.rank-progress-card')).toBeNull();
+  });
 });
+
+function accountProfile(): CultivationProfile {
+  const mortal = {
+    key: 'mortal',
+    group: 'Nhập môn',
+    name: 'Phàm nhân',
+    thresholdXp: 0,
+    sortOrder: 0,
+  };
+  const qi1 = {
+    key: 'qi-1',
+    group: 'Luyện Khí',
+    name: 'Luyện Khí tầng 1',
+    thresholdXp: 100,
+    sortOrder: 1,
+  };
+  const qi2 = {
+    key: 'qi-2',
+    group: 'Luyện Khí',
+    name: 'Luyện Khí tầng 2',
+    thresholdXp: 200,
+    sortOrder: 2,
+  };
+  return {
+    enabled: true,
+    profileVersion: 1,
+    totalXp: 125,
+    todayXpEarned: 45,
+    currentRank: qi1,
+    nextRank: qi2,
+    xpToNextRank: 75,
+    progressRatio: 0.25,
+    rankCatalogVersion: 'cultivation-v1',
+    policyVersion: 'xp-v1',
+    locale: 'vi-VN',
+    xpPerActiveMinute: 1,
+    dailyXpCap: 120,
+    nextDailyResetAt: '2026-11-14T00:00:00Z',
+    rankCatalog: [mortal, qi1, qi2],
+  };
+}

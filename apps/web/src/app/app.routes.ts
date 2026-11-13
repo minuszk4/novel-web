@@ -1,6 +1,5 @@
 import { Routes } from '@angular/router';
 import { AppShellComponent } from './shared/app-shell.component';
-import { CultivationPageComponent } from './pages/cultivation-page.component';
 import { HomePageComponent } from './pages/home-page.component';
 import { LandingPageComponent } from './pages/landing-page.component';
 import { LibraryPageComponent } from './pages/library-page.component';
@@ -75,7 +74,10 @@ export const routes: Routes = [
       { path: 'search', component: SearchPageComponent, title: 'Tìm trong thư viện — Novel' },
       {
         path: 'cultivation',
-        component: CultivationPageComponent,
+        loadComponent: () =>
+          import('./pages/cultivation-page.component').then(
+            (page) => page.CultivationPageComponent,
+          ),
         title: 'Hành trình tu luyện — Novel',
       },
       { path: 'settings', component: SettingsPageComponent, title: 'Cài đặt — Novel' },

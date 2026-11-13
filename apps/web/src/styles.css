@@ -2842,6 +2842,11 @@ label:has(input:focus-visible) {
   background: #90a0da;
   border-radius: inherit;
 }
+.daily-reset {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
 .rank-ladder {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2878,6 +2883,15 @@ label:has(input:focus-visible) {
   border-color: #dfd1aa;
   background: #f4eddb;
   font-size: 15px;
+}
+.current-rank-tag {
+  padding: 4px 6px;
+  color: #77623b;
+  background: #f0e9d8;
+  border-radius: 3px;
+  font-size: 10px;
+  letter-spacing: 0.35px;
+  white-space: nowrap;
 }
 .rank-ladder-copy {
   flex: 1;
@@ -2971,6 +2985,36 @@ label:has(input:focus-visible) {
   color: var(--muted);
   font-size: 14px;
   line-height: 1.5;
+}
+.cultivation-activity-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow: hidden;
+  border: 1px solid #e6e6e1;
+  border-radius: 9px;
+  background: #fff;
+}
+.cultivation-activity-row {
+  min-height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 15px;
+  border-bottom: 1px solid #eee;
+  font-size: 14px;
+}
+.cultivation-activity-row:last-child {
+  border-bottom: 0;
+}
+.cultivation-activity-row strong {
+  white-space: nowrap;
+}
+.cultivation-load-more {
+  display: block;
+  min-height: 44px;
+  margin: 12px auto 0;
 }
 
 /* Private sample work and reading experience */
@@ -5029,6 +5073,9 @@ button.reader-chapter-nav {
   .sample-daily .sample-tag {
     margin-left: auto;
   }
+  .account-daily .daily-reset {
+    margin-left: auto;
+  }
   .daily-progress {
     flex-basis: 100%;
   }
@@ -5238,6 +5285,51 @@ button.reader-chapter-nav {
   }
 }
 @media (max-width: 380px) {
+  .cultivation-page .eyebrow {
+    letter-spacing: 0.5px;
+  }
+  .cultivation-heading .private-tag {
+    align-self: flex-start;
+    margin-top: 0;
+  }
+  .cultivation-page .account-daily > div:first-child {
+    min-width: 0;
+    flex: 1 1 100%;
+  }
+  .cultivation-page .account-daily p,
+  .cultivation-page .account-daily p small {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .cultivation-page .account-daily .daily-reset {
+    flex: 1 1 100%;
+    margin-left: 0;
+    white-space: normal;
+    text-align: right;
+  }
+  .cultivation-page .rank-ladder {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .cultivation-page .rank-ladder-row {
+    min-width: 0;
+    flex-wrap: wrap;
+    gap: 7px;
+    padding: 8px;
+  }
+  .cultivation-page .rank-ladder-copy {
+    flex: 1 1 50px;
+  }
+  .cultivation-page .rank-group,
+  .cultivation-page .rank-ladder-copy strong {
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+  .cultivation-page .rank-threshold {
+    margin-left: auto;
+  }
+  .cultivation-page .current-rank-tag {
+    margin-left: 36px;
+  }
   .import-chapter-preview {
     padding: 12px;
   }
@@ -5464,6 +5556,15 @@ button.reader-chapter-nav {
   }
   .mobile-form-actions > .text-link {
     display: inline-flex;
+  }
+}
+@media (max-width: 380px) and (max-height: 420px) {
+  .cultivation-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .cultivation-heading .private-tag {
+    margin: 0;
   }
 }
 @media (prefers-reduced-motion: reduce) {
