@@ -40,6 +40,8 @@ import com.novelweb.library.imports.ImportStagingRateLimiter;
 import com.novelweb.progression.cultivation.CultivationRepository;
 import com.novelweb.progression.cultivation.CultivationService;
 import com.novelweb.translation.glossary.GlossaryCatalogController;
+import com.novelweb.translation.glossary.GlossaryImportApplyController;
+import com.novelweb.translation.glossary.GlossaryImportApplyService;
 import com.novelweb.translation.glossary.GlossaryImportParser;
 import com.novelweb.translation.glossary.GlossaryMatcher;
 import com.novelweb.translation.glossary.GlossaryRepository;
@@ -182,6 +184,8 @@ class PostgresSchemaIntegrationTests {
           "glossary_terms",
           "glossary_aliases",
           "glossary_publication_events",
+          "glossary_import_apply_idempotency",
+          "glossary_import_apply_rows",
           "library_collections",
           "library_collection_works",
           "import_rights_statements",
@@ -270,7 +274,7 @@ class PostgresSchemaIntegrationTests {
             connection.prepareStatement("SELECT COUNT(*) FROM databasechangelog");
         ResultSet changesets = changesetCount.executeQuery()) {
       changesets.next();
-      assertEquals(96, changesets.getInt(1), "unexpected number of applied changesets");
+      assertEquals(97, changesets.getInt(1), "unexpected number of applied changesets");
     }
 
     Set<String> actualTables = new HashSet<>();
@@ -1437,6 +1441,47 @@ class PostgresSchemaIntegrationTests {
       assertEquals(200, published.getResponse().getStatus());
       assertEquals("\"v3\"", published.getResponse().getHeader(HttpHeaders.ETAG));
 
+      UUID draftOnlyTermId = UUID.randomUUID();
+      GlossaryRevisionWriteRepository.DraftCreated latestDraft =
+          glossaryRevisionWriteRepository.createDraftRevision(
+              editorId,
+              glossaryId,
+              3,
+              List.of(
+                  new GlossaryRevisionWriteRepository.TermDraft(
+                      firstTermId,
+                      "金丹",
+                      "Kim Đan",
+                      0,
+                      GlossaryMatcher.CasePolicy.INSENSITIVE,
+                      GlossaryMatcher.MatchMode.WHOLE_PHRASE,
+                      false,
+                      null,
+                      List.of("Golden Core")),
+                  new GlossaryRevisionWriteRepository.TermDraft(
+                      secondTermId,
+                      "玉佩",
+                      "Ngọc bội draft",
+                      0,
+                      GlossaryMatcher.CasePolicy.INSENSITIVE,
+                      GlossaryMatcher.MatchMode.WHOLE_PHRASE,
+                      false,
+                      null,
+                      List.of("Jade Pendant")),
+                  new GlossaryRevisionWriteRepository.TermDraft(
+                      draftOnlyTermId,
+                      "兔子",
+                      "thỏ",
+                      0,
+                      GlossaryMatcher.CasePolicy.INSENSITIVE,
+                      GlossaryMatcher.MatchMode.WHOLE_PHRASE,
+                      false,
+                      null,
+                      List.of("Rabbit"))));
+      assertEquals(2, latestDraft.revisionNumber());
+      assertEquals(draft.revisionId(), latestDraft.parentRevisionId());
+      assertEquals(4, latestDraft.glossaryVersion());
+
       String route = "/api/v1/glossaries/{glossaryId}/terms/import-preview";
       String importJson =
           "{\"version\":1,\"terms\":["
@@ -1447,7 +1492,7 @@ class PostgresSchemaIntegrationTests {
 
       MvcResult unauthenticated =
           mockMvc
-              .perform(post(route, glossaryId).header(HttpHeaders.IF_MATCH, "\"v3\""))
+              .perform(post(route, glossaryId).header(HttpHeaders.IF_MATCH, "\"v4\""))
               .andReturn();
       assertEquals(403, unauthenticated.getResponse().getStatus());
       assertTrue(unauthenticated.getResponse().getContentAsString().contains("CSRF_FAILED"));
@@ -1457,7 +1502,7 @@ class PostgresSchemaIntegrationTests {
               .perform(
                   post(route, glossaryId)
                       .cookie(editorCookie)
-                      .header(HttpHeaders.IF_MATCH, "\"v3\"")
+                      .header(HttpHeaders.IF_MATCH, "\"v4\"")
                       .contentType(MediaType.APPLICATION_JSON)
                       .content(importJson))
               .andReturn();
@@ -1469,7 +1514,7 @@ class PostgresSchemaIntegrationTests {
                   post(route, glossaryId)
                       .cookie(blockedCookie)
                       .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, blockedCsrf)
-                      .header(HttpHeaders.IF_MATCH, "\"v3\"")
+                      .header(HttpHeaders.IF_MATCH, "\"v4\"")
                       .contentType(MediaType.APPLICATION_JSON)
                       .content(importJson))
               .andReturn();
@@ -1494,12 +1539,12 @@ class PostgresSchemaIntegrationTests {
                   post(route, glossaryId)
                       .cookie(editorCookie)
                       .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, editorCsrf)
-                      .header(HttpHeaders.IF_MATCH, "\"v2\"")
+                      .header(HttpHeaders.IF_MATCH, "\"v3\"")
                       .contentType(MediaType.APPLICATION_JSON)
                       .content(importJson))
               .andReturn();
       assertEquals(409, staleIfMatch.getResponse().getStatus());
-      assertEquals("\"v3\"", staleIfMatch.getResponse().getHeader(HttpHeaders.ETAG));
+      assertEquals("\"v4\"", staleIfMatch.getResponse().getHeader(HttpHeaders.ETAG));
 
       MvcResult malformedIfMatch =
           mockMvc
@@ -1507,7 +1552,7 @@ class PostgresSchemaIntegrationTests {
                   post(route, glossaryId)
                       .cookie(editorCookie)
                       .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, editorCsrf)
-                      .header(HttpHeaders.IF_MATCH, "v3")
+                      .header(HttpHeaders.IF_MATCH, "v4")
                       .contentType(MediaType.APPLICATION_JSON)
                       .content(importJson))
               .andReturn();
@@ -1519,7 +1564,7 @@ class PostgresSchemaIntegrationTests {
                   post(route, glossaryId)
                       .cookie(editorCookie)
                       .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, editorCsrf)
-                      .header(HttpHeaders.IF_MATCH, "\"v3\"")
+                      .header(HttpHeaders.IF_MATCH, "\"v4\"")
                       .contentType(MediaType.TEXT_PLAIN)
                       .content("term,target"))
               .andReturn();
@@ -1533,7 +1578,7 @@ class PostgresSchemaIntegrationTests {
                   post(route, glossaryId)
                       .cookie(editorCookie)
                       .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, editorCsrf)
-                      .header(HttpHeaders.IF_MATCH, "\"v3\"")
+                      .header(HttpHeaders.IF_MATCH, "\"v4\"")
                       .contentType(MediaType.APPLICATION_JSON)
                       .content(new byte[GlossaryImportParser.MAX_IMPORT_BYTES + 1]))
               .andReturn();
@@ -1547,7 +1592,7 @@ class PostgresSchemaIntegrationTests {
                   post(route, glossaryId)
                       .cookie(editorCookie)
                       .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, editorCsrf)
-                      .header(HttpHeaders.IF_MATCH, "\"v3\"")
+                      .header(HttpHeaders.IF_MATCH, "\"v4\"")
                       .contentType(MediaType.APPLICATION_JSON)
                       .content("{\"version\":1,\"terms\":[{}]}"))
               .andReturn();
@@ -1561,7 +1606,7 @@ class PostgresSchemaIntegrationTests {
                   post(route, glossaryId)
                       .cookie(readerCookie)
                       .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, readerCsrf)
-                      .header(HttpHeaders.IF_MATCH, "\"v3\"")
+                      .header(HttpHeaders.IF_MATCH, "\"v4\"")
                       .contentType(MediaType.APPLICATION_JSON)
                       .content(importJson))
               .andReturn();
@@ -1573,7 +1618,7 @@ class PostgresSchemaIntegrationTests {
                   post(route, glossaryId)
                       .cookie(outsiderCookie)
                       .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, outsiderCsrf)
-                      .header(HttpHeaders.IF_MATCH, "\"v3\"")
+                      .header(HttpHeaders.IF_MATCH, "\"v4\"")
                       .contentType(MediaType.APPLICATION_JSON)
                       .content(importJson))
               .andReturn();
@@ -1585,18 +1630,22 @@ class PostgresSchemaIntegrationTests {
                   post(route, glossaryId)
                       .cookie(ownerCookie)
                       .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
-                      .header(HttpHeaders.IF_MATCH, "\"v3\"")
+                      .header(HttpHeaders.IF_MATCH, "\"v4\"")
                       .contentType(MediaType.APPLICATION_JSON)
                       .content(importJson))
               .andReturn();
       assertEquals(200, ownerPreview.getResponse().getStatus());
-      assertEquals("\"v3\"", ownerPreview.getResponse().getHeader(HttpHeaders.ETAG));
+      assertEquals("\"v4\"", ownerPreview.getResponse().getHeader(HttpHeaders.ETAG));
       assertTrue(
           ownerPreview.getResponse().getHeader(HttpHeaders.CACHE_CONTROL).contains("no-store"));
       JsonNode preview = objectMapper.readTree(ownerPreview.getResponse().getContentAsString());
       assertEquals("LIBRARY", preview.path("scope").asText());
       assertEquals("金丹", preview.path("currentTerms").get(0).path("sourceTerm").asText());
-      assertEquals(2, preview.path("currentTerms").size());
+      assertEquals(3, preview.path("currentTerms").size());
+      assertEquals(draft.revisionId().toString(), preview.path("activeRevisionId").asText());
+      assertEquals(latestDraft.revisionId().toString(), preview.path("baseRevisionId").asText());
+      assertEquals(2, preview.path("baseRevisionNumber").asInt());
+      assertEquals("兔子", preview.path("currentTerms").get(2).path("sourceTerm").asText());
       assertEquals(4, preview.path("counts").path("imported").asInt());
       assertEquals(1, preview.path("counts").path("add").asInt());
       assertEquals(1, preview.path("counts").path("update").asInt());
@@ -1631,22 +1680,244 @@ class PostgresSchemaIntegrationTests {
       assertEquals(
           "ADD", emptyPreview.path("importedTerms").get(0).path("suggestedAction").asText());
 
+      String applyRoute = "/api/v1/glossaries/{glossaryId}/terms/import-apply";
+      MvcResult missingApplyCsrf =
+          mockMvc
+              .perform(
+                  post(applyRoute, glossaryId)
+                      .cookie(editorCookie)
+                      .header(HttpHeaders.IF_MATCH, "\"v4\"")
+                      .header("Idempotency-Key", "glossary-apply-missing-csrf-001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{}"))
+              .andReturn();
+      assertEquals(403, missingApplyCsrf.getResponse().getStatus());
+
+      String malformedApplyBody =
+          objectMapper.writeValueAsString(
+              new GlossaryImportApplyController.ImportApplyRequest(
+                  "JSON",
+                  Base64.getEncoder().encodeToString(importJson.getBytes(StandardCharsets.UTF_8)),
+                  List.of(
+                      new GlossaryImportApplyService.RowResolution(
+                          1, GlossaryImportApplyService.ResolutionAction.SKIP, null, null))));
+      MvcResult incompleteResolutions =
+          mockMvc
+              .perform(
+                  post(applyRoute, glossaryId)
+                      .cookie(editorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, editorCsrf)
+                      .header(HttpHeaders.IF_MATCH, "\"v4\"")
+                      .header("Idempotency-Key", "glossary-apply-shared-key-001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(malformedApplyBody))
+              .andReturn();
+      assertEquals(422, incompleteResolutions.getResponse().getStatus());
+      assertTrue(
+          incompleteResolutions
+              .getResponse()
+              .getContentAsString()
+              .contains("IMPORT_RESOLUTIONS_INCOMPLETE"));
+
+      List<GlossaryImportApplyService.RowResolution> unresolvedRows =
+          List.of(
+              new GlossaryImportApplyService.RowResolution(
+                  1, GlossaryImportApplyService.ResolutionAction.SKIP, null, null),
+              new GlossaryImportApplyService.RowResolution(
+                  2, GlossaryImportApplyService.ResolutionAction.SKIP, null, null),
+              new GlossaryImportApplyService.RowResolution(
+                  3,
+                  GlossaryImportApplyService.ResolutionAction.ADD,
+                  null,
+                  new GlossaryImportApplyService.ResolvedTerm(
+                      "银剑",
+                      "Kiếm bạc",
+                      0,
+                      GlossaryMatcher.CasePolicy.INSENSITIVE,
+                      GlossaryMatcher.MatchMode.WHOLE_PHRASE,
+                      false,
+                      null,
+                      List.of("Jade Pendant"))),
+              new GlossaryImportApplyService.RowResolution(
+                  4, GlossaryImportApplyService.ResolutionAction.SKIP, null, null));
+      String unresolvedApplyBody =
+          objectMapper.writeValueAsString(
+              new GlossaryImportApplyController.ImportApplyRequest(
+                  "JSON",
+                  Base64.getEncoder().encodeToString(importJson.getBytes(StandardCharsets.UTF_8)),
+                  unresolvedRows));
+      MvcResult unresolvedConflict =
+          mockMvc
+              .perform(
+                  post(applyRoute, glossaryId)
+                      .cookie(editorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, editorCsrf)
+                      .header(HttpHeaders.IF_MATCH, "\"v4\"")
+                      .header("Idempotency-Key", "glossary-apply-shared-key-001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(unresolvedApplyBody))
+              .andReturn();
+      assertEquals(422, unresolvedConflict.getResponse().getStatus());
+      assertTrue(
+          unresolvedConflict
+              .getResponse()
+              .getContentAsString()
+              .contains("IMPORT_CONFLICT_UNRESOLVED"));
+
+      List<GlossaryImportApplyService.RowResolution> resolvedRows =
+          List.of(
+              new GlossaryImportApplyService.RowResolution(
+                  1, GlossaryImportApplyService.ResolutionAction.SKIP, null, null),
+              new GlossaryImportApplyService.RowResolution(
+                  2, GlossaryImportApplyService.ResolutionAction.SKIP, null, null),
+              new GlossaryImportApplyService.RowResolution(
+                  3,
+                  GlossaryImportApplyService.ResolutionAction.MERGE,
+                  secondTermId,
+                  new GlossaryImportApplyService.ResolvedTerm(
+                      "银剑",
+                      "Kiếm bạc",
+                      0,
+                      GlossaryMatcher.CasePolicy.INSENSITIVE,
+                      GlossaryMatcher.MatchMode.WHOLE_PHRASE,
+                      false,
+                      null,
+                      List.of("Silver Blade"))),
+              new GlossaryImportApplyService.RowResolution(
+                  4,
+                  GlossaryImportApplyService.ResolutionAction.ADD,
+                  null,
+                  new GlossaryImportApplyService.ResolvedTerm(
+                      "丹田",
+                      "Đan điền",
+                      0,
+                      GlossaryMatcher.CasePolicy.INSENSITIVE,
+                      GlossaryMatcher.MatchMode.WHOLE_PHRASE,
+                      false,
+                      null,
+                      List.of())));
+      String resolvedApplyBody =
+          objectMapper.writeValueAsString(
+              new GlossaryImportApplyController.ImportApplyRequest(
+                  "JSON",
+                  Base64.getEncoder().encodeToString(importJson.getBytes(StandardCharsets.UTF_8)),
+                  resolvedRows));
+      MvcResult applied =
+          mockMvc
+              .perform(
+                  post(applyRoute, glossaryId)
+                      .cookie(editorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, editorCsrf)
+                      .header(HttpHeaders.IF_MATCH, "\"v4\"")
+                      .header("Idempotency-Key", "glossary-apply-shared-key-001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(resolvedApplyBody))
+              .andReturn();
+      assertEquals(201, applied.getResponse().getStatus());
+      assertEquals("\"v5\"", applied.getResponse().getHeader(HttpHeaders.ETAG));
+      assertTrue(applied.getResponse().getHeader(HttpHeaders.CACHE_CONTROL).contains("no-store"));
+      JsonNode appliedBody = objectMapper.readTree(applied.getResponse().getContentAsString());
+      assertEquals(false, appliedBody.path("replayed").asBoolean());
+      assertEquals(3, appliedBody.path("draft").path("revisionNumber").asInt());
+      assertEquals(
+          latestDraft.revisionId().toString(),
+          appliedBody.path("draft").path("parentRevisionId").asText());
+      assertEquals(2, appliedBody.path("skippedRows").asInt());
+      assertEquals(
+          secondTermId.toString(), appliedBody.path("rows").get(2).path("termId").asText());
+      UUID addedTermId = UUID.fromString(appliedBody.path("rows").get(3).path("termId").asText());
+
+      MvcResult duplicateRetry =
+          mockMvc
+              .perform(
+                  post(applyRoute, glossaryId)
+                      .cookie(editorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, editorCsrf)
+                      .header(HttpHeaders.IF_MATCH, "\"v4\"")
+                      .header("Idempotency-Key", "glossary-apply-shared-key-001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(resolvedApplyBody))
+              .andReturn();
+      assertEquals(201, duplicateRetry.getResponse().getStatus());
+      assertEquals("\"v5\"", duplicateRetry.getResponse().getHeader(HttpHeaders.ETAG));
+      JsonNode replayedBody =
+          objectMapper.readTree(duplicateRetry.getResponse().getContentAsString());
+      assertEquals(true, replayedBody.path("replayed").asBoolean());
+      assertEquals(
+          appliedBody.path("draft").path("revisionId").asText(),
+          replayedBody.path("draft").path("revisionId").asText());
+
+      MvcResult reusedKey =
+          mockMvc
+              .perform(
+                  post(applyRoute, glossaryId)
+                      .cookie(editorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, editorCsrf)
+                      .header(HttpHeaders.IF_MATCH, "\"v4\"")
+                      .header("Idempotency-Key", "glossary-apply-shared-key-001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(resolvedApplyBody + " "))
+              .andReturn();
+      assertEquals(409, reusedKey.getResponse().getStatus());
+      assertTrue(reusedKey.getResponse().getContentAsString().contains("IDEMPOTENCY_KEY_REUSED"));
+
+      MvcResult staleApply =
+          mockMvc
+              .perform(
+                  post(applyRoute, glossaryId)
+                      .cookie(editorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, editorCsrf)
+                      .header(HttpHeaders.IF_MATCH, "\"v4\"")
+                      .header("Idempotency-Key", "glossary-apply-stale-key-001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(resolvedApplyBody))
+              .andReturn();
+      assertEquals(409, staleApply.getResponse().getStatus());
+      assertEquals("\"v5\"", staleApply.getResponse().getHeader(HttpHeaders.ETAG));
+      assertTrue(staleApply.getResponse().getContentAsString().contains("GLOSSARY_VERSION_STALE"));
+
       try (Connection connection = dataSource.getConnection();
           PreparedStatement select =
               connection.prepareStatement(
                   """
                       SELECT g.version, g.active_revision_id,
                              (SELECT count(*) FROM glossary_revisions r WHERE r.glossary_id = g.id) AS revisions,
-                             (SELECT count(*) FROM glossary_terms t JOIN glossary_revisions r ON r.id = t.revision_id WHERE r.glossary_id = g.id) AS terms
+                             (SELECT count(*) FROM glossary_terms t JOIN glossary_revisions r ON r.id = t.revision_id WHERE r.glossary_id = g.id) AS terms,
+                             (SELECT count(*) FROM glossary_import_apply_idempotency i WHERE i.glossary_id = g.id) AS import_receipts,
+                             (SELECT count(*) FROM glossary_import_apply_rows i WHERE i.glossary_id = g.id) AS import_rows
                       FROM glossaries g WHERE g.id = ?
                       """)) {
         select.setObject(1, glossaryId);
         try (ResultSet row = select.executeQuery()) {
           assertTrue(row.next());
-          assertEquals(3, row.getLong("version"));
+          assertEquals(5, row.getLong("version"));
           assertEquals(draft.revisionId(), row.getObject("active_revision_id", UUID.class));
-          assertEquals(1, row.getLong("revisions"));
-          assertEquals(2, row.getLong("terms"));
+          assertEquals(3, row.getLong("revisions"));
+          assertEquals(9, row.getLong("terms"));
+          assertEquals(1, row.getLong("import_receipts"));
+          assertEquals(4, row.getLong("import_rows"));
+        }
+        try (PreparedStatement stableId =
+            connection.prepareStatement(
+                "SELECT count(*) FROM glossary_terms WHERE id = ? AND revision_id IN (?, ?, "
+                    + "(SELECT id FROM glossary_revisions WHERE glossary_id = ? "
+                    + "ORDER BY revision_no DESC LIMIT 1))")) {
+          stableId.setObject(1, secondTermId);
+          stableId.setObject(2, draft.revisionId());
+          stableId.setObject(3, latestDraft.revisionId());
+          stableId.setObject(4, glossaryId);
+          try (ResultSet row = stableId.executeQuery()) {
+            assertTrue(row.next());
+            assertEquals(3, row.getInt(1));
+          }
+        }
+        try (PreparedStatement newTerm =
+            connection.prepareStatement("SELECT source_term FROM glossary_terms WHERE id = ?")) {
+          newTerm.setObject(1, addedTermId);
+          try (ResultSet row = newTerm.executeQuery()) {
+            assertTrue(row.next());
+            assertEquals("丹田", row.getString(1));
+          }
         }
         select.setObject(1, emptyGlossaryId);
         try (ResultSet row = select.executeQuery()) {
@@ -1654,6 +1925,34 @@ class PostgresSchemaIntegrationTests {
           assertEquals(1, row.getLong("version"));
           assertNull(row.getObject("active_revision_id"));
           assertEquals(0, row.getLong("revisions"));
+        }
+      }
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement eraseMembership =
+              connection.prepareStatement("DELETE FROM workspace_members WHERE user_id = ?")) {
+        eraseMembership.setObject(1, editorId);
+        eraseMembership.executeUpdate();
+      }
+      deleteSessionTestUser(editorId);
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement erasure =
+              connection.prepareStatement(
+                  "SELECT (SELECT count(*) FROM glossaries WHERE id = ?) AS glossary_count, "
+                      + "(SELECT count(*) FROM glossary_revisions WHERE glossary_id = ?) AS revision_count, "
+                      + "(SELECT count(*) FROM glossary_import_apply_idempotency "
+                      + "WHERE glossary_id = ?) AS receipt_count, "
+                      + "(SELECT count(*) FROM glossary_import_apply_rows WHERE glossary_id = ?) "
+                      + "AS row_count")) {
+        erasure.setObject(1, glossaryId);
+        erasure.setObject(2, glossaryId);
+        erasure.setObject(3, glossaryId);
+        erasure.setObject(4, glossaryId);
+        try (ResultSet row = erasure.executeQuery()) {
+          assertTrue(row.next());
+          assertEquals(1, row.getLong("glossary_count"));
+          assertEquals(3, row.getLong("revision_count"));
+          assertEquals(0, row.getLong("receipt_count"));
+          assertEquals(0, row.getLong("row_count"));
         }
       }
     } finally {

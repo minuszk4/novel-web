@@ -206,6 +206,8 @@ class GlossaryImportPreviewServiceTests {
         version,
         version == 1 ? null : REVISION_ID,
         version == 1 ? null : 2,
+        version == 1 ? null : REVISION_ID,
+        version == 1 ? null : 2,
         terms);
   }
 

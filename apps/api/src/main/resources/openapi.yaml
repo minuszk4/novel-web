@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 6.12.0
+  version: 6.13.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -14,7 +14,7 @@ info:
     Source-only Reader manifest, chapter-content, progress, reader-preferences, bookmarks, private annotations and private reading-history routes are implemented in the PostgreSQL profile.
     History is derived from the latest saved progress per accessible readable work, is visible for 365 days, and never returns chapter body text.
     Versioned cultivation catalogs, authenticated profile settings, private daily XP activity and bounded private Reader sessions with atomic XP awards are implemented in the PostgreSQL profile. The approved starting policy awards 1 XP per complete active Reader minute, capped at 120 XP per UTC day; top-ups and unlocks award none. Cultivation is feature-gated and off by default while the frontend Reader integration and rank-threshold pilot remain pending.
-    Scoped glossary storage, actor-scoped catalog listing/creation, active-revision reads, version-checked immutable draft creation, lint-gated revision publication with append-only audit, and strict JSON/CSV/TSV import conflict preview are implemented in the PostgreSQL profile; import apply and translation remain unavailable.
+    Scoped glossary storage, actor-scoped catalog listing/creation, active-revision reads, version-checked immutable draft creation, lint-gated revision publication with append-only audit, and strict JSON/CSV/TSV import preview and resolved atomic draft apply are implemented in the PostgreSQL profile; translation remains unavailable.
 servers:
   - url: http://127.0.0.1:8080
 tags:
@@ -33,7 +33,7 @@ tags:
     description: Private rank catalog/profile, bounded Reader-session lifecycle and feature-gated server-timed XP awards/activity in the PostgreSQL profile.
     x-implementation-status: partial
   - name: Glossary
-    description: Actor-scoped catalog listing/creation, active-revision reads and immutable draft-revision creation are implemented in the PostgreSQL profile; publication and translation remain planned.
+    description: Actor-scoped catalog listing/creation, active-revision reads, immutable drafts, publication and resolved import apply are implemented in the PostgreSQL profile; translation remains planned.
     x-implementation-status: partial
 paths:
   /api/v1/glossaries:
@@ -313,8 +313,9 @@ paths:
       x-implementation-status: implemented-postgres-profile
       summary: Validate a glossary file and preview current revision conflicts
       description: >-
-        Reads at most 1 MiB of UTF-8 JSON, CSV or TSV and returns a normalized import proposal, the current writable
-        glossary snapshot and safe conflict suggestions. It never writes a revision or changes the glossary. JSON uses
+        Reads at most 1 MiB of UTF-8 JSON, CSV or TSV and returns a normalized import proposal and safe conflict
+        suggestions against the latest immutable draft snapshot. The response separately identifies the active revision
+        and the latest draft used as the import base. It never writes a revision or changes the glossary. JSON uses
         version 1 with a terms array. CSV/TSV require sourceTerm and targetTerm headers; aliases, when present, are a
         JSON array encoded in one delimited cell. The caller must resolve updates/pattern collisions and then submit a
         complete immutable draft with POST /revisions using the returned ETag. Translation-unit impact is explicitly
@@ -399,6 +400,106 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/GlossaryImportProblem'
+        '428':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/glossaries/{glossaryId}/terms/import-apply:
+    post:
+      operationId: applyResolvedGlossaryImport
+      tags: [Glossary]
+      x-implementation-status: implemented-postgres-profile
+      summary: Apply resolved import rows as one immutable draft
+      description: >-
+        Re-parses the bounded original JSON, CSV or TSV file, verifies that the caller supplied exactly one explicit
+        ADD, REPLACE, MERGE or SKIP decision for each parsed row, and rechecks current conflicts against the
+        authorized writable snapshot. REPLACE preserves the unique canonical-match term ID; MERGE preserves the
+        selected current term ID and uses the submitted complete resolved field set; ADD assigns a server-generated
+        stable ID; SKIP keeps the current snapshot unchanged for that row. The final complete snapshot is written in
+        one transaction as a new immutable draft and never activated. Missing, stale, malformed, truncated or still
+        conflicting decisions write nothing. The actor-scoped Idempotency-Key stores the exact request hash and the
+        created revision/result in the same transaction. Replaying the same request with the same key returns the
+        original result; using the key for different bytes returns 409. The original file is base64-encoded in this
+        JSON envelope and limited to 1 MiB; the complete request is limited to 2 MiB.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - name: glossaryId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: If-Match
+          in: header
+          required: true
+          description: Strong ETag returned by the glossary import preview.
+          schema:
+            type: string
+            pattern: '^"v[1-9][0-9]{0,18}"$'
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: Reuse this key only to retry the exact same request body for this actor and glossary.
+          schema:
+            type: string
+            minLength: 16
+            maxLength: 128
+            pattern: '^[A-Za-z0-9._~-]{16,128}$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GlossaryImportApplyRequest'
+      responses:
+        '201':
+          description: One complete immutable draft was created; it is not active.
+          headers:
+            ETag:
+              required: true
+              schema:
+                type: string
+                pattern: '^"v[1-9][0-9]*"$'
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GlossaryImportApplyResult'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          description: The glossary version changed or this idempotency key was used for another request.
+          headers:
+            ETag:
+              required: true
+              schema:
+                type: string
+                pattern: '^"v[1-9][0-9]*"$'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '413':
+          $ref: '#/components/responses/Problem'
+        '415':
+          $ref: '#/components/responses/Problem'
+        '422':
+          description: The file, row decisions or final conflict checks failed; no revision was written.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/GlossaryImportApplyProblem'
         '428':
           $ref: '#/components/responses/Problem'
         '503':
@@ -4488,7 +4589,7 @@ components:
     GlossaryImportPreview:
       type: object
       additionalProperties: false
-      required: [glossaryId, glossaryName, scope, sourceLanguage, targetLanguage, glossaryVersion, activeRevisionId, activeRevisionNumber, currentTerms, importedTerms, counts, translationImpact]
+      required: [glossaryId, glossaryName, scope, sourceLanguage, targetLanguage, glossaryVersion, activeRevisionId, activeRevisionNumber, baseRevisionId, baseRevisionNumber, currentTerms, importedTerms, counts, translationImpact]
       properties:
         glossaryId:
           type: string
@@ -4510,6 +4611,13 @@ components:
           type: [string, 'null']
           format: uuid
         activeRevisionNumber:
+          type: [integer, 'null']
+          minimum: 1
+        baseRevisionId:
+          type: [string, 'null']
+          format: uuid
+          description: Latest immutable revision used as the import base; may be an unpublished draft.
+        baseRevisionNumber:
           type: [integer, 'null']
           minimum: 1
         currentTerms:
@@ -4614,6 +4722,130 @@ components:
         - type: object
           required: [issueCount, issues, issuesTruncated]
           properties:
+            issueCount:
+              type: integer
+              minimum: 1
+            issues:
+              type: array
+              maxItems: 100
+              items:
+                $ref: '#/components/schemas/GlossaryImportIssue'
+            issuesTruncated:
+              type: boolean
+    GlossaryImportApplyRequest:
+      type: object
+      additionalProperties: false
+      required: [format, fileContentBase64, resolutions]
+      properties:
+        format:
+          type: string
+          enum: [JSON, CSV, TSV]
+        fileContentBase64:
+          type: string
+          format: byte
+          maxLength: 1398104
+          description: Original UTF-8 import file, decoded size at most 1 MiB.
+        resolutions:
+          type: array
+          minItems: 1
+          maxItems: 1000
+          items:
+            $ref: '#/components/schemas/GlossaryImportRowResolution'
+    GlossaryImportRowResolution:
+      type: object
+      additionalProperties: false
+      required: [rowNumber, action, targetTermId, term]
+      properties:
+        rowNumber:
+          type: integer
+          minimum: 1
+          description: JSON row index or delimited-file physical line number from import preview.
+        action:
+          type: string
+          enum: [ADD, REPLACE, MERGE, SKIP]
+        targetTermId:
+          type: [string, 'null']
+          format: uuid
+          description: Required for REPLACE and MERGE; null for ADD and SKIP.
+        term:
+          oneOf:
+            - $ref: '#/components/schemas/GlossaryImportResolvedTerm'
+            - type: 'null'
+          description: Complete final fields for ADD, REPLACE or MERGE; null for SKIP.
+    GlossaryImportResolvedTerm:
+      type: object
+      additionalProperties: false
+      required: [sourceTerm, targetTerm, priority, casePolicy, matchMode, doNotTranslate, contextNote, aliases]
+      properties:
+        sourceTerm:
+          type: string
+          minLength: 1
+          maxLength: 512
+        targetTerm:
+          type: [string, 'null']
+          maxLength: 4096
+        priority:
+          type: integer
+          minimum: -1000000
+          maximum: 1000000
+        casePolicy:
+          type: string
+          enum: [SENSITIVE, INSENSITIVE]
+        matchMode:
+          type: string
+          const: WHOLE_PHRASE
+        doNotTranslate:
+          type: boolean
+        contextNote:
+          type: [string, 'null']
+          maxLength: 2000
+        aliases:
+          type: array
+          maxItems: 25
+          items:
+            type: string
+            minLength: 1
+            maxLength: 512
+    GlossaryImportApplyResult:
+      type: object
+      additionalProperties: false
+      required: [draft, rows, skippedRows, replayed]
+      properties:
+        draft:
+          $ref: '#/components/schemas/GlossaryDraftCreated'
+        rows:
+          type: array
+          maxItems: 1000
+          items:
+            $ref: '#/components/schemas/GlossaryImportAppliedRow'
+        skippedRows:
+          type: integer
+          minimum: 0
+        replayed:
+          type: boolean
+    GlossaryImportAppliedRow:
+      type: object
+      additionalProperties: false
+      required: [rowNumber, action, termId]
+      properties:
+        rowNumber:
+          type: integer
+          minimum: 1
+        action:
+          type: string
+          enum: [ADD, REPLACE, MERGE, SKIP]
+        termId:
+          type: [string, 'null']
+          format: uuid
+          description: Stable draft term ID; null for a skipped row.
+    GlossaryImportApplyProblem:
+      allOf:
+        - $ref: '#/components/schemas/Problem'
+        - type: object
+          properties:
+            rowNumber:
+              type: integer
+              minimum: 1
             issueCount:
               type: integer
               minimum: 1

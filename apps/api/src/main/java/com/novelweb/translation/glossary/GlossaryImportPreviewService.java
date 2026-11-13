@@ -28,11 +28,16 @@ public class GlossaryImportPreviewService {
   public GlossaryImportPreviewRepository.WritableSnapshot loadCurrent(
       UUID actorUserId, UUID glossaryId, long expectedVersion) {
     GlossaryImportPreviewRepository.WritableSnapshot snapshot =
-        repository.loadWritableSnapshot(actorUserId, glossaryId);
+        loadSnapshot(actorUserId, glossaryId);
     if (snapshot.version() != expectedVersion) {
       throw new VersionConflictException(snapshot.version());
     }
     return snapshot;
+  }
+
+  public GlossaryImportPreviewRepository.WritableSnapshot loadSnapshot(
+      UUID actorUserId, UUID glossaryId) {
+    return repository.loadWritableSnapshot(actorUserId, glossaryId);
   }
 
   public Preview preview(
@@ -67,10 +72,18 @@ public class GlossaryImportPreviewService {
         snapshot.version(),
         snapshot.activeRevisionId(),
         snapshot.activeRevisionNumber(),
+        snapshot.baseRevisionId(),
+        snapshot.baseRevisionNumber(),
         snapshot.terms(),
         candidates,
         new Counts(candidates.size(), addCount, updateCount, unchangedCount, conflictCount),
         new TranslationImpact("UNAVAILABLE", null, "Translation units are not implemented yet."));
+  }
+
+  ImportCandidate classify(
+      GlossaryImportParser.ImportedTerm imported,
+      List<GlossaryImportPreviewRepository.CurrentTerm> currentTerms) {
+    return candidate(imported, patternIndex(currentTerms));
   }
 
   private static ImportCandidate candidate(
@@ -248,6 +261,8 @@ public class GlossaryImportPreviewService {
       long glossaryVersion,
       UUID activeRevisionId,
       Integer activeRevisionNumber,
+      UUID baseRevisionId,
+      Integer baseRevisionNumber,
       List<GlossaryImportPreviewRepository.CurrentTerm> currentTerms,
       List<ImportCandidate> importedTerms,
       Counts counts,

@@ -37,9 +37,9 @@ public class GlossaryImportPreviewRepository {
         GlossaryMetadata metadata = metadata(connection, actorUserId, glossaryId);
         if (metadata == null) throw new GlossaryNotFoundException();
         List<CurrentTerm> terms =
-            metadata.activeRevisionId() == null
+            metadata.baseRevisionId() == null
                 ? List.of()
-                : terms(connection, metadata.activeRevisionId());
+                : terms(connection, metadata.baseRevisionId());
         connection.commit();
         return new WritableSnapshot(
             metadata.glossaryId(),
@@ -50,6 +50,8 @@ public class GlossaryImportPreviewRepository {
             metadata.version(),
             metadata.activeRevisionId(),
             metadata.activeRevisionNumber(),
+            metadata.baseRevisionId(),
+            metadata.baseRevisionNumber(),
             terms);
       } catch (SQLException | RuntimeException exception) {
         connection.rollback();
@@ -68,11 +70,20 @@ public class GlossaryImportPreviewRepository {
         connection.prepareStatement(
             """
                 SELECT g.id, g.name, g.scope_type, g.source_language, g.target_language,
-                       g.version, g.active_revision_id, r.revision_no
+                       g.version, g.active_revision_id,
+                       active.revision_no AS active_revision_number,
+                       latest.id AS base_revision_id, latest.revision_no AS base_revision_number
                 FROM glossaries g
                 JOIN users actor ON actor.id = ? AND actor.status = 'active'
-                LEFT JOIN glossary_revisions r
-                  ON r.glossary_id = g.id AND r.id = g.active_revision_id
+                LEFT JOIN glossary_revisions active
+                  ON active.glossary_id = g.id AND active.id = g.active_revision_id
+                LEFT JOIN LATERAL (
+                  SELECT revision.id, revision.revision_no
+                  FROM glossary_revisions revision
+                  WHERE revision.glossary_id = g.id
+                  ORDER BY revision.revision_no DESC
+                  LIMIT 1
+                ) latest ON TRUE
                 WHERE g.id = ? AND g.deleted_at IS NULL
                   AND ((g.scope_type = 'USER_GLOBAL' AND g.owner_user_id = actor.id)
                        OR (g.library_id IS NOT NULL
@@ -90,7 +101,9 @@ public class GlossaryImportPreviewRepository {
             row.getString("target_language"),
             row.getLong("version"),
             row.getObject("active_revision_id", UUID.class),
-            row.getObject("revision_no", Integer.class));
+            row.getObject("active_revision_number", Integer.class),
+            row.getObject("base_revision_id", UUID.class),
+            row.getObject("base_revision_number", Integer.class));
       }
     }
   }
@@ -144,6 +157,8 @@ public class GlossaryImportPreviewRepository {
       long version,
       UUID activeRevisionId,
       Integer activeRevisionNumber,
+      UUID baseRevisionId,
+      Integer baseRevisionNumber,
       List<CurrentTerm> terms) {
     public WritableSnapshot {
       terms = List.copyOf(terms);
@@ -174,7 +189,9 @@ public class GlossaryImportPreviewRepository {
       String targetLanguage,
       long version,
       UUID activeRevisionId,
-      Integer activeRevisionNumber) {}
+      Integer activeRevisionNumber,
+      UUID baseRevisionId,
+      Integer baseRevisionNumber) {}
 
   private record TermAccumulator(
       UUID id,

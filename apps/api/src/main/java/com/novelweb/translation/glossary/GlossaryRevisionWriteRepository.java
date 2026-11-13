@@ -1,12 +1,15 @@
 package com.novelweb.translation.glossary;
 
+import java.security.MessageDigest;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import javax.sql.DataSource;
@@ -68,6 +71,236 @@ public class GlossaryRevisionWriteRepository {
       throw exception;
     } catch (SQLException exception) {
       throw new IllegalStateException("Unable to create glossary draft revision", exception);
+    }
+  }
+
+  /** Replays a prior import result or atomically creates a draft and stores its replay receipt. */
+  public ImportApplyResult createImportDraftRevision(
+      UUID actorUserId,
+      UUID glossaryId,
+      long expectedVersion,
+      List<TermDraft> requestedTerms,
+      String idempotencyKey,
+      byte[] requestSha256,
+      List<GlossaryImportApplyService.RowResult> rows,
+      int skippedRows) {
+    Objects.requireNonNull(actorUserId, "actor user id is required");
+    Objects.requireNonNull(glossaryId, "glossary id is required");
+    Objects.requireNonNull(idempotencyKey, "idempotency key is required");
+    Objects.requireNonNull(requestSha256, "request hash is required");
+    List<TermDraft> terms = List.copyOf(requestedTerms);
+    List<GlossaryImportApplyService.RowResult> rowResults = List.copyOf(rows);
+    validateTerms(terms);
+    if (expectedVersion < 1) throw new IllegalArgumentException("expectedVersion must be positive");
+    if (!idempotencyKey.matches("[A-Za-z0-9._~-]{16,128}")) {
+      throw new IllegalArgumentException("idempotency key is invalid");
+    }
+    if (requestSha256.length != 32)
+      throw new IllegalArgumentException("request hash must be SHA-256");
+    if (skippedRows < 0) throw new IllegalArgumentException("skipped rows cannot be negative");
+
+    try (Connection connection = dataSource.getConnection()) {
+      connection.setTransactionIsolation(Connection.TRANSACTION_READ_COMMITTED);
+      connection.setAutoCommit(false);
+      try {
+        requireActiveActor(connection, actorUserId);
+        Optional<ImportApplyResult> prior =
+            findImportApply(
+                connection, actorUserId, glossaryId, idempotencyKey, requestSha256, true);
+        if (prior.isPresent()) {
+          connection.commit();
+          return prior.orElseThrow();
+        }
+
+        GlossaryState glossary = lockWritableGlossary(connection, actorUserId, glossaryId);
+        // A request with the same key may have committed while this transaction waited on the
+        // glossary lock. Recheck before the version comparison so retries replay the first result.
+        prior =
+            findImportApply(
+                connection, actorUserId, glossaryId, idempotencyKey, requestSha256, true);
+        if (prior.isPresent()) {
+          connection.commit();
+          return prior.orElseThrow();
+        }
+        if (glossary.version() != expectedVersion) {
+          throw new VersionConflictException(glossary.version());
+        }
+
+        RevisionParent parent = latestRevision(connection, glossaryId);
+        int revisionNumber = Math.addExact(parent.revisionNumber(), 1);
+        UUID revisionId = UUID.randomUUID();
+        insertRevision(
+            connection, revisionId, glossaryId, revisionNumber, parent.revisionId(), actorUserId);
+        insertTerms(connection, revisionId, terms);
+        long newVersion = incrementGlossaryVersion(connection, glossaryId, expectedVersion);
+        insertImportApplyReceipt(
+            connection,
+            actorUserId,
+            glossaryId,
+            idempotencyKey,
+            requestSha256,
+            revisionId,
+            newVersion,
+            skippedRows);
+        insertImportApplyRows(connection, actorUserId, glossaryId, idempotencyKey, rowResults);
+        connection.commit();
+        return new ImportApplyResult(
+            new DraftCreated(
+                glossaryId, revisionId, revisionNumber, parent.revisionId(), newVersion),
+            rowResults,
+            skippedRows,
+            false);
+      } catch (SQLException | RuntimeException exception) {
+        connection.rollback();
+        throw exception;
+      }
+    } catch (GlossaryNotFoundException
+        | VersionConflictException
+        | IdempotencyKeyReusedException exception) {
+      throw exception;
+    } catch (SQLException exception) {
+      throw new IllegalStateException("Unable to apply glossary import", exception);
+    }
+  }
+
+  public Optional<ImportApplyResult> findImportApply(
+      UUID actorUserId, UUID glossaryId, String idempotencyKey, byte[] requestSha256) {
+    try (Connection connection = dataSource.getConnection()) {
+      return findImportApply(
+          connection, actorUserId, glossaryId, idempotencyKey, requestSha256, false);
+    } catch (IdempotencyKeyReusedException exception) {
+      throw exception;
+    } catch (SQLException exception) {
+      throw new IllegalStateException("Unable to read glossary import retry receipt", exception);
+    }
+  }
+
+  private static Optional<ImportApplyResult> findImportApply(
+      Connection connection,
+      UUID actorUserId,
+      UUID glossaryId,
+      String idempotencyKey,
+      byte[] requestSha256,
+      boolean forUpdate)
+      throws SQLException {
+    String sql =
+        """
+            SELECT receipt.request_sha256, receipt.revision_id, receipt.glossary_version,
+                   receipt.skipped_rows, revision.revision_no, revision.parent_revision_id
+            FROM glossary_import_apply_idempotency receipt
+            JOIN glossary_revisions revision
+              ON revision.glossary_id = receipt.glossary_id AND revision.id = receipt.revision_id
+            WHERE receipt.user_id = ? AND receipt.glossary_id = ? AND receipt.idempotency_key = ?
+            """;
+    if (forUpdate) sql += " FOR UPDATE OF receipt";
+    try (PreparedStatement select = connection.prepareStatement(sql)) {
+      select.setObject(1, actorUserId);
+      select.setObject(2, glossaryId);
+      select.setString(3, idempotencyKey);
+      try (ResultSet row = select.executeQuery()) {
+        if (!row.next()) return Optional.empty();
+        if (!MessageDigest.isEqual(row.getBytes("request_sha256"), requestSha256)) {
+          throw new IdempotencyKeyReusedException();
+        }
+        UUID revisionId = row.getObject("revision_id", UUID.class);
+        DraftCreated draft =
+            new DraftCreated(
+                glossaryId,
+                revisionId,
+                row.getInt("revision_no"),
+                row.getObject("parent_revision_id", UUID.class),
+                row.getLong("glossary_version"));
+        return Optional.of(
+            new ImportApplyResult(
+                draft,
+                importApplyRows(connection, actorUserId, glossaryId, idempotencyKey),
+                row.getInt("skipped_rows"),
+                true));
+      }
+    }
+  }
+
+  private static List<GlossaryImportApplyService.RowResult> importApplyRows(
+      Connection connection, UUID actorUserId, UUID glossaryId, String idempotencyKey)
+      throws SQLException {
+    List<GlossaryImportApplyService.RowResult> rows = new ArrayList<>();
+    try (PreparedStatement select =
+        connection.prepareStatement(
+            """
+                SELECT row_number, action, term_id
+                FROM glossary_import_apply_rows
+                WHERE user_id = ? AND glossary_id = ? AND idempotency_key = ?
+                ORDER BY row_number
+                """)) {
+      select.setObject(1, actorUserId);
+      select.setObject(2, glossaryId);
+      select.setString(3, idempotencyKey);
+      try (ResultSet result = select.executeQuery()) {
+        while (result.next()) {
+          rows.add(
+              new GlossaryImportApplyService.RowResult(
+                  result.getInt("row_number"),
+                  GlossaryImportApplyService.ResolutionAction.valueOf(result.getString("action")),
+                  result.getObject("term_id", UUID.class)));
+        }
+      }
+    }
+    return List.copyOf(rows);
+  }
+
+  private static void insertImportApplyReceipt(
+      Connection connection,
+      UUID actorUserId,
+      UUID glossaryId,
+      String idempotencyKey,
+      byte[] requestSha256,
+      UUID revisionId,
+      long glossaryVersion,
+      int skippedRows)
+      throws SQLException {
+    try (PreparedStatement insert =
+        connection.prepareStatement(
+            """
+                INSERT INTO glossary_import_apply_idempotency
+                    (user_id, glossary_id, idempotency_key, request_sha256, revision_id,
+                     glossary_version, skipped_rows)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """)) {
+      insert.setObject(1, actorUserId);
+      insert.setObject(2, glossaryId);
+      insert.setString(3, idempotencyKey);
+      insert.setBytes(4, requestSha256);
+      insert.setObject(5, revisionId);
+      insert.setLong(6, glossaryVersion);
+      insert.setInt(7, skippedRows);
+      insert.executeUpdate();
+    }
+  }
+
+  private static void insertImportApplyRows(
+      Connection connection,
+      UUID actorUserId,
+      UUID glossaryId,
+      String idempotencyKey,
+      List<GlossaryImportApplyService.RowResult> rows)
+      throws SQLException {
+    try (PreparedStatement insert =
+        connection.prepareStatement(
+            """
+                INSERT INTO glossary_import_apply_rows
+                    (user_id, glossary_id, idempotency_key, row_number, action, term_id)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """)) {
+      for (GlossaryImportApplyService.RowResult row : rows) {
+        insert.setObject(1, actorUserId);
+        insert.setObject(2, glossaryId);
+        insert.setString(3, idempotencyKey);
+        insert.setInt(4, row.rowNumber());
+        insert.setString(5, row.action().name());
+        insert.setObject(6, row.termId());
+        insert.addBatch();
+      }
+      insert.executeBatch();
     }
   }
 
@@ -224,7 +457,7 @@ public class GlossaryRevisionWriteRepository {
     }
   }
 
-  private static void validateTerms(List<TermDraft> terms) {
+  static void validateTerms(List<TermDraft> terms) {
     if (terms.size() > MAX_DRAFT_TERMS) {
       throw new IllegalArgumentException("a glossary draft may contain at most 1000 terms");
     }
@@ -292,6 +525,16 @@ public class GlossaryRevisionWriteRepository {
       UUID parentRevisionId,
       long glossaryVersion) {}
 
+  public record ImportApplyResult(
+      DraftCreated draft,
+      List<GlossaryImportApplyService.RowResult> rows,
+      int skippedRows,
+      boolean replayed) {
+    public ImportApplyResult {
+      rows = List.copyOf(rows);
+    }
+  }
+
   public static class GlossaryNotFoundException extends RuntimeException {}
 
   public static final class VersionConflictException extends RuntimeException {
@@ -305,6 +548,8 @@ public class GlossaryRevisionWriteRepository {
       return currentVersion;
     }
   }
+
+  public static final class IdempotencyKeyReusedException extends RuntimeException {}
 
   private record GlossaryState(long version) {}
 
