@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 6.6.0
+  version: 6.7.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -13,7 +13,7 @@ info:
     commit are implemented. Markdown uses CommonMark core only, strips raw HTML and link destinations, and derives chapter boundaries from repeated top-level headings.
     Source-only Reader manifest, chapter-content, progress, reader-preferences, bookmarks, private annotations and private reading-history routes are implemented in the PostgreSQL profile.
     History is derived from the latest saved progress per accessible readable work, is visible for 365 days, and never returns chapter body text.
-    Versioned cultivation catalogs, authenticated profile settings and bounded private Reader sessions with atomic XP awards and daily projection are implemented in the PostgreSQL profile. The approved starting policy awards 1 XP per complete active Reader minute, capped at 120 XP per UTC day; top-ups and unlocks award none. Cultivation is feature-gated and off by default while the frontend integration remains pending.
+    Versioned cultivation catalogs, authenticated profile settings, private daily XP activity and bounded private Reader sessions with atomic XP awards are implemented in the PostgreSQL profile. The approved starting policy awards 1 XP per complete active Reader minute, capped at 120 XP per UTC day; top-ups and unlocks award none. Cultivation is feature-gated and off by default while the frontend Reader integration and rank-threshold pilot remain pending.
 servers:
   - url: http://127.0.0.1:8080
 tags:
@@ -1631,10 +1631,10 @@ paths:
       x-implementation-status: implemented-postgres-profile-feature-gated
       summary: Get the current user's private cultivation profile and rank catalog
       description: >-
-        Returns only the authenticated user's opt-in state and the immutable, versioned Vietnamese rank catalog pinned
-        to that profile. A user with no profile is returned as disabled without creating a row. XP is currently zero
-        until validated Reader-session accounting is released. This route returns 503 unless the global feature flag
-        NOVEL_FEATURE_CULTIVATION_ENABLED is enabled; it defaults to false.
+        Returns only the authenticated user's opt-in state, server-derived progression and the immutable, versioned
+        Vietnamese rank catalog pinned to that profile. A user with no profile is returned as disabled without creating
+        a row. This route returns 503 unless the global feature flag NOVEL_FEATURE_CULTIVATION_ENABLED is enabled; it
+        defaults to false.
       security:
         - appSession: []
       responses:
@@ -1659,6 +1659,60 @@ paths:
           $ref: '#/components/responses/Problem'
         '503':
           $ref: '#/components/responses/Problem'
+  /api/v1/me/cultivation/activity:
+    get:
+      operationId: listCurrentUserCultivationActivity
+      tags: [Progression]
+      x-implementation-status: implemented-postgres-profile-feature-gated
+      summary: List the current user's private daily XP totals
+      description: >-
+        Returns daily XP totals ordered newest first. The result contains only UTC activity dates and XP earned; it
+        never contains work or chapter identifiers, titles, or content and has no public leaderboard. The optional
+        signed cursor binds to the authenticated account. Pausing progression does not delete historical activity.
+        This route requires current policy acceptance and returns 503 unless NOVEL_FEATURE_CULTIVATION_ENABLED is true;
+        that flag defaults to false.
+      security:
+        - appSession: []
+      parameters:
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 256
+          description: Opaque signed cursor returned by the previous page; bound to the current account.
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 30
+            minimum: 1
+            maximum: 100
+      responses:
+        '200':
+          description: Account-private daily XP totals
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CultivationActivityPage'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
   /api/v1/me/cultivation/settings:
     put:
       operationId: updateCurrentUserCultivationSettings
@@ -1669,7 +1723,8 @@ paths:
         Accepts only the enabled boolean; never accepts XP, rank, duration, or catalog-version values. Enabling pins the
         active immutable rank catalog. Pausing preserves the profile and pinned catalog. Repeating the current setting
         is idempotent and does not advance profileVersion. Requires session-bound CSRF and current policy acceptance.
-        XP award endpoints are not yet available, so the global feature flag defaults to false.
+        Validated Reader sessions award XP according to the catalog-pinned policy. The global feature flag defaults to
+        false until frontend integration and release approval are complete.
       security:
         - appSession: []
           csrfToken: []
@@ -1764,8 +1819,8 @@ paths:
         heartbeat; the session expires after 90 seconds without a valid heartbeat. Send every 30 seconds while the
         Reader is visible and focused, and send active=false when it becomes hidden or blurred. Sequence numbers must
         be consecutive. The Idempotency-Key binds one exact body; a replay returns the stored response without adding
-        time. This endpoint records session time only and does not award XP. A new heartbeat after close, idle expiry or
-        access revocation returns 410 Gone.
+        time. Each accepted heartbeat may award XP atomically; the response includes the exact award and an idempotent
+        replay returns the same receipt. A new heartbeat after close, idle expiry or access revocation returns 410 Gone.
       security:
         - appSession: []
           csrfToken: []
@@ -1823,9 +1878,9 @@ paths:
       x-implementation-status: implemented-postgres-profile-feature-gated
       summary: Close the current user's reading session
       description: >-
-        Closes the actor-owned session idempotently and reports its server-recorded active seconds. A heartbeat gap
-        of 90 seconds or more expires the session without crediting the stale interval. No XP is awarded by this route.
-        Requires session-bound CSRF and current policy acceptance.
+        Closes the actor-owned session idempotently and reports its server-recorded active seconds and XP awarded for
+        the final eligible interval. A heartbeat gap of 90 seconds or more expires the session without crediting the
+        stale interval. Requires session-bound CSRF and current policy acceptance.
       security:
         - appSession: []
           csrfToken: []
@@ -3243,6 +3298,36 @@ components:
         enabled:
           type: boolean
           description: Explicit user opt-in; false pauses future progression without deleting earned history.
+    CultivationActivityPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/CultivationDailyActivity'
+        nextCursor:
+          anyOf:
+            - type: string
+              maxLength: 256
+            - type: 'null'
+          description: Signed cursor for the next older date, or null when no older rows remain.
+    CultivationDailyActivity:
+      type: object
+      additionalProperties: false
+      required: [activityDate, xpEarned]
+      properties:
+        activityDate:
+          type: string
+          format: date
+          description: UTC date on which XP was recorded.
+        xpEarned:
+          type: integer
+          format: int64
+          minimum: 1
+          description: XP earned on this UTC date; no story or chapter metadata is included.
     CultivationReadingSessionStartRequest:
       type: object
       additionalProperties: false

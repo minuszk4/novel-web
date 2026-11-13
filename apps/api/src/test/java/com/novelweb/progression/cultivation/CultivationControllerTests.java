@@ -19,8 +19,10 @@ class CultivationControllerTests {
   @Test
   void hidesProfileAndSettingsUntilGlobalCultivationFlagIsEnabled() {
     CultivationService service = mock(CultivationService.class);
+    CultivationActivityService activityService = mock(CultivationActivityService.class);
     PolicyService policyService = mock(PolicyService.class);
-    CultivationController controller = new CultivationController(service, policyService, false);
+    CultivationController controller =
+        new CultivationController(service, activityService, policyService, false);
     UUID userId = UUID.randomUUID();
     var authentication =
         new UsernamePasswordAuthenticationToken(
@@ -29,12 +31,14 @@ class CultivationControllerTests {
     HttpServletRequest request = new org.springframework.mock.web.MockHttpServletRequest();
 
     var profile = controller.getProfile(authentication, request);
+    var activity = controller.getActivity(authentication, null, "30", request);
     var settings = controller.saveSettings(authentication, null, request);
 
     assertEquals(HttpStatus.SERVICE_UNAVAILABLE, profile.getStatusCode());
+    assertEquals(HttpStatus.SERVICE_UNAVAILABLE, activity.getStatusCode());
     assertEquals(HttpStatus.SERVICE_UNAVAILABLE, settings.getStatusCode());
     assertEquals(
         "CULTIVATION_NOT_ENABLED", ((ProblemDetail) profile.getBody()).getProperties().get("code"));
-    verifyNoInteractions(service, policyService);
+    verifyNoInteractions(service, activityService, policyService);
   }
 }

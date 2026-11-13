@@ -85,6 +85,9 @@ public class ApiSecurityConfiguration {
                     .permitAll();
                 authorize.requestMatchers(HttpMethod.GET, "/api/v1/me/cultivation").permitAll();
                 authorize
+                    .requestMatchers(HttpMethod.GET, "/api/v1/me/cultivation/activity")
+                    .permitAll();
+                authorize
                     .requestMatchers(HttpMethod.PUT, "/api/v1/me/cultivation/settings")
                     .permitAll();
                 authorize

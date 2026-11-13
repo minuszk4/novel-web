@@ -22,6 +22,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -32,14 +33,17 @@ public class CultivationController {
   private static final Logger LOGGER = LoggerFactory.getLogger(CultivationController.class);
 
   private final CultivationService service;
+  private final CultivationActivityService activityService;
   private final PolicyService policyService;
   private final boolean featureEnabled;
 
   public CultivationController(
       CultivationService service,
+      CultivationActivityService activityService,
       PolicyService policyService,
       @Value("${novel.features.cultivation-enabled:false}") boolean featureEnabled) {
     this.service = service;
+    this.activityService = activityService;
     this.policyService = policyService;
     this.featureEnabled = featureEnabled;
   }
@@ -59,6 +63,29 @@ public class CultivationController {
     ResponseEntity<?> policyGate = policyGate(actor.orElseThrow(), request);
     if (policyGate != null) return policyGate;
     return ok(service.get(actor.orElseThrow()));
+  }
+
+  @GetMapping("/cultivation/activity")
+  public ResponseEntity<?> getActivity(
+      Authentication authentication,
+      @RequestParam(required = false) String cursor,
+      @RequestParam(defaultValue = "30") String limit,
+      HttpServletRequest request) {
+    Optional<UUID> actor = actorUserId(authentication);
+    if (actor.isEmpty()) {
+      return problem(
+          HttpStatus.UNAUTHORIZED,
+          "UNAUTHENTICATED",
+          "Sign in to view your cultivation activity.",
+          request);
+    }
+    ResponseEntity<?> unavailable = featureAvailability(request);
+    if (unavailable != null) return unavailable;
+    ResponseEntity<?> policyGate = policyGate(actor.orElseThrow(), request);
+    if (policyGate != null) return policyGate;
+    Integer parsedLimit = parseActivityLimit(limit);
+    if (parsedLimit == null) return invalidActivityLimit(request);
+    return ok(activityService.list(actor.orElseThrow(), cursor, parsedLimit));
   }
 
   @PutMapping("/cultivation/settings")
@@ -87,6 +114,24 @@ public class CultivationController {
       HttpServletRequest request) {
     return problem(
         HttpStatus.BAD_REQUEST, "INVALID_CULTIVATION_SETTINGS", exception.getMessage(), request);
+  }
+
+  @ExceptionHandler(CultivationActivityCursorCodec.InvalidCursorException.class)
+  public ResponseEntity<ProblemDetail> invalidActivityCursor(HttpServletRequest request) {
+    return problem(
+        HttpStatus.BAD_REQUEST,
+        "INVALID_CULTIVATION_ACTIVITY_CURSOR",
+        "The activity cursor is malformed or belongs to another account.",
+        request);
+  }
+
+  @ExceptionHandler(CultivationActivityCursorCodec.SigningUnavailableException.class)
+  public ResponseEntity<ProblemDetail> unavailableActivityCursorKey(HttpServletRequest request) {
+    return problem(
+        HttpStatus.SERVICE_UNAVAILABLE,
+        "CULTIVATION_ACTIVITY_UNAVAILABLE",
+        "Cultivation activity pagination is not configured yet.",
+        request);
   }
 
   @ExceptionHandler(HttpMessageNotReadableException.class)
@@ -137,6 +182,25 @@ public class CultivationController {
         HttpStatus.SERVICE_UNAVAILABLE,
         "CULTIVATION_NOT_ENABLED",
         "Cultivation progression is not available yet.",
+        request);
+  }
+
+  private static Integer parseActivityLimit(String value) {
+    try {
+      int limit = Integer.parseInt(value);
+      return limit >= 1 && limit <= CultivationActivityService.MAX_PAGE_SIZE ? limit : null;
+    } catch (NumberFormatException exception) {
+      return null;
+    }
+  }
+
+  private ResponseEntity<ProblemDetail> invalidActivityLimit(HttpServletRequest request) {
+    return problem(
+        HttpStatus.BAD_REQUEST,
+        "INVALID_CULTIVATION_ACTIVITY_LIMIT",
+        "The activity page limit must be between 1 and "
+            + CultivationActivityService.MAX_PAGE_SIZE
+            + ".",
         request);
   }
 

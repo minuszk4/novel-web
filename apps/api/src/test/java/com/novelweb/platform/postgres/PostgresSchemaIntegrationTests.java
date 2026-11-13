@@ -417,6 +417,124 @@ class PostgresSchemaIntegrationTests {
   }
 
   @Test
+  void cultivationActivityIsPrivateDailyXpOnlyAndUsesAccountBoundPages() throws Exception {
+    UUID actorId = createSessionTestUser("Cultivation Activity Owner");
+    UUID otherUserId = createSessionTestUser("Cultivation Activity Other Owner");
+    UUID policyBlockedId = createSessionTestUser("Cultivation Activity Policy Blocked");
+    ReaderHistoryFixture readable =
+        createReaderHistoryFixture(
+            actorId, "ACTIVITY_PRIVATE_WORK_SENTINEL", "ACTIVITY_PRIVATE_TEXT_SENTINEL");
+    LocalDate today = LocalDate.now(ZoneOffset.UTC);
+    List<LocalDate> activityDates =
+        List.of(today.minusDays(1), today.minusDays(3), today.minusDays(5));
+    try {
+      addCurrentPolicyAcceptances(actorId);
+      addCurrentPolicyAcceptances(otherUserId);
+      SessionService.IssuedSession actorSession = sessionService.create(actorId).orElseThrow();
+      SessionService.IssuedSession otherSession = sessionService.create(otherUserId).orElseThrow();
+      var actorCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", actorSession.cookieValue());
+      var otherCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", otherSession.cookieValue());
+      cultivationRepository.setEnabled(actorId, true);
+      cultivationRepository.setEnabled(otherUserId, true);
+
+      for (int index = 0; index < activityDates.size(); index++) {
+        LocalDate activityDate = activityDates.get(index);
+        UUID sessionId = UUID.randomUUID();
+        Instant activityAt = activityDate.atTime(12, 0).toInstant(ZoneOffset.UTC);
+        insertCultivationTestReadingSession(
+            actorId,
+            sessionId,
+            readable,
+            activityAt.minusSeconds(300),
+            "cultivation-activity-session-" + index + "-0001");
+        insertCultivationXpLedger(actorId, sessionId, 0, activityAt);
+        closeCultivationTestReadingSession(sessionId);
+        rebuildCultivationDailyXp(actorId, activityDate);
+      }
+
+      MvcResult unauthenticated =
+          mockMvc.perform(get("/api/v1/me/cultivation/activity")).andReturn();
+      assertEquals(401, unauthenticated.getResponse().getStatus());
+
+      MvcResult firstPage =
+          mockMvc
+              .perform(
+                  get("/api/v1/me/cultivation/activity").cookie(actorCookie).param("limit", "2"))
+              .andReturn();
+      assertEquals(200, firstPage.getResponse().getStatus());
+      assertTrue(firstPage.getResponse().getHeader("Cache-Control").contains("no-store"));
+      JsonNode firstBody = objectMapper.readTree(firstPage.getResponse().getContentAsString());
+      assertEquals(2, firstBody.path("items").size());
+      assertEquals(
+          activityDates.get(0).toString(),
+          firstBody.path("items").get(0).path("activityDate").asText());
+      assertEquals(1, firstBody.path("items").get(0).path("xpEarned").asInt());
+      assertTrue(firstBody.path("nextCursor").isTextual());
+      assertFalse(firstBody.toString().contains("ACTIVITY_PRIVATE_WORK_SENTINEL"));
+      assertFalse(firstBody.toString().contains("ACTIVITY_PRIVATE_TEXT_SENTINEL"));
+      assertFalse(firstBody.toString().contains("workId"));
+      assertFalse(firstBody.toString().contains("chapterId"));
+
+      String nextCursor = firstBody.path("nextCursor").asText();
+      MvcResult secondPage =
+          mockMvc
+              .perform(
+                  get("/api/v1/me/cultivation/activity")
+                      .cookie(actorCookie)
+                      .param("cursor", nextCursor)
+                      .param("limit", "2"))
+              .andReturn();
+      assertEquals(200, secondPage.getResponse().getStatus());
+      JsonNode secondBody = objectMapper.readTree(secondPage.getResponse().getContentAsString());
+      assertEquals(1, secondBody.path("items").size());
+      assertEquals(
+          activityDates.get(2).toString(),
+          secondBody.path("items").get(0).path("activityDate").asText());
+      assertTrue(secondBody.path("nextCursor").isNull());
+
+      MvcResult crossAccountCursor =
+          mockMvc
+              .perform(
+                  get("/api/v1/me/cultivation/activity")
+                      .cookie(otherCookie)
+                      .param("cursor", nextCursor))
+              .andReturn();
+      assertEquals(400, crossAccountCursor.getResponse().getStatus());
+      assertTrue(
+          crossAccountCursor
+              .getResponse()
+              .getContentAsString()
+              .contains("INVALID_CULTIVATION_ACTIVITY_CURSOR"));
+
+      MvcResult invalidLimit =
+          mockMvc
+              .perform(
+                  get("/api/v1/me/cultivation/activity").cookie(actorCookie).param("limit", "101"))
+              .andReturn();
+      assertEquals(400, invalidLimit.getResponse().getStatus());
+
+      SessionService.IssuedSession blockedSession =
+          sessionService.create(policyBlockedId).orElseThrow();
+      MvcResult policyBlocked =
+          mockMvc
+              .perform(
+                  get("/api/v1/me/cultivation/activity")
+                      .cookie(
+                          new jakarta.servlet.http.Cookie(
+                              "__Host-novel_session", blockedSession.cookieValue())))
+              .andReturn();
+      assertEquals(403, policyBlocked.getResponse().getStatus());
+    } finally {
+      deleteReaderHistoryFixtures(actorId, List.of(readable));
+      deleteSessionTestUser(actorId);
+      deleteSessionTestUser(otherUserId);
+      deleteSessionTestUser(policyBlockedId);
+    }
+  }
+
+  @Test
   void cultivationXpLedgerIsAppendOnlyIdempotentAndDailyProjectionRebuilds() throws Exception {
     UUID actorId = createSessionTestUser("Cultivation XP Ledger Owner");
     UUID disabledActorId = createSessionTestUser("Cultivation XP Ledger Disabled");
