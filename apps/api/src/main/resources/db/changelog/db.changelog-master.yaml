@@ -65,3 +65,6 @@ databaseChangeLog:
   - include:
       file: changes/022-cultivation-ranks-and-profiles.sql
       relativeToChangelogFile: true
+  - include:
+      file: changes/023-cultivation-xp-ledger.sql
+      relativeToChangelogFile: true

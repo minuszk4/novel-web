@@ -37,6 +37,7 @@ import com.novelweb.library.WorkspaceService;
 import com.novelweb.library.imports.ImportParseService;
 import com.novelweb.library.imports.ImportStagingCleanupService;
 import com.novelweb.library.imports.ImportStagingRateLimiter;
+import com.novelweb.progression.cultivation.CultivationRepository;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -53,6 +54,7 @@ import java.sql.SQLException;
 import java.sql.Savepoint;
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
@@ -162,6 +164,8 @@ class PostgresSchemaIntegrationTests {
           "cultivation_rank_catalogs",
           "cultivation_rank_catalog_entries",
           "cultivation_profiles",
+          "cultivation_xp_ledger",
+          "cultivation_daily_xp_aggregates",
           "library_collections",
           "library_collection_works",
           "import_rights_statements",
@@ -190,6 +194,8 @@ class PostgresSchemaIntegrationTests {
   @Autowired private WorkspaceService workspaceService;
 
   @Autowired private LibraryUserStateService libraryUserStateService;
+
+  @Autowired private CultivationRepository cultivationRepository;
 
   @Autowired private com.novelweb.library.imports.ImportStagingFileStore importStagingFileStore;
 
@@ -242,7 +248,7 @@ class PostgresSchemaIntegrationTests {
             connection.prepareStatement("SELECT COUNT(*) FROM databasechangelog");
         ResultSet changesets = changesetCount.executeQuery()) {
       changesets.next();
-      assertEquals(77, changesets.getInt(1), "unexpected number of applied changesets");
+      assertEquals(82, changesets.getInt(1), "unexpected number of applied changesets");
     }
 
     Set<String> actualTables = new HashSet<>();
@@ -401,6 +407,105 @@ class PostgresSchemaIntegrationTests {
       deleteSessionTestUser(actorId);
       deleteSessionTestUser(otherUserId);
       deleteSessionTestUser(policyBlockedId);
+    }
+  }
+
+  @Test
+  void cultivationXpLedgerIsAppendOnlyIdempotentAndDailyProjectionRebuilds() throws Exception {
+    UUID actorId = createSessionTestUser("Cultivation XP Ledger Owner");
+    UUID disabledActorId = createSessionTestUser("Cultivation XP Ledger Disabled");
+    UUID firstSessionId = UUID.randomUUID();
+    UUID secondSessionId = UUID.randomUUID();
+    LocalDate firstDay = LocalDate.of(2026, 10, 31);
+    LocalDate secondDay = LocalDate.of(2026, 11, 1);
+    try {
+      cultivationRepository.setEnabled(actorId, true);
+      UUID firstEntryId =
+          insertCultivationXpLedger(
+              actorId, firstSessionId, 0, Instant.parse("2026-10-31T23:59:00Z"));
+      insertCultivationXpLedger(actorId, firstSessionId, 1, Instant.parse("2026-11-01T00:01:00Z"));
+      insertCultivationXpLedger(actorId, secondSessionId, 0, Instant.parse("2026-10-31T22:30:00Z"));
+
+      SQLException duplicateMinute =
+          assertThrows(
+              SQLException.class,
+              () ->
+                  insertCultivationXpLedger(
+                      actorId, firstSessionId, 0, Instant.parse("2026-10-31T23:59:30Z")));
+      assertEquals("23505", duplicateMinute.getSQLState());
+
+      SQLException immutableUpdate =
+          assertThrows(
+              SQLException.class,
+              () -> {
+                try (Connection connection = dataSource.getConnection();
+                    PreparedStatement update =
+                        connection.prepareStatement(
+                            "UPDATE cultivation_xp_ledger SET xp_delta = 2 WHERE id = ?")) {
+                  update.setObject(1, firstEntryId);
+                  update.executeUpdate();
+                }
+              });
+      assertEquals("55000", immutableUpdate.getSQLState());
+
+      SQLException immutableDelete =
+          assertThrows(
+              SQLException.class,
+              () -> {
+                try (Connection connection = dataSource.getConnection();
+                    PreparedStatement delete =
+                        connection.prepareStatement(
+                            "DELETE FROM cultivation_xp_ledger WHERE id = ?")) {
+                  delete.setObject(1, firstEntryId);
+                  delete.executeUpdate();
+                }
+              });
+      assertEquals("55000", immutableDelete.getSQLState());
+
+      assertEquals(firstDay, cultivationXpActivityDate(firstEntryId));
+      rebuildCultivationDailyXp(actorId, firstDay);
+      assertEquals(2L, cultivationDailyXp(actorId, firstDay));
+      assertEquals(2L, cultivationDailyLedgerCount(actorId, firstDay));
+
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement corruptProjection =
+              connection.prepareStatement(
+                  "UPDATE cultivation_daily_xp_aggregates SET xp_earned = 999 "
+                      + "WHERE user_id = ? AND activity_date = ?")) {
+        corruptProjection.setObject(1, actorId);
+        corruptProjection.setObject(2, firstDay);
+        assertEquals(1, corruptProjection.executeUpdate());
+      }
+      rebuildCultivationDailyXp(actorId, firstDay);
+      assertEquals(2L, cultivationDailyXp(actorId, firstDay));
+
+      rebuildCultivationDailyXp(actorId, secondDay);
+      assertEquals(1L, cultivationDailyXp(actorId, secondDay));
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement staleProjection =
+              connection.prepareStatement(
+                  "INSERT INTO cultivation_daily_xp_aggregates "
+                      + "(user_id, activity_date, xp_earned, ledger_entry_count) "
+                      + "VALUES (?, DATE '2026-11-02', 1, 1)")) {
+        staleProjection.setObject(1, actorId);
+        assertEquals(1, staleProjection.executeUpdate());
+      }
+      rebuildCultivationDailyXp(actorId, LocalDate.of(2026, 11, 2));
+      assertEquals(0L, cultivationDailyXp(actorId, LocalDate.of(2026, 11, 2)));
+
+      SQLException disabledProfile =
+          assertThrows(
+              SQLException.class,
+              () ->
+                  insertCultivationXpLedger(
+                      disabledActorId,
+                      UUID.randomUUID(),
+                      0,
+                      Instant.parse("2026-10-31T12:00:00Z")));
+      assertEquals("55000", disabledProfile.getSQLState());
+    } finally {
+      deleteSessionTestUser(actorId);
+      deleteSessionTestUser(disabledActorId);
     }
   }
 
@@ -7088,6 +7193,81 @@ class PostgresSchemaIntegrationTests {
       assertEquals(1, insert.executeUpdate());
     }
     return userId;
+  }
+
+  private UUID insertCultivationXpLedger(
+      UUID userId, UUID sessionId, int activeMinuteIndex, Instant activityAt) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement insert =
+            connection.prepareStatement(
+                """
+                    INSERT INTO cultivation_xp_ledger
+                        (user_id, source_session_id, active_minute_index, activity_at,
+                         xp_delta, catalog_version, policy_version)
+                    VALUES (?, ?, ?, ?, 1, 'cultivation-v1', 'xp-v1')
+                    RETURNING id
+                    """)) {
+      insert.setObject(1, userId);
+      insert.setObject(2, sessionId);
+      insert.setInt(3, activeMinuteIndex);
+      insert.setTimestamp(4, Timestamp.from(activityAt));
+      try (ResultSet row = insert.executeQuery()) {
+        assertTrue(row.next());
+        return row.getObject("id", UUID.class);
+      }
+    }
+  }
+
+  private void rebuildCultivationDailyXp(UUID userId, LocalDate activityDate) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement rebuild =
+            connection.prepareStatement("SELECT rebuild_cultivation_daily_xp_aggregate(?, ?)")) {
+      rebuild.setObject(1, userId);
+      rebuild.setObject(2, java.sql.Date.valueOf(activityDate));
+      rebuild.execute();
+    }
+  }
+
+  private LocalDate cultivationXpActivityDate(UUID ledgerEntryId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT activity_date FROM cultivation_xp_ledger WHERE id = ?")) {
+      select.setObject(1, ledgerEntryId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getDate("activity_date").toLocalDate();
+      }
+    }
+  }
+
+  private long cultivationDailyXp(UUID userId, LocalDate activityDate) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT xp_earned FROM cultivation_daily_xp_aggregates "
+                    + "WHERE user_id = ? AND activity_date = ?")) {
+      select.setObject(1, userId);
+      select.setObject(2, java.sql.Date.valueOf(activityDate));
+      try (ResultSet row = select.executeQuery()) {
+        return row.next() ? row.getLong("xp_earned") : 0L;
+      }
+    }
+  }
+
+  private long cultivationDailyLedgerCount(UUID userId, LocalDate activityDate)
+      throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT ledger_entry_count FROM cultivation_daily_xp_aggregates "
+                    + "WHERE user_id = ? AND activity_date = ?")) {
+      select.setObject(1, userId);
+      select.setObject(2, java.sql.Date.valueOf(activityDate));
+      try (ResultSet row = select.executeQuery()) {
+        return row.next() ? row.getLong("ledger_entry_count") : 0L;
+      }
+    }
   }
 
   private void insertTestVolume(UUID volumeId, UUID workId, int ordinal, String title)
