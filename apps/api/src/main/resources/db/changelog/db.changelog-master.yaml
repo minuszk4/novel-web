@@ -62,3 +62,6 @@ databaseChangeLog:
   - include:
       file: changes/021-import-cancellation.sql
       relativeToChangelogFile: true
+  - include:
+      file: changes/022-cultivation-ranks-and-profiles.sql
+      relativeToChangelogFile: true

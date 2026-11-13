@@ -12,12 +12,15 @@ public class SystemStatusController {
 
   private final String environment;
   private final GoogleSignInConfiguration googleSignInConfiguration;
+  private final boolean cultivationEnabled;
 
   public SystemStatusController(
       @Value("${novel.environment:local}") String environment,
-      GoogleSignInConfiguration googleSignInConfiguration) {
+      GoogleSignInConfiguration googleSignInConfiguration,
+      @Value("${novel.features.cultivation-enabled:false}") boolean cultivationEnabled) {
     this.environment = environment;
     this.googleSignInConfiguration = googleSignInConfiguration;
+    this.cultivationEnabled = cultivationEnabled;
   }
 
   @GetMapping("/status")
@@ -27,6 +30,6 @@ public class SystemStatusController {
         environment,
         new ApiSystemStatus.Integrations(
             googleSignInConfiguration.isReadyForSignIn(), false, "TEST"),
-        new ApiSystemStatus.Features(false, false, false));
+        new ApiSystemStatus.Features(false, cultivationEnabled, false));
   }
 }

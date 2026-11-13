@@ -139,11 +139,20 @@ try {
     $publicTableCount = $tables.Count
     if ($publicTableCount -lt 3) { throw 'The migrated source schema has too few public tables for a restore drill.' }
 
+    $rankCatalogSql = "SELECT count(*) FROM cultivation_rank_catalogs WHERE version = 'cultivation-v1' AND policy_version = 'xp-v1';"
+    $rankEntrySql = "SELECT count(*) FROM cultivation_rank_catalog_entries WHERE catalog_version = 'cultivation-v1' AND locale = 'vi-VN';"
+    $rankCatalogSeeds = [int](Invoke-ScratchPsql -Database $databaseName -Sql $rankCatalogSql)
+    $rankEntrySeeds = [int](Invoke-ScratchPsql -Database $databaseName -Sql $rankEntrySql)
+    if ($rankCatalogSeeds -ne 1 -or $rankEntrySeeds -ne 18) {
+        throw "Expected the immutable cultivation-v1 seed (one catalog and 18 Vietnamese ranks); found $rankCatalogSeeds catalogs/$rankEntrySeeds ranks."
+    }
+
+    $seededDataTables = @('databasechangelog', 'databasechangeloglock', 'cultivation_rank_catalogs', 'cultivation_rank_catalog_entries')
     foreach ($table in $tables) {
         if ($table -notmatch '^[a-z0-9_]+$') { throw "Unexpected public table name '$table'; stopping before destructive operations." }
         $count = Invoke-ScratchPsql -Database $databaseName -Sql "SELECT count(*) FROM public.`"$table`";"
         $sourceSnapshot.Add("$table|$count")
-        if ($table -notin @('databasechangelog', 'databasechangeloglock') -and [int]$count -ne 0) {
+        if ($table -notin $seededDataTables -and [int]$count -ne 0) {
             throw "Integration fixtures remain in public.$table; stopping before destructive operations."
         }
     }

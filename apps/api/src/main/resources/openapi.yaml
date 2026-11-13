@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 6.3.0
+  version: 6.4.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -13,6 +13,7 @@ info:
     commit are implemented. Markdown uses CommonMark core only, strips raw HTML and link destinations, and derives chapter boundaries from repeated top-level headings.
     Source-only Reader manifest, chapter-content, progress, reader-preferences, bookmarks, private annotations and private reading-history routes are implemented in the PostgreSQL profile.
     History is derived from the latest saved progress per accessible readable work, is visible for 365 days, and never returns chapter body text.
+    Versioned cultivation rank catalogs and authenticated private profile/opt-in settings are implemented in the PostgreSQL profile; XP remains zero until validated Reader-session accounting is released. Cultivation is feature-gated and off by default.
 servers:
   - url: http://127.0.0.1:8080
 tags:
@@ -26,6 +27,9 @@ tags:
     x-implementation-status: partial
   - name: Reader
     description: Source-only reader, progress, preferences, private bookmarks, source annotations and private reading history are available in the PostgreSQL profile.
+    x-implementation-status: partial
+  - name: Progression
+    description: Private server-owned rank catalog/profile settings; XP awards remain feature-gated pending Reader-session accounting.
     x-implementation-status: partial
 paths:
   /api/v1/system/status:
@@ -1620,6 +1624,76 @@ paths:
           $ref: '#/components/responses/Problem'
         '503':
           $ref: '#/components/responses/Problem'
+  /api/v1/me/cultivation:
+    get:
+      operationId: getCurrentUserCultivationProfile
+      tags: [Progression]
+      x-implementation-status: implemented-postgres-profile-feature-gated
+      summary: Get the current user's private cultivation profile and rank catalog
+      description: >-
+        Returns only the authenticated user's opt-in state and the immutable, versioned Vietnamese rank catalog pinned
+        to that profile. A user with no profile is returned as disabled without creating a row. XP is currently zero
+        until validated Reader-session accounting is released. This route returns 503 unless the global feature flag
+        NOVEL_FEATURE_CULTIVATION_ENABLED is enabled; it defaults to false.
+      security:
+        - appSession: []
+      responses:
+        '200':
+          description: Private profile and immutable rank catalog
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CultivationState'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/me/cultivation/settings:
+    put:
+      operationId: updateCurrentUserCultivationSettings
+      tags: [Progression]
+      x-implementation-status: implemented-postgres-profile-feature-gated
+      summary: Opt in to or pause private cultivation progression
+      description: >-
+        Accepts only the enabled boolean; never accepts XP, rank, duration, or catalog-version values. Enabling pins the
+        active immutable rank catalog. Pausing preserves the profile and pinned catalog. Repeating the current setting
+        is idempotent and does not advance profileVersion. Requires session-bound CSRF and current policy acceptance.
+        XP award endpoints are not yet available, so the global feature flag defaults to false.
+      security:
+        - appSession: []
+          csrfToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CultivationSettingsRequest'
+      responses:
+        '200':
+          description: Updated private cultivation profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CultivationState'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
   /api/v1/me/reader-preferences:
     get:
       operationId: getReaderPreferences
@@ -3004,6 +3078,90 @@ components:
           items:
             type: string
             format: uuid
+    CultivationSettingsRequest:
+      type: object
+      additionalProperties: false
+      required: [enabled]
+      properties:
+        enabled:
+          type: boolean
+          description: Explicit user opt-in; false pauses future progression without deleting earned history.
+    CultivationState:
+      type: object
+      additionalProperties: false
+      required:
+        [enabled, profileVersion, totalXp, currentRank, nextRank, xpToNextRank, progressRatio, rankCatalogVersion, policyVersion, locale, xpPerActiveMinute, dailyXpCap, nextDailyResetAt, rankCatalog]
+      properties:
+        enabled:
+          type: boolean
+        profileVersion:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Zero represents a not-yet-created profile; repeated settings do not increment this version.
+        totalXp:
+          type: integer
+          format: int64
+          minimum: 0
+        currentRank:
+          $ref: '#/components/schemas/CultivationRank'
+        nextRank:
+          anyOf:
+            - $ref: '#/components/schemas/CultivationRank'
+            - type: 'null'
+        xpToNextRank:
+          type: integer
+          format: int64
+          minimum: 0
+        progressRatio:
+          type: number
+          minimum: 0
+          maximum: 1
+        rankCatalogVersion:
+          type: string
+          maxLength: 32
+        policyVersion:
+          type: string
+          maxLength: 32
+        locale:
+          type: string
+          const: vi-VN
+        xpPerActiveMinute:
+          type: integer
+          minimum: 1
+        dailyXpCap:
+          type: integer
+          minimum: 1
+        nextDailyResetAt:
+          type: string
+          format: date-time
+          description: Next midnight UTC; display this exact server timestamp for the daily reset.
+        rankCatalog:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/CultivationRank'
+    CultivationRank:
+      type: object
+      additionalProperties: false
+      required: [key, group, name, thresholdXp, sortOrder]
+      properties:
+        key:
+          type: string
+          maxLength: 48
+        group:
+          type: string
+          maxLength: 64
+        name:
+          type: string
+          maxLength: 100
+        thresholdXp:
+          type: integer
+          format: int64
+          minimum: 0
+        sortOrder:
+          type: integer
+          minimum: 0
     ReaderPreferences:
       type: object
       additionalProperties: false

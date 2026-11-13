@@ -11,6 +11,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import javax.sql.DataSource;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Service;
 
@@ -19,9 +20,13 @@ import org.springframework.stereotype.Service;
 public class CurrentUserService {
 
   private final DataSource dataSource;
+  private final boolean cultivationEnabled;
 
-  public CurrentUserService(DataSource dataSource) {
+  public CurrentUserService(
+      DataSource dataSource,
+      @Value("${novel.features.cultivation-enabled:false}") boolean cultivationEnabled) {
     this.dataSource = dataSource;
+    this.cultivationEnabled = cultivationEnabled;
   }
 
   public Optional<CurrentUserResponse> findActiveUser(UUID userId) {
@@ -104,7 +109,7 @@ public class CurrentUserService {
                 new UserPolicyState(
                     acceptedTermsVersion, acknowledgedPrivacyVersion, requiredAcceptanceComplete),
                 List.of(new RoleScope("personal", List.of())),
-                new UserFeatureFlags(false, false, false, false, false)));
+                new UserFeatureFlags(false, false, false, cultivationEnabled, false)));
       }
     } catch (SQLException exception) {
       throw new IllegalStateException("Unable to load the current application user", exception);

@@ -25,6 +25,8 @@ management:
 
 novel:
   environment: ${NOVEL_ENVIRONMENT:local}
+  features:
+    cultivation-enabled: ${NOVEL_FEATURE_CULTIVATION_ENABLED:false}
   web:
     cors:
       allowed-origins:

@@ -16,18 +16,21 @@ class SystemStatusControllerTests {
             "1234567890-example.apps.googleusercontent.com",
             "https://api.example.test/api/v1/auth/google/credential",
             Base64.getUrlEncoder().withoutPadding().encodeToString(new byte[32]));
-    ApiSystemStatus status = new SystemStatusController("test", googleConfiguration).status();
+    ApiSystemStatus status =
+        new SystemStatusController("test", googleConfiguration, false).status();
 
     assertTrue(status.integrations().googleOidcEnabled());
     assertFalse(status.integrations().momoTestEnabled());
     assertFalse(status.features().commerceSandboxEnabled());
+    assertFalse(status.features().cultivationEnabled());
   }
 
   @Test
   void keepsGoogleDisabledWhenConfigurationIsIncomplete() {
     GoogleSignInConfiguration googleConfiguration = new GoogleSignInConfiguration("", "", "");
-    ApiSystemStatus status = new SystemStatusController("test", googleConfiguration).status();
+    ApiSystemStatus status = new SystemStatusController("test", googleConfiguration, true).status();
 
     assertFalse(status.integrations().googleOidcEnabled());
+    assertTrue(status.features().cultivationEnabled());
   }
 }

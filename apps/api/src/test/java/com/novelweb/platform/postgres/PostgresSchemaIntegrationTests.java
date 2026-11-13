@@ -109,6 +109,7 @@ import tools.jackson.databind.ObjectMapper;
       "novel.auth.google.web-client-id=novel-web-integration-test.apps.googleusercontent.com",
       "novel.auth.google.credential-callback-uri=https://api.example.test/api/v1/auth/google/credential",
       "novel.security.csrf.hmac-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "novel.features.cultivation-enabled=true",
       "novel.library.cursor.hmac-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
       "novel.imports.staging.root=${java.io.tmpdir}/novel-web-import-postgres-tests",
       "novel.imports.staging.max-upload-bytes=1024",
@@ -158,6 +159,9 @@ class PostgresSchemaIntegrationTests {
           "reader_bookmarks",
           "reader_bookmark_idempotency",
           "reader_annotations",
+          "cultivation_rank_catalogs",
+          "cultivation_rank_catalog_entries",
+          "cultivation_profiles",
           "library_collections",
           "library_collection_works",
           "import_rights_statements",
@@ -238,7 +242,7 @@ class PostgresSchemaIntegrationTests {
             connection.prepareStatement("SELECT COUNT(*) FROM databasechangelog");
         ResultSet changesets = changesetCount.executeQuery()) {
       changesets.next();
-      assertEquals(74, changesets.getInt(1), "unexpected number of applied changesets");
+      assertEquals(77, changesets.getInt(1), "unexpected number of applied changesets");
     }
 
     Set<String> actualTables = new HashSet<>();
@@ -258,6 +262,146 @@ class PostgresSchemaIntegrationTests {
       }
     }
     assertEquals(EXPECTED_APPLICATION_TABLES, actualTables);
+  }
+
+  @Test
+  void cultivationProfileIsPrivateVersionPinnedIdempotentAndCsrfProtected() throws Exception {
+    UUID actorId = createSessionTestUser("Cultivation Profile Owner");
+    UUID otherUserId = createSessionTestUser("Other Cultivation Profile");
+    UUID policyBlockedId = createSessionTestUser("Cultivation Policy Blocked");
+    try {
+      addCurrentPolicyAcceptances(actorId);
+      addCurrentPolicyAcceptances(otherUserId);
+      SessionService.IssuedSession actorSession = sessionService.create(actorId).orElseThrow();
+      SessionService.IssuedSession otherSession = sessionService.create(otherUserId).orElseThrow();
+      SessionService.IssuedSession blockedSession =
+          sessionService.create(policyBlockedId).orElseThrow();
+      var actorCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", actorSession.cookieValue());
+      var otherCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", otherSession.cookieValue());
+      String actorCsrf = csrfTokenService.tokenFor(actorSession.cookieValue());
+
+      MvcResult unauthenticated = mockMvc.perform(get("/api/v1/me/cultivation")).andReturn();
+      assertEquals(401, unauthenticated.getResponse().getStatus());
+
+      MvcResult initial =
+          mockMvc.perform(get("/api/v1/me/cultivation").cookie(actorCookie)).andReturn();
+      assertEquals(200, initial.getResponse().getStatus());
+      assertTrue(initial.getResponse().getHeader("Cache-Control").contains("no-store"));
+      JsonNode initialBody = objectMapper.readTree(initial.getResponse().getContentAsString());
+      assertFalse(initialBody.path("enabled").asBoolean());
+      assertEquals(0, initialBody.path("profileVersion").asLong());
+      assertEquals(0, initialBody.path("totalXp").asLong());
+      assertEquals("cultivation-v1", initialBody.path("rankCatalogVersion").asText());
+      assertEquals("mortal", initialBody.path("currentRank").path("key").asText());
+      assertEquals(100, initialBody.path("xpToNextRank").asLong());
+      assertEquals(120, initialBody.path("dailyXpCap").asInt());
+      assertEquals(18, initialBody.path("rankCatalog").size());
+      assertFalse(initialBody.has("userId"));
+      assertFalse(initialBody.toString().contains("Cultivation Profile Owner"));
+
+      MvcResult otherProfile =
+          mockMvc.perform(get("/api/v1/me/cultivation").cookie(otherCookie)).andReturn();
+      JsonNode otherBody = objectMapper.readTree(otherProfile.getResponse().getContentAsString());
+      assertEquals(200, otherProfile.getResponse().getStatus());
+      assertFalse(otherBody.path("enabled").asBoolean());
+      assertEquals(0, otherBody.path("profileVersion").asLong());
+
+      MvcResult missingCsrf =
+          mockMvc
+              .perform(
+                  put("/api/v1/me/cultivation/settings")
+                      .cookie(actorCookie)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"enabled\":true}"))
+              .andReturn();
+      assertEquals(403, missingCsrf.getResponse().getStatus());
+      assertTrue(missingCsrf.getResponse().getContentAsString().contains("CSRF_FAILED"));
+
+      MvcResult unknownField =
+          mockMvc
+              .perform(
+                  put("/api/v1/me/cultivation/settings")
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"enabled\":true,\"totalXp\":999999}"))
+              .andReturn();
+      assertEquals(400, unknownField.getResponse().getStatus());
+
+      MvcResult enabled =
+          mockMvc
+              .perform(
+                  put("/api/v1/me/cultivation/settings")
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"enabled\":true}"))
+              .andReturn();
+      assertEquals(200, enabled.getResponse().getStatus());
+      JsonNode enabledBody = objectMapper.readTree(enabled.getResponse().getContentAsString());
+      assertTrue(enabledBody.path("enabled").asBoolean());
+      assertEquals(1, enabledBody.path("profileVersion").asLong());
+
+      MvcResult repeatedEnable =
+          mockMvc
+              .perform(
+                  put("/api/v1/me/cultivation/settings")
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"enabled\":true}"))
+              .andReturn();
+      JsonNode repeatedBody =
+          objectMapper.readTree(repeatedEnable.getResponse().getContentAsString());
+      assertEquals(200, repeatedEnable.getResponse().getStatus());
+      assertEquals(1, repeatedBody.path("profileVersion").asLong());
+
+      MvcResult paused =
+          mockMvc
+              .perform(
+                  put("/api/v1/me/cultivation/settings")
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"enabled\":false}"))
+              .andReturn();
+      JsonNode pausedBody = objectMapper.readTree(paused.getResponse().getContentAsString());
+      assertEquals(200, paused.getResponse().getStatus());
+      assertFalse(pausedBody.path("enabled").asBoolean());
+      assertEquals(2, pausedBody.path("profileVersion").asLong());
+      assertEquals("cultivation-v1", pausedBody.path("rankCatalogVersion").asText());
+
+      MvcResult policyBlocked =
+          mockMvc
+              .perform(
+                  get("/api/v1/me/cultivation")
+                      .cookie(
+                          new jakarta.servlet.http.Cookie(
+                              "__Host-novel_session", blockedSession.cookieValue())))
+              .andReturn();
+      assertEquals(403, policyBlocked.getResponse().getStatus());
+      assertTrue(
+          policyBlocked.getResponse().getContentAsString().contains("POLICY_ACCEPTANCE_REQUIRED"));
+
+      SQLException immutableCatalog =
+          assertThrows(
+              SQLException.class,
+              () -> {
+                try (Connection connection = dataSource.getConnection();
+                    PreparedStatement update =
+                        connection.prepareStatement(
+                            "UPDATE cultivation_rank_catalog_entries SET threshold_xp = 101 WHERE rank_key = 'qi-1'")) {
+                  update.executeUpdate();
+                }
+              });
+      assertEquals("55000", immutableCatalog.getSQLState());
+    } finally {
+      deleteSessionTestUser(actorId);
+      deleteSessionTestUser(otherUserId);
+      deleteSessionTestUser(policyBlockedId);
+    }
   }
 
   @Test
@@ -5981,7 +6125,7 @@ class PostgresSchemaIntegrationTests {
       assertFalse(body.path("features").path("privateLibraryEnabled").asBoolean());
       assertFalse(body.path("features").path("importEnabled").asBoolean());
       assertFalse(body.path("features").path("readerEnabled").asBoolean());
-      assertFalse(body.path("features").path("cultivationEnabled").asBoolean());
+      assertTrue(body.path("features").path("cultivationEnabled").asBoolean());
       assertFalse(body.path("features").path("commerceSandboxEnabled").asBoolean());
       assertFalse(authenticated.getResponse().getContentAsString().contains(session.cookieValue()));
     } finally {
