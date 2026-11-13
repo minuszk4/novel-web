@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 6.13.0
+  version: 6.14.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -44,7 +44,9 @@ paths:
       summary: List visible glossaries
       description: >-
         Returns glossary metadata visible to the current actor: owned USER_GLOBAL glossaries and glossary scopes
-        attached to libraries the actor can read. Results are ordered by creation time descending, then ID descending.
+        attached to libraries the actor can read. Each item includes canWrite, derived from the same server-side
+        ownership/workspace role policy used by glossary mutations. This is a UI capability hint; every mutation
+        still rechecks current authorization. Results are ordered by creation time descending, then ID descending.
         Optional scope, libraryId and name query filters are bound into an actor- and access-scope-bound signed keyset
         cursor. Page size is at most 100. A filtered library ID that is missing or inaccessible returns an empty page.
         Current Terms and Privacy acceptance is required; responses use no-store caching.
@@ -4907,7 +4909,7 @@ components:
     GlossaryCatalogItem:
       type: object
       additionalProperties: false
-      required: [id, name, scope, sourceLanguage, targetLanguage, version, activeRevisionId, createdAt]
+      required: [id, name, scope, sourceLanguage, targetLanguage, version, activeRevisionId, createdAt, canWrite]
       properties:
         id:
           type: string
@@ -4934,6 +4936,9 @@ components:
         createdAt:
           type: string
           format: date-time
+        canWrite:
+          type: boolean
+          description: Actor may edit this glossary now; mutations still enforce authorization independently.
     GlossaryActiveRevision:
       type: object
       additionalProperties: false

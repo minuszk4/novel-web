@@ -2106,6 +2106,7 @@ class PostgresSchemaIntegrationTests {
       assertEquals("USER_GLOBAL", globalBody.path("scope").asText());
       assertEquals(1, globalBody.path("version").asInt());
       assertTrue(globalBody.path("activeRevisionId").isNull());
+      assertTrue(globalBody.path("canWrite").asBoolean());
 
       List<GlossaryCatalogController.CreateGlossaryRequest> scopedRequests =
           List.of(
@@ -2322,6 +2323,93 @@ class PostgresSchemaIntegrationTests {
   private static String tamperLastCharacter(String token) {
     char last = token.charAt(token.length() - 1);
     return token.substring(0, token.length() - 1) + (last == 'A' ? 'B' : 'A');
+  }
+
+  @Test
+  void glossaryCatalogReportsCurrentWorkspaceWriteCapabilityToEachActor() throws Exception {
+    UUID ownerId = createSessionTestUser("Glossary Capability Owner");
+    UUID editorId = createSessionTestUser("Glossary Capability Editor");
+    UUID readerId = createSessionTestUser("Glossary Capability Reader");
+    UUID workspaceId = null;
+    UUID libraryId = null;
+    UUID glossaryId = UUID.randomUUID();
+    try {
+      addCurrentPolicyAcceptances(ownerId);
+      addCurrentPolicyAcceptances(editorId);
+      addCurrentPolicyAcceptances(readerId);
+      SessionService.IssuedSession ownerSession = sessionService.create(ownerId).orElseThrow();
+      SessionService.IssuedSession editorSession = sessionService.create(editorId).orElseThrow();
+      SessionService.IssuedSession readerSession = sessionService.create(readerId).orElseThrow();
+      var ownerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", ownerSession.cookieValue());
+      var editorCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", editorSession.cookieValue());
+      var readerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", readerSession.cookieValue());
+
+      WorkspaceRepository.WorkspaceRecord workspace =
+          workspaceService.createWorkspace(ownerId, "Glossary Capability Workspace");
+      workspaceId = workspace.id();
+      workspaceService.addMember(ownerId, workspaceId, editorId, WorkspaceRepository.Role.EDITOR);
+      workspaceService.addMember(ownerId, workspaceId, readerId, WorkspaceRepository.Role.READER);
+      libraryId =
+          libraryService.createWorkspaceLibrary(ownerId, workspaceId, "Capability Library").id();
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement insert =
+              connection.prepareStatement(
+                  "INSERT INTO glossaries (id, name, scope_type, library_id, source_language,"
+                      + " target_language) VALUES (?, 'Shared Capability Glossary', 'LIBRARY', ?,"
+                      + " 'zh-Hans', 'vi')")) {
+        insert.setObject(1, glossaryId);
+        insert.setObject(2, libraryId);
+        assertEquals(1, insert.executeUpdate());
+      }
+
+      JsonNode ownerItem = catalogItemForLibrary(ownerCookie, libraryId);
+      JsonNode editorItem = catalogItemForLibrary(editorCookie, libraryId);
+      JsonNode readerItem = catalogItemForLibrary(readerCookie, libraryId);
+      assertEquals(glossaryId.toString(), ownerItem.path("id").asText());
+      assertEquals(glossaryId.toString(), editorItem.path("id").asText());
+      assertEquals(glossaryId.toString(), readerItem.path("id").asText());
+      assertTrue(ownerItem.path("canWrite").asBoolean());
+      assertTrue(editorItem.path("canWrite").asBoolean());
+      assertFalse(readerItem.path("canWrite").asBoolean());
+    } finally {
+      try (Connection connection = dataSource.getConnection()) {
+        try (PreparedStatement deleteGlossary =
+            connection.prepareStatement("DELETE FROM glossaries WHERE id = ?")) {
+          deleteGlossary.setObject(1, glossaryId);
+          deleteGlossary.executeUpdate();
+        }
+        if (libraryId != null) {
+          try (PreparedStatement deleteLibrary =
+              connection.prepareStatement("DELETE FROM libraries WHERE id = ?")) {
+            deleteLibrary.setObject(1, libraryId);
+            deleteLibrary.executeUpdate();
+          }
+        }
+      }
+      if (workspaceId != null) deleteWorkspaceTestData(workspaceId);
+      deleteSessionTestUser(ownerId);
+      deleteSessionTestUser(editorId);
+      deleteSessionTestUser(readerId);
+    }
+  }
+
+  private JsonNode catalogItemForLibrary(jakarta.servlet.http.Cookie actorCookie, UUID libraryId)
+      throws Exception {
+    MvcResult response =
+        mockMvc
+            .perform(
+                get("/api/v1/glossaries")
+                    .cookie(actorCookie)
+                    .param("libraryId", libraryId.toString()))
+            .andReturn();
+    assertEquals(200, response.getResponse().getStatus());
+    JsonNode items =
+        objectMapper.readTree(response.getResponse().getContentAsString()).path("items");
+    assertEquals(1, items.size());
+    return items.get(0);
   }
 
   @Test

@@ -123,15 +123,37 @@ describe('GlossaryApiService', () => {
           version: 4,
           activeRevisionId,
           createdAt: timestamp,
+          canWrite: true,
         },
       ],
       nextCursor: null,
     });
 
     await expect(pending).resolves.toMatchObject({
-      items: [{ id: glossaryId, scope: 'LIBRARY', version: 4 }],
+      items: [{ id: glossaryId, scope: 'LIBRARY', version: 4, canWrite: true }],
       nextCursor: null,
     });
+  });
+
+  it('fails closed when the catalog omits the server-computed write capability', async () => {
+    const pending = service.listGlossaries();
+    http.expectOne({ method: 'GET', url: '/api/v1/glossaries?limit=25' }).flush({
+      items: [
+        {
+          id: glossaryId,
+          name: 'Tu luyện',
+          scope: 'LIBRARY',
+          sourceLanguage: 'zh-Hans',
+          targetLanguage: 'vi',
+          version: 4,
+          activeRevisionId,
+          createdAt: timestamp,
+        },
+      ],
+      nextCursor: null,
+    });
+
+    await expect(pending).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
   });
 
   it('loads the immutable active revision only with a strong ETag and ordered terms', async () => {

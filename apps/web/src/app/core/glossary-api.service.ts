@@ -23,6 +23,7 @@ export interface GlossaryCatalogItem {
   version: number;
   activeRevisionId: string | null;
   createdAt: string;
+  canWrite: boolean;
 }
 
 export interface GlossaryPage {
@@ -378,7 +379,8 @@ function parseCatalogItem(value: unknown): GlossaryCatalogItem {
     !isBoundedString(value['targetLanguage'], 2, 35) ||
     !isPositiveInteger(value['version']) ||
     !isNullableUuid(value['activeRevisionId']) ||
-    !isTimestamp(value['createdAt'])
+    !isTimestamp(value['createdAt']) ||
+    typeof value['canWrite'] !== 'boolean'
   ) {
     throw invalidResponse();
   }
@@ -391,6 +393,7 @@ function parseCatalogItem(value: unknown): GlossaryCatalogItem {
     version: value['version'],
     activeRevisionId: value['activeRevisionId'],
     createdAt: value['createdAt'],
+    canWrite: value['canWrite'],
   };
 }
 

@@ -71,7 +71,11 @@ public class GlossaryCatalogRepository {
         new StringBuilder(
             """
                 SELECT g.id, g.name, g.scope_type, g.source_language, g.target_language,
-                       g.version, g.active_revision_id, g.created_at
+                       g.version, g.active_revision_id, g.created_at,
+                       CASE WHEN g.scope_type = 'USER_GLOBAL'
+                            THEN g.owner_user_id = actor.id
+                            ELSE can_access_library(g.library_id, actor.id, TRUE)
+                       END AS can_write
                 FROM glossaries g
                 JOIN users actor ON actor.id = ? AND actor.status = 'active'
                 WHERE g.deleted_at IS NULL
@@ -139,7 +143,7 @@ public class GlossaryCatalogRepository {
                      source_language, target_language)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 RETURNING id, name, scope_type, source_language, target_language,
-                          version, active_revision_id, created_at
+                          version, active_revision_id, created_at, TRUE AS can_write
                 """)) {
       int parameter = 1;
       insert.setObject(parameter++, glossaryId);
@@ -252,7 +256,8 @@ public class GlossaryCatalogRepository {
         row.getString("target_language"),
         row.getLong("version"),
         row.getObject("active_revision_id", UUID.class),
-        row.getObject("created_at", OffsetDateTime.class).toInstant());
+        row.getObject("created_at", OffsetDateTime.class).toInstant(),
+        row.getBoolean("can_write"));
   }
 
   private static GlossaryCursorCodec.Position position(GlossaryRecord record) {
@@ -277,7 +282,8 @@ public class GlossaryCatalogRepository {
       String targetLanguage,
       long version,
       UUID activeRevisionId,
-      Instant createdAt) {}
+      Instant createdAt,
+      boolean canWrite) {}
 
   public record Slice(
       List<GlossaryRecord> items, boolean hasMore, GlossaryCursorCodec.Position nextPosition) {
