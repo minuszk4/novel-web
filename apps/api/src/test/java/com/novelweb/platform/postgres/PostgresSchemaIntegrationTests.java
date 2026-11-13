@@ -39,6 +39,7 @@ import com.novelweb.library.imports.ImportStagingCleanupService;
 import com.novelweb.library.imports.ImportStagingRateLimiter;
 import com.novelweb.progression.cultivation.CultivationRepository;
 import com.novelweb.progression.cultivation.CultivationService;
+import com.novelweb.translation.glossary.GlossaryRepository;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -204,6 +205,8 @@ class PostgresSchemaIntegrationTests {
   @Autowired private LibraryUserStateService libraryUserStateService;
 
   @Autowired private CultivationRepository cultivationRepository;
+
+  @Autowired private GlossaryRepository glossaryRepository;
 
   @Autowired private CultivationService cultivationService;
 
@@ -397,6 +400,87 @@ class PostgresSchemaIntegrationTests {
         publishRevision.setObject(1, revisionId);
         publishRevision.setObject(2, glossaryId);
         publishRevision.executeUpdate();
+      }
+      GlossaryRepository.GlossarySnapshot snapshot =
+          glossaryRepository.loadActiveRevision(actorId, glossaryId).orElseThrow();
+      assertEquals(revisionId, snapshot.activeRevisionId());
+      assertEquals(1, snapshot.revisionNumber());
+      assertEquals("Golden Core", snapshot.terms().getFirst().aliases().getFirst());
+      assertEquals("Kim Đan", snapshot.asDomainRevision().terms().getFirst().targetTerm());
+      assertTrue(glossaryRepository.loadActiveRevision(UUID.randomUUID(), glossaryId).isEmpty());
+
+      UUID workspaceReaderId = createSessionTestUser("Glossary Workspace Reader");
+      UUID workspaceOutsiderId = createSessionTestUser("Glossary Workspace Outsider");
+      var workspace = workspaceService.createWorkspace(actorId, "Glossary Read Workspace");
+      UUID workspaceId = workspace.id();
+      workspaceService.addMember(
+          actorId, workspaceId, workspaceReaderId, WorkspaceRepository.Role.READER);
+      UUID workspaceLibraryId =
+          libraryService
+              .createWorkspaceLibrary(actorId, workspaceId, "Shared Glossary Library")
+              .id();
+      UUID workspaceGlossaryId = UUID.randomUUID();
+      UUID workspaceRevisionId = UUID.randomUUID();
+      try {
+        try (PreparedStatement insertGlossary =
+            connection.prepareStatement(
+                "INSERT INTO glossaries (id, name, scope_type, library_id, source_language,"
+                    + " target_language) VALUES (?, 'Shared', 'LIBRARY', ?, 'zh-Hans', 'vi')")) {
+          insertGlossary.setObject(1, workspaceGlossaryId);
+          insertGlossary.setObject(2, workspaceLibraryId);
+          insertGlossary.executeUpdate();
+        }
+        try (PreparedStatement insertRevision =
+            connection.prepareStatement(
+                "INSERT INTO glossary_revisions (id, glossary_id, revision_no, created_by_user_id)"
+                    + " VALUES (?, ?, 1, ?)")) {
+          insertRevision.setObject(1, workspaceRevisionId);
+          insertRevision.setObject(2, workspaceGlossaryId);
+          insertRevision.setObject(3, actorId);
+          insertRevision.executeUpdate();
+        }
+        try (PreparedStatement publishRevision =
+            connection.prepareStatement(
+                "UPDATE glossaries SET active_revision_id = ? WHERE id = ?")) {
+          publishRevision.setObject(1, workspaceRevisionId);
+          publishRevision.setObject(2, workspaceGlossaryId);
+          publishRevision.executeUpdate();
+        }
+        assertTrue(
+            glossaryRepository
+                .loadActiveRevision(workspaceReaderId, workspaceGlossaryId)
+                .isPresent());
+        try (PreparedStatement suspendReader =
+            connection.prepareStatement("UPDATE users SET status = 'suspended' WHERE id = ?")) {
+          suspendReader.setObject(1, workspaceReaderId);
+          suspendReader.executeUpdate();
+        }
+        assertTrue(
+            glossaryRepository
+                .loadActiveRevision(workspaceReaderId, workspaceGlossaryId)
+                .isEmpty());
+        assertTrue(
+            glossaryRepository
+                .loadActiveRevision(workspaceOutsiderId, workspaceGlossaryId)
+                .isEmpty());
+      } finally {
+        try (PreparedStatement deleteGlossary =
+            connection.prepareStatement("DELETE FROM glossaries WHERE id = ?")) {
+          deleteGlossary.setObject(1, workspaceGlossaryId);
+          deleteGlossary.executeUpdate();
+        }
+        try (PreparedStatement deleteLibrary =
+            connection.prepareStatement("DELETE FROM libraries WHERE id = ?")) {
+          deleteLibrary.setObject(1, workspaceLibraryId);
+          deleteLibrary.executeUpdate();
+        }
+        try (PreparedStatement deleteWorkspace =
+            connection.prepareStatement("DELETE FROM workspaces WHERE id = ?")) {
+          deleteWorkspace.setObject(1, workspaceId);
+          deleteWorkspace.executeUpdate();
+        }
+        deleteSessionTestUser(workspaceReaderId);
+        deleteSessionTestUser(workspaceOutsiderId);
       }
       try (PreparedStatement deleteUser =
           connection.prepareStatement("DELETE FROM users WHERE id = ?")) {
