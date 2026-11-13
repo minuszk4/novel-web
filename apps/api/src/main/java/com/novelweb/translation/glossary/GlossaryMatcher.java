@@ -12,8 +12,12 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
+import org.springframework.context.annotation.Profile;
+import org.springframework.stereotype.Component;
 
 /** Finds glossary terms in source text without rewriting or recursively processing that text. */
+@Component
+@Profile("postgres")
 public final class GlossaryMatcher {
 
   private static final Comparator<Candidate> CANDIDATE_ORDER =

@@ -180,6 +180,7 @@ class PostgresSchemaIntegrationTests {
           "glossary_revisions",
           "glossary_terms",
           "glossary_aliases",
+          "glossary_publication_events",
           "library_collections",
           "library_collection_works",
           "import_rights_statements",
@@ -268,7 +269,7 @@ class PostgresSchemaIntegrationTests {
             connection.prepareStatement("SELECT COUNT(*) FROM databasechangelog");
         ResultSet changesets = changesetCount.executeQuery()) {
       changesets.next();
-      assertEquals(95, changesets.getInt(1), "unexpected number of applied changesets");
+      assertEquals(96, changesets.getInt(1), "unexpected number of applied changesets");
     }
 
     Set<String> actualTables = new HashSet<>();
@@ -1006,6 +1007,324 @@ class PostgresSchemaIntegrationTests {
               connection.prepareStatement("DELETE FROM glossaries WHERE id IN (?, ?)")) {
         delete.setObject(1, glossaryId);
         delete.setObject(2, emptyGlossaryId);
+        delete.executeUpdate();
+      }
+      deleteSessionTestUser(ownerId);
+      deleteSessionTestUser(blockedId);
+      deleteSessionTestUser(outsiderId);
+    }
+  }
+
+  @Test
+  void glossaryPublicationRouteLintsLocksVersionsAndWritesImmutableAudit() throws Exception {
+    UUID ownerId = createSessionTestUser("Glossary Publish Owner");
+    UUID blockedId = createSessionTestUser("Glossary Publish Policy Blocked");
+    UUID outsiderId = createSessionTestUser("Glossary Publish Outsider");
+    UUID glossaryId = UUID.randomUUID();
+    UUID firstTermId = UUID.randomUUID();
+    UUID conflictTermId = UUID.randomUUID();
+    UUID conflictTermIdTwo = UUID.randomUUID();
+    UUID latestTermId = UUID.randomUUID();
+    try {
+      addCurrentPolicyAcceptances(ownerId);
+      addCurrentPolicyAcceptances(outsiderId);
+      SessionService.IssuedSession ownerSession = sessionService.create(ownerId).orElseThrow();
+      SessionService.IssuedSession blockedSession = sessionService.create(blockedId).orElseThrow();
+      SessionService.IssuedSession outsiderSession =
+          sessionService.create(outsiderId).orElseThrow();
+      var ownerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", ownerSession.cookieValue());
+      var blockedCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", blockedSession.cookieValue());
+      var outsiderCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", outsiderSession.cookieValue());
+      String ownerCsrf = csrfTokenService.tokenFor(ownerSession.cookieValue());
+      String blockedCsrf = csrfTokenService.tokenFor(blockedSession.cookieValue());
+      String outsiderCsrf = csrfTokenService.tokenFor(outsiderSession.cookieValue());
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement insert =
+              connection.prepareStatement(
+                  """
+                      INSERT INTO glossaries
+                          (id, owner_user_id, name, scope_type, source_language, target_language)
+                      VALUES (?, ?, 'Publish route glossary', 'USER_GLOBAL', 'zh-Hans', 'vi')
+                      """)) {
+        insert.setObject(1, glossaryId);
+        insert.setObject(2, ownerId);
+        assertEquals(1, insert.executeUpdate());
+      }
+
+      GlossaryRevisionWriteRepository.DraftCreated firstDraft =
+          glossaryRevisionWriteRepository.createDraftRevision(
+              ownerId,
+              glossaryId,
+              1,
+              List.of(
+                  new GlossaryRevisionWriteRepository.TermDraft(
+                      firstTermId,
+                      "金丹",
+                      "Kim Đan",
+                      5,
+                      GlossaryMatcher.CasePolicy.INSENSITIVE,
+                      GlossaryMatcher.MatchMode.WHOLE_PHRASE,
+                      false,
+                      "rank name",
+                      List.of("Golden Core"))));
+      String route = "/api/v1/glossaries/{glossaryId}/revisions/{revisionId}/publish";
+
+      MvcResult unauthenticated =
+          mockMvc
+              .perform(
+                  post(route, glossaryId, firstDraft.revisionId())
+                      .header(HttpHeaders.IF_MATCH, "\"v2\""))
+              .andReturn();
+      assertEquals(403, unauthenticated.getResponse().getStatus());
+      assertTrue(unauthenticated.getResponse().getContentAsString().contains("CSRF_FAILED"));
+
+      MvcResult policyBlocked =
+          mockMvc
+              .perform(
+                  post(route, glossaryId, firstDraft.revisionId())
+                      .cookie(blockedCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, blockedCsrf)
+                      .header(HttpHeaders.IF_MATCH, "\"v2\""))
+              .andReturn();
+      assertEquals(403, policyBlocked.getResponse().getStatus());
+      assertTrue(
+          policyBlocked.getResponse().getContentAsString().contains("POLICY_ACCEPTANCE_REQUIRED"));
+
+      MvcResult missingCsrf =
+          mockMvc
+              .perform(
+                  post(route, glossaryId, firstDraft.revisionId())
+                      .cookie(ownerCookie)
+                      .header(HttpHeaders.IF_MATCH, "\"v2\""))
+              .andReturn();
+      assertEquals(403, missingCsrf.getResponse().getStatus());
+      assertTrue(missingCsrf.getResponse().getContentAsString().contains("CSRF_FAILED"));
+
+      MvcResult missingIfMatch =
+          mockMvc
+              .perform(
+                  post(route, glossaryId, firstDraft.revisionId())
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf))
+              .andReturn();
+      assertEquals(428, missingIfMatch.getResponse().getStatus());
+
+      MvcResult malformedIfMatch =
+          mockMvc
+              .perform(
+                  post(route, glossaryId, firstDraft.revisionId())
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(HttpHeaders.IF_MATCH, "v2"))
+              .andReturn();
+      assertEquals(400, malformedIfMatch.getResponse().getStatus());
+
+      MvcResult firstPublished =
+          mockMvc
+              .perform(
+                  post(route, glossaryId, firstDraft.revisionId())
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(HttpHeaders.IF_MATCH, "\"v2\""))
+              .andReturn();
+      assertEquals(200, firstPublished.getResponse().getStatus());
+      assertEquals("\"v3\"", firstPublished.getResponse().getHeader(HttpHeaders.ETAG));
+      assertTrue(
+          firstPublished.getResponse().getHeader(HttpHeaders.CACHE_CONTROL).contains("no-store"));
+      JsonNode firstPublishedBody =
+          objectMapper.readTree(firstPublished.getResponse().getContentAsString());
+      assertEquals(
+          firstDraft.revisionId().toString(), firstPublishedBody.path("revisionId").asText());
+      assertEquals(1, firstPublishedBody.path("revisionNumber").asInt());
+      assertFalse(firstPublishedBody.path("alreadyActive").asBoolean());
+
+      MvcResult retryFirstPublish =
+          mockMvc
+              .perform(
+                  post(route, glossaryId, firstDraft.revisionId())
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(HttpHeaders.IF_MATCH, "\"v2\""))
+              .andReturn();
+      assertEquals(200, retryFirstPublish.getResponse().getStatus());
+      assertEquals("\"v3\"", retryFirstPublish.getResponse().getHeader(HttpHeaders.ETAG));
+      assertTrue(
+          objectMapper
+              .readTree(retryFirstPublish.getResponse().getContentAsString())
+              .path("alreadyActive")
+              .asBoolean());
+
+      GlossaryRevisionWriteRepository.DraftCreated conflictingDraft =
+          glossaryRevisionWriteRepository.createDraftRevision(
+              ownerId,
+              glossaryId,
+              3,
+              List.of(
+                  new GlossaryRevisionWriteRepository.TermDraft(
+                      conflictTermId,
+                      "玉佩",
+                      "Ngọc bội",
+                      1,
+                      GlossaryMatcher.CasePolicy.INSENSITIVE,
+                      GlossaryMatcher.MatchMode.WHOLE_PHRASE,
+                      false,
+                      null,
+                      List.of()),
+                  new GlossaryRevisionWriteRepository.TermDraft(
+                      conflictTermIdTwo,
+                      "玉佩",
+                      "Ngọc phù",
+                      1,
+                      GlossaryMatcher.CasePolicy.INSENSITIVE,
+                      GlossaryMatcher.MatchMode.WHOLE_PHRASE,
+                      false,
+                      null,
+                      List.of())));
+      MvcResult blockedByLint =
+          mockMvc
+              .perform(
+                  post(route, glossaryId, conflictingDraft.revisionId())
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(HttpHeaders.IF_MATCH, "\"v4\""))
+              .andReturn();
+      assertEquals(422, blockedByLint.getResponse().getStatus());
+      assertTrue(
+          blockedByLint
+              .getResponse()
+              .getContentAsString()
+              .contains("GLOSSARY_REVISION_NOT_PUBLISHABLE"));
+      assertTrue(
+          blockedByLint
+              .getResponse()
+              .getContentAsString()
+              .contains("EQUAL_PRECEDENCE_DIFFERENT_OUTCOMES"));
+      assertEquals(
+          firstDraft.revisionId(),
+          glossaryRepository
+              .loadActiveRevision(ownerId, glossaryId)
+              .orElseThrow()
+              .activeRevisionId());
+
+      GlossaryRevisionWriteRepository.DraftCreated latestDraft =
+          glossaryRevisionWriteRepository.createDraftRevision(
+              ownerId,
+              glossaryId,
+              4,
+              List.of(
+                  new GlossaryRevisionWriteRepository.TermDraft(
+                      latestTermId,
+                      "筑基",
+                      "Trúc Cơ",
+                      3,
+                      GlossaryMatcher.CasePolicy.INSENSITIVE,
+                      GlossaryMatcher.MatchMode.WHOLE_PHRASE,
+                      false,
+                      null,
+                      List.of())));
+
+      MvcResult replayOlderActiveRevision =
+          mockMvc
+              .perform(
+                  post(route, glossaryId, firstDraft.revisionId())
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(HttpHeaders.IF_MATCH, "\"v3\""))
+              .andReturn();
+      assertEquals(200, replayOlderActiveRevision.getResponse().getStatus());
+      assertEquals("\"v5\"", replayOlderActiveRevision.getResponse().getHeader(HttpHeaders.ETAG));
+      assertTrue(
+          objectMapper
+              .readTree(replayOlderActiveRevision.getResponse().getContentAsString())
+              .path("alreadyActive")
+              .asBoolean());
+
+      MvcResult nonLatest =
+          mockMvc
+              .perform(
+                  post(route, glossaryId, conflictingDraft.revisionId())
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(HttpHeaders.IF_MATCH, "\"v5\""))
+              .andReturn();
+      assertEquals(409, nonLatest.getResponse().getStatus());
+      assertTrue(
+          nonLatest.getResponse().getContentAsString().contains("GLOSSARY_REVISION_NOT_LATEST"));
+      assertEquals("\"v5\"", nonLatest.getResponse().getHeader(HttpHeaders.ETAG));
+
+      MvcResult staleVersion =
+          mockMvc
+              .perform(
+                  post(route, glossaryId, latestDraft.revisionId())
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(HttpHeaders.IF_MATCH, "\"v4\""))
+              .andReturn();
+      assertEquals(409, staleVersion.getResponse().getStatus());
+      assertEquals("\"v5\"", staleVersion.getResponse().getHeader(HttpHeaders.ETAG));
+      assertTrue(
+          staleVersion.getResponse().getContentAsString().contains("GLOSSARY_VERSION_STALE"));
+
+      MvcResult outsider =
+          mockMvc
+              .perform(
+                  post(route, glossaryId, latestDraft.revisionId())
+                      .cookie(outsiderCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, outsiderCsrf)
+                      .header(HttpHeaders.IF_MATCH, "\"v5\""))
+              .andReturn();
+      assertEquals(404, outsider.getResponse().getStatus());
+
+      MvcResult latestPublished =
+          mockMvc
+              .perform(
+                  post(route, glossaryId, latestDraft.revisionId())
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(HttpHeaders.IF_MATCH, "\"v5\""))
+              .andReturn();
+      assertEquals(200, latestPublished.getResponse().getStatus());
+      assertEquals("\"v6\"", latestPublished.getResponse().getHeader(HttpHeaders.ETAG));
+      assertEquals(
+          latestDraft.revisionId(),
+          glossaryRepository
+              .loadActiveRevision(ownerId, glossaryId)
+              .orElseThrow()
+              .activeRevisionId());
+
+      long publicationEventCount;
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement select =
+              connection.prepareStatement(
+                  "SELECT count(*) FROM glossary_publication_events WHERE glossary_id = ?")) {
+        select.setObject(1, glossaryId);
+        try (ResultSet row = select.executeQuery()) {
+          assertTrue(row.next());
+          publicationEventCount = row.getLong(1);
+        }
+      }
+      assertEquals(2, publicationEventCount);
+
+      assertThrows(
+          SQLException.class,
+          () -> {
+            try (Connection connection = dataSource.getConnection();
+                PreparedStatement update =
+                    connection.prepareStatement(
+                        "UPDATE glossary_publication_events SET glossary_version = 99"
+                            + " WHERE glossary_id = ?")) {
+              update.setObject(1, glossaryId);
+              update.executeUpdate();
+            }
+          });
+    } finally {
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement delete =
+              connection.prepareStatement("DELETE FROM glossaries WHERE id = ?")) {
+        delete.setObject(1, glossaryId);
         delete.executeUpdate();
       }
       deleteSessionTestUser(ownerId);
