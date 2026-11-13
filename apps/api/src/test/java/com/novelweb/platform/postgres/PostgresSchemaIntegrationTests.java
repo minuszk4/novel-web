@@ -904,6 +904,116 @@ class PostgresSchemaIntegrationTests {
   }
 
   @Test
+  void glossaryActiveRevisionRouteEnforcesPolicyAndConcealsInaccessibleSnapshots()
+      throws Exception {
+    UUID ownerId = createSessionTestUser("Glossary Active Read Owner");
+    UUID blockedId = createSessionTestUser("Glossary Active Read Policy Blocked");
+    UUID outsiderId = createSessionTestUser("Glossary Active Read Outsider");
+    UUID glossaryId = UUID.randomUUID();
+    UUID emptyGlossaryId = UUID.randomUUID();
+    UUID termId = UUID.randomUUID();
+    try {
+      addCurrentPolicyAcceptances(ownerId);
+      addCurrentPolicyAcceptances(outsiderId);
+      SessionService.IssuedSession ownerSession = sessionService.create(ownerId).orElseThrow();
+      SessionService.IssuedSession blockedSession = sessionService.create(blockedId).orElseThrow();
+      SessionService.IssuedSession outsiderSession =
+          sessionService.create(outsiderId).orElseThrow();
+      var ownerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", ownerSession.cookieValue());
+      var blockedCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", blockedSession.cookieValue());
+      var outsiderCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", outsiderSession.cookieValue());
+
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement insert =
+              connection.prepareStatement(
+                  """
+                      INSERT INTO glossaries
+                          (id, owner_user_id, name, scope_type, source_language, target_language)
+                      VALUES (?, ?, ?, 'USER_GLOBAL', 'zh-Hans', 'vi')
+                      """)) {
+        insert.setObject(1, glossaryId);
+        insert.setObject(2, ownerId);
+        insert.setString(3, "Active route draft");
+        assertEquals(1, insert.executeUpdate());
+        insert.setObject(1, emptyGlossaryId);
+        insert.setObject(2, ownerId);
+        insert.setString(3, "Empty route draft");
+        assertEquals(1, insert.executeUpdate());
+      }
+
+      GlossaryRevisionWriteRepository.DraftCreated created =
+          glossaryRevisionWriteRepository.createDraftRevision(
+              ownerId,
+              glossaryId,
+              1,
+              List.of(
+                  new GlossaryRevisionWriteRepository.TermDraft(
+                      termId,
+                      "金丹",
+                      "Kim Đan",
+                      5,
+                      GlossaryMatcher.CasePolicy.INSENSITIVE,
+                      GlossaryMatcher.MatchMode.WHOLE_PHRASE,
+                      false,
+                      "rank name",
+                      List.of("Golden Core"))));
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement activate =
+              connection.prepareStatement(
+                  "UPDATE glossaries SET active_revision_id = ? WHERE id = ?")) {
+        activate.setObject(1, created.revisionId());
+        activate.setObject(2, glossaryId);
+        assertEquals(1, activate.executeUpdate());
+      }
+
+      String route = "/api/v1/glossaries/{glossaryId}/active-revision";
+      MvcResult unauthenticated = mockMvc.perform(get(route, glossaryId)).andReturn();
+      assertEquals(401, unauthenticated.getResponse().getStatus());
+
+      MvcResult policyBlocked =
+          mockMvc.perform(get(route, glossaryId).cookie(blockedCookie)).andReturn();
+      assertEquals(403, policyBlocked.getResponse().getStatus());
+      assertTrue(
+          policyBlocked.getResponse().getContentAsString().contains("POLICY_ACCEPTANCE_REQUIRED"));
+
+      MvcResult ownerRead = mockMvc.perform(get(route, glossaryId).cookie(ownerCookie)).andReturn();
+      assertEquals(200, ownerRead.getResponse().getStatus());
+      assertEquals("\"v2\"", ownerRead.getResponse().getHeader(HttpHeaders.ETAG));
+      assertTrue(ownerRead.getResponse().getHeader(HttpHeaders.CACHE_CONTROL).contains("no-store"));
+      assertTrue(ownerRead.getResponse().getHeader(HttpHeaders.PRAGMA).contains("no-cache"));
+      JsonNode snapshot = objectMapper.readTree(ownerRead.getResponse().getContentAsString());
+      assertEquals(glossaryId.toString(), snapshot.path("glossaryId").asText());
+      assertEquals(created.revisionId().toString(), snapshot.path("activeRevisionId").asText());
+      assertEquals("USER_GLOBAL", snapshot.path("scope").asText());
+      assertEquals("金丹", snapshot.path("terms").get(0).path("sourceTerm").asText());
+      assertEquals("Golden Core", snapshot.path("terms").get(0).path("aliases").get(0).asText());
+
+      MvcResult emptySnapshot =
+          mockMvc.perform(get(route, emptyGlossaryId).cookie(ownerCookie)).andReturn();
+      assertEquals(404, emptySnapshot.getResponse().getStatus());
+
+      MvcResult outsiderRead =
+          mockMvc.perform(get(route, glossaryId).cookie(outsiderCookie)).andReturn();
+      assertEquals(404, outsiderRead.getResponse().getStatus());
+      assertTrue(outsiderRead.getResponse().getContentAsString().contains("NOT_FOUND"));
+    } finally {
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement delete =
+              connection.prepareStatement("DELETE FROM glossaries WHERE id IN (?, ?)")) {
+        delete.setObject(1, glossaryId);
+        delete.setObject(2, emptyGlossaryId);
+        delete.executeUpdate();
+      }
+      deleteSessionTestUser(ownerId);
+      deleteSessionTestUser(blockedId);
+      deleteSessionTestUser(outsiderId);
+    }
+  }
+
+  @Test
   void cultivationProfileIsPrivateVersionPinnedIdempotentAndCsrfProtected() throws Exception {
     UUID actorId = createSessionTestUser("Cultivation Profile Owner");
     UUID otherUserId = createSessionTestUser("Other Cultivation Profile");

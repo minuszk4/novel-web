@@ -17,6 +17,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -29,13 +30,45 @@ import org.springframework.web.bind.annotation.RestController;
 @Profile("postgres")
 public class GlossaryRevisionController {
 
+  private final GlossaryRepository readRepository;
   private final GlossaryRevisionWriteRepository repository;
   private final PolicyService policyService;
 
   public GlossaryRevisionController(
-      GlossaryRevisionWriteRepository repository, PolicyService policyService) {
+      GlossaryRepository readRepository,
+      GlossaryRevisionWriteRepository repository,
+      PolicyService policyService) {
+    this.readRepository = readRepository;
     this.repository = repository;
     this.policyService = policyService;
+  }
+
+  @GetMapping("/{glossaryId}/active-revision")
+  public ResponseEntity<?> getActiveRevision(
+      Authentication authentication, @PathVariable UUID glossaryId, HttpServletRequest request) {
+    Optional<UUID> actor = actorUserId(authentication);
+    if (actor.isEmpty()) {
+      return problem(
+          HttpStatus.UNAUTHORIZED, "UNAUTHENTICATED", "Sign in to view this glossary.", request);
+    }
+    ResponseEntity<?> policyGate = policyGate(actor.orElseThrow(), request);
+    if (policyGate != null) return policyGate;
+
+    Optional<GlossaryRepository.GlossarySnapshot> snapshot =
+        readRepository.loadActiveRevision(actor.orElseThrow(), glossaryId);
+    if (snapshot.isEmpty()) {
+      return problem(
+          HttpStatus.NOT_FOUND,
+          "NOT_FOUND",
+          "The glossary or its active revision is unavailable.",
+          request);
+    }
+    GlossaryRepository.GlossarySnapshot activeRevision = snapshot.orElseThrow();
+    return ResponseEntity.ok()
+        .header(HttpHeaders.ETAG, etag(activeRevision.version()))
+        .cacheControl(CacheControl.noStore())
+        .header(HttpHeaders.PRAGMA, "no-cache")
+        .body(activeRevision);
   }
 
   @PostMapping("/{glossaryId}/revisions")

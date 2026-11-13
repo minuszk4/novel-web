@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 6.8.0
+  version: 6.9.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -33,7 +33,7 @@ tags:
     description: Private rank catalog/profile, bounded Reader-session lifecycle and feature-gated server-timed XP awards/activity in the PostgreSQL profile.
     x-implementation-status: partial
   - name: Glossary
-    description: Authorized glossary draft-revision creation is implemented in the PostgreSQL profile; read routes, publication and translation remain planned.
+    description: Authorized active-revision reads and immutable draft-revision creation are implemented in the PostgreSQL profile; listing, glossary creation, publication and translation remain planned.
     x-implementation-status: partial
 paths:
   /api/v1/glossaries/{glossaryId}/revisions:
@@ -110,6 +110,51 @@ paths:
               schema:
                 $ref: '#/components/schemas/Problem'
         '428':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/glossaries/{glossaryId}/active-revision:
+    get:
+      operationId: getActiveGlossaryRevision
+      tags: [Glossary]
+      x-implementation-status: implemented-postgres-profile
+      summary: Read the active glossary revision
+      description: >-
+        Returns the immutable active snapshot visible to the current actor. USER_GLOBAL glossaries require their owner;
+        library/work/volume/chapter glossaries require library read access. A missing, inactive, inaccessible or
+        not-yet-published glossary is concealed as 404. Current Terms and Privacy acceptance is required. The
+        representation is private, non-cacheable and carries the glossary version ETag.
+      security:
+        - appSession: []
+      parameters:
+        - name: glossaryId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The active immutable snapshot, including terms and ordered aliases.
+          headers:
+            ETag:
+              required: true
+              schema:
+                type: string
+                pattern: '^"v[1-9][0-9]*"$'
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GlossaryActiveRevision'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
           $ref: '#/components/responses/Problem'
         '503':
           $ref: '#/components/responses/Problem'
@@ -3988,6 +4033,86 @@ components:
           type: integer
           format: int64
           minimum: 2
+    GlossaryActiveRevision:
+      type: object
+      additionalProperties: false
+      required:
+        [glossaryId, name, scope, sourceLanguage, targetLanguage, version, activeRevisionId, revisionNumber, parentRevisionId, revisionCreatedAt, terms]
+      properties:
+        glossaryId:
+          type: string
+          format: uuid
+        name:
+          type: string
+          maxLength: 300
+        scope:
+          type: string
+          enum: [USER_GLOBAL, LIBRARY, WORK, VOLUME, CHAPTER]
+        sourceLanguage:
+          type: string
+          maxLength: 64
+        targetLanguage:
+          type: string
+          maxLength: 64
+        version:
+          type: integer
+          format: int64
+          minimum: 1
+        activeRevisionId:
+          type: string
+          format: uuid
+        revisionNumber:
+          type: integer
+          minimum: 1
+        parentRevisionId:
+          type: [string, 'null']
+          format: uuid
+        revisionCreatedAt:
+          type: string
+          format: date-time
+        terms:
+          type: array
+          maxItems: 1000
+          items:
+            $ref: '#/components/schemas/GlossaryTerm'
+    GlossaryTerm:
+      type: object
+      additionalProperties: false
+      required: [id, ordinal, sourceTerm, targetTerm, priority, casePolicy, matchMode, doNotTranslate, contextNote, aliases]
+      properties:
+        id:
+          type: string
+          format: uuid
+        ordinal:
+          type: integer
+          minimum: 0
+        sourceTerm:
+          type: string
+          maxLength: 512
+        targetTerm:
+          type: [string, 'null']
+          maxLength: 4096
+        priority:
+          type: integer
+          minimum: -1000000
+          maximum: 1000000
+        casePolicy:
+          type: string
+          enum: [SENSITIVE, INSENSITIVE]
+        matchMode:
+          type: string
+          enum: [WHOLE_PHRASE]
+        doNotTranslate:
+          type: boolean
+        contextNote:
+          type: [string, 'null']
+          maxLength: 2000
+        aliases:
+          type: array
+          maxItems: 25
+          items:
+            type: string
+            maxLength: 512
     Problem:
       type: object
       required: [type, title, status, detail, code, correlationId]
