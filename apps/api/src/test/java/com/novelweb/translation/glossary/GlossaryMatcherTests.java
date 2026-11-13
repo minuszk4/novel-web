@@ -201,6 +201,29 @@ class GlossaryMatcherTests {
         IllegalArgumentException.class, () -> matcher.match("silver moon", List.of(term, term)));
   }
 
+  @Test
+  void rejectsTermsMixedAcrossGlossaryRevisions() {
+    GlossaryMatcher.Term first =
+        term("silver moon", "bạc nguyệt", List.of(), WORK, 4, INSENSITIVE, false);
+    GlossaryMatcher.Term second =
+        new GlossaryMatcher.Term(
+            id("term-revision-2"),
+            id("revision-2"),
+            "en",
+            "silver star",
+            "ngân tinh",
+            List.of(),
+            WORK,
+            4,
+            INSENSITIVE,
+            WHOLE_PHRASE,
+            false);
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> matcher.match("silver moon and silver star", List.of(first, second)));
+  }
+
   private static GlossaryMatcher.Term term(
       String source,
       String target,

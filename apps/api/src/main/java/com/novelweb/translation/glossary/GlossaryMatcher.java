@@ -139,10 +139,15 @@ public final class GlossaryMatcher {
     TrieNode insensitiveRoot = new TrieNode();
     List<Candidate> candidates = new ArrayList<>();
     Set<UUID> termIds = new HashSet<>();
+    UUID revisionId = null;
     for (Term term : terms) {
       Objects.requireNonNull(term, "term");
       if (!termIds.add(term.id())) {
         throw new IllegalArgumentException("term IDs must be unique within one glossary revision");
+      }
+      if (revisionId == null) revisionId = term.revisionId();
+      if (!revisionId.equals(term.revisionId())) {
+        throw new IllegalArgumentException("all terms must belong to the same glossary revision");
       }
       TrieNode root = term.casePolicy() == CasePolicy.INSENSITIVE ? insensitiveRoot : sensitiveRoot;
       for (PatternSpec pattern : patterns(term)) {
@@ -161,17 +166,19 @@ public final class GlossaryMatcher {
 
   private static List<PatternSpec> patterns(Term term) {
     List<PatternSpec> result = new ArrayList<>();
-    String canonical =
-        normalize(term.sourceTerm(), term.casePolicy() == CasePolicy.INSENSITIVE).text().strip();
+    String canonical = normalizeForComparison(term.sourceTerm(), term.casePolicy());
     result.add(new PatternSpec(term, canonical, false));
     for (String alias : term.aliases()) {
-      String normalized =
-          normalize(alias, term.casePolicy() == CasePolicy.INSENSITIVE).text().strip();
+      String normalized = normalizeForComparison(alias, term.casePolicy());
       if (result.stream().noneMatch(pattern -> pattern.pattern().equals(normalized))) {
         result.add(new PatternSpec(term, normalized, true));
       }
     }
     return result;
+  }
+
+  static String normalizeForComparison(String source, CasePolicy casePolicy) {
+    return normalize(source, casePolicy == CasePolicy.INSENSITIVE).text().strip();
   }
 
   private static void insert(TrieNode root, PatternSpec pattern) {
