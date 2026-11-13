@@ -76,8 +76,13 @@ public class GlossaryCatalogController {
     }
     ResponseEntity<?> policyGate = policyGate(actor.orElseThrow(), request);
     if (policyGate != null) return policyGate;
-    return ok(
-        glossaryService.get(actor.orElseThrow(), parseRequiredUuid(glossaryId, "glossaryId")));
+    GlossaryCatalogRepository.GlossaryRecord metadata =
+        glossaryService.get(actor.orElseThrow(), parseRequiredUuid(glossaryId, "glossaryId"));
+    return ResponseEntity.ok()
+        .header(HttpHeaders.ETAG, etag(metadata.version()))
+        .cacheControl(CacheControl.noStore())
+        .header(HttpHeaders.PRAGMA, "no-cache")
+        .body(metadata);
   }
 
   @PostMapping

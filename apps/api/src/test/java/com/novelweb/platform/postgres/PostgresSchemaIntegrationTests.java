@@ -2512,6 +2512,9 @@ class PostgresSchemaIntegrationTests {
     assertTrue(response.getResponse().getHeader(HttpHeaders.CACHE_CONTROL).contains("no-store"));
     JsonNode metadata = objectMapper.readTree(response.getResponse().getContentAsString());
     assertEquals(glossaryId.toString(), metadata.path("id").asText());
+    assertEquals(
+        "\"v" + metadata.path("version").asText() + "\"",
+        response.getResponse().getHeader(HttpHeaders.ETAG));
     return metadata;
   }
 
