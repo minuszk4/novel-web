@@ -88,6 +88,13 @@ public class ApiSecurityConfiguration {
                     .requestMatchers(HttpMethod.PUT, "/api/v1/me/cultivation/settings")
                     .permitAll();
                 authorize
+                    .requestMatchers(
+                        HttpMethod.POST,
+                        "/api/v1/me/reading-sessions",
+                        "/api/v1/me/reading-sessions/*:heartbeat",
+                        "/api/v1/me/reading-sessions/*:close")
+                    .permitAll();
+                authorize
                     .requestMatchers(HttpMethod.GET, "/api/v1/auth/google/bootstrap")
                     .permitAll();
                 authorize

@@ -166,6 +166,8 @@ class PostgresSchemaIntegrationTests {
           "cultivation_profiles",
           "cultivation_xp_ledger",
           "cultivation_daily_xp_aggregates",
+          "cultivation_reading_sessions",
+          "cultivation_reading_session_events",
           "library_collections",
           "library_collection_works",
           "import_rights_statements",
@@ -248,7 +250,7 @@ class PostgresSchemaIntegrationTests {
             connection.prepareStatement("SELECT COUNT(*) FROM databasechangelog");
         ResultSet changesets = changesetCount.executeQuery()) {
       changesets.next();
-      assertEquals(82, changesets.getInt(1), "unexpected number of applied changesets");
+      assertEquals(86, changesets.getInt(1), "unexpected number of applied changesets");
     }
 
     Set<String> actualTables = new HashSet<>();
@@ -506,6 +508,487 @@ class PostgresSchemaIntegrationTests {
     } finally {
       deleteSessionTestUser(actorId);
       deleteSessionTestUser(disabledActorId);
+    }
+  }
+
+  @Test
+  void cultivationReadingSessionBoundsActiveTimeAndProtectsLifecycle() throws Exception {
+    UUID actorId = createSessionTestUser("Cultivation Session Owner");
+    UUID otherUserId = createSessionTestUser("Cultivation Session Other Owner");
+    UUID policyBlockedId = createSessionTestUser("Cultivation Session Policy Blocked");
+    ReaderHistoryFixture readable =
+        createReaderHistoryFixture(actorId, "Cultivation session work", "SESSION_SOURCE_BODY");
+    ReaderHistoryFixture foreign =
+        createReaderHistoryFixture(otherUserId, "Foreign session work", "FOREIGN_SOURCE_BODY");
+    try {
+      addCurrentPolicyAcceptances(actorId);
+      addCurrentPolicyAcceptances(otherUserId);
+      cultivationRepository.setEnabled(actorId, true);
+      cultivationRepository.setEnabled(otherUserId, true);
+      SessionService.IssuedSession actorSession = sessionService.create(actorId).orElseThrow();
+      SessionService.IssuedSession otherSession = sessionService.create(otherUserId).orElseThrow();
+      SessionService.IssuedSession blockedSession =
+          sessionService.create(policyBlockedId).orElseThrow();
+      var actorCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", actorSession.cookieValue());
+      var blockedCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", blockedSession.cookieValue());
+      String actorCsrf = csrfTokenService.tokenFor(actorSession.cookieValue());
+      var otherCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", otherSession.cookieValue());
+      String otherCsrf = csrfTokenService.tokenFor(otherSession.cookieValue());
+
+      String startBody = readingSessionStartBody(readable);
+      MvcResult otherOwnerSession =
+          mockMvc
+              .perform(
+                  post("/api/v1/me/reading-sessions")
+                      .cookie(otherCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, otherCsrf)
+                      .header("Idempotency-Key", "other-owner-session-start-0001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(readingSessionStartBody(foreign)))
+              .andReturn();
+      UUID otherOwnerSessionId =
+          UUID.fromString(
+              objectMapper
+                  .readTree(otherOwnerSession.getResponse().getContentAsString())
+                  .path("sessionId")
+                  .asText());
+      MvcResult crossUserHeartbeat =
+          postCultivationHeartbeat(
+              actorCookie,
+              actorCsrf,
+              otherOwnerSessionId,
+              "session-heartbeat-foreign-owner-0001",
+              "{\"sequence\":1,\"active\":true}");
+      assertEquals(404, crossUserHeartbeat.getResponse().getStatus());
+
+      MvcResult unauthenticated =
+          mockMvc
+              .perform(
+                  post("/api/v1/me/reading-sessions")
+                      .header("Idempotency-Key", "session-start-anonymous-0001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(startBody))
+              .andReturn();
+      assertEquals(403, unauthenticated.getResponse().getStatus());
+      assertTrue(unauthenticated.getResponse().getContentAsString().contains("CSRF_FAILED"));
+
+      MvcResult missingCsrf =
+          mockMvc
+              .perform(
+                  post("/api/v1/me/reading-sessions")
+                      .cookie(actorCookie)
+                      .header("Idempotency-Key", "session-start-no-csrf-0001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(startBody))
+              .andReturn();
+      assertEquals(403, missingCsrf.getResponse().getStatus());
+
+      MvcResult blockedPolicy =
+          mockMvc
+              .perform(
+                  post("/api/v1/me/reading-sessions")
+                      .cookie(blockedCookie)
+                      .header(
+                          SessionCsrfTokenService.TOKEN_HEADER_NAME,
+                          csrfTokenService.tokenFor(blockedSession.cookieValue()))
+                      .header("Idempotency-Key", "session-start-policy-blocked-0001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(startBody))
+              .andReturn();
+      assertEquals(403, blockedPolicy.getResponse().getStatus());
+      assertTrue(
+          blockedPolicy.getResponse().getContentAsString().contains("POLICY_ACCEPTANCE_REQUIRED"));
+
+      MvcResult wrongChapterOwner =
+          mockMvc
+              .perform(
+                  post("/api/v1/me/reading-sessions")
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                      .header("Idempotency-Key", "session-start-foreign-work-0001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(readingSessionStartBody(foreign)))
+              .andReturn();
+      assertEquals(404, wrongChapterOwner.getResponse().getStatus());
+
+      MvcResult unknownStartValue =
+          mockMvc
+              .perform(
+                  post("/api/v1/me/reading-sessions")
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                      .header("Idempotency-Key", "session-start-client-duration-0001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          startBody.substring(0, startBody.length() - 1)
+                              + ",\"elapsedSeconds\":3600}"))
+              .andReturn();
+      assertEquals(400, unknownStartValue.getResponse().getStatus());
+
+      MvcResult created =
+          mockMvc
+              .perform(
+                  post("/api/v1/me/reading-sessions")
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                      .header("Idempotency-Key", "session-start-idempotent-0001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(startBody))
+              .andReturn();
+      assertEquals(201, created.getResponse().getStatus());
+      JsonNode createdBody = objectMapper.readTree(created.getResponse().getContentAsString());
+      UUID sessionId = UUID.fromString(createdBody.path("sessionId").asText());
+      assertEquals("active", createdBody.path("state").asText());
+      assertEquals(30, createdBody.path("heartbeatIntervalSeconds").asInt());
+      assertEquals(90, createdBody.path("idleTimeoutSeconds").asInt());
+      assertFalse(createdBody.has("workId"));
+      assertFalse(createdBody.has("chapterId"));
+      assertFalse(createdBody.toString().contains("SESSION_SOURCE_BODY"));
+
+      MvcResult replayedStart =
+          mockMvc
+              .perform(
+                  post("/api/v1/me/reading-sessions")
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                      .header("Idempotency-Key", "session-start-idempotent-0001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(startBody))
+              .andReturn();
+      assertEquals(200, replayedStart.getResponse().getStatus());
+      assertEquals("true", replayedStart.getResponse().getHeader("Idempotency-Replayed"));
+      assertEquals(
+          sessionId,
+          UUID.fromString(
+              objectMapper
+                  .readTree(replayedStart.getResponse().getContentAsString())
+                  .path("sessionId")
+                  .asText()));
+
+      MvcResult changedStartReplay =
+          mockMvc
+              .perform(
+                  post("/api/v1/me/reading-sessions")
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                      .header("Idempotency-Key", "session-start-idempotent-0001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(readingSessionStartBody(foreign)))
+              .andReturn();
+      assertEquals(409, changedStartReplay.getResponse().getStatus());
+
+      MvcResult secondActiveSession =
+          mockMvc
+              .perform(
+                  post("/api/v1/me/reading-sessions")
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                      .header("Idempotency-Key", "session-start-second-active-0001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(startBody))
+              .andReturn();
+      assertEquals(409, secondActiveSession.getResponse().getStatus());
+
+      setCultivationReadingSessionAge(sessionId, 50, 600);
+      String firstHeartbeatBody = "{\"sequence\":1,\"active\":true}";
+      MvcResult firstHeartbeat =
+          postCultivationHeartbeat(
+              actorCookie,
+              actorCsrf,
+              sessionId,
+              "session-heartbeat-owner-0001",
+              firstHeartbeatBody);
+      assertEquals(200, firstHeartbeat.getResponse().getStatus());
+      JsonNode firstHeartbeatBodyJson =
+          objectMapper.readTree(firstHeartbeat.getResponse().getContentAsString());
+      assertEquals(50, firstHeartbeatBodyJson.path("creditedSeconds").asInt());
+      assertEquals(50, firstHeartbeatBodyJson.path("totalActiveSeconds").asLong());
+
+      SQLException immutableHeartbeatEvent =
+          assertThrows(
+              SQLException.class,
+              () -> {
+                try (Connection connection = dataSource.getConnection();
+                    PreparedStatement update =
+                        connection.prepareStatement(
+                            "UPDATE cultivation_reading_session_events SET credited_seconds = 0 "
+                                + "WHERE session_id = ? AND idempotency_key = ?")) {
+                  update.setObject(1, sessionId);
+                  update.setString(2, "session-heartbeat-owner-0001");
+                  update.executeUpdate();
+                }
+              });
+      assertEquals("55000", immutableHeartbeatEvent.getSQLState());
+
+      MvcResult replayedHeartbeat =
+          postCultivationHeartbeat(
+              actorCookie,
+              actorCsrf,
+              sessionId,
+              "session-heartbeat-owner-0001",
+              firstHeartbeatBody);
+      assertEquals(200, replayedHeartbeat.getResponse().getStatus());
+      assertEquals("true", replayedHeartbeat.getResponse().getHeader("Idempotency-Replayed"));
+      assertEquals(
+          50,
+          objectMapper
+              .readTree(replayedHeartbeat.getResponse().getContentAsString())
+              .path("totalActiveSeconds")
+              .asLong());
+
+      MvcResult changedHeartbeatReplay =
+          postCultivationHeartbeat(
+              actorCookie,
+              actorCsrf,
+              sessionId,
+              "session-heartbeat-owner-0001",
+              "{\"sequence\":1,\"active\":false}");
+      assertEquals(409, changedHeartbeatReplay.getResponse().getStatus());
+
+      MvcResult outOfOrder =
+          postCultivationHeartbeat(
+              actorCookie,
+              actorCsrf,
+              sessionId,
+              "session-heartbeat-out-of-order-0001",
+              "{\"sequence\":3,\"active\":true}");
+      assertEquals(409, outOfOrder.getResponse().getStatus());
+      assertEquals(
+          2,
+          objectMapper
+              .readTree(outOfOrder.getResponse().getContentAsString())
+              .path("expectedSequence")
+              .asInt());
+
+      setCultivationReadingSessionAge(sessionId, 30, 600);
+      MvcResult pauseSignal =
+          postCultivationHeartbeat(
+              actorCookie,
+              actorCsrf,
+              sessionId,
+              "session-heartbeat-pause-signal-0001",
+              "{\"sequence\":2,\"active\":false}");
+      JsonNode pauseSignalBody =
+          objectMapper.readTree(pauseSignal.getResponse().getContentAsString());
+      assertEquals(200, pauseSignal.getResponse().getStatus());
+      assertEquals(30, pauseSignalBody.path("creditedSeconds").asInt());
+      assertEquals(80, pauseSignalBody.path("totalActiveSeconds").asLong());
+
+      setCultivationReadingSessionAge(sessionId, 45, 600);
+      MvcResult resumeSignal =
+          postCultivationHeartbeat(
+              actorCookie,
+              actorCsrf,
+              sessionId,
+              "session-heartbeat-resume-signal-0001",
+              "{\"sequence\":3,\"active\":true}");
+      JsonNode resumeSignalBody =
+          objectMapper.readTree(resumeSignal.getResponse().getContentAsString());
+      assertEquals(200, resumeSignal.getResponse().getStatus());
+      assertEquals(0, resumeSignalBody.path("creditedSeconds").asInt());
+      assertEquals(80, resumeSignalBody.path("totalActiveSeconds").asLong());
+
+      setCultivationReadingSessionAge(sessionId, 40, 600);
+      MvcResult activeAgain =
+          postCultivationHeartbeat(
+              actorCookie,
+              actorCsrf,
+              sessionId,
+              "session-heartbeat-active-again-0001",
+              "{\"sequence\":4,\"active\":true}");
+      assertEquals(200, activeAgain.getResponse().getStatus());
+      assertEquals(
+          40,
+          objectMapper
+              .readTree(activeAgain.getResponse().getContentAsString())
+              .path("creditedSeconds")
+              .asInt());
+
+      setCultivationReadingSessionAge(sessionId, 30, 600);
+      CountDownLatch heartbeatReady = new CountDownLatch(2);
+      CountDownLatch heartbeatStart = new CountDownLatch(1);
+      ExecutorService heartbeatExecutor = Executors.newFixedThreadPool(2);
+      MvcResult concurrentActive;
+      MvcResult concurrentPaused;
+      try {
+        Future<MvcResult> activeRequest =
+            heartbeatExecutor.submit(
+                () -> {
+                  heartbeatReady.countDown();
+                  if (!heartbeatStart.await(10, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("concurrent reading heartbeat did not start");
+                  }
+                  return postCultivationHeartbeat(
+                      actorCookie,
+                      actorCsrf,
+                      sessionId,
+                      "session-heartbeat-concurrent-active-0001",
+                      "{\"sequence\":5,\"active\":true}");
+                });
+        Future<MvcResult> pausedRequest =
+            heartbeatExecutor.submit(
+                () -> {
+                  heartbeatReady.countDown();
+                  if (!heartbeatStart.await(10, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("concurrent reading heartbeat did not start");
+                  }
+                  return postCultivationHeartbeat(
+                      actorCookie,
+                      actorCsrf,
+                      sessionId,
+                      "session-heartbeat-concurrent-paused-0001",
+                      "{\"sequence\":5,\"active\":false}");
+                });
+        assertTrue(heartbeatReady.await(10, TimeUnit.SECONDS));
+        heartbeatStart.countDown();
+        concurrentActive = activeRequest.get(10, TimeUnit.SECONDS);
+        concurrentPaused = pausedRequest.get(10, TimeUnit.SECONDS);
+      } finally {
+        heartbeatExecutor.shutdownNow();
+      }
+      assertTrue(
+          List.of(
+                  concurrentActive.getResponse().getStatus(),
+                  concurrentPaused.getResponse().getStatus())
+              .containsAll(List.of(200, 409)));
+      assertEquals(150, sessionActiveSeconds(sessionId));
+      pauseCultivationReadingSessionClock(sessionId);
+
+      MvcResult closed =
+          mockMvc
+              .perform(
+                  post("/api/v1/me/reading-sessions/{sessionId}:close", sessionId)
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf))
+              .andReturn();
+      assertEquals(200, closed.getResponse().getStatus());
+      JsonNode closedBody = objectMapper.readTree(closed.getResponse().getContentAsString());
+      assertEquals("closed", closedBody.path("state").asText());
+      assertEquals(150, closedBody.path("totalActiveSeconds").asLong());
+      assertTrue(closedBody.path("closedAt").isTextual());
+      MvcResult repeatedClose =
+          mockMvc
+              .perform(
+                  post("/api/v1/me/reading-sessions/{sessionId}:close", sessionId)
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf))
+              .andReturn();
+      assertEquals(200, repeatedClose.getResponse().getStatus());
+      assertEquals(
+          closedBody.path("closedAt").asText(),
+          objectMapper
+              .readTree(repeatedClose.getResponse().getContentAsString())
+              .path("closedAt")
+              .asText());
+      assertEquals(
+          150,
+          objectMapper
+              .readTree(repeatedClose.getResponse().getContentAsString())
+              .path("totalActiveSeconds")
+              .asLong());
+
+      MvcResult heartbeatAfterClose =
+          postCultivationHeartbeat(
+              actorCookie,
+              actorCsrf,
+              sessionId,
+              "session-heartbeat-closed-0001",
+              "{\"sequence\":5,\"active\":true}");
+      assertEquals(410, heartbeatAfterClose.getResponse().getStatus());
+
+      MvcResult expiringStart =
+          mockMvc
+              .perform(
+                  post("/api/v1/me/reading-sessions")
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                      .header("Idempotency-Key", "session-start-expiring-0001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(startBody))
+              .andReturn();
+      UUID expiringSessionId =
+          UUID.fromString(
+              objectMapper
+                  .readTree(expiringStart.getResponse().getContentAsString())
+                  .path("sessionId")
+                  .asText());
+      setCultivationReadingSessionAge(expiringSessionId, 90, 900);
+      MvcResult replacementAfterIdle =
+          mockMvc
+              .perform(
+                  post("/api/v1/me/reading-sessions")
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                      .header("Idempotency-Key", "session-start-after-idle-0001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(startBody))
+              .andReturn();
+      assertEquals(201, replacementAfterIdle.getResponse().getStatus());
+      UUID replacementSessionId =
+          UUID.fromString(
+              objectMapper
+                  .readTree(replacementAfterIdle.getResponse().getContentAsString())
+                  .path("sessionId")
+                  .asText());
+      MvcResult expiredHeartbeat =
+          postCultivationHeartbeat(
+              actorCookie,
+              actorCsrf,
+              expiringSessionId,
+              "session-heartbeat-expired-0001",
+              "{\"sequence\":1,\"active\":true}");
+      assertEquals(410, expiredHeartbeat.getResponse().getStatus());
+      assertTrue(
+          expiredHeartbeat.getResponse().getContentAsString().contains("READING_SESSION_EXPIRED"));
+      assertEquals(0, sessionActiveSeconds(expiringSessionId));
+
+      cultivationRepository.setEnabled(actorId, false);
+      MvcResult optedOutHeartbeat =
+          postCultivationHeartbeat(
+              actorCookie,
+              actorCsrf,
+              replacementSessionId,
+              "session-heartbeat-after-opt-out-0001",
+              "{\"sequence\":1,\"active\":true}");
+      assertEquals(410, optedOutHeartbeat.getResponse().getStatus());
+      cultivationRepository.setEnabled(actorId, true);
+
+      MvcResult accessRecheckStart =
+          mockMvc
+              .perform(
+                  post("/api/v1/me/reading-sessions")
+                      .cookie(actorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, actorCsrf)
+                      .header("Idempotency-Key", "session-start-access-recheck-0001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(startBody))
+              .andReturn();
+      UUID accessRecheckSessionId =
+          UUID.fromString(
+              objectMapper
+                  .readTree(accessRecheckStart.getResponse().getContentAsString())
+                  .path("sessionId")
+                  .asText());
+      deleteReaderHistoryWork(actorId, readable.workId());
+      MvcResult revokedHeartbeat =
+          postCultivationHeartbeat(
+              actorCookie,
+              actorCsrf,
+              accessRecheckSessionId,
+              "session-heartbeat-revoked-0001",
+              "{\"sequence\":1,\"active\":true}");
+      assertEquals(410, revokedHeartbeat.getResponse().getStatus());
+      assertTrue(
+          revokedHeartbeat.getResponse().getContentAsString().contains("READING_SESSION_REVOKED"));
+    } finally {
+      deleteReaderHistoryFixtures(actorId, List.of(readable));
+      deleteSessionTestUser(actorId);
+      deleteReaderHistoryFixtures(otherUserId, List.of(foreign));
+      deleteSessionTestUser(otherUserId);
+      deleteSessionTestUser(policyBlockedId);
     }
   }
 
@@ -7214,6 +7697,77 @@ class PostgresSchemaIntegrationTests {
       try (ResultSet row = insert.executeQuery()) {
         assertTrue(row.next());
         return row.getObject("id", UUID.class);
+      }
+    }
+  }
+
+  private static String readingSessionStartBody(ReaderHistoryFixture fixture) {
+    return "{\"workId\":\""
+        + fixture.workId()
+        + "\",\"chapterId\":\""
+        + fixture.chapterId()
+        + "\",\"active\":true}";
+  }
+
+  private MvcResult postCultivationHeartbeat(
+      jakarta.servlet.http.Cookie cookie,
+      String csrfToken,
+      UUID sessionId,
+      String idempotencyKey,
+      String body)
+      throws Exception {
+    return mockMvc
+        .perform(
+            post("/api/v1/me/reading-sessions/{sessionId}:heartbeat", sessionId)
+                .cookie(cookie)
+                .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, csrfToken)
+                .header("Idempotency-Key", idempotencyKey)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(body))
+        .andReturn();
+  }
+
+  private void setCultivationReadingSessionAge(
+      UUID sessionId, long heartbeatAgeSeconds, long startedAgeSeconds) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement update =
+            connection.prepareStatement(
+                """
+                    UPDATE cultivation_reading_sessions
+                    SET started_at = clock_timestamp() - (? * INTERVAL '1 second'),
+                        last_heartbeat_at = clock_timestamp() - (? * INTERVAL '1 second')
+                    WHERE id = ?
+                    """)) {
+      update.setLong(1, startedAgeSeconds);
+      update.setLong(2, heartbeatAgeSeconds);
+      update.setObject(3, sessionId);
+      assertEquals(1, update.executeUpdate());
+    }
+  }
+
+  private void pauseCultivationReadingSessionClock(UUID sessionId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement update =
+            connection.prepareStatement(
+                """
+                    UPDATE cultivation_reading_sessions
+                    SET last_heartbeat_at = clock_timestamp(), last_client_active = FALSE
+                    WHERE id = ?
+                    """)) {
+      update.setObject(1, sessionId);
+      assertEquals(1, update.executeUpdate());
+    }
+  }
+
+  private long sessionActiveSeconds(UUID sessionId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT total_active_seconds FROM cultivation_reading_sessions WHERE id = ?")) {
+      select.setObject(1, sessionId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getLong("total_active_seconds");
       }
     }
   }

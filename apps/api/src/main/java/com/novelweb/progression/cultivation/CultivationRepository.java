@@ -57,6 +57,7 @@ public class CultivationRepository {
           updated = insertEnabledProfile(connection, actorUserId, current.catalogVersion());
         } else {
           updated = updateEnabledProfile(connection, actorUserId, enabled);
+          if (!enabled) closeActiveReadingSessions(connection, actorUserId);
         }
 
         CultivationSnapshot saved = snapshot(connection, updated);
@@ -195,6 +196,23 @@ public class CultivationRepository {
         if (!row.next()) throw new SQLException("Cultivation profile disappeared during update");
         return profileState(row);
       }
+    }
+  }
+
+  private static void closeActiveReadingSessions(Connection connection, UUID actorUserId)
+      throws SQLException {
+    try (PreparedStatement close =
+        connection.prepareStatement(
+            """
+                UPDATE cultivation_reading_sessions
+                SET state = 'revoked',
+                    closed_at = clock_timestamp(),
+                    last_heartbeat_at = clock_timestamp(),
+                    last_client_active = FALSE
+                WHERE user_id = ? AND state = 'active'
+                """)) {
+      close.setObject(1, actorUserId);
+      close.executeUpdate();
     }
   }
 

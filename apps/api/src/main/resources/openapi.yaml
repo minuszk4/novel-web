@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 6.4.0
+  version: 6.5.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -13,7 +13,7 @@ info:
     commit are implemented. Markdown uses CommonMark core only, strips raw HTML and link destinations, and derives chapter boundaries from repeated top-level headings.
     Source-only Reader manifest, chapter-content, progress, reader-preferences, bookmarks, private annotations and private reading-history routes are implemented in the PostgreSQL profile.
     History is derived from the latest saved progress per accessible readable work, is visible for 365 days, and never returns chapter body text.
-    Versioned cultivation rank catalogs and authenticated private profile/opt-in settings are implemented in the PostgreSQL profile; XP remains zero until validated Reader-session accounting is released. Cultivation is feature-gated and off by default.
+    Versioned cultivation catalogs, authenticated profile settings and bounded private Reader-session lifecycle are implemented in the PostgreSQL profile. Sessions do not yet award XP; profile XP remains zero. Cultivation is feature-gated and off by default.
 servers:
   - url: http://127.0.0.1:8080
 tags:
@@ -29,7 +29,7 @@ tags:
     description: Source-only reader, progress, preferences, private bookmarks, source annotations and private reading history are available in the PostgreSQL profile.
     x-implementation-status: partial
   - name: Progression
-    description: Private server-owned rank catalog/profile settings; XP awards remain feature-gated pending Reader-session accounting.
+    description: Private rank catalog/profile and bounded Reader-session lifecycle; XP awards remain unavailable pending the award/projection path.
     x-implementation-status: partial
 paths:
   /api/v1/system/status:
@@ -1694,6 +1694,163 @@ paths:
           $ref: '#/components/responses/Problem'
         '503':
           $ref: '#/components/responses/Problem'
+  /api/v1/me/reading-sessions:
+    post:
+      operationId: startCultivationReadingSession
+      tags: [Progression]
+      x-implementation-status: implemented-postgres-profile-feature-gated
+      summary: Start a private reading session for an accessible chapter
+      description: >-
+        Requires an authenticated, policy-current user with cultivation opted in and one readable chapter.
+        Only one active session per user is allowed. The active signal is a browser visibility/focus hint, not proof
+        of attention; the server records its own receipt time. Session responses omit work/chapter identifiers.
+        Requires session-bound CSRF. A retry with the same Idempotency-Key and request returns the same session.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            minLength: 16
+            maxLength: 128
+            pattern: '^[A-Za-z0-9._~-]{16,128}$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CultivationReadingSessionStartRequest'
+      responses:
+        '201':
+          description: New reading session created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CultivationReadingSessionStart'
+        '200':
+          description: Idempotent replay of the original start
+          headers:
+            Idempotency-Replayed:
+              schema:
+                type: string
+                const: 'true'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CultivationReadingSessionStart'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/me/reading-sessions/{sessionId}:heartbeat:
+    post:
+      operationId: heartbeatCultivationReadingSession
+      tags: [Progression]
+      x-implementation-status: implemented-postgres-profile-feature-gated
+      summary: Send an ordered reading-session heartbeat
+      description: >-
+        The server computes active seconds only from database receipt times. At most 60 seconds are recorded for a
+        heartbeat; the session expires after 90 seconds without a valid heartbeat. Send every 30 seconds while the
+        Reader is visible and focused, and send active=false when it becomes hidden or blurred. Sequence numbers must
+        be consecutive. The Idempotency-Key binds one exact body; a replay returns the stored response without adding
+        time. This endpoint records session time only and does not award XP. A new heartbeat after close, idle expiry or
+        access revocation returns 410 Gone.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            minLength: 16
+            maxLength: 128
+            pattern: '^[A-Za-z0-9._~-]{16,128}$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CultivationReadingSessionHeartbeatRequest'
+      responses:
+        '200':
+          description: Accepted heartbeat and server-derived bounded interval
+          headers:
+            Idempotency-Replayed:
+              schema:
+                type: string
+                const: 'true'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CultivationReadingSessionHeartbeat'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '410':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/me/reading-sessions/{sessionId}:close:
+    post:
+      operationId: closeCultivationReadingSession
+      tags: [Progression]
+      x-implementation-status: implemented-postgres-profile-feature-gated
+      summary: Close the current user's reading session
+      description: >-
+        Closes the actor-owned session idempotently and reports its server-recorded active seconds. A heartbeat gap
+        of 90 seconds or more expires the session without crediting the stale interval. No XP is awarded by this route.
+        Requires session-bound CSRF and current policy acceptance.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Closed or previously terminal session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CultivationReadingSessionClose'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
   /api/v1/me/reader-preferences:
     get:
       operationId: getReaderPreferences
@@ -3086,6 +3243,118 @@ components:
         enabled:
           type: boolean
           description: Explicit user opt-in; false pauses future progression without deleting earned history.
+    CultivationReadingSessionStartRequest:
+      type: object
+      additionalProperties: false
+      required: [workId, chapterId, active]
+      properties:
+        workId:
+          type: string
+          format: uuid
+        chapterId:
+          type: string
+          format: uuid
+        active:
+          type: boolean
+          const: true
+          description: Browser visibility/focus signal; the server does not trust client duration or timestamps.
+    CultivationReadingSessionHeartbeatRequest:
+      type: object
+      additionalProperties: false
+      required: [sequence, active]
+      properties:
+        sequence:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Consecutive client event number; gaps and stale sequence values return 409.
+        active:
+          type: boolean
+          description: False pauses elapsed time when the Reader is hidden or blurred.
+    CultivationReadingSessionStart:
+      type: object
+      additionalProperties: false
+      required: [sessionId, state, startedAt, expiresAt, lastSequence, totalActiveSeconds, heartbeatIntervalSeconds, idleTimeoutSeconds]
+      properties:
+        sessionId:
+          type: string
+          format: uuid
+        state:
+          type: string
+          const: active
+        startedAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+        lastSequence:
+          type: integer
+          format: int64
+          const: 0
+        totalActiveSeconds:
+          type: integer
+          format: int64
+          const: 0
+        heartbeatIntervalSeconds:
+          type: integer
+          const: 30
+        idleTimeoutSeconds:
+          type: integer
+          const: 90
+    CultivationReadingSessionHeartbeat:
+      type: object
+      additionalProperties: false
+      required: [sessionId, state, sequence, creditedSeconds, totalActiveSeconds, receivedAt, expiresAt]
+      properties:
+        sessionId:
+          type: string
+          format: uuid
+        state:
+          type: string
+          const: active
+        sequence:
+          type: integer
+          format: int64
+        creditedSeconds:
+          type: integer
+          minimum: 0
+          maximum: 60
+        totalActiveSeconds:
+          type: integer
+          format: int64
+          minimum: 0
+        receivedAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+    CultivationReadingSessionClose:
+      type: object
+      additionalProperties: false
+      required: [sessionId, state, startedAt, closedAt, totalActiveSeconds, lastSequence]
+      properties:
+        sessionId:
+          type: string
+          format: uuid
+        state:
+          type: string
+          enum: [closed, expired, revoked]
+        startedAt:
+          type: string
+          format: date-time
+        closedAt:
+          type: string
+          format: date-time
+        totalActiveSeconds:
+          type: integer
+          format: int64
+          minimum: 0
+        lastSequence:
+          type: integer
+          format: int64
+          minimum: 0
     CultivationState:
       type: object
       additionalProperties: false
