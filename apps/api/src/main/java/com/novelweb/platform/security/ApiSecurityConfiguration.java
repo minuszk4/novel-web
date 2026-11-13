@@ -150,6 +150,8 @@ public class ApiSecurityConfiguration {
                 authorize
                     .requestMatchers(HttpMethod.GET, "/api/v1/glossaries/*/active-revision")
                     .permitAll();
+                authorize.requestMatchers(HttpMethod.GET, "/api/v1/glossaries").permitAll();
+                authorize.requestMatchers(HttpMethod.POST, "/api/v1/glossaries").permitAll();
               }
               authorize.anyRequest().denyAll();
             })

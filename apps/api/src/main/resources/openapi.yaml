@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 6.9.0
+  version: 6.10.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -14,7 +14,7 @@ info:
     Source-only Reader manifest, chapter-content, progress, reader-preferences, bookmarks, private annotations and private reading-history routes are implemented in the PostgreSQL profile.
     History is derived from the latest saved progress per accessible readable work, is visible for 365 days, and never returns chapter body text.
     Versioned cultivation catalogs, authenticated profile settings, private daily XP activity and bounded private Reader sessions with atomic XP awards are implemented in the PostgreSQL profile. The approved starting policy awards 1 XP per complete active Reader minute, capped at 120 XP per UTC day; top-ups and unlocks award none. Cultivation is feature-gated and off by default while the frontend Reader integration and rank-threshold pilot remain pending.
-    Scoped glossary storage, authorized active-revision reads and version-checked immutable draft creation are implemented in the PostgreSQL profile; glossary publication and translation remain unavailable.
+    Scoped glossary storage, actor-scoped catalog listing/creation, active-revision reads and version-checked immutable draft creation are implemented in the PostgreSQL profile; glossary publication and translation remain unavailable.
 servers:
   - url: http://127.0.0.1:8080
 tags:
@@ -33,9 +33,120 @@ tags:
     description: Private rank catalog/profile, bounded Reader-session lifecycle and feature-gated server-timed XP awards/activity in the PostgreSQL profile.
     x-implementation-status: partial
   - name: Glossary
-    description: Authorized active-revision reads and immutable draft-revision creation are implemented in the PostgreSQL profile; listing, glossary creation, publication and translation remain planned.
+    description: Actor-scoped catalog listing/creation, active-revision reads and immutable draft-revision creation are implemented in the PostgreSQL profile; publication and translation remain planned.
     x-implementation-status: partial
 paths:
+  /api/v1/glossaries:
+    get:
+      operationId: listGlossaries
+      tags: [Glossary]
+      x-implementation-status: implemented-postgres-profile
+      summary: List visible glossaries
+      description: >-
+        Returns glossary metadata visible to the current actor: owned USER_GLOBAL glossaries and glossary scopes
+        attached to libraries the actor can read. Results are ordered by creation time descending, then ID descending.
+        Optional scope, libraryId and name query filters are bound into an actor- and access-scope-bound signed keyset
+        cursor. Page size is at most 100. A filtered library ID that is missing or inaccessible returns an empty page.
+        Current Terms and Privacy acceptance is required; responses use no-store caching.
+      security:
+        - appSession: []
+      parameters:
+        - name: scope
+          in: query
+          schema:
+            type: string
+            enum: [USER_GLOBAL, LIBRARY, WORK, VOLUME, CHAPTER]
+        - name: libraryId
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: q
+          in: query
+          description: Case-insensitive glossary-name substring; normalized to NFC and limited to 160 characters.
+          schema:
+            type: string
+            maxLength: 160
+        - name: cursor
+          in: query
+          description: Opaque signed keyset cursor bound to actor, filters and current workspace access scope.
+          schema:
+            type: string
+            maxLength: 512
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 25
+            minimum: 1
+            maximum: 100
+      responses:
+        '200':
+          description: One bounded page of visible glossary metadata.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GlossaryCatalogPage'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+    post:
+      operationId: createGlossary
+      tags: [Glossary]
+      x-implementation-status: implemented-postgres-profile
+      summary: Create an empty glossary container
+      description: >-
+        Creates glossary metadata for one supported scope. The actor is derived from the session. USER_GLOBAL is
+        owner-only; library/work/volume/chapter scopes require write access to the exact library and a matching target
+        hierarchy. Current Terms and Privacy acceptance and session-bound CSRF are required. Creation starts at
+        version 1 with no active revision; the caller can use its ETag to create the first immutable draft through
+        POST /api/v1/glossaries/{glossaryId}/revisions. It does not publish an empty revision.
+      security:
+        - appSession: []
+          csrfToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateGlossaryRequest'
+      responses:
+        '201':
+          description: Glossary metadata created at version 1, without an active revision.
+          headers:
+            ETag:
+              required: true
+              schema:
+                type: string
+                pattern: '^"v1"$'
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GlossaryCatalogItem'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
   /api/v1/glossaries/{glossaryId}/revisions:
     post:
       operationId: createGlossaryDraftRevision
@@ -4033,6 +4144,84 @@ components:
           type: integer
           format: int64
           minimum: 2
+    CreateGlossaryRequest:
+      type: object
+      additionalProperties: false
+      description: Scope target IDs must match the selected scope exactly; the server rejects missing or extra targets.
+      required: [name, scope, sourceLanguage, targetLanguage]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+        scope:
+          type: string
+          enum: [USER_GLOBAL, LIBRARY, WORK, VOLUME, CHAPTER]
+        sourceLanguage:
+          type: string
+          minLength: 2
+          maxLength: 35
+          description: BCP 47 language tag.
+        targetLanguage:
+          type: string
+          minLength: 2
+          maxLength: 35
+          description: BCP 47 language tag.
+        libraryId:
+          type: [string, 'null']
+          format: uuid
+        workId:
+          type: [string, 'null']
+          format: uuid
+        volumeId:
+          type: [string, 'null']
+          format: uuid
+        chapterId:
+          type: [string, 'null']
+          format: uuid
+    GlossaryCatalogPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/GlossaryCatalogItem'
+        nextCursor:
+          type: [string, 'null']
+          maxLength: 512
+    GlossaryCatalogItem:
+      type: object
+      additionalProperties: false
+      required: [id, name, scope, sourceLanguage, targetLanguage, version, activeRevisionId, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          maxLength: 120
+        scope:
+          type: string
+          enum: [USER_GLOBAL, LIBRARY, WORK, VOLUME, CHAPTER]
+        sourceLanguage:
+          type: string
+          maxLength: 35
+        targetLanguage:
+          type: string
+          maxLength: 35
+        version:
+          type: integer
+          format: int64
+          minimum: 1
+        activeRevisionId:
+          type: [string, 'null']
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
     GlossaryActiveRevision:
       type: object
       additionalProperties: false

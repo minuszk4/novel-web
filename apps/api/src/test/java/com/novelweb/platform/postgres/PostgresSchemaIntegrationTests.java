@@ -39,6 +39,7 @@ import com.novelweb.library.imports.ImportStagingCleanupService;
 import com.novelweb.library.imports.ImportStagingRateLimiter;
 import com.novelweb.progression.cultivation.CultivationRepository;
 import com.novelweb.progression.cultivation.CultivationService;
+import com.novelweb.translation.glossary.GlossaryCatalogController;
 import com.novelweb.translation.glossary.GlossaryMatcher;
 import com.novelweb.translation.glossary.GlossaryRepository;
 import com.novelweb.translation.glossary.GlossaryRevisionController;
@@ -1011,6 +1012,344 @@ class PostgresSchemaIntegrationTests {
       deleteSessionTestUser(blockedId);
       deleteSessionTestUser(outsiderId);
     }
+  }
+
+  @Test
+  void glossaryCatalogRoutesCreateAllScopesAndPaginateOnlyVisibleRecords() throws Exception {
+    UUID ownerId = createSessionTestUser("Glossary Catalog Owner");
+    UUID outsiderId = createSessionTestUser("Glossary Catalog Outsider");
+    UUID blockedId = createSessionTestUser("Glossary Catalog Policy Blocked");
+    UUID libraryId = UUID.randomUUID();
+    UUID workId = UUID.randomUUID();
+    UUID volumeId = UUID.randomUUID();
+    UUID chapterId = UUID.randomUUID();
+    try {
+      addCurrentPolicyAcceptances(ownerId);
+      addCurrentPolicyAcceptances(outsiderId);
+      SessionService.IssuedSession ownerSession = sessionService.create(ownerId).orElseThrow();
+      SessionService.IssuedSession outsiderSession =
+          sessionService.create(outsiderId).orElseThrow();
+      SessionService.IssuedSession blockedSession = sessionService.create(blockedId).orElseThrow();
+      var ownerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", ownerSession.cookieValue());
+      var outsiderCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", outsiderSession.cookieValue());
+      var blockedCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", blockedSession.cookieValue());
+      String ownerCsrf = csrfTokenService.tokenFor(ownerSession.cookieValue());
+      String outsiderCsrf = csrfTokenService.tokenFor(outsiderSession.cookieValue());
+      String blockedCsrf = csrfTokenService.tokenFor(blockedSession.cookieValue());
+
+      try (Connection connection = dataSource.getConnection()) {
+        try (PreparedStatement insertLibrary =
+            connection.prepareStatement(
+                "INSERT INTO libraries (id, owner_user_id, name, is_default)"
+                    + " VALUES (?, ?, 'Glossary catalog fixture', FALSE)")) {
+          insertLibrary.setObject(1, libraryId);
+          insertLibrary.setObject(2, ownerId);
+          assertEquals(1, insertLibrary.executeUpdate());
+        }
+        try (PreparedStatement insertWork =
+            connection.prepareStatement(
+                "INSERT INTO works (id, library_id, owner_user_id, title) VALUES (?, ?, ?, ?)")) {
+          insertWork.setObject(1, workId);
+          insertWork.setObject(2, libraryId);
+          insertWork.setObject(3, ownerId);
+          insertWork.setString(4, "Glossary catalog work");
+          assertEquals(1, insertWork.executeUpdate());
+        }
+        try (PreparedStatement insertVolume =
+            connection.prepareStatement(
+                "INSERT INTO volumes (id, work_id, ordinal, title) VALUES (?, ?, 1, 'Volume')")) {
+          insertVolume.setObject(1, volumeId);
+          insertVolume.setObject(2, workId);
+          assertEquals(1, insertVolume.executeUpdate());
+        }
+        try (PreparedStatement insertChapter =
+            connection.prepareStatement(
+                "INSERT INTO chapters (id, work_id, volume_id, ordinal, title)"
+                    + " VALUES (?, ?, ?, 1, 'Chapter')")) {
+          insertChapter.setObject(1, chapterId);
+          insertChapter.setObject(2, workId);
+          insertChapter.setObject(3, volumeId);
+          assertEquals(1, insertChapter.executeUpdate());
+        }
+      }
+
+      String route = "/api/v1/glossaries";
+      MvcResult unauthenticated = mockMvc.perform(get(route)).andReturn();
+      assertEquals(401, unauthenticated.getResponse().getStatus());
+      MvcResult policyBlocked = mockMvc.perform(get(route).cookie(blockedCookie)).andReturn();
+      assertEquals(403, policyBlocked.getResponse().getStatus());
+      assertTrue(
+          policyBlocked.getResponse().getContentAsString().contains("POLICY_ACCEPTANCE_REQUIRED"));
+
+      GlossaryCatalogController.CreateGlossaryRequest globalRequest =
+          new GlossaryCatalogController.CreateGlossaryRequest(
+              "Wuxia Global",
+              GlossaryMatcher.Scope.USER_GLOBAL,
+              "zh-Hans",
+              "vi",
+              null,
+              null,
+              null,
+              null);
+      String globalJson = objectMapper.writeValueAsString(globalRequest);
+      MvcResult missingCsrf =
+          mockMvc
+              .perform(
+                  post(route)
+                      .cookie(ownerCookie)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(globalJson))
+              .andReturn();
+      assertEquals(403, missingCsrf.getResponse().getStatus());
+      assertTrue(missingCsrf.getResponse().getContentAsString().contains("CSRF_FAILED"));
+
+      MvcResult blockedCreate =
+          mockMvc
+              .perform(
+                  post(route)
+                      .cookie(blockedCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, blockedCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(globalJson))
+              .andReturn();
+      assertEquals(403, blockedCreate.getResponse().getStatus());
+
+      MvcResult createdGlobal =
+          mockMvc
+              .perform(
+                  post(route)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(globalJson))
+              .andReturn();
+      assertEquals(201, createdGlobal.getResponse().getStatus());
+      assertEquals("\"v1\"", createdGlobal.getResponse().getHeader(HttpHeaders.ETAG));
+      assertTrue(
+          createdGlobal.getResponse().getHeader(HttpHeaders.CACHE_CONTROL).contains("no-store"));
+      JsonNode globalBody = objectMapper.readTree(createdGlobal.getResponse().getContentAsString());
+      assertEquals("USER_GLOBAL", globalBody.path("scope").asText());
+      assertEquals(1, globalBody.path("version").asInt());
+      assertTrue(globalBody.path("activeRevisionId").isNull());
+
+      List<GlossaryCatalogController.CreateGlossaryRequest> scopedRequests =
+          List.of(
+              new GlossaryCatalogController.CreateGlossaryRequest(
+                  "Wuxia Library",
+                  GlossaryMatcher.Scope.LIBRARY,
+                  "zh-Hans",
+                  "vi",
+                  libraryId.toString(),
+                  null,
+                  null,
+                  null),
+              new GlossaryCatalogController.CreateGlossaryRequest(
+                  "Wuxia Work",
+                  GlossaryMatcher.Scope.WORK,
+                  "zh-Hans",
+                  "vi",
+                  libraryId.toString(),
+                  workId.toString(),
+                  null,
+                  null),
+              new GlossaryCatalogController.CreateGlossaryRequest(
+                  "Wuxia Volume",
+                  GlossaryMatcher.Scope.VOLUME,
+                  "zh-Hans",
+                  "vi",
+                  libraryId.toString(),
+                  workId.toString(),
+                  volumeId.toString(),
+                  null),
+              new GlossaryCatalogController.CreateGlossaryRequest(
+                  "Wuxia Chapter",
+                  GlossaryMatcher.Scope.CHAPTER,
+                  "zh-Hans",
+                  "vi",
+                  libraryId.toString(),
+                  workId.toString(),
+                  null,
+                  chapterId.toString()));
+      for (GlossaryCatalogController.CreateGlossaryRequest scopedRequest : scopedRequests) {
+        MvcResult created =
+            mockMvc
+                .perform(
+                    post(route)
+                        .cookie(ownerCookie)
+                        .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(scopedRequest)))
+                .andReturn();
+        assertEquals(201, created.getResponse().getStatus());
+        JsonNode body = objectMapper.readTree(created.getResponse().getContentAsString());
+        assertEquals(scopedRequest.scope().name(), body.path("scope").asText());
+        assertEquals("\"v1\"", created.getResponse().getHeader(HttpHeaders.ETAG));
+      }
+
+      GlossaryCatalogController.CreateGlossaryRequest invalidScopeTarget =
+          new GlossaryCatalogController.CreateGlossaryRequest(
+              "Bad Wuxia",
+              GlossaryMatcher.Scope.WORK,
+              "zh-Hans",
+              "vi",
+              libraryId.toString(),
+              null,
+              null,
+              null);
+      MvcResult invalidTarget =
+          mockMvc
+              .perform(
+                  post(route)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(objectMapper.writeValueAsString(invalidScopeTarget)))
+              .andReturn();
+      assertEquals(400, invalidTarget.getResponse().getStatus());
+
+      GlossaryCatalogController.CreateGlossaryRequest outsiderRequest =
+          new GlossaryCatalogController.CreateGlossaryRequest(
+              "Outsider Wuxia",
+              GlossaryMatcher.Scope.LIBRARY,
+              "zh-Hans",
+              "vi",
+              libraryId.toString(),
+              null,
+              null,
+              null);
+      MvcResult outsiderCreate =
+          mockMvc
+              .perform(
+                  post(route)
+                      .cookie(outsiderCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, outsiderCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(objectMapper.writeValueAsString(outsiderRequest)))
+              .andReturn();
+      assertEquals(404, outsiderCreate.getResponse().getStatus());
+
+      MvcResult firstPage =
+          mockMvc
+              .perform(get(route).cookie(ownerCookie).param("q", "Wuxia").param("limit", "2"))
+              .andReturn();
+      assertEquals(200, firstPage.getResponse().getStatus());
+      assertTrue(firstPage.getResponse().getHeader(HttpHeaders.CACHE_CONTROL).contains("no-store"));
+      JsonNode firstBody = objectMapper.readTree(firstPage.getResponse().getContentAsString());
+      assertEquals(2, firstBody.path("items").size());
+      String cursor = firstBody.path("nextCursor").asText();
+      assertFalse(cursor.isBlank());
+
+      MvcResult secondPage =
+          mockMvc
+              .perform(
+                  get(route)
+                      .cookie(ownerCookie)
+                      .param("q", "wuxia")
+                      .param("limit", "2")
+                      .param("cursor", cursor))
+              .andReturn();
+      assertEquals(200, secondPage.getResponse().getStatus());
+      JsonNode secondBody = objectMapper.readTree(secondPage.getResponse().getContentAsString());
+      assertEquals(2, secondBody.path("items").size());
+      String lastCursor = secondBody.path("nextCursor").asText();
+      assertFalse(lastCursor.isBlank());
+
+      MvcResult thirdPage =
+          mockMvc
+              .perform(
+                  get(route)
+                      .cookie(ownerCookie)
+                      .param("q", "wuxia")
+                      .param("limit", "2")
+                      .param("cursor", lastCursor))
+              .andReturn();
+      assertEquals(200, thirdPage.getResponse().getStatus());
+      JsonNode thirdBody = objectMapper.readTree(thirdPage.getResponse().getContentAsString());
+      assertEquals(1, thirdBody.path("items").size());
+      assertTrue(thirdBody.path("nextCursor").isNull());
+
+      MvcResult filterMismatch =
+          mockMvc
+              .perform(
+                  get(route).cookie(ownerCookie).param("q", "different").param("cursor", cursor))
+              .andReturn();
+      assertEquals(400, filterMismatch.getResponse().getStatus());
+      MvcResult tamperedCursor =
+          mockMvc
+              .perform(
+                  get(route)
+                      .cookie(ownerCookie)
+                      .param("q", "wuxia")
+                      .param("cursor", tamperLastCharacter(cursor)))
+              .andReturn();
+      assertEquals(400, tamperedCursor.getResponse().getStatus());
+
+      MvcResult workFilter =
+          mockMvc
+              .perform(
+                  get(route)
+                      .cookie(ownerCookie)
+                      .param("scope", "WORK")
+                      .param("libraryId", libraryId.toString()))
+              .andReturn();
+      assertEquals(200, workFilter.getResponse().getStatus());
+      assertEquals(
+          1,
+          objectMapper
+              .readTree(workFilter.getResponse().getContentAsString())
+              .path("items")
+              .size());
+
+      MvcResult outsiderList = mockMvc.perform(get(route).cookie(outsiderCookie)).andReturn();
+      assertEquals(200, outsiderList.getResponse().getStatus());
+      assertEquals(
+          0,
+          objectMapper
+              .readTree(outsiderList.getResponse().getContentAsString())
+              .path("items")
+              .size());
+    } finally {
+      try (Connection connection = dataSource.getConnection()) {
+        try (PreparedStatement deleteGlossaries =
+            connection.prepareStatement(
+                "DELETE FROM glossaries WHERE owner_user_id = ? OR library_id = ?")) {
+          deleteGlossaries.setObject(1, ownerId);
+          deleteGlossaries.setObject(2, libraryId);
+          deleteGlossaries.executeUpdate();
+        }
+        try (PreparedStatement deleteChapters =
+            connection.prepareStatement("DELETE FROM chapters WHERE work_id = ?")) {
+          deleteChapters.setObject(1, workId);
+          deleteChapters.executeUpdate();
+        }
+        try (PreparedStatement deleteVolumes =
+            connection.prepareStatement("DELETE FROM volumes WHERE work_id = ?")) {
+          deleteVolumes.setObject(1, workId);
+          deleteVolumes.executeUpdate();
+        }
+        try (PreparedStatement deleteWorks =
+            connection.prepareStatement("DELETE FROM works WHERE id = ?")) {
+          deleteWorks.setObject(1, workId);
+          deleteWorks.executeUpdate();
+        }
+        try (PreparedStatement deleteLibrary =
+            connection.prepareStatement("DELETE FROM libraries WHERE id = ?")) {
+          deleteLibrary.setObject(1, libraryId);
+          deleteLibrary.executeUpdate();
+        }
+      }
+      deleteSessionTestUser(ownerId);
+      deleteSessionTestUser(outsiderId);
+      deleteSessionTestUser(blockedId);
+    }
+  }
+
+  private static String tamperLastCharacter(String token) {
+    char last = token.charAt(token.length() - 1);
+    return token.substring(0, token.length() - 1) + (last == 'A' ? 'B' : 'A');
   }
 
   @Test
