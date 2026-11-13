@@ -170,6 +170,10 @@ class PostgresSchemaIntegrationTests {
           "cultivation_daily_active_time",
           "cultivation_reading_sessions",
           "cultivation_reading_session_events",
+          "glossaries",
+          "glossary_revisions",
+          "glossary_terms",
+          "glossary_aliases",
           "library_collections",
           "library_collection_works",
           "import_rights_statements",
@@ -254,7 +258,7 @@ class PostgresSchemaIntegrationTests {
             connection.prepareStatement("SELECT COUNT(*) FROM databasechangelog");
         ResultSet changesets = changesetCount.executeQuery()) {
       changesets.next();
-      assertEquals(89, changesets.getInt(1), "unexpected number of applied changesets");
+      assertEquals(95, changesets.getInt(1), "unexpected number of applied changesets");
     }
 
     Set<String> actualTables = new HashSet<>();
@@ -274,6 +278,146 @@ class PostgresSchemaIntegrationTests {
       }
     }
     assertEquals(EXPECTED_APPLICATION_TABLES, actualTables);
+  }
+
+  @Test
+  void glossaryRevisionsAndTermsAreImmutableScopedSnapshots() throws SQLException {
+    UUID actorId = UUID.randomUUID();
+    UUID glossaryId = UUID.randomUUID();
+    UUID revisionId = UUID.randomUUID();
+    UUID otherGlossaryId = UUID.randomUUID();
+    UUID otherRevisionId = UUID.randomUUID();
+    UUID termId = UUID.randomUUID();
+    try (Connection connection = dataSource.getConnection()) {
+      try (PreparedStatement insertUser =
+          connection.prepareStatement(
+              "INSERT INTO users (id, display_name, status) VALUES (?, 'Glossary Test', 'active')")) {
+        insertUser.setObject(1, actorId);
+        insertUser.executeUpdate();
+      }
+      try (PreparedStatement insertGlossary =
+          connection.prepareStatement(
+              "INSERT INTO glossaries (id, owner_user_id, name, scope_type, source_language,"
+                  + " target_language) VALUES (?, ?, 'Test', 'USER_GLOBAL', 'zh-Hans', 'vi')")) {
+        insertGlossary.setObject(1, glossaryId);
+        insertGlossary.setObject(2, actorId);
+        insertGlossary.executeUpdate();
+      }
+      try (PreparedStatement insertRevision =
+          connection.prepareStatement(
+              "INSERT INTO glossary_revisions (id, glossary_id, revision_no, created_by_user_id)"
+                  + " VALUES (?, ?, 1, ?)")) {
+        insertRevision.setObject(1, revisionId);
+        insertRevision.setObject(2, glossaryId);
+        insertRevision.setObject(3, actorId);
+        insertRevision.executeUpdate();
+      }
+      try (PreparedStatement insertGlossary =
+          connection.prepareStatement(
+              "INSERT INTO glossaries (id, owner_user_id, name, scope_type, source_language,"
+                  + " target_language) VALUES (?, ?, 'Other Test', 'USER_GLOBAL', 'zh-Hans', 'vi')")) {
+        insertGlossary.setObject(1, otherGlossaryId);
+        insertGlossary.setObject(2, actorId);
+        insertGlossary.executeUpdate();
+      }
+      try (PreparedStatement insertRevision =
+          connection.prepareStatement(
+              "INSERT INTO glossary_revisions (id, glossary_id, revision_no, created_by_user_id)"
+                  + " VALUES (?, ?, 1, ?)")) {
+        insertRevision.setObject(1, otherRevisionId);
+        insertRevision.setObject(2, otherGlossaryId);
+        insertRevision.setObject(3, actorId);
+        insertRevision.executeUpdate();
+      }
+      try (PreparedStatement insertTerm =
+          connection.prepareStatement(
+              "INSERT INTO glossary_terms (id, revision_id, ordinal, source_term, target_term,"
+                  + " case_policy, match_mode) VALUES (?, ?, 1, '金丹', 'Kim Đan', 'INSENSITIVE',"
+                  + " 'WHOLE_PHRASE')")) {
+        insertTerm.setObject(1, termId);
+        insertTerm.setObject(2, revisionId);
+        insertTerm.executeUpdate();
+      }
+      try (PreparedStatement insertAlias =
+          connection.prepareStatement(
+              "INSERT INTO glossary_aliases (revision_id, term_id, ordinal, alias_text)"
+                  + " VALUES (?, ?, 1, 'Golden Core')")) {
+        insertAlias.setObject(1, revisionId);
+        insertAlias.setObject(2, termId);
+        insertAlias.executeUpdate();
+      }
+
+      assertThrows(
+          SQLException.class,
+          () -> {
+            try (PreparedStatement updateTerm =
+                connection.prepareStatement(
+                    "UPDATE glossary_terms SET target_term = 'Đan vàng' WHERE revision_id = ?")) {
+              updateTerm.setObject(1, revisionId);
+              updateTerm.executeUpdate();
+            }
+          });
+      assertThrows(
+          SQLException.class,
+          () -> {
+            try (PreparedStatement updateScope =
+                connection.prepareStatement(
+                    "UPDATE glossaries SET scope_type = 'WORK' WHERE id = ?")) {
+              updateScope.setObject(1, glossaryId);
+              updateScope.executeUpdate();
+            }
+          });
+      assertThrows(
+          SQLException.class,
+          () -> {
+            try (PreparedStatement invalidScope =
+                connection.prepareStatement(
+                    "INSERT INTO glossaries (id, owner_user_id, name, scope_type,"
+                        + " source_language, target_language)"
+                        + " VALUES (?, ?, 'Invalid', 'WORK', 'zh-Hans', 'vi')")) {
+              invalidScope.setObject(1, UUID.randomUUID());
+              invalidScope.setObject(2, actorId);
+              invalidScope.executeUpdate();
+            }
+          });
+      assertThrows(
+          SQLException.class,
+          () -> {
+            try (PreparedStatement wrongActiveRevision =
+                connection.prepareStatement(
+                    "UPDATE glossaries SET active_revision_id = ? WHERE id = ?")) {
+              wrongActiveRevision.setObject(1, otherRevisionId);
+              wrongActiveRevision.setObject(2, glossaryId);
+              wrongActiveRevision.executeUpdate();
+            }
+          });
+      try (PreparedStatement publishRevision =
+          connection.prepareStatement(
+              "UPDATE glossaries SET active_revision_id = ?, version = 2 WHERE id = ?")) {
+        publishRevision.setObject(1, revisionId);
+        publishRevision.setObject(2, glossaryId);
+        publishRevision.executeUpdate();
+      }
+      try (PreparedStatement deleteUser =
+          connection.prepareStatement("DELETE FROM users WHERE id = ?")) {
+        deleteUser.setObject(1, actorId);
+        deleteUser.executeUpdate();
+      }
+      try (PreparedStatement remainingSnapshots =
+          connection.prepareStatement(
+              "SELECT (SELECT COUNT(*) FROM glossaries WHERE id IN (?, ?)) +"
+                  + " (SELECT COUNT(*) FROM glossary_revisions WHERE id IN (?, ?))")) {
+        remainingSnapshots.setObject(1, glossaryId);
+        remainingSnapshots.setObject(2, otherGlossaryId);
+        remainingSnapshots.setObject(3, revisionId);
+        remainingSnapshots.setObject(4, otherRevisionId);
+        try (ResultSet row = remainingSnapshots.executeQuery()) {
+          assertTrue(row.next());
+          assertEquals(
+              0, row.getLong(1), "account erasure must cascade private glossary snapshots");
+        }
+      }
+    }
   }
 
   @Test
