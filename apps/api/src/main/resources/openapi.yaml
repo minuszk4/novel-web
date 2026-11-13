@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 6.5.0
+  version: 6.6.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -13,7 +13,7 @@ info:
     commit are implemented. Markdown uses CommonMark core only, strips raw HTML and link destinations, and derives chapter boundaries from repeated top-level headings.
     Source-only Reader manifest, chapter-content, progress, reader-preferences, bookmarks, private annotations and private reading-history routes are implemented in the PostgreSQL profile.
     History is derived from the latest saved progress per accessible readable work, is visible for 365 days, and never returns chapter body text.
-    Versioned cultivation catalogs, authenticated profile settings and bounded private Reader-session lifecycle are implemented in the PostgreSQL profile. Sessions do not yet award XP; profile XP remains zero. Cultivation is feature-gated and off by default.
+    Versioned cultivation catalogs, authenticated profile settings and bounded private Reader sessions with atomic XP awards and daily projection are implemented in the PostgreSQL profile. The approved starting policy awards 1 XP per complete active Reader minute, capped at 120 XP per UTC day; top-ups and unlocks award none. Cultivation is feature-gated and off by default while the frontend integration remains pending.
 servers:
   - url: http://127.0.0.1:8080
 tags:
@@ -3305,7 +3305,7 @@ components:
     CultivationReadingSessionHeartbeat:
       type: object
       additionalProperties: false
-      required: [sessionId, state, sequence, creditedSeconds, totalActiveSeconds, receivedAt, expiresAt]
+      required: [sessionId, state, sequence, creditedSeconds, totalActiveSeconds, awardedXp, receivedAt, expiresAt]
       properties:
         sessionId:
           type: string
@@ -3324,6 +3324,11 @@ components:
           type: integer
           format: int64
           minimum: 0
+        awardedXp:
+          type: integer
+          minimum: 0
+          maximum: 120
+          description: XP atomically posted by this accepted heartbeat; idempotent replays return the same award.
         receivedAt:
           type: string
           format: date-time
@@ -3333,7 +3338,7 @@ components:
     CultivationReadingSessionClose:
       type: object
       additionalProperties: false
-      required: [sessionId, state, startedAt, closedAt, totalActiveSeconds, lastSequence]
+      required: [sessionId, state, startedAt, closedAt, totalActiveSeconds, lastSequence, awardedXp]
       properties:
         sessionId:
           type: string
@@ -3355,11 +3360,16 @@ components:
           type: integer
           format: int64
           minimum: 0
+        awardedXp:
+          type: integer
+          minimum: 0
+          maximum: 120
+          description: XP posted for the final eligible active interval when this session was closed.
     CultivationState:
       type: object
       additionalProperties: false
       required:
-        [enabled, profileVersion, totalXp, currentRank, nextRank, xpToNextRank, progressRatio, rankCatalogVersion, policyVersion, locale, xpPerActiveMinute, dailyXpCap, nextDailyResetAt, rankCatalog]
+        [enabled, profileVersion, totalXp, todayXpEarned, currentRank, nextRank, xpToNextRank, progressRatio, rankCatalogVersion, policyVersion, locale, xpPerActiveMinute, dailyXpCap, nextDailyResetAt, rankCatalog]
       properties:
         enabled:
           type: boolean
@@ -3372,6 +3382,11 @@ components:
           type: integer
           format: int64
           minimum: 0
+        todayXpEarned:
+          type: integer
+          format: int64
+          minimum: 0
+          description: XP already posted to the immutable ledger for the current UTC date; the approved policy cap is 120.
         currentRank:
           $ref: '#/components/schemas/CultivationRank'
         nextRank:

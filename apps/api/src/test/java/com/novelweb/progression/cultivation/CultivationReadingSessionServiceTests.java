@@ -8,6 +8,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verifyNoInteractions;
 
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
@@ -49,6 +50,22 @@ class CultivationReadingSessionServiceTests {
         CultivationReadingSessionService.creditableSeconds(
             previous, previous.minusSeconds(1), true));
     assertEquals(0, CultivationReadingSessionService.creditableSeconds(null, previous, true));
+  }
+
+  @Test
+  void preservesFractionalActiveTimeAndSplitsItAtUtcMidnight() {
+    Instant previous = Instant.parse("2026-11-01T23:59:30Z");
+    assertEquals(
+        1_234,
+        CultivationReadingSessionService.creditableMicroseconds(
+            previous, previous.plusNanos(1_234_999), true));
+
+    var slices = CultivationReadingSessionRepository.splitByUtcDay(previous, 60_000_000L);
+    assertEquals(2, slices.size());
+    assertEquals(LocalDate.of(2026, 11, 1), slices.getFirst().activityDate());
+    assertEquals(30_000_000L, slices.getFirst().durationMicroseconds());
+    assertEquals(LocalDate.of(2026, 11, 2), slices.getLast().activityDate());
+    assertEquals(30_000_000L, slices.getLast().durationMicroseconds());
   }
 
   @Test

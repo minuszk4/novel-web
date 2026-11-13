@@ -18,6 +18,7 @@ public class CultivationReadingSessionService {
 
   public static final int HEARTBEAT_INTERVAL_SECONDS = 30;
   public static final int MAX_CREDIT_SECONDS = 60;
+  public static final long MAX_CREDIT_MICROSECONDS = MAX_CREDIT_SECONDS * 1_000_000L;
   public static final int IDLE_TIMEOUT_SECONDS = 90;
   private static final Pattern IDEMPOTENCY_KEY_PATTERN =
       Pattern.compile("^[A-Za-z0-9._~-]{16,128}$");
@@ -84,10 +85,16 @@ public class CultivationReadingSessionService {
 
   public static int creditableSeconds(
       Instant previousReceipt, Instant currentReceipt, boolean active) {
+    return (int) (creditableMicroseconds(previousReceipt, currentReceipt, active) / 1_000_000L);
+  }
+
+  public static long creditableMicroseconds(
+      Instant previousReceipt, Instant currentReceipt, boolean active) {
     if (!active || previousReceipt == null || currentReceipt == null) return 0;
-    long elapsed = Duration.between(previousReceipt, currentReceipt).getSeconds();
-    if (elapsed <= 0) return 0;
-    return (int) Math.min(MAX_CREDIT_SECONDS, elapsed);
+    Duration elapsed = Duration.between(previousReceipt, currentReceipt);
+    if (elapsed.isNegative() || elapsed.isZero()) return 0;
+    long elapsedMicroseconds = elapsed.getSeconds() * 1_000_000L + elapsed.getNano() / 1_000L;
+    return Math.min(MAX_CREDIT_MICROSECONDS, elapsedMicroseconds);
   }
 
   public static boolean isExpired(Instant previousReceipt, Instant currentReceipt) {
@@ -135,6 +142,7 @@ public class CultivationReadingSessionService {
         result.sequence(),
         result.creditedSeconds(),
         result.totalActiveSeconds(),
+        result.awardedXp(),
         result.receivedAt(),
         result.expiresAt());
   }
@@ -147,7 +155,8 @@ public class CultivationReadingSessionService {
         session.startedAt(),
         session.closedAt(),
         session.totalActiveSeconds(),
-        session.lastSequence());
+        session.lastSequence(),
+        session.closedAwardedXp());
   }
 
   public record StartOutcome(StartResponse session, boolean replayed) {}
@@ -170,6 +179,7 @@ public class CultivationReadingSessionService {
       long sequence,
       int creditedSeconds,
       long totalActiveSeconds,
+      int awardedXp,
       Instant receivedAt,
       Instant expiresAt) {}
 
@@ -179,7 +189,8 @@ public class CultivationReadingSessionService {
       Instant startedAt,
       Instant closedAt,
       long totalActiveSeconds,
-      long lastSequence) {}
+      long lastSequence,
+      int awardedXp) {}
 
   public static final class StartRequest {
     private UUID workId;

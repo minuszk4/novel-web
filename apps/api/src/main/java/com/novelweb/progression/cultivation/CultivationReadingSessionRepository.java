@@ -7,8 +7,13 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.sql.Types;
+import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
 import javax.sql.DataSource;
@@ -88,7 +93,7 @@ public class CultivationReadingSessionRepository {
     try (Connection connection = dataSource.getConnection()) {
       connection.setAutoCommit(false);
       try {
-        requireActiveUser(connection, actorUserId, false);
+        requireActiveUser(connection, actorUserId, true);
         SessionSnapshot session = findSession(connection, actorUserId, sessionId, true);
         EventSnapshot replay = findEvent(connection, sessionId, idempotencyKey);
         if (replay != null) {
@@ -105,6 +110,7 @@ public class CultivationReadingSessionRepository {
                   sequence,
                   0,
                   session.totalActiveSeconds(),
+                  0,
                   session.lastHeartbeatAt(),
                   expiresAt(session.lastHeartbeatAt())),
               false);
@@ -127,28 +133,42 @@ public class CultivationReadingSessionRepository {
             CultivationReadingSessionService.isExpired(session.lastHeartbeatAt(), receivedAt);
 
         String resultState;
-        int creditedSeconds;
+        long creditedMicroseconds;
         if (expired) {
           resultState = "expired";
-          creditedSeconds = 0;
+          creditedMicroseconds = 0;
         } else if (!readable) {
           resultState = "revoked";
-          creditedSeconds = 0;
+          creditedMicroseconds = 0;
         } else {
           resultState = "active";
-          creditedSeconds =
-              CultivationReadingSessionService.creditableSeconds(
+          creditedMicroseconds =
+              CultivationReadingSessionService.creditableMicroseconds(
                   session.lastHeartbeatAt(), receivedAt, session.lastClientActive());
         }
 
-        long totalActiveSeconds = session.totalActiveSeconds() + creditedSeconds;
+        ProfileCatalog pinnedPolicy = eligible ? profile : null;
+        int awardedXp =
+            pinnedPolicy == null || creditedMicroseconds == 0
+                ? 0
+                : awardInterval(
+                    connection,
+                    actorUserId,
+                    session,
+                    session.lastHeartbeatAt(),
+                    creditedMicroseconds,
+                    pinnedPolicy);
+        long totalActiveMicroseconds = session.totalActiveMicroseconds() + creditedMicroseconds;
+        long totalActiveSeconds = totalActiveMicroseconds / 1_000_000L;
+        int creditedSeconds = (int) (creditedMicroseconds / 1_000_000L);
         updateHeartbeat(
             connection,
             sessionId,
             sequence,
             clientActive,
             receivedAt,
-            creditedSeconds,
+            creditedMicroseconds,
+            totalActiveMicroseconds,
             totalActiveSeconds,
             resultState);
         HeartbeatResult result =
@@ -158,6 +178,7 @@ public class CultivationReadingSessionRepository {
                 sequence,
                 creditedSeconds,
                 totalActiveSeconds,
+                awardedXp,
                 receivedAt,
                 expiresAt(receivedAt));
         insertEvent(
@@ -168,7 +189,8 @@ public class CultivationReadingSessionRepository {
             sequence,
             clientActive,
             receivedAt,
-            creditedSeconds,
+            creditedMicroseconds,
+            awardedXp,
             totalActiveSeconds,
             resultState);
         connection.commit();
@@ -188,7 +210,7 @@ public class CultivationReadingSessionRepository {
     try (Connection connection = dataSource.getConnection()) {
       connection.setAutoCommit(false);
       try {
-        requireActiveUser(connection, actorUserId, false);
+        requireActiveUser(connection, actorUserId, true);
         SessionSnapshot session = findSession(connection, actorUserId, sessionId, true);
         if (!"active".equals(session.state())) {
           connection.commit();
@@ -209,22 +231,41 @@ public class CultivationReadingSessionRepository {
             CultivationReadingSessionService.isExpired(session.lastHeartbeatAt(), closedAt);
 
         String state;
-        int creditedSeconds;
+        long creditedMicroseconds;
         if (expired) {
           state = "expired";
-          creditedSeconds = 0;
+          creditedMicroseconds = 0;
         } else if (!readable) {
           state = "revoked";
-          creditedSeconds = 0;
+          creditedMicroseconds = 0;
         } else {
           state = "closed";
-          creditedSeconds =
-              CultivationReadingSessionService.creditableSeconds(
+          creditedMicroseconds =
+              CultivationReadingSessionService.creditableMicroseconds(
                   session.lastHeartbeatAt(), closedAt, session.lastClientActive());
         }
 
-        long totalActiveSeconds = session.totalActiveSeconds() + creditedSeconds;
-        updateClosedSession(connection, sessionId, closedAt, totalActiveSeconds, state);
+        ProfileCatalog pinnedPolicy = eligible ? profile : null;
+        int awardedXp =
+            pinnedPolicy == null || creditedMicroseconds == 0
+                ? 0
+                : awardInterval(
+                    connection,
+                    actorUserId,
+                    session,
+                    session.lastHeartbeatAt(),
+                    creditedMicroseconds,
+                    pinnedPolicy);
+        long totalActiveMicroseconds = session.totalActiveMicroseconds() + creditedMicroseconds;
+        long totalActiveSeconds = totalActiveMicroseconds / 1_000_000L;
+        updateClosedSession(
+            connection,
+            sessionId,
+            closedAt,
+            totalActiveMicroseconds,
+            totalActiveSeconds,
+            awardedXp,
+            state);
         SessionSnapshot closed =
             new SessionSnapshot(
                 sessionId,
@@ -232,7 +273,9 @@ public class CultivationReadingSessionRepository {
                 session.startedAt(),
                 session.lastHeartbeatAt(),
                 closedAt,
+                totalActiveMicroseconds,
                 totalActiveSeconds,
+                awardedXp,
                 session.lastSequence(),
                 false,
                 session.workId(),
@@ -251,28 +294,299 @@ public class CultivationReadingSessionRepository {
   }
 
   public int purgeExpiredSessions() {
-    try (Connection connection = dataSource.getConnection();
-        PreparedStatement delete =
-            connection.prepareStatement(
-                """
-                    WITH expired AS (
-                        SELECT id
-                        FROM cultivation_reading_sessions
-                        WHERE (state <> 'active'
-                               AND closed_at < clock_timestamp() - INTERVAL '24 hours')
-                           OR (state = 'active'
-                               AND last_heartbeat_at < clock_timestamp() - INTERVAL '24 hours')
-                        ORDER BY last_heartbeat_at
-                        LIMIT 500
-                        FOR UPDATE SKIP LOCKED
-                    )
-                    DELETE FROM cultivation_reading_sessions s
-                    USING expired e
-                    WHERE s.id = e.id
-                    """)) {
-      return delete.executeUpdate();
+    try (Connection connection = dataSource.getConnection()) {
+      int sessionsDeleted;
+      try (PreparedStatement delete =
+          connection.prepareStatement(
+              """
+                  WITH expired AS (
+                      SELECT id
+                      FROM cultivation_reading_sessions
+                      WHERE (state <> 'active'
+                             AND closed_at < clock_timestamp() - INTERVAL '24 hours')
+                         OR (state = 'active'
+                             AND last_heartbeat_at < clock_timestamp() - INTERVAL '24 hours')
+                      ORDER BY last_heartbeat_at
+                      LIMIT 500
+                      FOR UPDATE SKIP LOCKED
+                  )
+                  DELETE FROM cultivation_reading_sessions s
+                  USING expired e
+                  WHERE s.id = e.id
+                  """)) {
+        sessionsDeleted = delete.executeUpdate();
+      }
+      try (PreparedStatement deleteBuckets =
+          connection.prepareStatement(
+              "DELETE FROM cultivation_daily_active_time "
+                  + "WHERE updated_at < clock_timestamp() - INTERVAL '24 hours'")) {
+        return sessionsDeleted + deleteBuckets.executeUpdate();
+      }
     } catch (SQLException exception) {
       throw new IllegalStateException("Unable to purge expired cultivation sessions", exception);
+    }
+  }
+
+  static void closeActiveReadingSessionsAndAward(Connection connection, UUID userId)
+      throws SQLException {
+    List<SessionSnapshot> activeSessions = new ArrayList<>();
+    try (PreparedStatement select =
+        connection.prepareStatement(
+            """
+                SELECT id, state, started_at, last_heartbeat_at, closed_at, total_active_seconds,
+                       last_sequence, last_client_active, work_id, chapter_id,
+                       catalog_version, policy_version, total_active_microseconds, closed_awarded_xp
+                FROM cultivation_reading_sessions
+                WHERE user_id = ? AND state = 'active'
+                ORDER BY id
+                FOR UPDATE
+                """)) {
+      select.setObject(1, userId);
+      try (ResultSet rows = select.executeQuery()) {
+        while (rows.next()) activeSessions.add(snapshot(rows));
+      }
+    }
+
+    for (SessionSnapshot session : activeSessions) {
+      Instant closedAt = databaseNow(connection);
+      ProfileCatalog profile = findEnabledProfile(connection, userId);
+      boolean eligible =
+          profile != null
+              && profile.catalogVersion().equals(session.catalogVersion())
+              && profile.policyVersion().equals(session.policyVersion());
+      boolean readable =
+          eligible && isReadableChapter(connection, userId, session.workId(), session.chapterId());
+      boolean expired =
+          CultivationReadingSessionService.isExpired(session.lastHeartbeatAt(), closedAt);
+      long creditedMicroseconds =
+          !expired && readable
+              ? CultivationReadingSessionService.creditableMicroseconds(
+                  session.lastHeartbeatAt(), closedAt, session.lastClientActive())
+              : 0;
+      int awardedXp =
+          creditedMicroseconds == 0 || !eligible
+              ? 0
+              : awardInterval(
+                  connection,
+                  userId,
+                  session,
+                  session.lastHeartbeatAt(),
+                  creditedMicroseconds,
+                  profile);
+      long totalActiveMicroseconds = session.totalActiveMicroseconds() + creditedMicroseconds;
+      updateClosedSession(
+          connection,
+          session.id(),
+          closedAt,
+          totalActiveMicroseconds,
+          totalActiveMicroseconds / 1_000_000L,
+          awardedXp,
+          expired ? "expired" : "revoked");
+    }
+  }
+
+  static List<DailySlice> splitByUtcDay(Instant start, long durationMicroseconds) {
+    if (start == null || durationMicroseconds <= 0) return List.of();
+    List<DailySlice> slices = new ArrayList<>();
+    Instant cursor = start;
+    long remaining = durationMicroseconds;
+    while (remaining > 0) {
+      LocalDate date = cursor.atZone(ZoneOffset.UTC).toLocalDate();
+      Instant nextDay = date.plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant();
+      long untilNextDay = Duration.between(cursor, nextDay).toNanos() / 1_000L;
+      long sliceMicroseconds = Math.min(remaining, untilNextDay);
+      slices.add(new DailySlice(date, cursor, sliceMicroseconds));
+      cursor = cursor.plusNanos(sliceMicroseconds * 1_000L);
+      remaining -= sliceMicroseconds;
+    }
+    return List.copyOf(slices);
+  }
+
+  private static int awardInterval(
+      Connection connection,
+      UUID userId,
+      SessionSnapshot session,
+      Instant intervalStart,
+      long creditedMicroseconds,
+      ProfileCatalog policy)
+      throws SQLException {
+    int totalAwardedXp = 0;
+    int nextSessionMinuteIndex = nextSessionMinuteIndex(connection, session.id());
+    for (DailySlice slice : splitByUtcDay(intervalStart, creditedMicroseconds)) {
+      ensureDailyActiveBucket(connection, userId, slice.activityDate(), policy);
+      long priorMicroseconds = dailyActiveMicroseconds(connection, userId, slice.activityDate());
+      long updatedMicroseconds =
+          Math.min(86_400_000_000L, priorMicroseconds + slice.durationMicroseconds());
+      updateDailyActiveBucket(connection, userId, slice.activityDate(), updatedMicroseconds);
+
+      long targetXp =
+          Math.min(
+              (updatedMicroseconds / 60_000_000L) * policy.xpPerActiveMinute(),
+              policy.dailyXpCap());
+      long existingXp = dailyXp(connection, userId, slice.activityDate());
+      if (existingXp < 0) throw new SQLException("Daily cultivation XP cannot be negative");
+      long remainingXp = Math.max(0, targetXp - existingXp);
+      long awardsToInsert = remainingXp / policy.xpPerActiveMinute();
+      long firstCrossedMinute = priorMicroseconds / 60_000_000L + 1;
+      long crossedMinuteCount = updatedMicroseconds / 60_000_000L;
+      long intervalAwards = Math.min(awardsToInsert, crossedMinuteCount - firstCrossedMinute + 1);
+      if (intervalAwards <= 0) continue;
+
+      for (long index = 0; index < intervalAwards; index++) {
+        long minuteOrdinal = firstCrossedMinute + index;
+        long microsecondsIntoSlice = minuteOrdinal * 60_000_000L - priorMicroseconds;
+        if (microsecondsIntoSlice <= 0 || microsecondsIntoSlice > slice.durationMicroseconds()) {
+          throw new SQLException("Cultivation active-time bucket and XP ledger are inconsistent");
+        }
+        Instant activityAt = slice.start().plusNanos(microsecondsIntoSlice * 1_000L);
+        if (!activityAt.atZone(ZoneOffset.UTC).toLocalDate().equals(slice.activityDate())) {
+          activityAt = activityAt.minusNanos(1_000L);
+        }
+        insertXpLedger(
+            connection,
+            userId,
+            session,
+            nextSessionMinuteIndex++,
+            activityAt,
+            policy.xpPerActiveMinute());
+        totalAwardedXp += policy.xpPerActiveMinute();
+      }
+      rebuildDailyXp(connection, userId, slice.activityDate());
+    }
+    return totalAwardedXp;
+  }
+
+  private static void ensureDailyActiveBucket(
+      Connection connection, UUID userId, LocalDate date, ProfileCatalog policy)
+      throws SQLException {
+    try (PreparedStatement insert =
+        connection.prepareStatement(
+            """
+                INSERT INTO cultivation_daily_active_time
+                    (user_id, activity_date, eligible_microseconds, catalog_version, policy_version)
+                VALUES (?, ?, 0, ?, ?)
+                ON CONFLICT (user_id, activity_date) DO NOTHING
+                """)) {
+      insert.setObject(1, userId);
+      insert.setObject(2, date);
+      insert.setString(3, policy.catalogVersion());
+      insert.setString(4, policy.policyVersion());
+      insert.executeUpdate();
+    }
+    try (PreparedStatement select =
+        connection.prepareStatement(
+            """
+                SELECT catalog_version, policy_version
+                FROM cultivation_daily_active_time
+                WHERE user_id = ? AND activity_date = ?
+                FOR UPDATE
+                """)) {
+      select.setObject(1, userId);
+      select.setObject(2, date);
+      try (ResultSet row = select.executeQuery()) {
+        if (!row.next()
+            || !policy.catalogVersion().equals(row.getString("catalog_version"))
+            || !policy.policyVersion().equals(row.getString("policy_version"))) {
+          throw new SQLException("Daily cultivation activity policy changed mid-day");
+        }
+      }
+    }
+  }
+
+  private static long dailyActiveMicroseconds(Connection connection, UUID userId, LocalDate date)
+      throws SQLException {
+    try (PreparedStatement select =
+        connection.prepareStatement(
+            "SELECT eligible_microseconds FROM cultivation_daily_active_time "
+                + "WHERE user_id = ? AND activity_date = ? FOR UPDATE")) {
+      select.setObject(1, userId);
+      select.setObject(2, date);
+      try (ResultSet row = select.executeQuery()) {
+        if (!row.next()) throw new SQLException("Daily cultivation activity bucket disappeared");
+        return row.getLong(1);
+      }
+    }
+  }
+
+  private static void updateDailyActiveBucket(
+      Connection connection, UUID userId, LocalDate date, long microseconds) throws SQLException {
+    try (PreparedStatement update =
+        connection.prepareStatement(
+            """
+                UPDATE cultivation_daily_active_time
+                SET eligible_microseconds = ?, updated_at = clock_timestamp()
+                WHERE user_id = ? AND activity_date = ?
+                """)) {
+      update.setLong(1, microseconds);
+      update.setObject(2, userId);
+      update.setObject(3, date);
+      if (update.executeUpdate() != 1) throw new SQLException("Daily activity bucket disappeared");
+    }
+  }
+
+  private static long dailyXp(Connection connection, UUID userId, LocalDate date)
+      throws SQLException {
+    try (PreparedStatement select =
+        connection.prepareStatement(
+            "SELECT COALESCE(SUM(xp_delta), 0) FROM cultivation_xp_ledger "
+                + "WHERE user_id = ? AND activity_date = ?")) {
+      select.setObject(1, userId);
+      select.setObject(2, date);
+      try (ResultSet row = select.executeQuery()) {
+        if (!row.next()) throw new SQLException("Daily cultivation XP query returned no row");
+        return row.getLong(1);
+      }
+    }
+  }
+
+  private static int nextSessionMinuteIndex(Connection connection, UUID sessionId)
+      throws SQLException {
+    try (PreparedStatement select =
+        connection.prepareStatement(
+            "SELECT COALESCE(MAX(active_minute_index), -1) + 1 "
+                + "FROM cultivation_xp_ledger WHERE source_session_id = ?")) {
+      select.setObject(1, sessionId);
+      try (ResultSet row = select.executeQuery()) {
+        if (!row.next()) throw new SQLException("Session XP index query returned no row");
+        return row.getInt(1);
+      }
+    }
+  }
+
+  private static void insertXpLedger(
+      Connection connection,
+      UUID userId,
+      SessionSnapshot session,
+      int activeMinuteIndex,
+      Instant activityAt,
+      int xpDelta)
+      throws SQLException {
+    try (PreparedStatement insert =
+        connection.prepareStatement(
+            """
+                INSERT INTO cultivation_xp_ledger
+                    (user_id, source_session_id, active_minute_index, activity_at, xp_delta,
+                     catalog_version, policy_version)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """)) {
+      insert.setObject(1, userId);
+      insert.setObject(2, session.id());
+      insert.setInt(3, activeMinuteIndex);
+      insert.setTimestamp(4, Timestamp.from(activityAt));
+      insert.setInt(5, xpDelta);
+      insert.setString(6, session.catalogVersion());
+      insert.setString(7, session.policyVersion());
+      insert.executeUpdate();
+    }
+  }
+
+  private static void rebuildDailyXp(Connection connection, UUID userId, LocalDate date)
+      throws SQLException {
+    try (PreparedStatement rebuild =
+        connection.prepareStatement("SELECT rebuild_cultivation_daily_xp_aggregate(?, ?)")) {
+      rebuild.setObject(1, userId);
+      rebuild.setObject(2, date);
+      rebuild.execute();
     }
   }
 
@@ -301,7 +615,8 @@ public class CultivationReadingSessionRepository {
     try (PreparedStatement select =
         connection.prepareStatement(
             """
-                SELECT p.enabled, p.catalog_version, c.policy_version
+                SELECT p.enabled, p.catalog_version, c.policy_version,
+                       c.xp_per_active_minute, c.daily_xp_cap
                 FROM cultivation_profiles p
                 JOIN cultivation_rank_catalogs c ON c.version = p.catalog_version
                 WHERE p.user_id = ?
@@ -311,7 +626,10 @@ public class CultivationReadingSessionRepository {
       try (ResultSet row = select.executeQuery()) {
         if (!row.next() || !row.getBoolean("enabled")) return null;
         return new ProfileCatalog(
-            row.getString("catalog_version"), row.getString("policy_version"));
+            row.getString("catalog_version"),
+            row.getString("policy_version"),
+            row.getInt("xp_per_active_minute"),
+            row.getInt("daily_xp_cap"));
       }
     }
   }
@@ -415,7 +733,7 @@ public class CultivationReadingSessionRepository {
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 RETURNING id, state, started_at, last_heartbeat_at, closed_at,
                           total_active_seconds, last_sequence, last_client_active, work_id, chapter_id,
-                          catalog_version, policy_version
+                          catalog_version, policy_version, total_active_microseconds, closed_awarded_xp
                 """)) {
       insert.setObject(1, userId);
       insert.setObject(2, workId);
@@ -439,7 +757,7 @@ public class CultivationReadingSessionRepository {
             """
                 SELECT id, state, started_at, last_heartbeat_at, closed_at, total_active_seconds,
                        last_sequence, last_client_active, work_id, chapter_id,
-                       catalog_version, policy_version
+                       catalog_version, policy_version, total_active_microseconds, closed_awarded_xp
                 FROM cultivation_reading_sessions
                 WHERE id = ? AND user_id = ?
                 """
@@ -460,7 +778,9 @@ public class CultivationReadingSessionRepository {
         instant(row, "started_at"),
         instant(row, "last_heartbeat_at"),
         instant(row, "closed_at"),
+        row.getLong("total_active_microseconds"),
         row.getLong("total_active_seconds"),
+        row.getInt("closed_awarded_xp"),
         row.getLong("last_sequence"),
         row.getBoolean("last_client_active"),
         row.getObject("work_id", UUID.class),
@@ -475,7 +795,7 @@ public class CultivationReadingSessionRepository {
         connection.prepareStatement(
             """
                 SELECT request_sha256, session_id, result_state, sequence, credited_seconds,
-                       total_active_seconds, received_at
+                       total_active_seconds, awarded_xp, received_at
                 FROM cultivation_reading_session_events
                 WHERE session_id = ? AND idempotency_key = ?
                 """)) {
@@ -491,6 +811,7 @@ public class CultivationReadingSessionRepository {
                 row.getLong("sequence"),
                 row.getInt("credited_seconds"),
                 row.getLong("total_active_seconds"),
+                row.getInt("awarded_xp"),
                 instant(row, "received_at"),
                 expiresAt(instant(row, "received_at"))));
       }
@@ -503,7 +824,8 @@ public class CultivationReadingSessionRepository {
       long sequence,
       boolean clientActive,
       Instant receivedAt,
-      int creditedSeconds,
+      long creditedMicroseconds,
+      long totalActiveMicroseconds,
       long totalActiveSeconds,
       String state)
       throws SQLException {
@@ -512,21 +834,22 @@ public class CultivationReadingSessionRepository {
             """
                 UPDATE cultivation_reading_sessions
                 SET last_heartbeat_at = ?, last_client_active = ?, last_sequence = ?,
-                    total_active_seconds = ?, state = ?,
+                    total_active_microseconds = ?, total_active_seconds = ?, state = ?,
                     closed_at = ?
                 WHERE id = ?
                 """)) {
       update.setTimestamp(1, Timestamp.from(receivedAt));
       update.setBoolean(2, clientActive);
       update.setLong(3, sequence);
-      update.setLong(4, totalActiveSeconds);
-      update.setString(5, state);
+      update.setLong(4, totalActiveMicroseconds);
+      update.setLong(5, totalActiveSeconds);
+      update.setString(6, state);
       if ("active".equals(state)) {
-        update.setNull(6, Types.TIMESTAMP_WITH_TIMEZONE);
+        update.setNull(7, Types.TIMESTAMP_WITH_TIMEZONE);
       } else {
-        update.setTimestamp(6, Timestamp.from(receivedAt));
+        update.setTimestamp(7, Timestamp.from(receivedAt));
       }
-      update.setObject(7, sessionId);
+      update.setObject(8, sessionId);
       if (update.executeUpdate() != 1) throw new SQLException("Reading session disappeared");
     }
   }
@@ -539,7 +862,8 @@ public class CultivationReadingSessionRepository {
       long sequence,
       boolean clientActive,
       Instant receivedAt,
-      int creditedSeconds,
+      long creditedMicroseconds,
+      int awardedXp,
       long totalActiveSeconds,
       String state)
       throws SQLException {
@@ -548,8 +872,9 @@ public class CultivationReadingSessionRepository {
             """
                 INSERT INTO cultivation_reading_session_events
                     (session_id, idempotency_key, request_sha256, sequence, client_active,
-                     received_at, credited_seconds, total_active_seconds, result_state)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     received_at, credited_seconds, total_active_seconds, result_state,
+                     credited_microseconds, awarded_xp)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """)) {
       insert.setObject(1, sessionId);
       insert.setString(2, idempotencyKey);
@@ -557,9 +882,11 @@ public class CultivationReadingSessionRepository {
       insert.setLong(4, sequence);
       insert.setBoolean(5, clientActive);
       insert.setTimestamp(6, Timestamp.from(receivedAt));
-      insert.setInt(7, creditedSeconds);
+      insert.setInt(7, (int) (creditedMicroseconds / 1_000_000L));
       insert.setLong(8, totalActiveSeconds);
       insert.setString(9, state);
+      insert.setLong(10, creditedMicroseconds);
+      insert.setInt(11, awardedXp);
       insert.executeUpdate();
     }
   }
@@ -568,7 +895,9 @@ public class CultivationReadingSessionRepository {
       Connection connection,
       UUID sessionId,
       Instant closedAt,
+      long totalActiveMicroseconds,
       long totalActiveSeconds,
+      int awardedXp,
       String state)
       throws SQLException {
     try (PreparedStatement update =
@@ -576,14 +905,17 @@ public class CultivationReadingSessionRepository {
             """
                 UPDATE cultivation_reading_sessions
                 SET state = ?, closed_at = ?, last_heartbeat_at = ?,
-                    last_client_active = FALSE, total_active_seconds = ?
+                    last_client_active = FALSE, total_active_microseconds = ?,
+                    total_active_seconds = ?, closed_awarded_xp = ?
                 WHERE id = ?
                 """)) {
       update.setString(1, state);
       update.setTimestamp(2, Timestamp.from(closedAt));
       update.setTimestamp(3, Timestamp.from(closedAt));
-      update.setLong(4, totalActiveSeconds);
-      update.setObject(5, sessionId);
+      update.setLong(4, totalActiveMicroseconds);
+      update.setLong(5, totalActiveSeconds);
+      update.setInt(6, awardedXp);
+      update.setObject(7, sessionId);
       if (update.executeUpdate() != 1) throw new SQLException("Reading session disappeared");
     }
   }
@@ -624,7 +956,10 @@ public class CultivationReadingSessionRepository {
     }
   }
 
-  private record ProfileCatalog(String catalogVersion, String policyVersion) {}
+  private record ProfileCatalog(
+      String catalogVersion, String policyVersion, int xpPerActiveMinute, int dailyXpCap) {}
+
+  record DailySlice(LocalDate activityDate, Instant start, long durationMicroseconds) {}
 
   private record ExistingStart(UUID sessionId, byte[] requestHash) {}
 
@@ -640,7 +975,9 @@ public class CultivationReadingSessionRepository {
       Instant startedAt,
       Instant lastHeartbeatAt,
       Instant closedAt,
+      long totalActiveMicroseconds,
       long totalActiveSeconds,
+      int closedAwardedXp,
       long lastSequence,
       boolean lastClientActive,
       UUID workId,
@@ -654,6 +991,7 @@ public class CultivationReadingSessionRepository {
       long sequence,
       int creditedSeconds,
       long totalActiveSeconds,
+      int awardedXp,
       Instant receivedAt,
       Instant expiresAt) {}
 

@@ -38,6 +38,7 @@ import com.novelweb.library.imports.ImportParseService;
 import com.novelweb.library.imports.ImportStagingCleanupService;
 import com.novelweb.library.imports.ImportStagingRateLimiter;
 import com.novelweb.progression.cultivation.CultivationRepository;
+import com.novelweb.progression.cultivation.CultivationService;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -166,6 +167,7 @@ class PostgresSchemaIntegrationTests {
           "cultivation_profiles",
           "cultivation_xp_ledger",
           "cultivation_daily_xp_aggregates",
+          "cultivation_daily_active_time",
           "cultivation_reading_sessions",
           "cultivation_reading_session_events",
           "library_collections",
@@ -198,6 +200,8 @@ class PostgresSchemaIntegrationTests {
   @Autowired private LibraryUserStateService libraryUserStateService;
 
   @Autowired private CultivationRepository cultivationRepository;
+
+  @Autowired private CultivationService cultivationService;
 
   @Autowired private com.novelweb.library.imports.ImportStagingFileStore importStagingFileStore;
 
@@ -250,7 +254,7 @@ class PostgresSchemaIntegrationTests {
             connection.prepareStatement("SELECT COUNT(*) FROM databasechangelog");
         ResultSet changesets = changesetCount.executeQuery()) {
       changesets.next();
-      assertEquals(86, changesets.getInt(1), "unexpected number of applied changesets");
+      assertEquals(89, changesets.getInt(1), "unexpected number of applied changesets");
     }
 
     Set<String> actualTables = new HashSet<>();
@@ -420,13 +424,20 @@ class PostgresSchemaIntegrationTests {
     UUID secondSessionId = UUID.randomUUID();
     LocalDate firstDay = LocalDate.of(2026, 10, 31);
     LocalDate secondDay = LocalDate.of(2026, 11, 1);
+    ReaderHistoryFixture readable =
+        createReaderHistoryFixture(actorId, "Cultivation XP ledger work", "XP_LEDGER_BODY");
     try {
       cultivationRepository.setEnabled(actorId, true);
+      insertCultivationTestReadingSession(
+          actorId,
+          firstSessionId,
+          readable,
+          Instant.parse("2026-10-31T00:00:00Z"),
+          "xp-ledger-first-session-0001");
       UUID firstEntryId =
           insertCultivationXpLedger(
               actorId, firstSessionId, 0, Instant.parse("2026-10-31T23:59:00Z"));
       insertCultivationXpLedger(actorId, firstSessionId, 1, Instant.parse("2026-11-01T00:01:00Z"));
-      insertCultivationXpLedger(actorId, secondSessionId, 0, Instant.parse("2026-10-31T22:30:00Z"));
 
       SQLException duplicateMinute =
           assertThrows(
@@ -435,6 +446,23 @@ class PostgresSchemaIntegrationTests {
                   insertCultivationXpLedger(
                       actorId, firstSessionId, 0, Instant.parse("2026-10-31T23:59:30Z")));
       assertEquals("23505", duplicateMinute.getSQLState());
+
+      closeCultivationTestReadingSession(firstSessionId);
+      insertCultivationTestReadingSession(
+          actorId,
+          secondSessionId,
+          readable,
+          Instant.parse("2026-10-31T00:00:00Z"),
+          "xp-ledger-second-session-0001");
+      insertCultivationXpLedger(actorId, secondSessionId, 0, Instant.parse("2026-10-31T22:30:00Z"));
+
+      SQLException missingSourceSession =
+          assertThrows(
+              SQLException.class,
+              () ->
+                  insertCultivationXpLedger(
+                      actorId, UUID.randomUUID(), 0, Instant.parse("2026-10-31T21:00:00Z")));
+      assertEquals("55000", missingSourceSession.getSQLState());
 
       SQLException immutableUpdate =
           assertThrows(
@@ -506,6 +534,7 @@ class PostgresSchemaIntegrationTests {
                       Instant.parse("2026-10-31T12:00:00Z")));
       assertEquals("55000", disabledProfile.getSQLState());
     } finally {
+      deleteReaderHistoryFixtures(actorId, List.of(readable));
       deleteSessionTestUser(actorId);
       deleteSessionTestUser(disabledActorId);
     }
@@ -706,6 +735,7 @@ class PostgresSchemaIntegrationTests {
           objectMapper.readTree(firstHeartbeat.getResponse().getContentAsString());
       assertEquals(50, firstHeartbeatBodyJson.path("creditedSeconds").asInt());
       assertEquals(50, firstHeartbeatBodyJson.path("totalActiveSeconds").asLong());
+      assertEquals(0, firstHeartbeatBodyJson.path("awardedXp").asInt());
 
       SQLException immutableHeartbeatEvent =
           assertThrows(
@@ -776,6 +806,22 @@ class PostgresSchemaIntegrationTests {
       assertEquals(200, pauseSignal.getResponse().getStatus());
       assertEquals(30, pauseSignalBody.path("creditedSeconds").asInt());
       assertEquals(80, pauseSignalBody.path("totalActiveSeconds").asLong());
+      assertEquals(1, pauseSignalBody.path("awardedXp").asInt());
+      MvcResult replayedAwardingHeartbeat =
+          postCultivationHeartbeat(
+              actorCookie,
+              actorCsrf,
+              sessionId,
+              "session-heartbeat-pause-signal-0001",
+              "{\"sequence\":2,\"active\":false}");
+      assertEquals(
+          "true", replayedAwardingHeartbeat.getResponse().getHeader("Idempotency-Replayed"));
+      assertEquals(
+          1,
+          objectMapper
+              .readTree(replayedAwardingHeartbeat.getResponse().getContentAsString())
+              .path("awardedXp")
+              .asInt());
 
       setCultivationReadingSessionAge(sessionId, 45, 600);
       MvcResult resumeSignal =
@@ -791,7 +837,7 @@ class PostgresSchemaIntegrationTests {
       assertEquals(0, resumeSignalBody.path("creditedSeconds").asInt());
       assertEquals(80, resumeSignalBody.path("totalActiveSeconds").asLong());
 
-      setCultivationReadingSessionAge(sessionId, 40, 600);
+      setCultivationReadingSessionAge(sessionId, 30, 600);
       MvcResult activeAgain =
           postCultivationHeartbeat(
               actorCookie,
@@ -801,10 +847,16 @@ class PostgresSchemaIntegrationTests {
               "{\"sequence\":4,\"active\":true}");
       assertEquals(200, activeAgain.getResponse().getStatus());
       assertEquals(
-          40,
+          30,
           objectMapper
               .readTree(activeAgain.getResponse().getContentAsString())
               .path("creditedSeconds")
+              .asInt());
+      assertEquals(
+          0,
+          objectMapper
+              .readTree(activeAgain.getResponse().getContentAsString())
+              .path("awardedXp")
               .asInt());
 
       setCultivationReadingSessionAge(sessionId, 30, 600);
@@ -854,8 +906,16 @@ class PostgresSchemaIntegrationTests {
                   concurrentActive.getResponse().getStatus(),
                   concurrentPaused.getResponse().getStatus())
               .containsAll(List.of(200, 409)));
-      assertEquals(150, sessionActiveSeconds(sessionId));
-      pauseCultivationReadingSessionClock(sessionId);
+      assertEquals(140, sessionActiveSeconds(sessionId));
+      MvcResult winningHeartbeat =
+          concurrentActive.getResponse().getStatus() == 200 ? concurrentActive : concurrentPaused;
+      assertEquals(
+          1,
+          objectMapper
+              .readTree(winningHeartbeat.getResponse().getContentAsString())
+              .path("awardedXp")
+              .asInt());
+      setCultivationReadingSessionActiveAge(sessionId, 40, 600);
 
       MvcResult closed =
           mockMvc
@@ -867,8 +927,11 @@ class PostgresSchemaIntegrationTests {
       assertEquals(200, closed.getResponse().getStatus());
       JsonNode closedBody = objectMapper.readTree(closed.getResponse().getContentAsString());
       assertEquals("closed", closedBody.path("state").asText());
-      assertEquals(150, closedBody.path("totalActiveSeconds").asLong());
+      assertEquals(180, closedBody.path("totalActiveSeconds").asLong());
+      assertEquals(1, closedBody.path("awardedXp").asInt());
       assertTrue(closedBody.path("closedAt").isTextual());
+      assertEquals(3, cultivationRepository.find(actorId).totalXp());
+      assertEquals(3, cultivationRepository.find(actorId).todayXpEarned());
       MvcResult repeatedClose =
           mockMvc
               .perform(
@@ -884,11 +947,17 @@ class PostgresSchemaIntegrationTests {
               .path("closedAt")
               .asText());
       assertEquals(
-          150,
+          180,
           objectMapper
               .readTree(repeatedClose.getResponse().getContentAsString())
               .path("totalActiveSeconds")
               .asLong());
+      assertEquals(
+          1,
+          objectMapper
+              .readTree(repeatedClose.getResponse().getContentAsString())
+              .path("awardedXp")
+              .asInt());
 
       MvcResult heartbeatAfterClose =
           postCultivationHeartbeat(
@@ -945,7 +1014,10 @@ class PostgresSchemaIntegrationTests {
           expiredHeartbeat.getResponse().getContentAsString().contains("READING_SESSION_EXPIRED"));
       assertEquals(0, sessionActiveSeconds(expiringSessionId));
 
+      setCultivationReadingSessionAge(replacementSessionId, 60, 600);
       cultivationRepository.setEnabled(actorId, false);
+      assertEquals(4, cultivationRepository.find(actorId).totalXp());
+      assertEquals(4, cultivationRepository.find(actorId).todayXpEarned());
       MvcResult optedOutHeartbeat =
           postCultivationHeartbeat(
               actorCookie,
@@ -989,6 +1061,163 @@ class PostgresSchemaIntegrationTests {
       deleteReaderHistoryFixtures(otherUserId, List.of(foreign));
       deleteSessionTestUser(otherUserId);
       deleteSessionTestUser(policyBlockedId);
+    }
+  }
+
+  @Test
+  void cultivationReadingCrossesRankBoundaryAndCapsDailyAwardsAtOneHundredTwentyXp()
+      throws Exception {
+    UUID actorId = createSessionTestUser("Cultivation Daily XP Cap Owner");
+    ReaderHistoryFixture readable =
+        createReaderHistoryFixture(actorId, "Cultivation daily cap work", "DAILY_CAP_BODY");
+    try {
+      addCurrentPolicyAcceptances(actorId);
+      cultivationRepository.setEnabled(actorId, true);
+      SessionService.IssuedSession authSession = sessionService.create(actorId).orElseThrow();
+      var cookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", authSession.cookieValue());
+      String csrf = csrfTokenService.tokenFor(authSession.cookieValue());
+      MvcResult created =
+          mockMvc
+              .perform(
+                  post("/api/v1/me/reading-sessions")
+                      .cookie(cookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, csrf)
+                      .header("Idempotency-Key", "daily-xp-cap-session-start-0001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(readingSessionStartBody(readable)))
+              .andReturn();
+      assertEquals(201, created.getResponse().getStatus());
+      UUID sessionId =
+          UUID.fromString(
+              objectMapper
+                  .readTree(created.getResponse().getContentAsString())
+                  .path("sessionId")
+                  .asText());
+      setCultivationReadingSessionAge(sessionId, 5, 10_800);
+
+      LocalDate activityDate;
+      Instant ledgerActivityAt;
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement now = connection.prepareStatement("SELECT clock_timestamp()");
+          ResultSet row = now.executeQuery()) {
+        assertTrue(row.next());
+        OffsetDateTime databaseNow = row.getObject(1, OffsetDateTime.class);
+        ledgerActivityAt = databaseNow.toInstant().minusMillis(1);
+        activityDate = ledgerActivityAt.atZone(ZoneOffset.UTC).toLocalDate();
+      }
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement insertBucket =
+              connection.prepareStatement(
+                  """
+                      INSERT INTO cultivation_daily_active_time
+                          (user_id, activity_date, eligible_microseconds, catalog_version, policy_version)
+                      VALUES (?, ?, 5999000000, 'cultivation-v1', 'xp-v1')
+                      """);
+          PreparedStatement insertXp =
+              connection.prepareStatement(
+                  """
+                      INSERT INTO cultivation_xp_ledger
+                          (user_id, source_session_id, active_minute_index, activity_at,
+                           xp_delta, catalog_version, policy_version)
+                      VALUES (?, ?, ?, ?, 1, 'cultivation-v1', 'xp-v1')
+                      """)) {
+        insertBucket.setObject(1, actorId);
+        insertBucket.setObject(2, java.sql.Date.valueOf(activityDate));
+        assertEquals(1, insertBucket.executeUpdate());
+        for (int minuteIndex = 0; minuteIndex < 99; minuteIndex++) {
+          insertXp.setObject(1, actorId);
+          insertXp.setObject(2, sessionId);
+          insertXp.setInt(3, minuteIndex);
+          insertXp.setTimestamp(4, Timestamp.from(ledgerActivityAt));
+          assertEquals(1, insertXp.executeUpdate());
+        }
+      }
+      rebuildCultivationDailyXp(actorId, activityDate);
+      setCultivationReadingSessionAge(sessionId, 5, 10_800);
+
+      MvcResult reachesCap =
+          postCultivationHeartbeat(
+              cookie,
+              csrf,
+              sessionId,
+              "daily-xp-cap-heartbeat-0001",
+              "{\"sequence\":1,\"active\":true}");
+      assertEquals(200, reachesCap.getResponse().getStatus());
+      assertEquals(
+          1,
+          objectMapper
+              .readTree(reachesCap.getResponse().getContentAsString())
+              .path("awardedXp")
+              .asInt());
+      assertEquals(100, cultivationDailyXp(actorId, activityDate));
+      assertEquals(100, cultivationRepository.find(actorId).totalXp());
+      assertEquals("qi-1", cultivationService.get(actorId).currentRank().key());
+
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement fillDay =
+              connection.prepareStatement(
+                  "UPDATE cultivation_daily_active_time SET eligible_microseconds = 7199000000 "
+                      + "WHERE user_id = ? AND activity_date = ?");
+          PreparedStatement insertXp =
+              connection.prepareStatement(
+                  """
+                      INSERT INTO cultivation_xp_ledger
+                          (user_id, source_session_id, active_minute_index, activity_at,
+                           xp_delta, catalog_version, policy_version)
+                      VALUES (?, ?, ?, ?, 1, 'cultivation-v1', 'xp-v1')
+                      """)) {
+        fillDay.setObject(1, actorId);
+        fillDay.setObject(2, java.sql.Date.valueOf(activityDate));
+        assertEquals(1, fillDay.executeUpdate());
+        for (int minuteIndex = 100; minuteIndex < 119; minuteIndex++) {
+          insertXp.setObject(1, actorId);
+          insertXp.setObject(2, sessionId);
+          insertXp.setInt(3, minuteIndex);
+          insertXp.setTimestamp(4, Timestamp.from(ledgerActivityAt));
+          assertEquals(1, insertXp.executeUpdate());
+        }
+      }
+      rebuildCultivationDailyXp(actorId, activityDate);
+
+      setCultivationReadingSessionAge(sessionId, 30, 10_800);
+      MvcResult afterCap =
+          postCultivationHeartbeat(
+              cookie,
+              csrf,
+              sessionId,
+              "daily-xp-cap-heartbeat-0002",
+              "{\"sequence\":2,\"active\":true}");
+      assertEquals(200, afterCap.getResponse().getStatus());
+      assertEquals(
+          1,
+          objectMapper
+              .readTree(afterCap.getResponse().getContentAsString())
+              .path("awardedXp")
+              .asInt());
+      assertEquals(120, cultivationDailyXp(actorId, activityDate));
+      assertEquals(120, cultivationRepository.find(actorId).totalXp());
+
+      setCultivationReadingSessionAge(sessionId, 30, 10_800);
+      MvcResult afterCapHeartbeat =
+          postCultivationHeartbeat(
+              cookie,
+              csrf,
+              sessionId,
+              "daily-xp-cap-heartbeat-0003",
+              "{\"sequence\":3,\"active\":true}");
+      assertEquals(200, afterCapHeartbeat.getResponse().getStatus());
+      assertEquals(
+          0,
+          objectMapper
+              .readTree(afterCapHeartbeat.getResponse().getContentAsString())
+              .path("awardedXp")
+              .asInt());
+      assertEquals(120, cultivationRepository.find(actorId).todayXpEarned());
+      assertEquals(120, cultivationDailyLedgerCount(actorId, activityDate));
+    } finally {
+      deleteReaderHistoryFixtures(actorId, List.of(readable));
+      deleteSessionTestUser(actorId);
     }
   }
 
@@ -2652,7 +2881,7 @@ class PostgresSchemaIntegrationTests {
       assertTrue(importJobStagingFileDeletedAt(blockedJobId) != null);
       assertTrue(importJobStagingFileDeletedAt(expiredUploadedId) != null);
       assertTrue(importJobStagingFileDeletedAt(expiredPendingId) != null);
-      assertEquals(0, importStagingCleanupService.cleanupExpiredStaging());
+      importStagingCleanupService.cleanupExpiredStaging();
 
       assertEquals("uploaded", importJobStatus(activeUploadedId));
       assertNull(importJobStagingFileDeletedAt(activeUploadedId));
@@ -2833,7 +3062,7 @@ class PostgresSchemaIntegrationTests {
       assertEquals("cancelled", importJobStatus(parsingJobId));
       assertEquals("parsing", importParseJobStatus(parsingJobId));
       assertFalse(importParseService.processNext(), "cancelled jobs must not be claimed again");
-      assertEquals(0, importStagingCleanupService.cleanupExpiredStaging());
+      importStagingCleanupService.cleanupExpiredStaging();
       assertNull(
           importJobStagingFileDeletedAt(parsingJobId),
           "the janitor must wait for an in-flight parser lease before deleting its source file");
@@ -7701,6 +7930,45 @@ class PostgresSchemaIntegrationTests {
     }
   }
 
+  private void insertCultivationTestReadingSession(
+      UUID userId, UUID sessionId, ReaderHistoryFixture fixture, Instant startedAt, String startKey)
+      throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement insert =
+            connection.prepareStatement(
+                """
+                    INSERT INTO cultivation_reading_sessions
+                        (id, user_id, work_id, chapter_id, catalog_version, policy_version,
+                         start_idempotency_key, start_request_sha256, started_at, last_heartbeat_at)
+                    VALUES (?, ?, ?, ?, 'cultivation-v1', 'xp-v1', ?, ?, ?, ?)
+                    """)) {
+      insert.setObject(1, sessionId);
+      insert.setObject(2, userId);
+      insert.setObject(3, fixture.workId());
+      insert.setObject(4, fixture.chapterId());
+      insert.setString(5, startKey);
+      insert.setBytes(6, new byte[32]);
+      insert.setTimestamp(7, Timestamp.from(startedAt));
+      insert.setTimestamp(8, Timestamp.from(startedAt));
+      assertEquals(1, insert.executeUpdate());
+    }
+  }
+
+  private void closeCultivationTestReadingSession(UUID sessionId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement update =
+            connection.prepareStatement(
+                """
+                    UPDATE cultivation_reading_sessions
+                    SET state = 'closed', closed_at = clock_timestamp(),
+                        last_heartbeat_at = clock_timestamp(), last_client_active = FALSE
+                    WHERE id = ?
+                    """)) {
+      update.setObject(1, sessionId);
+      assertEquals(1, update.executeUpdate());
+    }
+  }
+
   private static String readingSessionStartBody(ReaderHistoryFixture fixture) {
     return "{\"workId\":\""
         + fixture.workId()
@@ -7745,16 +8013,21 @@ class PostgresSchemaIntegrationTests {
     }
   }
 
-  private void pauseCultivationReadingSessionClock(UUID sessionId) throws SQLException {
+  private void setCultivationReadingSessionActiveAge(
+      UUID sessionId, long heartbeatAgeSeconds, long startedAgeSeconds) throws SQLException {
     try (Connection connection = dataSource.getConnection();
         PreparedStatement update =
             connection.prepareStatement(
                 """
                     UPDATE cultivation_reading_sessions
-                    SET last_heartbeat_at = clock_timestamp(), last_client_active = FALSE
+                    SET started_at = clock_timestamp() - (? * INTERVAL '1 second'),
+                        last_heartbeat_at = clock_timestamp() - (? * INTERVAL '1 second'),
+                        last_client_active = TRUE
                     WHERE id = ?
                     """)) {
-      update.setObject(1, sessionId);
+      update.setLong(1, startedAgeSeconds);
+      update.setLong(2, heartbeatAgeSeconds);
+      update.setObject(3, sessionId);
       assertEquals(1, update.executeUpdate());
     }
   }

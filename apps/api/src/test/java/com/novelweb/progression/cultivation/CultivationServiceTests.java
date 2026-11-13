@@ -30,6 +30,7 @@ class CultivationServiceTests {
     CultivationService.CultivationState state = service.get(userId);
 
     assertEquals("qi-6", state.currentRank().key());
+    assertEquals(25, state.todayXpEarned());
     assertEquals("Luyện Khí tầng 6", state.currentRank().name());
     assertEquals("qi-7", state.nextRank().key());
     assertEquals(50, state.xpToNextRank());
@@ -82,6 +83,6 @@ class CultivationServiceTests {
             new CultivationRepository.RankRecord("qi-9", "Luyện Khí", "Luyện Khí tầng 9", 900, 9),
             new CultivationRepository.RankRecord("foundation", "Tứ đại cảnh", "Trúc Cơ", 1000, 10));
     return new CultivationRepository.CultivationSnapshot(
-        enabled, 1, "cultivation-v1", "xp-v1", "vi-VN", 1, 120, totalXp, ranks);
+        enabled, 1, "cultivation-v1", "xp-v1", "vi-VN", 1, 120, totalXp, 25, ranks);
   }
 }

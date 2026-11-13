@@ -28,7 +28,7 @@ public class CultivationRepository {
     Objects.requireNonNull(actorUserId, "actor user id is required");
     try (Connection connection = dataSource.getConnection()) {
       ProfileState profile = selectProfileState(connection, actorUserId);
-      return snapshot(connection, profile);
+      return snapshot(connection, actorUserId, profile);
     } catch (SQLException exception) {
       throw new IllegalStateException("Unable to load cultivation profile", exception);
     }
@@ -42,7 +42,7 @@ public class CultivationRepository {
         requireActiveUserForUpdate(connection, actorUserId);
         ProfileState current = selectProfileState(connection, actorUserId);
         if (current.enabled() == enabled) {
-          CultivationSnapshot unchanged = snapshot(connection, current);
+          CultivationSnapshot unchanged = snapshot(connection, actorUserId, current);
           connection.commit();
           return unchanged;
         }
@@ -50,17 +50,20 @@ public class CultivationRepository {
         ProfileState updated;
         if (current.profileVersion() == 0) {
           if (!enabled) {
-            CultivationSnapshot unchanged = snapshot(connection, current);
+            CultivationSnapshot unchanged = snapshot(connection, actorUserId, current);
             connection.commit();
             return unchanged;
           }
           updated = insertEnabledProfile(connection, actorUserId, current.catalogVersion());
         } else {
+          if (!enabled) {
+            CultivationReadingSessionRepository.closeActiveReadingSessionsAndAward(
+                connection, actorUserId);
+          }
           updated = updateEnabledProfile(connection, actorUserId, enabled);
-          if (!enabled) closeActiveReadingSessions(connection, actorUserId);
         }
 
-        CultivationSnapshot saved = snapshot(connection, updated);
+        CultivationSnapshot saved = snapshot(connection, actorUserId, updated);
         connection.commit();
         return saved;
       } catch (SQLException | RuntimeException exception) {
@@ -101,8 +104,8 @@ public class CultivationRepository {
     }
   }
 
-  private static CultivationSnapshot snapshot(Connection connection, ProfileState profile)
-      throws SQLException {
+  private static CultivationSnapshot snapshot(
+      Connection connection, UUID actorUserId, ProfileState profile) throws SQLException {
     String policyVersion;
     int xpPerActiveMinute;
     int dailyXpCap;
@@ -136,6 +139,25 @@ public class CultivationRepository {
       }
     }
     validateRanks(ranks);
+    long totalXp;
+    long todayXpEarned;
+    try (PreparedStatement select =
+        connection.prepareStatement(
+            """
+                SELECT COALESCE(SUM(xp_delta), 0) AS total_xp,
+                       COALESCE(SUM(xp_delta) FILTER (
+                           WHERE activity_date = (clock_timestamp() AT TIME ZONE 'UTC')::date
+                       ), 0) AS today_xp
+                FROM cultivation_xp_ledger
+                WHERE user_id = ?
+                """)) {
+      select.setObject(1, actorUserId);
+      try (ResultSet row = select.executeQuery()) {
+        if (!row.next()) throw new SQLException("Cultivation XP aggregate returned no row");
+        totalXp = row.getLong("total_xp");
+        todayXpEarned = row.getLong("today_xp");
+      }
+    }
     return new CultivationSnapshot(
         profile.enabled(),
         profile.profileVersion(),
@@ -144,7 +166,8 @@ public class CultivationRepository {
         DEFAULT_LOCALE,
         xpPerActiveMinute,
         dailyXpCap,
-        0,
+        totalXp,
+        todayXpEarned,
         List.copyOf(ranks));
   }
 
@@ -199,23 +222,6 @@ public class CultivationRepository {
     }
   }
 
-  private static void closeActiveReadingSessions(Connection connection, UUID actorUserId)
-      throws SQLException {
-    try (PreparedStatement close =
-        connection.prepareStatement(
-            """
-                UPDATE cultivation_reading_sessions
-                SET state = 'revoked',
-                    closed_at = clock_timestamp(),
-                    last_heartbeat_at = clock_timestamp(),
-                    last_client_active = FALSE
-                WHERE user_id = ? AND state = 'active'
-                """)) {
-      close.setObject(1, actorUserId);
-      close.executeUpdate();
-    }
-  }
-
   private static ProfileState profileState(ResultSet row) throws SQLException {
     return new ProfileState(
         row.getBoolean("enabled"), row.getString("catalog_version"), row.getLong("version"));
@@ -255,6 +261,7 @@ public class CultivationRepository {
       int xpPerActiveMinute,
       int dailyXpCap,
       long totalXp,
+      long todayXpEarned,
       List<RankRecord> ranks) {}
 
   public static final class CultivationProfileNotFoundException extends RuntimeException {}
