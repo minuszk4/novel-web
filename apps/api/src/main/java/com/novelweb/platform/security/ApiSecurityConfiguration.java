@@ -144,6 +144,9 @@ public class ApiSecurityConfiguration {
                     .requestMatchers(HttpMethod.PATCH, "/api/v1/imports/*/preview")
                     .permitAll();
                 authorize.requestMatchers(HttpMethod.POST, "/api/v1/imports/*/commit").permitAll();
+                authorize
+                    .requestMatchers(HttpMethod.POST, "/api/v1/glossaries/*/revisions")
+                    .permitAll();
               }
               authorize.anyRequest().denyAll();
             })

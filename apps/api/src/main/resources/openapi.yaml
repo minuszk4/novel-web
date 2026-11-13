@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 6.7.0
+  version: 6.8.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -14,6 +14,7 @@ info:
     Source-only Reader manifest, chapter-content, progress, reader-preferences, bookmarks, private annotations and private reading-history routes are implemented in the PostgreSQL profile.
     History is derived from the latest saved progress per accessible readable work, is visible for 365 days, and never returns chapter body text.
     Versioned cultivation catalogs, authenticated profile settings, private daily XP activity and bounded private Reader sessions with atomic XP awards are implemented in the PostgreSQL profile. The approved starting policy awards 1 XP per complete active Reader minute, capped at 120 XP per UTC day; top-ups and unlocks award none. Cultivation is feature-gated and off by default while the frontend Reader integration and rank-threshold pilot remain pending.
+    Scoped glossary storage, authorized active-revision reads and version-checked immutable draft creation are implemented in the PostgreSQL profile; glossary publication and translation remain unavailable.
 servers:
   - url: http://127.0.0.1:8080
 tags:
@@ -29,9 +30,89 @@ tags:
     description: Source-only reader, progress, preferences, private bookmarks, source annotations and private reading history are available in the PostgreSQL profile.
     x-implementation-status: partial
   - name: Progression
-    description: Private rank catalog/profile and bounded Reader-session lifecycle; XP awards remain unavailable pending the award/projection path.
+    description: Private rank catalog/profile, bounded Reader-session lifecycle and feature-gated server-timed XP awards/activity in the PostgreSQL profile.
+    x-implementation-status: partial
+  - name: Glossary
+    description: Authorized glossary draft-revision creation is implemented in the PostgreSQL profile; read routes, publication and translation remain planned.
     x-implementation-status: partial
 paths:
+  /api/v1/glossaries/{glossaryId}/revisions:
+    post:
+      operationId: createGlossaryDraftRevision
+      tags: [Glossary]
+      x-implementation-status: implemented-postgres-profile
+      summary: Create an immutable glossary draft revision
+      description: >-
+        Creates one complete draft snapshot for the current authenticated actor. USER_GLOBAL glossaries require their
+        owner; library/work/volume/chapter glossaries require library write access. The glossary version in If-Match
+        is checked atomically. The returned ETag is the next glossary version. The draft's parent is the latest revision,
+        while activeRevisionId remains unchanged until a separate publish action is implemented. Drafts contain at most
+        1000 terms and at most 5000 aliases total, with no more than 25 aliases per term. Current Terms and Privacy
+        acceptance and the session-bound CSRF token are required.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - name: glossaryId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: If-Match
+          in: header
+          required: true
+          description: Strong ETag returned by the current glossary representation.
+          schema:
+            type: string
+            pattern: '^"v[1-9][0-9]{0,18}"$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateGlossaryDraftRequest'
+      responses:
+        '201':
+          description: Immutable draft created; it is not the active revision.
+          headers:
+            ETag:
+              required: true
+              schema:
+                type: string
+                pattern: '^"v[1-9][0-9]*"$'
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GlossaryDraftCreated'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          description: The glossary version changed; ETag contains the current version.
+          headers:
+            ETag:
+              required: true
+              schema:
+                type: string
+                pattern: '^"v[1-9][0-9]*"$'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '428':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
   /api/v1/system/status:
     get:
       operationId: getSystemStatus
@@ -3838,6 +3919,75 @@ components:
         title:
           type: string
           maxLength: 300
+    CreateGlossaryDraftRequest:
+      type: object
+      additionalProperties: false
+      required: [terms]
+      properties:
+        terms:
+          type: array
+          maxItems: 1000
+          items:
+            $ref: '#/components/schemas/GlossaryTermDraft'
+    GlossaryTermDraft:
+      type: object
+      additionalProperties: false
+      required: [id, sourceTerm, casePolicy, matchMode]
+      properties:
+        id:
+          type: string
+          format: uuid
+        sourceTerm:
+          type: string
+          minLength: 1
+          maxLength: 512
+        targetTerm:
+          type: [string, 'null']
+          maxLength: 4096
+        priority:
+          type: integer
+          minimum: -1000000
+          maximum: 1000000
+        casePolicy:
+          type: string
+          enum: [SENSITIVE, INSENSITIVE]
+        matchMode:
+          type: string
+          enum: [WHOLE_PHRASE]
+        doNotTranslate:
+          type: boolean
+          default: false
+        contextNote:
+          type: [string, 'null']
+          maxLength: 2000
+        aliases:
+          type: array
+          maxItems: 25
+          items:
+            type: string
+            minLength: 1
+            maxLength: 512
+    GlossaryDraftCreated:
+      type: object
+      additionalProperties: false
+      required: [glossaryId, revisionId, revisionNumber, parentRevisionId, glossaryVersion]
+      properties:
+        glossaryId:
+          type: string
+          format: uuid
+        revisionId:
+          type: string
+          format: uuid
+        revisionNumber:
+          type: integer
+          minimum: 1
+        parentRevisionId:
+          type: [string, 'null']
+          format: uuid
+        glossaryVersion:
+          type: integer
+          format: int64
+          minimum: 2
     Problem:
       type: object
       required: [type, title, status, detail, code, correlationId]

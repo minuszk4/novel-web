@@ -18,6 +18,10 @@ import org.springframework.stereotype.Repository;
 @Profile("postgres")
 public class GlossaryRevisionWriteRepository {
 
+  public static final int MAX_DRAFT_TERMS = 1000;
+  public static final int MAX_ALIASES_PER_TERM = 25;
+  public static final int MAX_DRAFT_ALIASES = 5000;
+
   private final DataSource dataSource;
 
   public GlossaryRevisionWriteRepository(DataSource dataSource) {
@@ -221,7 +225,11 @@ public class GlossaryRevisionWriteRepository {
   }
 
   private static void validateTerms(List<TermDraft> terms) {
+    if (terms.size() > MAX_DRAFT_TERMS) {
+      throw new IllegalArgumentException("a glossary draft may contain at most 1000 terms");
+    }
     Set<UUID> ids = new HashSet<>();
+    long aliasCount = 0;
     for (TermDraft term : terms) {
       Objects.requireNonNull(term, "term is required");
       Objects.requireNonNull(term.id(), "term id is required");
@@ -238,6 +246,13 @@ public class GlossaryRevisionWriteRepository {
       Objects.requireNonNull(term.casePolicy(), "case policy is required");
       Objects.requireNonNull(term.matchMode(), "match mode is required");
       if (term.contextNote() != null) requireLength(term.contextNote(), "context note", 2000);
+      if (term.aliases().size() > MAX_ALIASES_PER_TERM) {
+        throw new IllegalArgumentException("a glossary term may have at most 25 aliases");
+      }
+      aliasCount += term.aliases().size();
+      if (aliasCount > MAX_DRAFT_ALIASES) {
+        throw new IllegalArgumentException("a glossary draft may contain at most 5000 aliases");
+      }
       for (String alias : term.aliases()) requireBoundedText(alias, "alias", 512);
     }
   }

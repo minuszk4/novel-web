@@ -41,6 +41,7 @@ import com.novelweb.progression.cultivation.CultivationRepository;
 import com.novelweb.progression.cultivation.CultivationService;
 import com.novelweb.translation.glossary.GlossaryMatcher;
 import com.novelweb.translation.glossary.GlossaryRepository;
+import com.novelweb.translation.glossary.GlossaryRevisionController;
 import com.novelweb.translation.glossary.GlossaryRevisionWriteRepository;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -92,6 +93,7 @@ import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
@@ -709,6 +711,194 @@ class PostgresSchemaIntegrationTests {
       deleteSessionTestUser(editorId);
       deleteSessionTestUser(readerId);
       deleteSessionTestUser(suspendedEditorId);
+      deleteSessionTestUser(outsiderId);
+    }
+  }
+
+  @Test
+  void glossaryDraftRouteRequiresSessionCsrfPolicyAndCurrentEtag() throws Exception {
+    UUID ownerId = createSessionTestUser("Glossary Draft Route Owner");
+    UUID blockedId = createSessionTestUser("Glossary Draft Route Policy Blocked");
+    UUID outsiderId = createSessionTestUser("Glossary Draft Route Outsider");
+    UUID glossaryId = UUID.randomUUID();
+    UUID termId = UUID.randomUUID();
+    try {
+      addCurrentPolicyAcceptances(ownerId);
+      addCurrentPolicyAcceptances(outsiderId);
+      SessionService.IssuedSession ownerSession = sessionService.create(ownerId).orElseThrow();
+      SessionService.IssuedSession blockedSession = sessionService.create(blockedId).orElseThrow();
+      SessionService.IssuedSession outsiderSession =
+          sessionService.create(outsiderId).orElseThrow();
+      var ownerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", ownerSession.cookieValue());
+      var blockedCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", blockedSession.cookieValue());
+      var outsiderCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", outsiderSession.cookieValue());
+      String ownerCsrf = csrfTokenService.tokenFor(ownerSession.cookieValue());
+      String blockedCsrf = csrfTokenService.tokenFor(blockedSession.cookieValue());
+      String outsiderCsrf = csrfTokenService.tokenFor(outsiderSession.cookieValue());
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement insert =
+              connection.prepareStatement(
+                  """
+                      INSERT INTO glossaries
+                          (id, owner_user_id, name, scope_type, source_language, target_language)
+                      VALUES (?, ?, 'Route draft', 'USER_GLOBAL', 'zh-Hans', 'vi')
+                      """)) {
+        insert.setObject(1, glossaryId);
+        insert.setObject(2, ownerId);
+        assertEquals(1, insert.executeUpdate());
+      }
+
+      GlossaryRevisionController.DraftRequest validBody =
+          new GlossaryRevisionController.DraftRequest(
+              List.of(
+                  new GlossaryRevisionController.TermRequest(
+                      termId,
+                      "金丹",
+                      "Kim Đan",
+                      5,
+                      GlossaryMatcher.CasePolicy.INSENSITIVE,
+                      GlossaryMatcher.MatchMode.WHOLE_PHRASE,
+                      false,
+                      "rank name",
+                      List.of("Golden Core"))));
+      String validJson = objectMapper.writeValueAsString(validBody);
+      String route = "/api/v1/glossaries/{glossaryId}/revisions";
+
+      MvcResult missingCsrf =
+          mockMvc
+              .perform(
+                  post(route, glossaryId)
+                      .cookie(ownerCookie)
+                      .header(HttpHeaders.IF_MATCH, "\"v1\"")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(validJson))
+              .andReturn();
+      assertEquals(403, missingCsrf.getResponse().getStatus());
+      assertTrue(missingCsrf.getResponse().getContentAsString().contains("CSRF_FAILED"));
+
+      MvcResult policyBlocked =
+          mockMvc
+              .perform(
+                  post(route, glossaryId)
+                      .cookie(blockedCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, blockedCsrf)
+                      .header(HttpHeaders.IF_MATCH, "\"v1\"")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(validJson))
+              .andReturn();
+      assertEquals(403, policyBlocked.getResponse().getStatus());
+      assertTrue(
+          policyBlocked.getResponse().getContentAsString().contains("POLICY_ACCEPTANCE_REQUIRED"));
+
+      MvcResult missingIfMatch =
+          mockMvc
+              .perform(
+                  post(route, glossaryId)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(validJson))
+              .andReturn();
+      assertEquals(428, missingIfMatch.getResponse().getStatus());
+      assertTrue(missingIfMatch.getResponse().getContentAsString().contains("IF_MATCH_REQUIRED"));
+
+      MvcResult malformedIfMatch =
+          mockMvc
+              .perform(
+                  post(route, glossaryId)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(HttpHeaders.IF_MATCH, "v1")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(validJson))
+              .andReturn();
+      assertEquals(400, malformedIfMatch.getResponse().getStatus());
+      assertTrue(
+          malformedIfMatch.getResponse().getContentAsString().contains("INVALID_GLOSSARY_DRAFT"));
+
+      GlossaryRevisionController.DraftRequest invalidBody =
+          new GlossaryRevisionController.DraftRequest(
+              List.of(
+                  new GlossaryRevisionController.TermRequest(
+                      UUID.randomUUID(),
+                      "金丹",
+                      " ",
+                      5,
+                      GlossaryMatcher.CasePolicy.INSENSITIVE,
+                      GlossaryMatcher.MatchMode.WHOLE_PHRASE,
+                      false,
+                      null,
+                      List.of())));
+      MvcResult invalidTerm =
+          mockMvc
+              .perform(
+                  post(route, glossaryId)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(HttpHeaders.IF_MATCH, "\"v1\"")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(objectMapper.writeValueAsString(invalidBody)))
+              .andReturn();
+      assertEquals(400, invalidTerm.getResponse().getStatus());
+      assertTrue(invalidTerm.getResponse().getContentAsString().contains("INVALID_GLOSSARY_DRAFT"));
+
+      MvcResult created =
+          mockMvc
+              .perform(
+                  post(route, glossaryId)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(HttpHeaders.IF_MATCH, "\"v1\"")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(validJson))
+              .andReturn();
+      assertEquals(201, created.getResponse().getStatus());
+      assertEquals("\"v2\"", created.getResponse().getHeader(HttpHeaders.ETAG));
+      assertTrue(created.getResponse().getHeader(HttpHeaders.CACHE_CONTROL).contains("no-store"));
+      JsonNode createdBody = objectMapper.readTree(created.getResponse().getContentAsString());
+      assertEquals(glossaryId.toString(), createdBody.path("glossaryId").asText());
+      assertEquals(1, createdBody.path("revisionNumber").asInt());
+      assertTrue(createdBody.path("parentRevisionId").isNull());
+
+      MvcResult stale =
+          mockMvc
+              .perform(
+                  post(route, glossaryId)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(HttpHeaders.IF_MATCH, "\"v1\"")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(validJson))
+              .andReturn();
+      assertEquals(409, stale.getResponse().getStatus());
+      assertEquals("\"v2\"", stale.getResponse().getHeader(HttpHeaders.ETAG));
+      assertTrue(stale.getResponse().getContentAsString().contains("GLOSSARY_VERSION_STALE"));
+
+      MvcResult outsider =
+          mockMvc
+              .perform(
+                  post(route, glossaryId)
+                      .cookie(outsiderCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, outsiderCsrf)
+                      .header(HttpHeaders.IF_MATCH, "\"v2\"")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(validJson))
+              .andReturn();
+      assertEquals(404, outsider.getResponse().getStatus());
+      assertTrue(outsider.getResponse().getContentAsString().contains("NOT_FOUND"));
+      assertTrue(glossaryRepository.loadActiveRevision(ownerId, glossaryId).isEmpty());
+    } finally {
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement delete =
+              connection.prepareStatement("DELETE FROM glossaries WHERE id = ?")) {
+        delete.setObject(1, glossaryId);
+        delete.executeUpdate();
+      }
+      deleteSessionTestUser(ownerId);
+      deleteSessionTestUser(blockedId);
       deleteSessionTestUser(outsiderId);
     }
   }
