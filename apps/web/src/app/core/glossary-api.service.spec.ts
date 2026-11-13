@@ -122,6 +122,8 @@ describe('GlossaryApiService', () => {
           targetLanguage: 'vi',
           version: 4,
           activeRevisionId,
+          activeRevisionNumber: 1,
+          latestRevisionNumber: 1,
           createdAt: timestamp,
           canWrite: true,
         },
@@ -147,6 +149,8 @@ describe('GlossaryApiService', () => {
           targetLanguage: 'vi',
           version: 4,
           activeRevisionId,
+          activeRevisionNumber: 1,
+          latestRevisionNumber: 1,
           createdAt: timestamp,
         },
       ],
@@ -154,6 +158,40 @@ describe('GlossaryApiService', () => {
     });
 
     await expect(pending).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+  });
+
+  it('loads visible metadata by ID and rejects a response for another glossary', async () => {
+    const pending = service.getGlossary(glossaryId);
+    http.expectOne({ method: 'GET', url: `/api/v1/glossaries/${glossaryId}` }).flush({
+      id: glossaryId,
+      name: 'Tu luyện',
+      scope: 'LIBRARY',
+      sourceLanguage: 'zh-Hans',
+      targetLanguage: 'vi',
+      version: 4,
+      activeRevisionId,
+      activeRevisionNumber: 1,
+      latestRevisionNumber: null,
+      createdAt: timestamp,
+      canWrite: false,
+    });
+    await expect(pending).resolves.toMatchObject({ id: glossaryId, canWrite: false });
+
+    const mismatched = service.getGlossary(glossaryId);
+    http.expectOne({ method: 'GET', url: `/api/v1/glossaries/${glossaryId}` }).flush({
+      id: activeRevisionId,
+      name: 'Wrong glossary',
+      scope: 'LIBRARY',
+      sourceLanguage: 'zh-Hans',
+      targetLanguage: 'vi',
+      version: 4,
+      activeRevisionId: null,
+      activeRevisionNumber: null,
+      latestRevisionNumber: null,
+      createdAt: timestamp,
+      canWrite: true,
+    });
+    await expect(mismatched).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
   });
 
   it('loads the immutable active revision only with a strong ETag and ordered terms', async () => {

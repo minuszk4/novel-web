@@ -22,6 +22,8 @@ export interface GlossaryCatalogItem {
   targetLanguage: string;
   version: number;
   activeRevisionId: string | null;
+  activeRevisionNumber: number | null;
+  latestRevisionNumber: number | null;
   createdAt: string;
   canWrite: boolean;
 }
@@ -226,6 +228,18 @@ export class GlossaryApiService {
     }
   }
 
+  async getGlossary(glossaryId: string): Promise<GlossaryCatalogItem> {
+    if (!isUuid(glossaryId)) throw invalidQuery();
+    try {
+      const value: unknown = await firstValueFrom(
+        this.http.get<unknown>(`${glossariesUrl}/${glossaryId}`).pipe(timeout(requestTimeoutMs)),
+      );
+      return parseCatalogItem(value, glossaryId);
+    } catch (error) {
+      throw toGlossaryApiError(error);
+    }
+  }
+
   async getActiveRevision(glossaryId: string): Promise<GlossaryActiveRevision> {
     if (!isUuid(glossaryId)) throw invalidQuery();
     try {
@@ -364,21 +378,32 @@ function parseGlossaryPage(value: unknown, limit: number): GlossaryPage {
   ) {
     throw invalidResponse();
   }
-  const items = value['items'].map(parseCatalogItem);
+  const items = value['items'].map((item) => parseCatalogItem(item));
   if (new Set(items.map((item) => item.id)).size !== items.length) throw invalidResponse();
   return { items, nextCursor: value['nextCursor'] as string | null };
 }
 
-function parseCatalogItem(value: unknown): GlossaryCatalogItem {
+function parseCatalogItem(value: unknown, expectedId?: string): GlossaryCatalogItem {
   if (
     !isRecord(value) ||
     !isUuid(value['id']) ||
+    (expectedId !== undefined && value['id'] !== expectedId) ||
     !isBoundedString(value['name'], 1, 120) ||
     !isScope(value['scope']) ||
     !isBoundedString(value['sourceLanguage'], 2, 35) ||
     !isBoundedString(value['targetLanguage'], 2, 35) ||
     !isPositiveInteger(value['version']) ||
     !isNullableUuid(value['activeRevisionId']) ||
+    !isNullablePositiveInteger(value['activeRevisionNumber']) ||
+    !isNullablePositiveInteger(value['latestRevisionNumber']) ||
+    (value['activeRevisionId'] === null) !== (value['activeRevisionNumber'] === null) ||
+    (value['canWrite'] === false && value['latestRevisionNumber'] !== null) ||
+    (value['canWrite'] === true &&
+      value['activeRevisionNumber'] !== null &&
+      value['latestRevisionNumber'] === null) ||
+    (value['activeRevisionNumber'] !== null &&
+      value['latestRevisionNumber'] !== null &&
+      value['latestRevisionNumber'] < value['activeRevisionNumber']) ||
     !isTimestamp(value['createdAt']) ||
     typeof value['canWrite'] !== 'boolean'
   ) {
@@ -392,6 +417,8 @@ function parseCatalogItem(value: unknown): GlossaryCatalogItem {
     targetLanguage: value['targetLanguage'],
     version: value['version'],
     activeRevisionId: value['activeRevisionId'],
+    activeRevisionNumber: value['activeRevisionNumber'],
+    latestRevisionNumber: value['latestRevisionNumber'],
     createdAt: value['createdAt'],
     canWrite: value['canWrite'],
   };

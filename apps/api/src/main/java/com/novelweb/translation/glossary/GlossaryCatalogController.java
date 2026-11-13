@@ -16,6 +16,7 @@ import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -63,6 +64,20 @@ public class GlossaryCatalogController {
             cursor,
             parseLimit(limit));
     return ok(page);
+  }
+
+  @GetMapping("/{glossaryId}")
+  public ResponseEntity<?> get(
+      Authentication authentication, @PathVariable String glossaryId, HttpServletRequest request) {
+    Optional<UUID> actor = actorUserId(authentication);
+    if (actor.isEmpty()) {
+      return problem(
+          HttpStatus.UNAUTHORIZED, "UNAUTHENTICATED", "Sign in to view this glossary.", request);
+    }
+    ResponseEntity<?> policyGate = policyGate(actor.orElseThrow(), request);
+    if (policyGate != null) return policyGate;
+    return ok(
+        glossaryService.get(actor.orElseThrow(), parseRequiredUuid(glossaryId, "glossaryId")));
   }
 
   @PostMapping
@@ -193,6 +208,12 @@ public class GlossaryCatalogController {
     } catch (IllegalArgumentException exception) {
       throw new IllegalArgumentException(field + " must be a valid UUID");
     }
+  }
+
+  private static UUID parseRequiredUuid(String value, String field) {
+    UUID parsed = parseUuid(value, field);
+    if (parsed == null) throw new IllegalArgumentException(field + " is required");
+    return parsed;
   }
 
   private static Optional<UUID> actorUserId(Authentication authentication) {

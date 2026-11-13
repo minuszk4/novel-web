@@ -2330,22 +2330,34 @@ class PostgresSchemaIntegrationTests {
     UUID ownerId = createSessionTestUser("Glossary Capability Owner");
     UUID editorId = createSessionTestUser("Glossary Capability Editor");
     UUID readerId = createSessionTestUser("Glossary Capability Reader");
+    UUID outsiderId = createSessionTestUser("Glossary Capability Outsider");
+    UUID blockedId = createSessionTestUser("Glossary Capability Policy Blocked");
     UUID workspaceId = null;
     UUID libraryId = null;
     UUID glossaryId = UUID.randomUUID();
+    UUID activeRevisionId = UUID.randomUUID();
+    UUID latestRevisionId = UUID.randomUUID();
     try {
       addCurrentPolicyAcceptances(ownerId);
       addCurrentPolicyAcceptances(editorId);
       addCurrentPolicyAcceptances(readerId);
+      addCurrentPolicyAcceptances(outsiderId);
       SessionService.IssuedSession ownerSession = sessionService.create(ownerId).orElseThrow();
       SessionService.IssuedSession editorSession = sessionService.create(editorId).orElseThrow();
       SessionService.IssuedSession readerSession = sessionService.create(readerId).orElseThrow();
+      SessionService.IssuedSession outsiderSession =
+          sessionService.create(outsiderId).orElseThrow();
+      SessionService.IssuedSession blockedSession = sessionService.create(blockedId).orElseThrow();
       var ownerCookie =
           new jakarta.servlet.http.Cookie("__Host-novel_session", ownerSession.cookieValue());
       var editorCookie =
           new jakarta.servlet.http.Cookie("__Host-novel_session", editorSession.cookieValue());
       var readerCookie =
           new jakarta.servlet.http.Cookie("__Host-novel_session", readerSession.cookieValue());
+      var outsiderCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", outsiderSession.cookieValue());
+      var blockedCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", blockedSession.cookieValue());
 
       WorkspaceRepository.WorkspaceRecord workspace =
           workspaceService.createWorkspace(ownerId, "Glossary Capability Workspace");
@@ -2364,6 +2376,42 @@ class PostgresSchemaIntegrationTests {
         insert.setObject(2, libraryId);
         assertEquals(1, insert.executeUpdate());
       }
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement insert =
+              connection.prepareStatement(
+                  "INSERT INTO glossary_revisions (id, glossary_id, revision_no, created_by_user_id)"
+                      + " VALUES (?, ?, 1, ?)")) {
+        insert.setObject(1, activeRevisionId);
+        insert.setObject(2, glossaryId);
+        insert.setObject(3, ownerId);
+        assertEquals(1, insert.executeUpdate());
+      }
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement activate =
+              connection.prepareStatement(
+                  "UPDATE glossaries SET active_revision_id = ?, version = 2 WHERE id = ?")) {
+        activate.setObject(1, activeRevisionId);
+        activate.setObject(2, glossaryId);
+        assertEquals(1, activate.executeUpdate());
+      }
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement insert =
+              connection.prepareStatement(
+                  "INSERT INTO glossary_revisions"
+                      + " (id, glossary_id, revision_no, parent_revision_id, created_by_user_id)"
+                      + " VALUES (?, ?, 2, ?, ?)")) {
+        insert.setObject(1, latestRevisionId);
+        insert.setObject(2, glossaryId);
+        insert.setObject(3, activeRevisionId);
+        insert.setObject(4, editorId);
+        assertEquals(1, insert.executeUpdate());
+      }
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement updateVersion =
+              connection.prepareStatement("UPDATE glossaries SET version = 3 WHERE id = ?")) {
+        updateVersion.setObject(1, glossaryId);
+        assertEquals(1, updateVersion.executeUpdate());
+      }
 
       JsonNode ownerItem = catalogItemForLibrary(ownerCookie, libraryId);
       JsonNode editorItem = catalogItemForLibrary(editorCookie, libraryId);
@@ -2374,6 +2422,48 @@ class PostgresSchemaIntegrationTests {
       assertTrue(ownerItem.path("canWrite").asBoolean());
       assertTrue(editorItem.path("canWrite").asBoolean());
       assertFalse(readerItem.path("canWrite").asBoolean());
+      assertEquals(1, ownerItem.path("activeRevisionNumber").asInt());
+      assertEquals(2, ownerItem.path("latestRevisionNumber").asInt());
+      assertTrue(readerItem.path("latestRevisionNumber").isNull());
+
+      JsonNode ownerMetadata = glossaryMetadataForActor(ownerCookie, glossaryId);
+      JsonNode editorMetadata = glossaryMetadataForActor(editorCookie, glossaryId);
+      JsonNode readerMetadata = glossaryMetadataForActor(readerCookie, glossaryId);
+      assertTrue(ownerMetadata.path("canWrite").asBoolean());
+      assertTrue(editorMetadata.path("canWrite").asBoolean());
+      assertFalse(readerMetadata.path("canWrite").asBoolean());
+      assertEquals(1, ownerMetadata.path("activeRevisionNumber").asInt());
+      assertEquals(2, ownerMetadata.path("latestRevisionNumber").asInt());
+      assertEquals(1, readerMetadata.path("activeRevisionNumber").asInt());
+      assertTrue(readerMetadata.path("latestRevisionNumber").isNull());
+      assertEquals(
+          401,
+          mockMvc
+              .perform(get("/api/v1/glossaries/" + glossaryId))
+              .andReturn()
+              .getResponse()
+              .getStatus());
+      assertEquals(
+          403,
+          mockMvc
+              .perform(get("/api/v1/glossaries/" + glossaryId).cookie(blockedCookie))
+              .andReturn()
+              .getResponse()
+              .getStatus());
+      assertEquals(
+          404,
+          mockMvc
+              .perform(get("/api/v1/glossaries/" + glossaryId).cookie(outsiderCookie))
+              .andReturn()
+              .getResponse()
+              .getStatus());
+      assertEquals(
+          400,
+          mockMvc
+              .perform(get("/api/v1/glossaries/not-a-uuid").cookie(ownerCookie))
+              .andReturn()
+              .getResponse()
+              .getStatus());
     } finally {
       try (Connection connection = dataSource.getConnection()) {
         try (PreparedStatement deleteGlossary =
@@ -2393,6 +2483,8 @@ class PostgresSchemaIntegrationTests {
       deleteSessionTestUser(ownerId);
       deleteSessionTestUser(editorId);
       deleteSessionTestUser(readerId);
+      deleteSessionTestUser(outsiderId);
+      deleteSessionTestUser(blockedId);
     }
   }
 
@@ -2410,6 +2502,17 @@ class PostgresSchemaIntegrationTests {
         objectMapper.readTree(response.getResponse().getContentAsString()).path("items");
     assertEquals(1, items.size());
     return items.get(0);
+  }
+
+  private JsonNode glossaryMetadataForActor(
+      jakarta.servlet.http.Cookie actorCookie, UUID glossaryId) throws Exception {
+    MvcResult response =
+        mockMvc.perform(get("/api/v1/glossaries/" + glossaryId).cookie(actorCookie)).andReturn();
+    assertEquals(200, response.getResponse().getStatus());
+    assertTrue(response.getResponse().getHeader(HttpHeaders.CACHE_CONTROL).contains("no-store"));
+    JsonNode metadata = objectMapper.readTree(response.getResponse().getContentAsString());
+    assertEquals(glossaryId.toString(), metadata.path("id").asText());
+    return metadata;
   }
 
   @Test

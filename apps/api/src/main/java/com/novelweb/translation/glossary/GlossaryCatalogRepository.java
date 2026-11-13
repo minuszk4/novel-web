@@ -9,6 +9,7 @@ import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 import javax.sql.DataSource;
 import org.springframework.context.annotation.Profile;
@@ -72,6 +73,14 @@ public class GlossaryCatalogRepository {
             """
                 SELECT g.id, g.name, g.scope_type, g.source_language, g.target_language,
                        g.version, g.active_revision_id, g.created_at,
+                       (SELECT active.revision_no FROM glossary_revisions active
+                        WHERE active.id = g.active_revision_id) AS active_revision_number,
+                       CASE WHEN g.scope_type = 'USER_GLOBAL'
+                                  OR can_access_library(g.library_id, actor.id, TRUE)
+                            THEN (SELECT MAX(latest.revision_no) FROM glossary_revisions latest
+                                  WHERE latest.glossary_id = g.id)
+                            ELSE NULL
+                       END AS latest_revision_number,
                        CASE WHEN g.scope_type = 'USER_GLOBAL'
                             THEN g.owner_user_id = actor.id
                             ELSE can_access_library(g.library_id, actor.id, TRUE)
@@ -132,6 +141,53 @@ public class GlossaryCatalogRepository {
     }
   }
 
+  public Optional<GlossaryRecord> findVisibleGlossary(UUID actorUserId, UUID glossaryId) {
+    Objects.requireNonNull(actorUserId, "actor user id is required");
+    Objects.requireNonNull(glossaryId, "glossary id is required");
+    String sql =
+        """
+            SELECT g.id, g.name, g.scope_type, g.source_language, g.target_language,
+                   g.version, g.active_revision_id, g.created_at,
+                   (SELECT active.revision_no FROM glossary_revisions active
+                    WHERE active.id = g.active_revision_id) AS active_revision_number,
+                   CASE WHEN g.scope_type = 'USER_GLOBAL'
+                              OR can_access_library(g.library_id, actor.id, TRUE)
+                        THEN (SELECT MAX(latest.revision_no) FROM glossary_revisions latest
+                              WHERE latest.glossary_id = g.id)
+                        ELSE NULL
+                   END AS latest_revision_number,
+                   CASE WHEN g.scope_type = 'USER_GLOBAL'
+                        THEN g.owner_user_id = actor.id
+                        ELSE can_access_library(g.library_id, actor.id, TRUE)
+                   END AS can_write
+            FROM glossaries g
+            JOIN users actor ON actor.id = ? AND actor.status = 'active'
+            WHERE g.id = ? AND g.deleted_at IS NULL
+              AND ((g.scope_type = 'USER_GLOBAL' AND g.owner_user_id = actor.id)
+                   OR (g.library_id IS NOT NULL AND can_access_library(g.library_id, actor.id, FALSE)))
+            """;
+
+    try (Connection connection = dataSource.getConnection()) {
+      connection.setReadOnly(true);
+      connection.setTransactionIsolation(Connection.TRANSACTION_REPEATABLE_READ);
+      connection.setAutoCommit(false);
+      try (PreparedStatement select = connection.prepareStatement(sql)) {
+        select.setObject(1, actorUserId);
+        select.setObject(2, glossaryId);
+        try (ResultSet row = select.executeQuery()) {
+          GlossaryRecord record = row.next() ? glossary(row) : null;
+          connection.commit();
+          return Optional.ofNullable(record);
+        }
+      } catch (SQLException | RuntimeException exception) {
+        connection.rollback();
+        throw exception;
+      }
+    } catch (SQLException exception) {
+      throw new IllegalStateException("Unable to load visible glossary metadata", exception);
+    }
+  }
+
   private static GlossaryRecord insertGlossary(
       Connection connection, UUID actorUserId, UUID glossaryId, NewGlossary glossary)
       throws SQLException {
@@ -143,7 +199,10 @@ public class GlossaryCatalogRepository {
                      source_language, target_language)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 RETURNING id, name, scope_type, source_language, target_language,
-                          version, active_revision_id, created_at, TRUE AS can_write
+                          version, active_revision_id, created_at,
+                          NULL::INTEGER AS active_revision_number,
+                          NULL::INTEGER AS latest_revision_number,
+                          TRUE AS can_write
                 """)) {
       int parameter = 1;
       insert.setObject(parameter++, glossaryId);
@@ -257,6 +316,8 @@ public class GlossaryCatalogRepository {
         row.getLong("version"),
         row.getObject("active_revision_id", UUID.class),
         row.getObject("created_at", OffsetDateTime.class).toInstant(),
+        row.getObject("active_revision_number", Integer.class),
+        row.getObject("latest_revision_number", Integer.class),
         row.getBoolean("can_write"));
   }
 
@@ -283,6 +344,8 @@ public class GlossaryCatalogRepository {
       long version,
       UUID activeRevisionId,
       Instant createdAt,
+      Integer activeRevisionNumber,
+      Integer latestRevisionNumber,
       boolean canWrite) {}
 
   public record Slice(

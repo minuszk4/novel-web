@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 6.14.0
+  version: 6.15.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -131,6 +131,49 @@ paths:
               schema:
                 type: string
                 pattern: '^"v1"$'
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GlossaryCatalogItem'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/glossaries/{glossaryId}:
+    get:
+      operationId: getGlossaryMetadata
+      tags: [Glossary]
+      x-implementation-status: implemented-postgres-profile
+      summary: Read visible glossary metadata by ID
+      description: >-
+        Returns metadata for one glossary visible to the current actor, including the server-computed canWrite
+        presentation hint, the published active revision number, and the latest revision number when the actor can
+        write. Readers never receive the unpublished draft revision number. Missing and inaccessible IDs share the
+        same 404 response. The hint does not authorize later writes; every mutation rechecks current ownership or
+        workspace role. Current Terms and Privacy acceptance is required; responses use no-store caching.
+      security:
+        - appSession: []
+      parameters:
+        - name: glossaryId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Visible glossary metadata.
+          headers:
             Cache-Control:
               schema:
                 type: string
@@ -4909,7 +4952,7 @@ components:
     GlossaryCatalogItem:
       type: object
       additionalProperties: false
-      required: [id, name, scope, sourceLanguage, targetLanguage, version, activeRevisionId, createdAt, canWrite]
+      required: [id, name, scope, sourceLanguage, targetLanguage, version, activeRevisionId, activeRevisionNumber, latestRevisionNumber, createdAt, canWrite]
       properties:
         id:
           type: string
@@ -4933,6 +4976,14 @@ components:
         activeRevisionId:
           type: [string, 'null']
           format: uuid
+        activeRevisionNumber:
+          type: [integer, 'null']
+          minimum: 1
+          description: Visible active revision number, or null when no revision has been published.
+        latestRevisionNumber:
+          type: [integer, 'null']
+          minimum: 1
+          description: Latest draft-base revision number for writers; null for readers or an empty glossary.
         createdAt:
           type: string
           format: date-time

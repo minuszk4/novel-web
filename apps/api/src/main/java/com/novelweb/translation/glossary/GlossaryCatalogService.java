@@ -49,6 +49,14 @@ public class GlossaryCatalogService {
             requested.chapterId()));
   }
 
+  public GlossaryCatalogRepository.GlossaryRecord get(UUID actorUserId, UUID glossaryId) {
+    Objects.requireNonNull(actorUserId, "actor user id is required");
+    Objects.requireNonNull(glossaryId, "glossary id is required");
+    return repository
+        .findVisibleGlossary(actorUserId, glossaryId)
+        .orElseThrow(GlossaryCatalogRepository.GlossaryNotFoundException::new);
+  }
+
   public Page list(
       UUID actorUserId,
       String requestedScope,
