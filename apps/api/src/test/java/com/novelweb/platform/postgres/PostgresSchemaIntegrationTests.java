@@ -40,6 +40,7 @@ import com.novelweb.library.imports.ImportStagingRateLimiter;
 import com.novelweb.progression.cultivation.CultivationRepository;
 import com.novelweb.progression.cultivation.CultivationService;
 import com.novelweb.translation.glossary.GlossaryCatalogController;
+import com.novelweb.translation.glossary.GlossaryImportParser;
 import com.novelweb.translation.glossary.GlossaryMatcher;
 import com.novelweb.translation.glossary.GlossaryRepository;
 import com.novelweb.translation.glossary.GlossaryRevisionController;
@@ -1328,6 +1329,359 @@ class PostgresSchemaIntegrationTests {
         delete.executeUpdate();
       }
       deleteSessionTestUser(ownerId);
+      deleteSessionTestUser(blockedId);
+      deleteSessionTestUser(outsiderId);
+    }
+  }
+
+  @Test
+  void glossaryImportPreviewRequiresCurrentWriterAndNeverChangesTheGlossary() throws Exception {
+    UUID ownerId = createSessionTestUser("Glossary Import Preview Owner");
+    UUID editorId = createSessionTestUser("Glossary Import Preview Editor");
+    UUID readerId = createSessionTestUser("Glossary Import Preview Reader");
+    UUID blockedId = createSessionTestUser("Glossary Import Preview Policy Blocked");
+    UUID outsiderId = createSessionTestUser("Glossary Import Preview Outsider");
+    UUID glossaryId = UUID.randomUUID();
+    UUID emptyGlossaryId = UUID.randomUUID();
+    UUID firstTermId = UUID.randomUUID();
+    UUID secondTermId = UUID.randomUUID();
+    UUID workspaceId = null;
+    UUID libraryId = null;
+    try {
+      addCurrentPolicyAcceptances(ownerId);
+      addCurrentPolicyAcceptances(editorId);
+      addCurrentPolicyAcceptances(readerId);
+      addCurrentPolicyAcceptances(outsiderId);
+      WorkspaceRepository.WorkspaceRecord workspace =
+          workspaceService.createWorkspace(ownerId, "Glossary Import Preview Workspace");
+      workspaceId = workspace.id();
+      workspaceService.addMember(ownerId, workspaceId, editorId, WorkspaceRepository.Role.EDITOR);
+      workspaceService.addMember(ownerId, workspaceId, readerId, WorkspaceRepository.Role.READER);
+      libraryId =
+          libraryService
+              .createWorkspaceLibrary(ownerId, workspaceId, "Glossary Import Preview Library")
+              .id();
+      for (UUID id : List.of(glossaryId, emptyGlossaryId)) {
+        try (Connection connection = dataSource.getConnection();
+            PreparedStatement insert =
+                connection.prepareStatement(
+                    """
+                        INSERT INTO glossaries
+                            (id, name, scope_type, library_id, source_language, target_language)
+                        VALUES (?, 'Import preview glossary', 'LIBRARY', ?, 'zh-Hans', 'vi')
+                        """)) {
+          insert.setObject(1, id);
+          insert.setObject(2, libraryId);
+          assertEquals(1, insert.executeUpdate());
+        }
+      }
+      GlossaryRevisionWriteRepository.DraftCreated draft =
+          glossaryRevisionWriteRepository.createDraftRevision(
+              editorId,
+              glossaryId,
+              1,
+              List.of(
+                  new GlossaryRevisionWriteRepository.TermDraft(
+                      firstTermId,
+                      "金丹",
+                      "Kim Đan",
+                      0,
+                      GlossaryMatcher.CasePolicy.INSENSITIVE,
+                      GlossaryMatcher.MatchMode.WHOLE_PHRASE,
+                      false,
+                      null,
+                      List.of("Golden Core")),
+                  new GlossaryRevisionWriteRepository.TermDraft(
+                      secondTermId,
+                      "玉佩",
+                      "Ngọc bội",
+                      0,
+                      GlossaryMatcher.CasePolicy.INSENSITIVE,
+                      GlossaryMatcher.MatchMode.WHOLE_PHRASE,
+                      false,
+                      null,
+                      List.of("Jade Pendant"))));
+      SessionService.IssuedSession ownerSession = sessionService.create(ownerId).orElseThrow();
+      SessionService.IssuedSession editorSession = sessionService.create(editorId).orElseThrow();
+      SessionService.IssuedSession readerSession = sessionService.create(readerId).orElseThrow();
+      SessionService.IssuedSession blockedSession = sessionService.create(blockedId).orElseThrow();
+      SessionService.IssuedSession outsiderSession =
+          sessionService.create(outsiderId).orElseThrow();
+      var ownerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", ownerSession.cookieValue());
+      var editorCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", editorSession.cookieValue());
+      var readerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", readerSession.cookieValue());
+      var blockedCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", blockedSession.cookieValue());
+      var outsiderCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", outsiderSession.cookieValue());
+      String ownerCsrf = csrfTokenService.tokenFor(ownerSession.cookieValue());
+      String editorCsrf = csrfTokenService.tokenFor(editorSession.cookieValue());
+      String readerCsrf = csrfTokenService.tokenFor(readerSession.cookieValue());
+      String blockedCsrf = csrfTokenService.tokenFor(blockedSession.cookieValue());
+      String outsiderCsrf = csrfTokenService.tokenFor(outsiderSession.cookieValue());
+
+      MvcResult published =
+          mockMvc
+              .perform(
+                  post(
+                          "/api/v1/glossaries/{glossaryId}/revisions/{revisionId}/publish",
+                          glossaryId,
+                          draft.revisionId())
+                      .cookie(editorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, editorCsrf)
+                      .header(HttpHeaders.IF_MATCH, "\"v2\""))
+              .andReturn();
+      assertEquals(200, published.getResponse().getStatus());
+      assertEquals("\"v3\"", published.getResponse().getHeader(HttpHeaders.ETAG));
+
+      String route = "/api/v1/glossaries/{glossaryId}/terms/import-preview";
+      String importJson =
+          "{\"version\":1,\"terms\":["
+              + "{\"sourceTerm\":\"金丹\",\"targetTerm\":\"Kim Đan\",\"aliases\":[\"Golden Core\"]},"
+              + "{\"sourceTerm\":\"玉佩\",\"targetTerm\":\"Ngọc phù\"},"
+              + "{\"sourceTerm\":\"银剑\",\"targetTerm\":\"Kiếm bạc\",\"aliases\":[\"Jade Pendant\"]},"
+              + "{\"sourceTerm\":\"丹田\",\"targetTerm\":\"Đan Điền\"}]}";
+
+      MvcResult unauthenticated =
+          mockMvc
+              .perform(post(route, glossaryId).header(HttpHeaders.IF_MATCH, "\"v3\""))
+              .andReturn();
+      assertEquals(403, unauthenticated.getResponse().getStatus());
+      assertTrue(unauthenticated.getResponse().getContentAsString().contains("CSRF_FAILED"));
+
+      MvcResult missingCsrf =
+          mockMvc
+              .perform(
+                  post(route, glossaryId)
+                      .cookie(editorCookie)
+                      .header(HttpHeaders.IF_MATCH, "\"v3\"")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(importJson))
+              .andReturn();
+      assertEquals(403, missingCsrf.getResponse().getStatus());
+
+      MvcResult policyBlocked =
+          mockMvc
+              .perform(
+                  post(route, glossaryId)
+                      .cookie(blockedCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, blockedCsrf)
+                      .header(HttpHeaders.IF_MATCH, "\"v3\"")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(importJson))
+              .andReturn();
+      assertEquals(403, policyBlocked.getResponse().getStatus());
+      assertTrue(
+          policyBlocked.getResponse().getContentAsString().contains("POLICY_ACCEPTANCE_REQUIRED"));
+
+      MvcResult missingIfMatch =
+          mockMvc
+              .perform(
+                  post(route, glossaryId)
+                      .cookie(editorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, editorCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(importJson))
+              .andReturn();
+      assertEquals(428, missingIfMatch.getResponse().getStatus());
+
+      MvcResult staleIfMatch =
+          mockMvc
+              .perform(
+                  post(route, glossaryId)
+                      .cookie(editorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, editorCsrf)
+                      .header(HttpHeaders.IF_MATCH, "\"v2\"")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(importJson))
+              .andReturn();
+      assertEquals(409, staleIfMatch.getResponse().getStatus());
+      assertEquals("\"v3\"", staleIfMatch.getResponse().getHeader(HttpHeaders.ETAG));
+
+      MvcResult malformedIfMatch =
+          mockMvc
+              .perform(
+                  post(route, glossaryId)
+                      .cookie(editorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, editorCsrf)
+                      .header(HttpHeaders.IF_MATCH, "v3")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(importJson))
+              .andReturn();
+      assertEquals(400, malformedIfMatch.getResponse().getStatus());
+
+      MvcResult unsupportedType =
+          mockMvc
+              .perform(
+                  post(route, glossaryId)
+                      .cookie(editorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, editorCsrf)
+                      .header(HttpHeaders.IF_MATCH, "\"v3\"")
+                      .contentType(MediaType.TEXT_PLAIN)
+                      .content("term,target"))
+              .andReturn();
+      assertEquals(415, unsupportedType.getResponse().getStatus());
+      assertTrue(
+          unsupportedType.getResponse().getContentAsString().contains("IMPORT_UNSUPPORTED_FORMAT"));
+
+      MvcResult oversizedFile =
+          mockMvc
+              .perform(
+                  post(route, glossaryId)
+                      .cookie(editorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, editorCsrf)
+                      .header(HttpHeaders.IF_MATCH, "\"v3\"")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(new byte[GlossaryImportParser.MAX_IMPORT_BYTES + 1]))
+              .andReturn();
+      assertEquals(413, oversizedFile.getResponse().getStatus());
+      assertTrue(
+          oversizedFile.getResponse().getContentAsString().contains("IMPORT_LIMIT_EXCEEDED"));
+
+      MvcResult malformedFile =
+          mockMvc
+              .perform(
+                  post(route, glossaryId)
+                      .cookie(editorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, editorCsrf)
+                      .header(HttpHeaders.IF_MATCH, "\"v3\"")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"version\":1,\"terms\":[{}]}"))
+              .andReturn();
+      assertEquals(422, malformedFile.getResponse().getStatus());
+      assertTrue(
+          malformedFile.getResponse().getContentAsString().contains("GLOSSARY_IMPORT_INVALID"));
+
+      MvcResult readerDenied =
+          mockMvc
+              .perform(
+                  post(route, glossaryId)
+                      .cookie(readerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, readerCsrf)
+                      .header(HttpHeaders.IF_MATCH, "\"v3\"")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(importJson))
+              .andReturn();
+      assertEquals(404, readerDenied.getResponse().getStatus());
+
+      MvcResult outsiderDenied =
+          mockMvc
+              .perform(
+                  post(route, glossaryId)
+                      .cookie(outsiderCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, outsiderCsrf)
+                      .header(HttpHeaders.IF_MATCH, "\"v3\"")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(importJson))
+              .andReturn();
+      assertEquals(404, outsiderDenied.getResponse().getStatus());
+
+      MvcResult ownerPreview =
+          mockMvc
+              .perform(
+                  post(route, glossaryId)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(HttpHeaders.IF_MATCH, "\"v3\"")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(importJson))
+              .andReturn();
+      assertEquals(200, ownerPreview.getResponse().getStatus());
+      assertEquals("\"v3\"", ownerPreview.getResponse().getHeader(HttpHeaders.ETAG));
+      assertTrue(
+          ownerPreview.getResponse().getHeader(HttpHeaders.CACHE_CONTROL).contains("no-store"));
+      JsonNode preview = objectMapper.readTree(ownerPreview.getResponse().getContentAsString());
+      assertEquals("LIBRARY", preview.path("scope").asText());
+      assertEquals("金丹", preview.path("currentTerms").get(0).path("sourceTerm").asText());
+      assertEquals(2, preview.path("currentTerms").size());
+      assertEquals(4, preview.path("counts").path("imported").asInt());
+      assertEquals(1, preview.path("counts").path("add").asInt());
+      assertEquals(1, preview.path("counts").path("update").asInt());
+      assertEquals(1, preview.path("counts").path("unchanged").asInt());
+      assertEquals(1, preview.path("counts").path("requiresResolution").asInt());
+      assertEquals(
+          secondTermId.toString(),
+          preview
+              .path("importedTerms")
+              .get(2)
+              .path("existingMatches")
+              .get(0)
+              .path("termId")
+              .asText());
+      assertEquals("UNAVAILABLE", preview.path("translationImpact").path("status").asText());
+
+      MvcResult emptyGlossaryPreview =
+          mockMvc
+              .perform(
+                  post(route, emptyGlossaryId)
+                      .cookie(editorCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, editorCsrf)
+                      .header(HttpHeaders.IF_MATCH, "\"v1\"")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          "{\"version\":1,\"terms\":[{\"sourceTerm\":\"new\",\"targetTerm\":\"mới\"}]}"))
+              .andReturn();
+      assertEquals(200, emptyGlossaryPreview.getResponse().getStatus());
+      JsonNode emptyPreview =
+          objectMapper.readTree(emptyGlossaryPreview.getResponse().getContentAsString());
+      assertTrue(emptyPreview.path("activeRevisionId").isNull());
+      assertEquals(
+          "ADD", emptyPreview.path("importedTerms").get(0).path("suggestedAction").asText());
+
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement select =
+              connection.prepareStatement(
+                  """
+                      SELECT g.version, g.active_revision_id,
+                             (SELECT count(*) FROM glossary_revisions r WHERE r.glossary_id = g.id) AS revisions,
+                             (SELECT count(*) FROM glossary_terms t JOIN glossary_revisions r ON r.id = t.revision_id WHERE r.glossary_id = g.id) AS terms
+                      FROM glossaries g WHERE g.id = ?
+                      """)) {
+        select.setObject(1, glossaryId);
+        try (ResultSet row = select.executeQuery()) {
+          assertTrue(row.next());
+          assertEquals(3, row.getLong("version"));
+          assertEquals(draft.revisionId(), row.getObject("active_revision_id", UUID.class));
+          assertEquals(1, row.getLong("revisions"));
+          assertEquals(2, row.getLong("terms"));
+        }
+        select.setObject(1, emptyGlossaryId);
+        try (ResultSet row = select.executeQuery()) {
+          assertTrue(row.next());
+          assertEquals(1, row.getLong("version"));
+          assertNull(row.getObject("active_revision_id"));
+          assertEquals(0, row.getLong("revisions"));
+        }
+      }
+    } finally {
+      try (Connection connection = dataSource.getConnection()) {
+        try (PreparedStatement delete =
+            connection.prepareStatement("DELETE FROM glossaries WHERE id IN (?, ?)")) {
+          delete.setObject(1, glossaryId);
+          delete.setObject(2, emptyGlossaryId);
+          delete.executeUpdate();
+        }
+        if (libraryId != null) {
+          try (PreparedStatement delete =
+              connection.prepareStatement("DELETE FROM libraries WHERE id = ?")) {
+            delete.setObject(1, libraryId);
+            delete.executeUpdate();
+          }
+        }
+        if (workspaceId != null) {
+          try (PreparedStatement delete =
+              connection.prepareStatement("DELETE FROM workspaces WHERE id = ?")) {
+            delete.setObject(1, workspaceId);
+            delete.executeUpdate();
+          }
+        }
+      }
+      deleteSessionTestUser(ownerId);
+      deleteSessionTestUser(editorId);
+      deleteSessionTestUser(readerId);
       deleteSessionTestUser(blockedId);
       deleteSessionTestUser(outsiderId);
     }
