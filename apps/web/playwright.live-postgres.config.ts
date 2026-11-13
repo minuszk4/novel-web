@@ -2,14 +2,15 @@ import { defineConfig, devices } from '@playwright/test';
 
 export default defineConfig({
   testDir: './e2e',
-  testMatch: /(?:library|reader|work-detail|private-import(?:-formats)?)-live-postgres\.spec\.ts/,
+  testMatch:
+    /(?:library|reader|work-detail|private-import(?:-formats)?|cultivation)-live-postgres\.spec\.ts/,
   fullyParallel: false,
   forbidOnly: true,
   retries: 0,
   workers: 1,
   reporter: [['list'], ['junit', { outputFile: 'reports/live-postgres-junit.xml' }]],
   outputDir: 'reports/live-postgres-results',
-  timeout: 120_000,
+  timeout: 180_000,
   expect: { timeout: 15_000 },
   use: {
     baseURL: 'http://localhost:4300',

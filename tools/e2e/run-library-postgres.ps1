@@ -43,7 +43,8 @@ foreach ($port in @(8081, 4300)) {
 $environmentNames = @(
     'POSTGRES_PORT', 'POSTGRES_PASSWORD', 'DATABASE_URL', 'DATABASE_USERNAME', 'DATABASE_PASSWORD',
     'GOOGLE_AUTH_RATE_LIMIT_HMAC_KEY', 'NOVEL_CSRF_HMAC_KEY', 'NOVEL_LIBRARY_CURSOR_HMAC_KEY',
-    'NOVEL_WEB_CORS_ALLOWED_ORIGINS', 'LIBRARY_LIVE_TEST_SESSION_TOKEN', 'LIBRARY_LIVE_TEST_LIBRARY_ID',
+    'NOVEL_WEB_CORS_ALLOWED_ORIGINS', 'NOVEL_FEATURE_CULTIVATION_ENABLED',
+    'LIBRARY_LIVE_TEST_SESSION_TOKEN', 'LIBRARY_LIVE_TEST_LIBRARY_ID',
     'NOVEL_IMPORT_STAGING_ROOT', 'LIBRARY_LIVE_TEST_WORK_IDS', 'LIBRARY_LIVE_TEST_SCREENSHOT', 'READER_LIVE_TEST_WORK_ID',
     'READER_LIVE_TEST_CHAPTER_ID', 'READER_LIVE_TEST_SCREENSHOT',
     'WORK_DETAIL_LIVE_TEST_SCREENSHOT', 'PRIVATE_IMPORT_LIVE_TEST_SCREENSHOT'
@@ -60,6 +61,8 @@ $failure = $null
 $cleanup = 'Not started'
 $stagingCleanup = 'Not created'
 $appliedChangesets = 0
+$cultivationLedgerXp = 0
+$cultivationLedgerEntries = 0
 $startedAt = Get-Date
 $postgresPassword = [guid]::NewGuid().ToString('N')
 $sessionBytes = New-Object byte[] 32
@@ -97,6 +100,7 @@ try {
     $env:GOOGLE_AUTH_RATE_LIMIT_HMAC_KEY = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
     $env:NOVEL_CSRF_HMAC_KEY = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
     $env:NOVEL_LIBRARY_CURSOR_HMAC_KEY = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+    $env:NOVEL_FEATURE_CULTIVATION_ENABLED = 'true'
     $env:NOVEL_IMPORT_STAGING_ROOT = $importStagingRoot
     $env:NOVEL_WEB_CORS_ALLOWED_ORIGINS = 'http://localhost:4300'
 
@@ -208,10 +212,20 @@ COMMIT;
     $env:PRIVATE_IMPORT_LIVE_TEST_SCREENSHOT = $privateImportScreenshotPath
     Push-Location $webDirectory
     try {
-        & npm.cmd run test:e2e:postgres -- e2e/library-live-postgres.spec.ts e2e/reader-live-postgres.spec.ts e2e/work-detail-live-postgres.spec.ts e2e/private-import-live-postgres.spec.ts e2e/private-import-formats-live-postgres.spec.ts *>&1 | Tee-Object -FilePath $e2eLog
+        & npm.cmd run test:e2e:postgres -- e2e/library-live-postgres.spec.ts e2e/reader-live-postgres.spec.ts e2e/work-detail-live-postgres.spec.ts e2e/private-import-live-postgres.spec.ts e2e/private-import-formats-live-postgres.spec.ts e2e/cultivation-live-postgres.spec.ts *>&1 | Tee-Object -FilePath $e2eLog
         $e2eExit = $LASTEXITCODE
     } finally { Pop-Location }
     if ($e2eExit -ne 0) { throw "Live FE/API/PostgreSQL Playwright journey failed (exit $e2eExit)." }
+
+    $ledgerSummary = & $docker @composeArguments exec -T postgres psql -v ON_ERROR_STOP=1 -tA -U novelweb -d novelweb -c "SELECT COALESCE(SUM(xp_delta), 0)::text || '|' || COUNT(*)::text FROM cultivation_xp_ledger WHERE user_id = '$userId';"
+    if ($LASTEXITCODE -ne 0) { throw 'Could not verify the cultivation XP ledger in disposable PostgreSQL.' }
+    $ledgerParts = ([string]$ledgerSummary).Trim() -split '\|'
+    if ($ledgerParts.Count -ne 2) { throw "Unexpected cultivation ledger summary: $ledgerSummary" }
+    $cultivationLedgerXp = [int]$ledgerParts[0]
+    $cultivationLedgerEntries = [int]$ledgerParts[1]
+    if ($cultivationLedgerXp -lt 1 -or $cultivationLedgerEntries -lt 1) {
+        throw "Expected at least one XP award in the disposable PostgreSQL ledger; found $cultivationLedgerXp XP across $cultivationLedgerEntries entries."
+    }
     $result = 'PASS'
 } catch {
     $failure = $_.Exception.Message
@@ -250,7 +264,7 @@ COMMIT;
     }
     $duration = [math]::Round(((Get-Date) - $startedAt).TotalSeconds, 1)
     @(
-        '# Browser journey: frontend to PostgreSQL import, library, Work Detail and Reader'
+        '# Browser journey: frontend to PostgreSQL import, Library, Reader and cultivation'
         ''
         "- Date: $($startedAt.ToString('yyyy-MM-dd HH:mm:ss zzz'))"
         "- Result: $result"
@@ -259,7 +273,9 @@ COMMIT;
         '- API: built from the current workspace and started with the PostgreSQL profile'
         "- Schema: $appliedChangesets/$expectedChangesets Liquibase changesets applied before fixture setup"
         '- Browser: Playwright Chromium, Angular dev-server proxy to the real API'
-        '- Journey: session cookie/policy → rights receipt → upload/parse/preview/private commit → refreshed Library → Work Detail → Reader source; plus persisted bookmark and reload'
+        '- Journey: session cookie/policy → rights receipt → upload/parse/preview/private commit → refreshed Library → Work Detail → Reader source/bookmark, then opt-in → server-timed Reader session → XP award → private profile/activity'
+        '- Cultivation feature flag: enabled only in this random disposable API process; prior process value restored during cleanup'
+        "- PostgreSQL cultivation ledger: $cultivationLedgerXp XP across $cultivationLedgerEntries entries for the synthetic user"
         '- API route mocks: none'
         "- Elapsed: $duration seconds"
         "- Cleanup: $cleanup"
