@@ -240,6 +240,56 @@ export class GlossaryApiService {
     }
   }
 
+  async createUserGlossary(input: {
+    name: string;
+    sourceLanguage: string;
+    targetLanguage: string;
+  }): Promise<GlossaryCatalogItem> {
+    const name = input.name.trim();
+    const sourceLanguage = input.sourceLanguage.trim();
+    const targetLanguage = input.targetLanguage.trim();
+    if (
+      !isBoundedString(name, 1, 120) ||
+      !isBoundedString(sourceLanguage, 2, 35) ||
+      !isBoundedString(targetLanguage, 2, 35)
+    ) {
+      throw invalidQuery();
+    }
+    try {
+      const headers = (await this.csrfHeaders()).set('Content-Type', 'application/json');
+      const response = await firstValueFrom(
+        this.http
+          .post<unknown>(
+            glossariesUrl,
+            {
+              name,
+              scope: 'USER_GLOBAL',
+              sourceLanguage,
+              targetLanguage,
+            },
+            { headers, observe: 'response' },
+          )
+          .pipe(timeout(requestTimeoutMs)),
+      );
+      const item = parseCatalogItem(response.body);
+      const etag = response.headers.get('ETag');
+      if (
+        !isEtag(etag) ||
+        item.scope !== 'USER_GLOBAL' ||
+        !item.canWrite ||
+        item.activeRevisionId !== null ||
+        item.activeRevisionNumber !== null ||
+        item.latestRevisionNumber !== null ||
+        etag !== `"v${item.version}"`
+      ) {
+        throw invalidResponse();
+      }
+      return item;
+    } catch (error) {
+      throw toGlossaryApiError(error);
+    }
+  }
+
   async getActiveRevision(glossaryId: string): Promise<GlossaryActiveRevision> {
     if (!isUuid(glossaryId)) throw invalidQuery();
     try {

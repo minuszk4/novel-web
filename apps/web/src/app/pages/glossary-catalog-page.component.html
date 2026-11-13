@@ -1,0 +1,242 @@
+<section class="page-wrap glossary-page">
+  <div class="page-heading page-heading-inline glossary-heading">
+    <div>
+      <p class="eyebrow">THUẬT NGỮ CỦA BẠN</p>
+      <h1>Glossary</h1>
+      <p>Tra cứu tên gọi và cách dịch nhất quán trong những tác phẩm bạn đọc.</p>
+    </div>
+    @if (state() === 'ready') {
+      <button class="button button-primary" type="button" (click)="toggleCreate()">
+        {{ createOpen() ? 'Đóng biểu mẫu' : '+ Tạo glossary' }}
+      </button>
+    }
+  </div>
+
+  @if (state() === 'guest') {
+    <div class="empty-state-panel glossary-empty">
+      <span class="glossary-empty-mark" aria-hidden="true">文</span>
+      <h2>Đăng nhập để xem glossary</h2>
+      <p>Glossary gắn với tài khoản và phạm vi được chia sẻ cho bạn.</p>
+      <a
+        class="button button-primary"
+        [routerLink]="['/sign-in']"
+        [queryParams]="{ returnTo: '/app/glossaries' }"
+        >Đăng nhập</a
+      >
+    </div>
+  } @else {
+    @if (createOpen()) {
+      <section class="glossary-create-panel" aria-labelledby="glossary-create-heading">
+        <div>
+          <p class="eyebrow">RIÊNG TƯ VỚI TÀI KHOẢN</p>
+          <h2 id="glossary-create-heading">Tạo glossary cá nhân</h2>
+          <p>Chỉ bạn có quyền chỉnh sửa. Có thể chia sẻ ở bước quản lý phạm vi sau.</p>
+        </div>
+        <form class="glossary-create-form" (submit)="createGlossary($event)">
+          <label>
+            <span>Tên glossary</span>
+            <input
+              type="text"
+              autocomplete="off"
+              maxlength="120"
+              required
+              [value]="createName()"
+              (input)="updateCreateName($event)"
+              placeholder="Ví dụ: Tu luyện"
+            />
+          </label>
+          <div class="glossary-language-fields">
+            <label>
+              <span>Ngôn ngữ nguồn</span>
+              <input
+                type="text"
+                autocomplete="off"
+                maxlength="35"
+                required
+                [value]="createSourceLanguage()"
+                (input)="updateSourceLanguage($event)"
+                aria-describedby="glossary-language-help"
+              />
+            </label>
+            <span class="glossary-language-arrow" aria-hidden="true">→</span>
+            <label>
+              <span>Ngôn ngữ đích</span>
+              <input
+                type="text"
+                autocomplete="off"
+                maxlength="35"
+                required
+                [value]="createTargetLanguage()"
+                (input)="updateTargetLanguage($event)"
+                aria-describedby="glossary-language-help"
+              />
+            </label>
+          </div>
+          <p id="glossary-language-help" class="glossary-form-help">
+            Dùng mã ngôn ngữ như zh-Hans, zh-Hant, en hoặc vi.
+          </p>
+          @if (createError(); as error) {
+            <div class="glossary-create-error" role="alert">
+              <p class="glossary-inline-error">{{ error }}</p>
+              @if (createCheckRequired()) {
+                <button class="text-button" type="button" (click)="refreshAfterUncertainCreate()">
+                  Tải lại danh sách
+                </button>
+              }
+            </div>
+          }
+          <div class="glossary-form-actions">
+            <button class="button button-outline" type="button" (click)="toggleCreate()">
+              Hủy
+            </button>
+            <button
+              class="button button-primary"
+              type="submit"
+              [disabled]="createBusy() || createCheckRequired()"
+            >
+              {{ createButtonLabel() }}
+            </button>
+          </div>
+        </form>
+      </section>
+    }
+
+    <form
+      class="glossary-toolbar"
+      role="search"
+      aria-label="Tìm trong danh sách glossary"
+      (submit)="submitSearch($event)"
+    >
+      <label class="glossary-query-field">
+        <span>Tìm glossary</span>
+        <input
+          type="search"
+          maxlength="160"
+          [value]="queryText()"
+          (input)="updateQuery($event)"
+          placeholder="Nhập tên hoặc từ khóa"
+        />
+      </label>
+      <label class="glossary-scope-field">
+        <span>Phạm vi</span>
+        <select [value]="selectedScope()" (change)="updateScope($event)">
+          @for (option of scopeOptions; track option.value) {
+            <option [value]="option.value">{{ option.label }}</option>
+          }
+        </select>
+      </label>
+      <button class="button button-outline" type="submit" [disabled]="state() === 'loading'">
+        Tìm
+      </button>
+    </form>
+
+    @if (state() === 'loading') {
+      <p class="library-status-message library-sync-message" role="status" aria-live="polite">
+        Đang tải glossary từ tài khoản…
+      </p>
+    } @else if (state() === 'error') {
+      <div class="library-status-message library-sync-error" role="alert">
+        <span>{{ errorMessage() }}</span>
+        @if (requiresSignIn()) {
+          <a
+            class="text-link"
+            [routerLink]="['/sign-in']"
+            [queryParams]="{ returnTo: '/app/glossaries' }"
+            >Đăng nhập lại</a
+          >
+        } @else {
+          <button class="text-button" type="button" (click)="loadFirstPage()">Tải lại</button>
+        }
+      </div>
+    } @else if (items().length) {
+      <p class="glossary-result-count" role="status">
+        {{ items().length }} glossary đang hiển thị
+        @if (nextCursor()) {
+          · còn kết quả khác
+        }
+      </p>
+      <div class="glossary-card-list">
+        @for (item of items(); track item.id) {
+          <article class="glossary-card">
+            <div class="glossary-card-main">
+              <div class="glossary-card-heading">
+                <h2>
+                  <a [routerLink]="['/app/glossaries', item.id]">{{ item.name }}</a>
+                </h2>
+                @if (draftIsAhead(item)) {
+                  <span class="glossary-draft-badge">Có bản nháp</span>
+                }
+              </div>
+              <p class="glossary-language-pair">
+                {{ languageLabel(item.sourceLanguage) }}
+                <span aria-label="sang">→</span>
+                {{ languageLabel(item.targetLanguage) }}
+              </p>
+              <div class="glossary-card-meta">
+                <span>{{ scopeLabel(item.scope) }}</span>
+                @if (item.activeRevisionNumber; as revisionNumber) {
+                  <span>Bản đang dùng {{ revisionNumber }}</span>
+                } @else {
+                  <span>Chưa có bản xuất bản</span>
+                }
+                @if (!item.canWrite) {
+                  <span class="glossary-readonly-badge">Chỉ xem</span>
+                }
+              </div>
+            </div>
+            <a
+              class="glossary-card-open"
+              [routerLink]="['/app/glossaries', item.id]"
+              [attr.aria-label]="'Mở glossary ' + item.name"
+              >Mở <span aria-hidden="true">→</span></a
+            >
+          </article>
+        }
+      </div>
+      @if (loadMoreError(); as error) {
+        <div class="library-status-message library-sync-error" role="alert">
+          <span>{{ error }}</span>
+          @if (requiresSignIn()) {
+            <a
+              class="text-link"
+              [routerLink]="['/sign-in']"
+              [queryParams]="{ returnTo: '/app/glossaries' }"
+              >Đăng nhập lại</a
+            >
+          } @else {
+            <button class="text-button" type="button" (click)="loadMore()">Tải tiếp</button>
+          }
+        </div>
+      } @else if (nextCursor()) {
+        <div class="glossary-load-more">
+          <button
+            class="button button-outline"
+            type="button"
+            (click)="loadMore()"
+            [disabled]="isLoadingMore()"
+          >
+            {{ isLoadingMore() ? 'Đang tải…' : 'Tải thêm glossary' }}
+          </button>
+        </div>
+      }
+    } @else if (hasActiveFilter()) {
+      <div class="empty-state-panel glossary-empty">
+        <span class="glossary-empty-mark" aria-hidden="true">⌕</span>
+        <h2>Không tìm thấy glossary phù hợp</h2>
+        <p>Thử từ khóa khác hoặc chọn phạm vi rộng hơn.</p>
+        <button class="button button-outline" type="button" (click)="clearFilters()">
+          Xóa bộ lọc
+        </button>
+      </div>
+    } @else {
+      <div class="empty-state-panel glossary-empty">
+        <span class="glossary-empty-mark" aria-hidden="true">文</span>
+        <h2>Chưa có glossary nào</h2>
+        <p>Tạo glossary cá nhân để bắt đầu lưu tên riêng, thuật ngữ và cách dịch.</p>
+        <button class="button button-primary" type="button" (click)="toggleCreate()">
+          Tạo glossary cá nhân
+        </button>
+      </div>
+    }
+  }
+</section>

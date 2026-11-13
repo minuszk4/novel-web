@@ -73,6 +73,22 @@ export const routes: Routes = [
       },
       { path: 'search', component: SearchPageComponent, title: 'Tìm trong thư viện — Novel' },
       {
+        path: 'glossaries',
+        loadComponent: () =>
+          import('./pages/glossary-catalog-page.component').then(
+            (page) => page.GlossaryCatalogPageComponent,
+          ),
+        title: 'Thuật ngữ — Novel',
+      },
+      {
+        path: 'glossaries/:glossaryId',
+        loadComponent: () =>
+          import('./pages/glossary-detail-page.component').then(
+            (page) => page.GlossaryDetailPageComponent,
+          ),
+        title: 'Chi tiết glossary — Novel',
+      },
+      {
         path: 'cultivation',
         loadComponent: () =>
           import('./pages/cultivation-page.component').then(

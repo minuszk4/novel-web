@@ -1,7 +1,11 @@
 import { HttpHeaders, provideHttpClient } from '@angular/common/http';
-import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
+import {
+  HttpTestingController,
+  TestRequest,
+  provideHttpClientTesting,
+} from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   GlossaryApiError,
   GlossaryApiService,
@@ -192,6 +196,46 @@ describe('GlossaryApiService', () => {
       canWrite: true,
     });
     await expect(mismatched).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+  });
+
+  it('creates a private user glossary with CSRF and a matching version ETag', async () => {
+    const pending = service.createUserGlossary({
+      name: '  Personal terms  ',
+      sourceLanguage: ' zh-Hans ',
+      targetLanguage: ' vi ',
+    });
+    http.expectOne({ method: 'GET', url: '/api/v1/auth/csrf' }).flush({ token: csrfToken });
+    let request: TestRequest | undefined;
+    await vi.waitFor(() => {
+      request = http.expectOne({ method: 'POST', url: '/api/v1/glossaries' });
+    });
+    expect(request).toBeDefined();
+    const createRequest = request!;
+    expect(createRequest.request.headers.get('X-CSRF-Token')).toBe(csrfToken);
+    expect(createRequest.request.body).toEqual({
+      name: 'Personal terms',
+      scope: 'USER_GLOBAL',
+      sourceLanguage: 'zh-Hans',
+      targetLanguage: 'vi',
+    });
+    createRequest.flush(
+      {
+        id: glossaryId,
+        name: 'Personal terms',
+        scope: 'USER_GLOBAL',
+        sourceLanguage: 'zh-Hans',
+        targetLanguage: 'vi',
+        version: 1,
+        activeRevisionId: null,
+        activeRevisionNumber: null,
+        latestRevisionNumber: null,
+        createdAt: timestamp,
+        canWrite: true,
+      },
+      { status: 201, statusText: 'Created', headers: new HttpHeaders({ ETag: '"v1"' }) },
+    );
+
+    await expect(pending).resolves.toMatchObject({ id: glossaryId, canWrite: true });
   });
 
   it('loads the immutable active revision only with a strong ETag and ordered terms', async () => {

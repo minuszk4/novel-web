@@ -1,0 +1,112 @@
+<section class="page-wrap glossary-page glossary-detail-page">
+  <a class="back-link glossary-back-link" routerLink="/app/glossaries">← Tất cả glossary</a>
+
+  @if (state() === 'guest') {
+    <div class="empty-state-panel glossary-empty">
+      <h1>Đăng nhập để xem glossary</h1>
+      <p>Chi tiết glossary chỉ hiển thị trong phiên tài khoản của bạn.</p>
+      <a
+        class="button button-primary"
+        [routerLink]="['/sign-in']"
+        [queryParams]="{ returnTo: signInReturnTo() }"
+        >Đăng nhập</a
+      >
+    </div>
+  } @else if (state() === 'loading') {
+    <p class="library-status-message library-sync-message" role="status" aria-live="polite">
+      Đang tải glossary…
+    </p>
+  } @else if (state() === 'not-found') {
+    <div class="empty-state-panel glossary-empty">
+      <h1>Không tìm thấy glossary</h1>
+      <p>Glossary có thể đã bị xóa hoặc tài khoản của bạn không còn quyền truy cập.</p>
+      <a class="button button-outline" routerLink="/app/glossaries">Về danh sách</a>
+    </div>
+  } @else if (state() === 'error') {
+    <div class="library-status-message library-sync-error" role="alert">
+      <span>{{ errorMessage() }}</span>
+      @if (requiresSignIn()) {
+        <a
+          class="text-link"
+          [routerLink]="['/sign-in']"
+          [queryParams]="{ returnTo: signInReturnTo() }"
+          >Đăng nhập lại</a
+        >
+      } @else {
+        <button class="text-button" type="button" (click)="retry()">Tải lại</button>
+      }
+    </div>
+  } @else if (glossary(); as item) {
+    <header class="glossary-detail-heading">
+      <p class="eyebrow">
+        GLOSSARY · {{ languageLabel(item.sourceLanguage) }} →
+        {{ languageLabel(item.targetLanguage) }}
+      </p>
+      <h1>{{ item.name }}</h1>
+      <p class="glossary-detail-summary">
+        Bản đang áp dụng: {{ item.activeRevisionNumber ?? 'chưa xuất bản' }}
+      </p>
+      <div class="glossary-detail-badges">
+        @if (!item.canWrite) {
+          <span class="glossary-readonly-badge">Chỉ xem</span>
+        }
+        @if (draftIsAhead()) {
+          <span class="glossary-draft-badge">Có bản nháp chưa xuất bản</span>
+        }
+      </div>
+    </header>
+
+    @if (!item.activeRevisionId) {
+      <div class="empty-state-panel glossary-empty glossary-no-revision">
+        <span class="glossary-empty-mark" aria-hidden="true">文</span>
+        <h2>Chưa có bản thuật ngữ đang dùng</h2>
+        <p>
+          @if (item.canWrite) {
+            Glossary này chưa có bản xuất bản để áp dụng.
+          } @else {
+            Chủ sở hữu chưa xuất bản nội dung cho glossary này.
+          }
+        </p>
+      </div>
+    } @else if (revision(); as active) {
+      <section aria-labelledby="glossary-terms-heading">
+        <div class="section-heading glossary-terms-heading">
+          <div>
+            <p class="eyebrow">BẢN {{ active.revisionNumber }}</p>
+            <h2 id="glossary-terms-heading">Thuật ngữ đang áp dụng</h2>
+          </div>
+          <span class="glossary-term-count">{{ active.terms.length }} mục</span>
+        </div>
+        @if (active.terms.length) {
+          <ol class="glossary-term-list">
+            @for (term of active.terms; track term.id) {
+              <li class="glossary-term-row">
+                <div class="glossary-term-copy">
+                  <h3>{{ term.sourceTerm }}</h3>
+                  @if (term.aliases.length) {
+                    <p class="glossary-term-aliases">Tên khác: {{ term.aliases.join(' · ') }}</p>
+                  }
+                  @if (term.contextNote) {
+                    <p class="glossary-term-context">{{ term.contextNote }}</p>
+                  }
+                </div>
+                <p class="glossary-term-target">
+                  @if (term.doNotTranslate) {
+                    <span>Giữ nguyên</span>
+                  } @else {
+                    {{ term.targetTerm || 'Chưa có cách dịch' }}
+                  }
+                </p>
+              </li>
+            }
+          </ol>
+        } @else {
+          <div class="empty-state-panel glossary-empty glossary-empty-terms">
+            <h3>Bản này chưa có mục thuật ngữ</h3>
+            <p>Các mục sẽ xuất hiện tại đây sau khi được xuất bản.</p>
+          </div>
+        }
+      </section>
+    }
+  }
+</section>
