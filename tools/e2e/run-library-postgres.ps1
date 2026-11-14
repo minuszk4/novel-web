@@ -1,6 +1,7 @@
 param(
     [int]$PostgresPortStart = 55432,
-    [int]$PostgresPortEnd = 55480
+    [int]$PostgresPortEnd = 55480,
+    [switch]$IncludeTranslationPreview
 )
 
 $ErrorActionPreference = 'Stop'
@@ -44,9 +45,12 @@ $environmentNames = @(
     'POSTGRES_PORT', 'POSTGRES_PASSWORD', 'DATABASE_URL', 'DATABASE_USERNAME', 'DATABASE_PASSWORD',
     'GOOGLE_AUTH_RATE_LIMIT_HMAC_KEY', 'NOVEL_CSRF_HMAC_KEY', 'NOVEL_LIBRARY_CURSOR_HMAC_KEY',
     'NOVEL_WEB_CORS_ALLOWED_ORIGINS', 'NOVEL_FEATURE_CULTIVATION_ENABLED',
+    'NOVEL_TRANSLATION_FAKE_ENABLED', 'NOVEL_TRANSLATION_FAKE_API_ENABLED',
+    'NOVEL_TRANSLATION_FAKE_WORKER_ENABLED',
     'LIBRARY_LIVE_TEST_SESSION_TOKEN', 'LIBRARY_LIVE_TEST_LIBRARY_ID',
     'NOVEL_IMPORT_STAGING_ROOT', 'LIBRARY_LIVE_TEST_WORK_IDS', 'LIBRARY_LIVE_TEST_SCREENSHOT', 'READER_LIVE_TEST_WORK_ID',
     'AUTHORING_LIVE_TEST_TITLE', 'AUTHORING_LIVE_TEST_SCREENSHOT',
+    'TRANSLATION_LIVE_TEST_WORK_ID', 'TRANSLATION_LIVE_TEST_CHAPTER_ID', 'TRANSLATION_LIVE_TEST_SCREENSHOT',
     'READER_LIVE_TEST_CHAPTER_ID', 'READER_LIVE_TEST_SCREENSHOT',
     'WORK_DETAIL_LIVE_TEST_SCREENSHOT', 'PRIVATE_IMPORT_LIVE_TEST_SCREENSHOT',
     'GLOSSARY_LIVE_TEST_GLOSSARY_ID', 'GLOSSARY_LIVE_TEST_SCREENSHOT', 'GLOSSARY_EDITOR_LIVE_TEST_SCREENSHOT'
@@ -81,6 +85,10 @@ $readerChapterId = [guid]::NewGuid()
 $readerVolumeId = [guid]::NewGuid()
 $readerRevisionId = [guid]::NewGuid()
 $readerSegmentId = [guid]::NewGuid()
+$translationChapterId = [guid]::NewGuid()
+$translationVolumeId = [guid]::NewGuid()
+$translationRevisionId = [guid]::NewGuid()
+$translationSegmentId = [guid]::NewGuid()
 $glossaryId = [guid]::NewGuid()
 $glossaryActiveRevisionId = [guid]::NewGuid()
 $glossaryDraftRevisionId = [guid]::NewGuid()
@@ -89,6 +97,10 @@ $authoringTitle = "Live E2E Authored Draft $userId"
 $readerSourceText = 'Live E2E source text is served from PostgreSQL.'
 $readerSourceHash = [Convert]::ToHexString(
     [System.Security.Cryptography.SHA256]::HashData([System.Text.Encoding]::UTF8.GetBytes($readerSourceText))
+).ToLowerInvariant()
+$translationSourceText = 'Live fake-local source segment from PostgreSQL.'
+$translationSourceHash = [Convert]::ToHexString(
+    [System.Security.Cryptography.SHA256]::HashData([System.Text.Encoding]::UTF8.GetBytes($translationSourceText))
 ).ToLowerInvariant()
 $screenshotPath = Join-Path $evidenceDirectory 'account-library-live.png'
 $readerScreenshotPath = Join-Path $evidenceDirectory 'account-reader-live.png'
@@ -112,6 +124,14 @@ try {
     $env:NOVEL_CSRF_HMAC_KEY = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
     $env:NOVEL_LIBRARY_CURSOR_HMAC_KEY = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
     $env:NOVEL_FEATURE_CULTIVATION_ENABLED = 'true'
+    $env:NOVEL_TRANSLATION_FAKE_ENABLED = 'false'
+    $env:NOVEL_TRANSLATION_FAKE_API_ENABLED = 'false'
+    $env:NOVEL_TRANSLATION_FAKE_WORKER_ENABLED = 'false'
+    if ($IncludeTranslationPreview) {
+        $env:NOVEL_TRANSLATION_FAKE_ENABLED = 'true'
+        $env:NOVEL_TRANSLATION_FAKE_API_ENABLED = 'true'
+        $env:NOVEL_TRANSLATION_FAKE_WORKER_ENABLED = 'true'
+    }
     $env:NOVEL_IMPORT_STAGING_ROOT = $importStagingRoot
     $env:NOVEL_WEB_CORS_ALLOWED_ORIGINS = 'http://localhost:4300'
 
@@ -140,7 +160,8 @@ try {
 
     $javaCommand = Get-Command java -ErrorAction Stop
     $apiJar = Join-Path $apiDirectory 'target\api-0.0.1-SNAPSHOT.jar'
-    $apiArguments = @('-jar', ('"{0}"' -f $apiJar), '--spring.profiles.active=postgres', '--server.port=8081')
+    $activeProfiles = if ($IncludeTranslationPreview) { 'postgres,translation-fake' } else { 'postgres' }
+    $apiArguments = @('-jar', ('"{0}"' -f $apiJar), "--spring.profiles.active=$activeProfiles", '--server.port=8081')
     $apiProcess = Start-Process -FilePath $javaCommand.Source -ArgumentList $apiArguments `
         -WorkingDirectory $apiDirectory -PassThru -WindowStyle Hidden `
         -RedirectStandardOutput $apiStdout -RedirectStandardError $apiStderr
@@ -200,13 +221,21 @@ VALUES
 ('$firstWorkId', '$libraryId', '$userId', 'Live E2E Novel One', 'E2E Author', 'vi', 'private', 'active'),
 ('$secondWorkId', '$libraryId', '$userId', 'Live E2E Novel Two', 'E2E Author', 'en', 'private', 'active');
 INSERT INTO volumes (id, work_id, ordinal, title)
-VALUES ('$readerVolumeId', '$firstWorkId', 1, 'Live E2E Volume');
+VALUES
+('$readerVolumeId', '$firstWorkId', 1, 'Live E2E Volume'),
+('$translationVolumeId', '$secondWorkId', 1, 'Live Translation Volume');
 INSERT INTO chapters (id, work_id, volume_id, ordinal, title, source_language, source_revision_id, status)
-VALUES ('$readerChapterId', '$firstWorkId', '$readerVolumeId', 1, 'Live Reader Chapter', 'en', '$readerRevisionId', 'ready');
+VALUES
+('$readerChapterId', '$firstWorkId', '$readerVolumeId', 1, 'Live Reader Chapter', 'en', '$readerRevisionId', 'ready'),
+('$translationChapterId', '$secondWorkId', '$translationVolumeId', 1, 'Live Translation Chapter', 'en', '$translationRevisionId', 'ready');
 INSERT INTO chapter_revisions (id, chapter_id, revision_no, source_format, normalized_content, content_hash, created_by_user_id)
-VALUES ('$readerRevisionId', '$readerChapterId', 1, 'plain_text', '$readerSourceText', decode('$readerSourceHash', 'hex'), '$userId');
+VALUES
+('$readerRevisionId', '$readerChapterId', 1, 'plain_text', '$readerSourceText', decode('$readerSourceHash', 'hex'), '$userId'),
+('$translationRevisionId', '$translationChapterId', 1, 'plain_text', '$translationSourceText', decode('$translationSourceHash', 'hex'), '$userId');
 INSERT INTO segments (id, chapter_revision_id, ordinal, segment_type, source_text, stable_anchor, checksum)
-VALUES ('$readerSegmentId', '$readerRevisionId', 1, 'paragraph', '$readerSourceText', 'live-reader-p1', decode('$readerSourceHash', 'hex'));
+VALUES
+('$readerSegmentId', '$readerRevisionId', 1, 'paragraph', '$readerSourceText', 'live-reader-p1', decode('$readerSourceHash', 'hex')),
+('$translationSegmentId', '$translationRevisionId', 1, 'paragraph', '$translationSourceText', 'live-translation-p1', decode('$translationSourceHash', 'hex'));
 INSERT INTO glossaries (id, owner_user_id, name, scope_type, source_language, target_language, version)
 VALUES ('$glossaryId', '$userId', 'E2E Glossary Import', 'USER_GLOBAL', 'zh-Hans', 'vi', 4);
 INSERT INTO glossary_revisions (id, glossary_id, revision_no, created_by_user_id)
@@ -241,9 +270,26 @@ COMMIT;
     $env:GLOSSARY_EDITOR_LIVE_TEST_SCREENSHOT = $glossaryEditorScreenshotPath
     $env:AUTHORING_LIVE_TEST_TITLE = $authoringTitle
     $env:AUTHORING_LIVE_TEST_SCREENSHOT = $authoringScreenshotPath
+    $translationJobScreenshot = Join-Path $evidenceDirectory 'translation-job-live.png'
+    if ($IncludeTranslationPreview) {
+        $env:TRANSLATION_LIVE_TEST_WORK_ID = [string]$secondWorkId
+        $env:TRANSLATION_LIVE_TEST_CHAPTER_ID = [string]$translationChapterId
+        $env:TRANSLATION_LIVE_TEST_SCREENSHOT = $translationJobScreenshot
+    }
     Push-Location $webDirectory
     try {
-        & npm.cmd run test:e2e:postgres -- e2e/authoring-create-live-postgres.spec.ts e2e/library-live-postgres.spec.ts e2e/reader-live-postgres.spec.ts e2e/work-detail-live-postgres.spec.ts e2e/private-import-live-postgres.spec.ts e2e/private-import-formats-live-postgres.spec.ts e2e/glossary-import-live-postgres.spec.ts e2e/cultivation-live-postgres.spec.ts *>&1 | Tee-Object -FilePath $e2eLog
+        $e2eSpecs = @(
+            'e2e/authoring-create-live-postgres.spec.ts',
+            'e2e/library-live-postgres.spec.ts',
+            'e2e/reader-live-postgres.spec.ts',
+            'e2e/work-detail-live-postgres.spec.ts',
+            'e2e/private-import-live-postgres.spec.ts',
+            'e2e/private-import-formats-live-postgres.spec.ts',
+            'e2e/glossary-import-live-postgres.spec.ts',
+            'e2e/cultivation-live-postgres.spec.ts'
+        )
+        if ($IncludeTranslationPreview) { $e2eSpecs += 'e2e/translation-live-postgres.spec.ts' }
+        & npm.cmd run test:e2e:postgres -- $e2eSpecs *>&1 | Tee-Object -FilePath $e2eLog
         $e2eExit = $LASTEXITCODE
     } finally { Pop-Location }
     if ($e2eExit -ne 0) { throw "Live FE/API/PostgreSQL Playwright journey failed (exit $e2eExit)." }
@@ -269,6 +315,14 @@ COMMIT;
     $glossaryParts = ([string]$glossarySummary).Trim() -split '\|'
     if ($glossaryParts.Count -ne 8 -or $glossaryParts[0] -ne '6' -or $glossaryParts[1] -ne '1' -or $glossaryParts[2] -ne '4' -or $glossaryParts[3] -ne '6' -or $glossaryParts[4] -ne '6' -or $glossaryParts[5] -ne '1' -or $glossaryParts[6] -ne '1' -or $glossaryParts[7] -ne '1') {
         throw "PostgreSQL glossary import/editor invariants failed after browser journeys: $glossarySummary"
+    }
+    if ($IncludeTranslationPreview) {
+        $translationSummary = & $docker @composeArguments exec -T postgres psql -v ON_ERROR_STOP=1 -tA -U novelweb -d novelweb -c "SELECT COUNT(*)::text || '|' || COALESCE(bool_and(j.provider_id = 'fake-local' AND j.status = 'review_required' AND j.completed_units = 1 AND j.failed_units = 0 AND c.status = 'ready_for_review' AND s.translated_text = '[fake en->vi] $translationSourceText'), FALSE)::text || '|' || COUNT(DISTINCT a.id)::text || '|' || COUNT(DISTINCT s.candidate_id)::text FROM translation_jobs j JOIN translation_units u ON u.job_id = j.id JOIN translation_attempts a ON a.unit_id = u.id JOIN translation_candidates c ON c.job_id = j.id JOIN translation_candidate_segments s ON s.candidate_id = c.id WHERE j.chapter_id = '$translationChapterId' AND j.target_language = 'vi' AND a.provider_id = 'fake-local' AND a.outcome = 'succeeded';"
+        if ($LASTEXITCODE -ne 0) { throw 'Could not verify the fake-local translation candidate in disposable PostgreSQL.' }
+        $translationParts = ([string]$translationSummary).Trim() -split '\|'
+        if ($translationParts.Count -ne 4 -or $translationParts[0] -ne '1' -or $translationParts[1] -notin @('t', 'true') -or $translationParts[2] -ne '1' -or $translationParts[3] -ne '1') {
+            throw "PostgreSQL fake-local translation invariants failed after browser journey: $translationSummary"
+        }
     }
     $result = 'PASS'
 } catch {
@@ -308,25 +362,27 @@ COMMIT;
     }
     $duration = [math]::Round(((Get-Date) - $startedAt).TotalSeconds, 1)
     @(
-        '# Browser journey: frontend to PostgreSQL import, Library, Reader and cultivation'
+        '# Browser journey: frontend to PostgreSQL import, Library, Reader, cultivation and fake-local translation'
         ''
         "- Date: $($startedAt.ToString('yyyy-MM-dd HH:mm:ss zzz'))"
         "- Result: $result"
         "- Compose project: $project"
         "- PostgreSQL host port: $hostPort"
-        '- API: built from the current workspace and started with the PostgreSQL profile'
+        "- API: built from the current workspace and started with the $activeProfiles profile"
         "- Schema: $appliedChangesets/$expectedChangesets Liquibase changesets applied before fixture setup"
         '- Browser: Playwright Chromium, Angular dev-server proxy to the real API'
         '- Authoring: real authenticated metadata create, same-key replay, changed-payload 409, private authored work persisted, one idempotency receipt, zero volumes/chapters'
-        '- Journey: session cookie/policy → rights receipt → upload/parse/preview/private commit → refreshed Library → Work Detail → Reader source/bookmark, then opt-in → server-timed Reader session → XP award → private profile/activity → glossary import/draft edit/revision preview'
+        "- Journey: session cookie/policy → rights receipt → upload/parse/preview/private commit → refreshed Library → Work Detail → Reader source/bookmark, then opt-in → server-timed Reader session → XP award → private profile/activity → glossary import/draft edit/revision preview$(if ($IncludeTranslationPreview) { ' → fake-local Reader translation → redacted job status → unpublished PostgreSQL candidate' } else { '' })"
         '- Cultivation feature flag: enabled only in this random disposable API process; prior process value restored during cleanup'
+        $(if ($IncludeTranslationPreview) { '- Translation feature/provider/API/worker flags: fake-local only, enabled only in this random disposable API process; no external NMT provider was configured or called; prior process values restored during cleanup' } else { '- Translation fake-local flags: forced false for this disposable API process; prior process values restored during cleanup' })
         "- PostgreSQL cultivation ledger: $cultivationLedgerXp XP across $cultivationLedgerEntries entries for the synthetic user"
         $(if ($glossaryParts.Count -eq 8) { "- PostgreSQL glossary import/editor after revision preview: version $($glossaryParts[0]), active revision $($glossaryParts[1]), latest draft $($glossaryParts[2]), $($glossaryParts[3]) immutable term rows, $($glossaryParts[4]) aliases, one idempotency receipt and one apply row; preview did not create a revision or change the active pointer" } else { '- PostgreSQL glossary import/editor: not verified' })
+        $(if ($translationParts.Count -eq 4) { "- PostgreSQL fake-local translation: $($translationParts[0]) job, $($translationParts[2]) successful attempt and $($translationParts[3]) unpublished candidate segment verified with the fake marker" } else { '- PostgreSQL fake-local translation: not requested' })
         '- API route mocks: none'
         "- Elapsed: $duration seconds"
         "- Cleanup: $cleanup"
         "- Staging cleanup: $stagingCleanup"
-        "- Screenshots: $([System.IO.Path]::GetFileName($screenshotPath)), $([System.IO.Path]::GetFileName($workDetailScreenshotPath)), $([System.IO.Path]::GetFileName($readerScreenshotPath)), $([System.IO.Path]::GetFileName($glossaryImportScreenshotPath)), $([System.IO.Path]::GetFileName($glossaryEditorScreenshotPath)), $([System.IO.Path]::GetFileName($authoringScreenshotPath)), private-import-commit-live.png, private-import-detail-live.png, private-import-reader-live.png, private-import-html-commit-live.png, private-import-html-detail-live.png, private-import-html-reader-live.png, private-import-markdown-commit-live.png, private-import-markdown-detail-live.png, private-import-markdown-reader-live.png, private-import-epub-commit-live.png, private-import-epub-detail-live.png, private-import-epub-reader-live.png"
+        "- Screenshots: $([System.IO.Path]::GetFileName($screenshotPath)), $([System.IO.Path]::GetFileName($workDetailScreenshotPath)), $([System.IO.Path]::GetFileName($readerScreenshotPath)), $([System.IO.Path]::GetFileName($glossaryImportScreenshotPath)), $([System.IO.Path]::GetFileName($glossaryEditorScreenshotPath)), $([System.IO.Path]::GetFileName($authoringScreenshotPath))$(if ($IncludeTranslationPreview) { ', translation-job-live.png' } else { '' }), private-import-commit-live.png, private-import-detail-live.png, private-import-reader-live.png, private-import-html-commit-live.png, private-import-html-detail-live.png, private-import-html-reader-live.png, private-import-markdown-commit-live.png, private-import-markdown-detail-live.png, private-import-markdown-reader-live.png, private-import-epub-commit-live.png, private-import-epub-detail-live.png, private-import-epub-reader-live.png"
         '- Logs: api-build.log, api-stdout.log, api-stderr.log, playwright.log'
         $(if ($failure) { "- Failure: $failure" } else { '- Failure: none' })
         ''
