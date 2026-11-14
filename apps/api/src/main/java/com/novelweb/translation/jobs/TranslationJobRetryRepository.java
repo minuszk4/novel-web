@@ -29,6 +29,8 @@ public class TranslationJobRetryRepository {
       connection.setTransactionIsolation(Connection.TRANSACTION_READ_COMMITTED);
       connection.setAutoCommit(false);
       try {
+        if (!hasWritableAccess(connection, actorUserId, jobId)) throw new JobNotFoundException();
+        lockAllJobUnits(connection, jobId);
         RetryContext context = lockAccessibleJob(connection, actorUserId, jobId);
         if (!"fake-local".equals(context.providerId())) throw new RetryNotAllowedException();
 
@@ -103,6 +105,39 @@ public class TranslationJobRetryRepository {
             row.getString("chapter_status"),
             row.getObject("current_revision_id", UUID.class),
             row.getBytes("current_source_sha256"));
+      }
+    }
+  }
+
+  private static boolean hasWritableAccess(Connection connection, UUID actorUserId, UUID jobId)
+      throws SQLException {
+    try (PreparedStatement select =
+        connection.prepareStatement(
+            """
+                SELECT 1
+                FROM translation_jobs job
+                JOIN works work ON work.id = job.work_id
+                JOIN libraries library ON library.id = work.library_id
+                JOIN users actor ON actor.id = ? AND actor.status = 'active'
+                JOIN chapters chapter ON chapter.id = job.chapter_id AND chapter.work_id = job.work_id
+                WHERE job.id = ? AND work.deleted_at IS NULL AND library.deleted_at IS NULL
+                  AND can_access_library(library.id, actor.id, TRUE)
+                """)) {
+      select.setObject(1, actorUserId);
+      select.setObject(2, jobId);
+      try (ResultSet row = select.executeQuery()) {
+        return row.next();
+      }
+    }
+  }
+
+  private static void lockAllJobUnits(Connection connection, UUID jobId) throws SQLException {
+    try (PreparedStatement select =
+        connection.prepareStatement(
+            "SELECT id FROM translation_units WHERE job_id = ? ORDER BY unit_no FOR UPDATE")) {
+      select.setObject(1, jobId);
+      try (ResultSet rows = select.executeQuery()) {
+        while (rows.next()) rows.getObject("id", UUID.class);
       }
     }
   }

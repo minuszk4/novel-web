@@ -13,6 +13,8 @@ import com.novelweb.translation.jobs.TranslationAttemptFailureService;
 import com.novelweb.translation.jobs.TranslationAttemptRepository;
 import com.novelweb.translation.jobs.TranslationAttemptService;
 import com.novelweb.translation.jobs.TranslationFakeLocalWorkerService;
+import com.novelweb.translation.jobs.TranslationJobCancelRepository;
+import com.novelweb.translation.jobs.TranslationJobCancelService;
 import com.novelweb.translation.jobs.TranslationJobRetryRepository;
 import com.novelweb.translation.jobs.TranslationJobRetryService;
 import com.novelweb.translation.jobs.TranslationJobService;
@@ -67,6 +69,8 @@ class PostgresTranslationUnitLeaseTests {
   @Autowired private TranslationJobService jobService;
 
   @Autowired private TranslationJobRetryService jobRetryService;
+
+  @Autowired private TranslationJobCancelService jobCancelService;
 
   @Autowired private TranslationUnitLeaseService leaseService;
 
@@ -676,6 +680,205 @@ class PostgresTranslationUnitLeaseTests {
     assertEquals(0, countOutboxEvents(exhaustedFixture.jobId(), "translation.job.retry_requested"));
   }
 
+  @Test
+  void queuedJobCanBeCancelledWithAnIdempotentIdentifierOnlyReceipt() throws Exception {
+    Fixture fixture = createQueuedJob(1);
+    UUID unitId = unitIds(fixture.jobId()).getFirst();
+    String idempotencyKey = "translation-cancel-key-0001";
+
+    TranslationJobCancelRepository.CancelResult cancelled =
+        jobCancelService.cancel(fixture.userId(), fixture.jobId(), idempotencyKey);
+
+    assertFalse(cancelled.replayed());
+    assertEquals(1, cancelled.cancelledUnits());
+    assertEquals(0, cancelled.cancelledAttempts());
+    assertEquals("cancelled", cancelled.jobStatus());
+    assertEquals("cancelled", readJobStatus(fixture.jobId()));
+    assertEquals("cancelled", readUnitStatus(unitId));
+    assertCancelEventContainsOnlyIds(
+        fixture.jobId(), cancelled.outboxEventId(), unitId, null, idempotencyKey);
+
+    TranslationJobCancelRepository.CancelResult replay =
+        jobCancelService.cancel(fixture.userId(), fixture.jobId(), idempotencyKey);
+    assertTrue(replay.replayed());
+    assertEquals(cancelled.outboxEventId(), replay.outboxEventId());
+    assertEquals(1, countOutboxEvents(fixture.jobId(), "translation.job.cancel_requested"));
+    assertThrows(
+        TranslationJobCancelRepository.CancelNotAllowedException.class,
+        () -> jobCancelService.cancel(fixture.userId(), fixture.jobId(), "cancel-key-new-0002"));
+    assertEquals(1, countOutboxEvents(fixture.jobId(), "translation.job.cancel_requested"));
+  }
+
+  @Test
+  void cancellingAnActiveFakeAttemptFencesLateCompletionWithoutCandidateWrites() throws Exception {
+    Fixture fixture = createQueuedJob(1);
+    TranslationUnitLeaseRepository.Lease lease =
+        leaseService
+            .claimNext("translation-cancel-active-worker", Duration.ofSeconds(60))
+            .orElseThrow();
+    TranslationAttemptRepository.StartResult attempt = attemptService.begin(lease);
+
+    TranslationJobCancelRepository.CancelResult cancelled =
+        jobCancelService.cancel(
+            fixture.userId(), fixture.jobId(), "translation-cancel-running-0001");
+
+    assertEquals(1, cancelled.cancelledUnits());
+    assertEquals(1, cancelled.cancelledAttempts());
+    assertEquals("cancelled", readUnitStatus(lease.unitId()));
+    assertEquals("cancelled", readAttemptOutcome(attempt.attemptId()));
+    assertEquals("CANCELLED", readAttemptFailureCode(attempt.attemptId()));
+    assertEquals(0, countCandidates(fixture.jobId()));
+    assertEquals(0, countCandidateSegmentsForJob(fixture.jobId()));
+    assertThrows(
+        TranslationAttemptCompletionRepository.StaleLeaseException.class,
+        () -> completionService.complete(lease, response(attempt.attemptId(), lease.unitId())));
+    assertEquals("cancelled", readJobStatus(fixture.jobId()));
+    assertEquals(0, countCandidates(fixture.jobId()));
+    assertEquals(0, countUnitCompletedEvents(fixture.jobId()));
+    assertEquals(0, countCandidateReadyEvents(fixture.jobId()));
+    assertCancelEventContainsOnlyIds(
+        fixture.jobId(),
+        cancelled.outboxEventId(),
+        lease.unitId(),
+        attempt.attemptId(),
+        "translation-cancel-running-0001");
+  }
+
+  @Test
+  void writableWorkspaceEditorCanCancelButReaderAndOutsideActorCannot() throws Exception {
+    Fixture editorFixture = createQueuedJob(1);
+    UUID editorWorkspace = createWorkspace(editorFixture);
+    UUID editorId = addWorkspaceMember(editorWorkspace, "editor");
+    TranslationJobCancelRepository.CancelResult editorCancel =
+        jobCancelService.cancel(editorId, editorFixture.jobId(), "workspace-editor-cancel-0001");
+    assertEquals("cancelled", editorCancel.jobStatus());
+
+    Fixture readerFixture = createQueuedJob(1);
+    UUID readerWorkspace = createWorkspace(readerFixture);
+    UUID readerId = addWorkspaceMember(readerWorkspace, "reader");
+    assertThrows(
+        TranslationJobCancelRepository.JobNotFoundException.class,
+        () ->
+            jobCancelService.cancel(
+                readerId, readerFixture.jobId(), "workspace-reader-cancel-0001"));
+    assertEquals("queued", readJobStatus(readerFixture.jobId()));
+    assertEquals(0, countOutboxEvents(readerFixture.jobId(), "translation.job.cancel_requested"));
+
+    Fixture outsiderFixture = createQueuedJob(1);
+    createWorkspace(outsiderFixture);
+    UUID outsiderId = createUser("outside translation cancel fixture");
+    assertThrows(
+        TranslationJobCancelRepository.JobNotFoundException.class,
+        () ->
+            jobCancelService.cancel(
+                outsiderId, outsiderFixture.jobId(), "workspace-outsider-cancel-0001"));
+    assertEquals("queued", readJobStatus(outsiderFixture.jobId()));
+    assertEquals(0, countOutboxEvents(outsiderFixture.jobId(), "translation.job.cancel_requested"));
+  }
+
+  @Test
+  void cancellationRacingWithCompletionHasOneAtomicWinner() throws Exception {
+    Fixture fixture = createQueuedJob(1);
+    TranslationUnitLeaseRepository.Lease lease =
+        leaseService
+            .claimNext("translation-cancel-race-worker", Duration.ofSeconds(60))
+            .orElseThrow();
+    TranslationAttemptRepository.StartResult attempt = attemptService.begin(lease);
+    CountDownLatch ready = new CountDownLatch(2);
+    CountDownLatch start = new CountDownLatch(1);
+    ExecutorService executor = Executors.newFixedThreadPool(2);
+    try {
+      Future<Object> cancelOutcome =
+          executor.submit(
+              () -> {
+                ready.countDown();
+                if (!start.await(5, TimeUnit.SECONDS)) {
+                  throw new IllegalStateException("cancel barrier timed out");
+                }
+                try {
+                  return jobCancelService.cancel(
+                      fixture.userId(), fixture.jobId(), "translation-cancel-race-0001");
+                } catch (RuntimeException exception) {
+                  return exception;
+                }
+              });
+      Future<Object> completionOutcome =
+          executor.submit(
+              () -> {
+                ready.countDown();
+                if (!start.await(5, TimeUnit.SECONDS)) {
+                  throw new IllegalStateException("completion barrier timed out");
+                }
+                try {
+                  return completionService.complete(
+                      lease, response(attempt.attemptId(), lease.unitId()));
+                } catch (RuntimeException exception) {
+                  return exception;
+                }
+              });
+
+      assertTrue(ready.await(5, TimeUnit.SECONDS));
+      start.countDown();
+      Object cancel = cancelOutcome.get(10, TimeUnit.SECONDS);
+      Object completion = completionOutcome.get(10, TimeUnit.SECONDS);
+      boolean cancellationWon = cancel instanceof TranslationJobCancelRepository.CancelResult;
+      boolean completionWon =
+          completion instanceof TranslationAttemptCompletionRepository.CompletionResult;
+      assertTrue(cancellationWon ^ completionWon);
+
+      if (cancellationWon) {
+        assertTrue(
+            completion instanceof TranslationAttemptCompletionRepository.StaleLeaseException);
+        assertEquals("cancelled", readJobStatus(fixture.jobId()));
+        assertEquals("cancelled", readUnitStatus(lease.unitId()));
+        assertEquals("cancelled", readAttemptOutcome(attempt.attemptId()));
+        assertEquals(0, countCandidateSegmentsForJob(fixture.jobId()));
+        assertEquals(1, countOutboxEvents(fixture.jobId(), "translation.job.cancel_requested"));
+        assertEquals(0, countUnitCompletedEvents(fixture.jobId()));
+      } else {
+        assertTrue(cancel instanceof TranslationJobCancelRepository.CancelNotAllowedException);
+        assertEquals("review_required", readJobStatus(fixture.jobId()));
+        assertEquals("succeeded", readUnitStatus(lease.unitId()));
+        assertEquals("succeeded", readAttemptOutcome(attempt.attemptId()));
+        assertEquals(1, countCandidateSegmentsForJob(fixture.jobId()));
+        assertEquals(0, countOutboxEvents(fixture.jobId(), "translation.job.cancel_requested"));
+        assertEquals(1, countUnitCompletedEvents(fixture.jobId()));
+      }
+    } finally {
+      start.countDown();
+      executor.shutdownNow();
+    }
+  }
+
+  @Test
+  void cancellationRejectsFailedOrNonFakeLocalJobsWithoutAnEvent() throws Exception {
+    Fixture failedFixture = createFailedSingleUnitJob();
+    assertThrows(
+        TranslationJobCancelRepository.CancelNotAllowedException.class,
+        () ->
+            jobCancelService.cancel(
+                failedFixture.userId(), failedFixture.jobId(), "translation-cancel-failed-0001"));
+    assertEquals(0, countOutboxEvents(failedFixture.jobId(), "translation.job.cancel_requested"));
+
+    Fixture nonFakeFixture = createQueuedJob(1);
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement update =
+            connection.prepareStatement(
+                "UPDATE translation_jobs SET provider_id = 'external' WHERE id = ?")) {
+      update.setObject(1, nonFakeFixture.jobId());
+      assertEquals(1, update.executeUpdate());
+    }
+    assertThrows(
+        TranslationJobCancelRepository.CancelNotAllowedException.class,
+        () ->
+            jobCancelService.cancel(
+                nonFakeFixture.userId(),
+                nonFakeFixture.jobId(),
+                "translation-cancel-external-001"));
+    assertEquals("queued", readJobStatus(nonFakeFixture.jobId()));
+    assertEquals(0, countOutboxEvents(nonFakeFixture.jobId(), "translation.job.cancel_requested"));
+  }
+
   private Optional<TranslationUnitLeaseRepository.Lease> claimAfterBarrier(
       String workerId, CountDownLatch ready, CountDownLatch start) throws InterruptedException {
     ready.countDown();
@@ -1207,6 +1410,42 @@ class PostgresTranslationUnitLeaseTests {
         assertEquals(jobId.toString(), row.getString("payload_job_id"));
         assertEquals(1, row.getInt("unit_count"));
         assertTrue(row.getBoolean("has_unit_id"));
+        assertFalse(row.getString("deduplication_key").contains(rawIdempotencyKey));
+      }
+    }
+  }
+
+  private void assertCancelEventContainsOnlyIds(
+      UUID jobId, UUID eventId, UUID unitId, UUID attemptId, String rawIdempotencyKey)
+      throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                """
+                    SELECT event_type,
+                           (payload - 'jobId' - 'unitIds' - 'attemptIds') = '{}'::jsonb AS only_ids,
+                           payload->>'jobId' AS payload_job_id,
+                           jsonb_array_length(payload->'unitIds') AS unit_count,
+                           jsonb_array_length(payload->'attemptIds') AS attempt_count,
+                           payload->'unitIds' @> jsonb_build_array(?::text) AS has_unit_id,
+                           payload->'attemptIds' @> jsonb_build_array(?::text) AS has_attempt_id,
+                           deduplication_key
+                    FROM translation_outbox_events
+                    WHERE event_id = ? AND aggregate_id = ?
+                    """)) {
+      select.setString(1, unitId == null ? null : unitId.toString());
+      select.setString(2, attemptId == null ? null : attemptId.toString());
+      select.setObject(3, eventId);
+      select.setObject(4, jobId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        assertEquals("translation.job.cancel_requested", row.getString("event_type"));
+        assertTrue(row.getBoolean("only_ids"));
+        assertEquals(jobId.toString(), row.getString("payload_job_id"));
+        assertEquals(unitId == null ? 0 : 1, row.getInt("unit_count"));
+        assertEquals(attemptId == null ? 0 : 1, row.getInt("attempt_count"));
+        if (unitId != null) assertTrue(row.getBoolean("has_unit_id"));
+        if (attemptId != null) assertTrue(row.getBoolean("has_attempt_id"));
         assertFalse(row.getString("deduplication_key").contains(rawIdempotencyKey));
       }
     }
