@@ -43,6 +43,7 @@ export class TranslationJobPageComponent {
   private lastAnnouncement = '';
   private retryIdempotencyKey: string | null = null;
   private cancelIdempotencyKey: string | null = null;
+  private cancelDialogOpener: HTMLButtonElement | null = null;
 
   @ViewChild('cancelDialog') private cancelDialog?: ElementRef<HTMLDialogElement>;
 
@@ -171,13 +172,24 @@ export class TranslationJobPageComponent {
     await this.loadStatus(this.requestToken, false);
   }
 
-  protected openCancelConfirmation(): void {
+  protected openCancelConfirmation(event: Event): void {
     const dialog = this.cancelDialog?.nativeElement;
-    if (dialog && !dialog.open) dialog.showModal();
+    if (dialog && !dialog.open) {
+      this.cancelDialogOpener = event.currentTarget as HTMLButtonElement;
+      dialog.showModal();
+    }
   }
 
   protected closeCancelConfirmation(): void {
-    this.cancelDialog?.nativeElement.close();
+    const dialog = this.cancelDialog?.nativeElement;
+    if (dialog?.open) {
+      dialog.close();
+      return;
+    }
+
+    const opener = this.cancelDialogOpener;
+    this.cancelDialogOpener = null;
+    if (opener?.isConnected && !opener.disabled) opener.focus();
   }
 
   protected async retryFailedUnits(): Promise<void> {
