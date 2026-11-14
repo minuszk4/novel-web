@@ -29,6 +29,9 @@ public class TranslationJobStatusRepository {
             connection.prepareStatement(
                 """
                     SELECT job.id, job.work_id, job.chapter_id, job.source_revision_id,
+                           work.title AS work_title, chapter.title AS chapter_title,
+                           chapter.ordinal AS chapter_ordinal,
+                           can_access_library(library.id, actor.id, TRUE) AS can_manage,
                            job.source_language, job.target_language, job.provider_id, job.status,
                            job.total_units, job.completed_units, job.failed_units, job.failure_code,
                            job.created_at, job.updated_at, job.started_at, job.completed_at,
@@ -41,6 +44,7 @@ public class TranslationJobStatusRepository {
                     FROM translation_jobs job
                     JOIN works work ON work.id = job.work_id
                     JOIN libraries library ON library.id = work.library_id
+                    JOIN chapters chapter ON chapter.id = job.chapter_id
                     JOIN users actor ON actor.id = ? AND actor.status = 'active'
                     LEFT JOIN translation_units unit ON unit.job_id = job.id
                     LEFT JOIN LATERAL (
@@ -49,7 +53,8 @@ public class TranslationJobStatusRepository {
                     ) candidate ON TRUE
                     WHERE job.id = ? AND work.deleted_at IS NULL AND library.deleted_at IS NULL
                       AND can_access_library(library.id, actor.id, FALSE)
-                    GROUP BY job.id, candidate.id, candidate.status
+                    GROUP BY job.id, candidate.id, candidate.status, work.title, chapter.title,
+                             chapter.ordinal, library.id, actor.id
                     """)) {
       select.setObject(1, actorUserId);
       select.setObject(2, jobId);
@@ -61,6 +66,10 @@ public class TranslationJobStatusRepository {
                 row.getObject("work_id", UUID.class),
                 row.getObject("chapter_id", UUID.class),
                 row.getObject("source_revision_id", UUID.class),
+                row.getString("work_title"),
+                row.getString("chapter_title"),
+                row.getInt("chapter_ordinal"),
+                row.getBoolean("can_manage"),
                 row.getString("source_language"),
                 row.getString("target_language"),
                 row.getString("provider_id"),
@@ -96,6 +105,10 @@ public class TranslationJobStatusRepository {
       UUID workId,
       UUID chapterId,
       UUID sourceRevisionId,
+      String workTitle,
+      String chapterTitle,
+      int chapterOrdinal,
+      boolean canManage,
       String sourceLanguage,
       String targetLanguage,
       String providerId,

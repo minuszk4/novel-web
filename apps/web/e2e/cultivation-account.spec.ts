@@ -86,6 +86,7 @@ async function installAcceptedAccount(page: Page): Promise<void> {
         importProcessingEnabled: false,
         cultivationEnabled: true,
         commerceSandboxEnabled: false,
+        translationFakePreviewEnabled: false,
       },
     }),
   );

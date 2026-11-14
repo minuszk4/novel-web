@@ -1,0 +1,189 @@
+<div class="page-wrap translation-job-page">
+  @if (pageState() === 'loading') {
+    <div class="translation-job-state" role="status" aria-live="polite">
+      <p>Đang tải trạng thái bản xem thử…</p>
+    </div>
+  } @else if (pageState() === 'error') {
+    <section class="translation-job-state" role="alert">
+      <span class="eyebrow">BẢN XEM THỬ CỤC BỘ</span>
+      <h1>Chưa mở được job</h1>
+      <p>{{ initialError() }}</p>
+      <a class="button button-primary" routerLink="/app/library">Quay lại thư viện</a>
+    </section>
+  } @else if (job(); as currentJob) {
+    <header class="translation-job-heading">
+      <div>
+        <p class="eyebrow">KẾT QUẢ GIẢ · BẢN XEM THỬ CỤC BỘ</p>
+        <h1>{{ currentJob.chapterTitle || 'Bản xem thử chương' }}</h1>
+        <p class="translation-job-workline">
+          {{ currentJob.workTitle }} · Chương {{ currentJob.chapterOrdinal }} ·
+          {{ currentJob.sourceLanguage }} → {{ currentJob.targetLanguage }}
+        </p>
+      </div>
+      <a
+        class="button button-outline translation-job-back"
+        [routerLink]="['/app/reader', currentJob.workId, currentJob.chapterId]"
+      >
+        Quay lại chương
+      </a>
+    </header>
+
+    <aside class="translation-job-preview-notice" aria-label="Giới hạn bản xem thử">
+      <span aria-hidden="true">ⓘ</span>
+      <p>
+        Đây là kết quả giả để thử luồng xử lý. Nội dung trả về chỉ lặp lại nguyên tác có nhãn, không
+        phải bản dịch dùng được. Không gửi chương ra dịch vụ ngoài và không tính phí.
+      </p>
+    </aside>
+
+    <section class="translation-job-card" aria-labelledby="translation-job-status-heading">
+      <div class="translation-job-status-row">
+        <div>
+          <p class="eyebrow">TRẠNG THÁI</p>
+          <h2 id="translation-job-status-heading">{{ statusLabel() }}</h2>
+        </div>
+        <button
+          class="button button-outline"
+          type="button"
+          [disabled]="actionBusy() !== null"
+          (click)="refresh()"
+        >
+          Tải lại trạng thái
+        </button>
+      </div>
+
+      <div class="translation-job-progress">
+        <div class="translation-job-progress-label">
+          <span>Phần đã xử lý</span><strong>{{ progress() }}%</strong>
+        </div>
+        <progress
+          [value]="progress()"
+          max="100"
+          [attr.aria-label]="'Đã xử lý ' + currentJob.totalUnits + ' phần của bản xem thử'"
+          [attr.aria-valuetext]="progress() + ' phần trăm'"
+        ></progress>
+        <p>
+          {{ currentJob.completedUnits + currentJob.failedUnits + currentJob.cancelledUnits }} /
+          {{ currentJob.totalUnits }} phần đã xử lý
+        </p>
+      </div>
+
+      <dl class="translation-job-counters">
+        <div>
+          <dt>Đang chờ</dt>
+          <dd>{{ currentJob.queuedUnits }}</dd>
+        </div>
+        <div>
+          <dt>Đang chạy</dt>
+          <dd>{{ currentJob.runningUnits }}</dd>
+        </div>
+        <div>
+          <dt>Chờ thử lại</dt>
+          <dd>{{ currentJob.retryWaitUnits }}</dd>
+        </div>
+        <div>
+          <dt>Không xử lý được</dt>
+          <dd>{{ currentJob.failedUnits }}</dd>
+        </div>
+        <div>
+          <dt>Đã dừng</dt>
+          <dd>{{ currentJob.cancelledUnits }}</dd>
+        </div>
+      </dl>
+
+      <p class="visually-hidden" role="status" aria-live="polite" aria-atomic="true">
+        {{ announcement() }}
+      </p>
+
+      @if (currentJob.status === 'retry_wait') {
+        <p class="translation-job-info">
+          Hệ thống đang chờ lượt thử lại. Chưa có thời gian hoàn tất ước tính.
+        </p>
+      }
+      @if (currentJob.status === 'review_required') {
+        <div class="translation-job-info">
+          <strong>Candidate đã sẵn sàng, nhưng hiện chưa có màn hình xem hoặc duyệt.</strong>
+          <p>Bản xem thử chưa được xuất bản và không thay thế nguyên tác.</p>
+        </div>
+      }
+      @if (currentJob.status === 'completed') {
+        <p class="translation-job-info">Job đã hoàn tất; nội dung vẫn chưa được xuất bản.</p>
+      }
+      @if (failureMessage(); as message) {
+        <p class="translation-job-error" role="status">{{ message }}</p>
+      }
+      @if (refreshError(); as error) {
+        <div class="translation-job-error" role="alert">
+          <p>{{ error }}</p>
+          <button class="text-button" type="button" (click)="refresh()">Thử tải lại</button>
+        </div>
+      }
+      @if (actionError(); as error) {
+        <div class="translation-job-error" role="alert">
+          <p>{{ error }}</p>
+          <button class="text-button" type="button" (click)="refresh()">Kiểm tra trạng thái</button>
+        </div>
+      }
+
+      <div class="translation-job-actions">
+        @if (canRetry) {
+          <button
+            class="button button-primary"
+            type="button"
+            [disabled]="actionBusy() !== null"
+            (click)="retryFailedUnits()"
+          >
+            {{ actionBusy() === 'retry' ? 'Đang gửi…' : 'Thử lại phần lỗi' }}
+          </button>
+        }
+        @if (canCancel) {
+          <button
+            class="button button-outline"
+            type="button"
+            [disabled]="actionBusy() !== null"
+            (click)="openCancelConfirmation()"
+          >
+            Dừng bản xem thử
+          </button>
+        }
+        @if (!canRetry && !canCancel) {
+          <span class="translation-job-actions-note"
+            >Không có thao tác nào khả dụng ở trạng thái này.</span
+          >
+        }
+      </div>
+    </section>
+
+    <dialog
+      #cancelDialog
+      class="translation-cancel-dialog"
+      aria-labelledby="translation-cancel-title"
+      (close)="closeCancelConfirmation()"
+    >
+      <div class="translation-cancel-dialog-content">
+        <p class="eyebrow">DỪNG BẢN THỬ CỤC BỘ</p>
+        <h2 id="translation-cancel-title">Bạn muốn dừng job này?</h2>
+        <p>Unit đang chờ hoặc chạy sẽ bị dừng. Phần đã xử lý vẫn là candidate chưa xuất bản.</p>
+        <div class="translation-job-actions">
+          <button
+            class="button button-outline"
+            type="button"
+            autofocus
+            [disabled]="actionBusy() !== null"
+            (click)="closeCancelConfirmation()"
+          >
+            Giữ bản xem thử
+          </button>
+          <button
+            class="button button-danger"
+            type="button"
+            [disabled]="actionBusy() !== null"
+            (click)="cancelJob()"
+          >
+            {{ actionBusy() === 'cancel' ? 'Đang dừng…' : 'Xác nhận dừng' }}
+          </button>
+        </div>
+      </div>
+    </dialog>
+  }
+</div>

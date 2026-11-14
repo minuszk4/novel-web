@@ -28,6 +28,7 @@ import {
 } from '../core/reader-api.service';
 import { CultivationApiService } from '../core/cultivation-api.service';
 import { SystemStatusService } from '../core/system-status.service';
+import { TranslationPreviewActionComponent } from './translation-preview-action.component';
 
 const manifestPageSize = 100;
 const contentPageSize = 1000;
@@ -98,7 +99,7 @@ const maxAnnotationPages = 20;
 
 @Component({
   selector: 'app-account-reader-page',
-  imports: [RouterLink],
+  imports: [RouterLink, TranslationPreviewActionComponent],
   templateUrl: './account-reader-page.component.html',
 })
 export class AccountReaderPageComponent {

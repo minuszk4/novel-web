@@ -40,5 +40,6 @@ export interface ApiSystemStatus {
     importProcessingEnabled: boolean;
     cultivationEnabled: boolean;
     commerceSandboxEnabled: boolean;
+    translationFakePreviewEnabled: boolean;
   };
 }

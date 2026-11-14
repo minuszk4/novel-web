@@ -72,6 +72,14 @@ export const routes: Routes = [
           ),
         title: 'Đang đọc — Novel',
       },
+      {
+        path: 'translation/jobs/:jobId',
+        loadComponent: () =>
+          import('./pages/translation-job-page.component').then(
+            (page) => page.TranslationJobPageComponent,
+          ),
+        title: 'Bản xem thử dịch — Novel',
+      },
       { path: 'search', component: SearchPageComponent, title: 'Tìm trong thư viện — Novel' },
       {
         path: 'glossaries',

@@ -16,6 +16,7 @@ const validStatus = {
     importProcessingEnabled: false,
     cultivationEnabled: false,
     commerceSandboxEnabled: false,
+    translationFakePreviewEnabled: false,
   },
 };
 

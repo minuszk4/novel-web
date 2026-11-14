@@ -32,6 +32,7 @@ test('glossary import previews without upload-on-selection and saves an atomic d
           importProcessingEnabled: false,
           cultivationEnabled: false,
           commerceSandboxEnabled: false,
+          translationFakePreviewEnabled: false,
         },
       },
     }),

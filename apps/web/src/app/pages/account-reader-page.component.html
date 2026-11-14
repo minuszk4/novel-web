@@ -72,6 +72,12 @@
     </div>
   </header>
 
+  <app-translation-preview-action
+    [chapterId]="activeChapter()?.id ?? null"
+    [sourceRevisionId]="sourceRevisionId()"
+    [sourceLanguage]="work()?.language ?? null"
+  />
+
   <div class="reader-account-bar" aria-label="Thông tin nội dung">
     <span class="reader-account-private"><span aria-hidden="true">◈</span> THƯ VIỆN TÀI KHOẢN</span>
     @if (work(); as currentWork) {

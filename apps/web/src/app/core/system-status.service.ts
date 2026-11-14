@@ -63,6 +63,7 @@ function isApiSystemStatus(value: unknown): value is ApiSystemStatus {
     typeof integrations.momoEnvironment === 'string' &&
     typeof features?.importProcessingEnabled === 'boolean' &&
     typeof features.cultivationEnabled === 'boolean' &&
-    typeof features.commerceSandboxEnabled === 'boolean'
+    typeof features.commerceSandboxEnabled === 'boolean' &&
+    typeof features.translationFakePreviewEnabled === 'boolean'
   );
 }

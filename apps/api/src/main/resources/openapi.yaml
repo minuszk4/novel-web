@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 6.21.0
+  version: 6.22.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -14,7 +14,7 @@ info:
     Source-only Reader manifest, chapter-content, progress, reader-preferences, bookmarks, private annotations and private reading-history routes are implemented in the PostgreSQL profile.
     History is derived from the latest saved progress per accessible readable work, is visible for 365 days, and never returns chapter body text.
     Versioned cultivation catalogs, authenticated profile settings, private daily XP activity and bounded private Reader sessions with atomic XP awards are implemented in the PostgreSQL profile. The approved starting policy awards 1 XP per complete active Reader minute, capped at 120 XP per UTC day; same-day sub-minute remainder does not cross UTC midnight; top-ups and unlocks award none. Cultivation is feature-gated and off by default pending the rank-threshold pilot and release reviews.
-    Scoped glossary storage, actor-scoped catalog listing/creation, active and writer-only latest-revision reads, version-checked immutable draft creation, authenticated diff/lint/match preview, lint-gated revision publication with append-only audit, strict JSON/CSV/TSV import preview and resolved atomic draft apply, and active/writer-only latest snapshot export are implemented in the PostgreSQL profile. Translation job enqueue/status/retry/cancel are available only as an explicit fake-local development preview and never call an external NMT provider.
+    Scoped glossary storage, actor-scoped catalog listing/creation, active and writer-only latest-revision reads, version-checked immutable draft creation, authenticated diff/lint/match preview, lint-gated revision publication with append-only audit, strict JSON/CSV/TSV import preview and resolved atomic draft apply, and active/writer-only latest snapshot export are implemented in the PostgreSQL profile. Translation job enqueue/status/retry/cancel are available only as an explicit fake-local development preview and never call an external NMT provider. `features.translationFakePreviewEnabled` is true only when both required profiles and the provider/API/worker opt-in flags are active.
 servers:
   - url: http://127.0.0.1:8080
 tags:
@@ -3326,9 +3326,10 @@ paths:
       x-implementation-status: local-preview
       summary: Read translation job progress metadata
       description: >-
-        Returns only identifiers, language pair, stable state/failure code, unit counters and candidate status;
-        source and translated text are never returned. Requires readable access to the containing library and
-        current Terms/Privacy acceptance. Responses are no-store. Active jobs include Retry-After: 2 for polling.
+        Returns only identifiers, authorized work/chapter titles and ordinal, a writer-action capability flag,
+        language pair, stable state/failure code, unit counters and candidate status; source and translated text
+        are never returned. Requires readable access to the containing library and current Terms/Privacy
+        acceptance. Responses are no-store. Active jobs include Retry-After: 2 for polling.
       security:
         - appSession: []
       parameters:
@@ -3542,7 +3543,7 @@ components:
         job:
           type: object
           additionalProperties: false
-          required: [id, workId, chapterId, sourceRevisionId, sourceLanguage, targetLanguage, providerId, status, totalUnits, completedUnits, failedUnits, queuedUnits, runningUnits, retryWaitUnits, cancelledUnits, failureCode, candidateId, candidateStatus, createdAt, updatedAt, startedAt, completedAt, cancelRequestedAt]
+          required: [id, workId, chapterId, sourceRevisionId, workTitle, chapterTitle, chapterOrdinal, canManage, sourceLanguage, targetLanguage, providerId, status, totalUnits, completedUnits, failedUnits, queuedUnits, runningUnits, retryWaitUnits, cancelledUnits, failureCode, candidateId, candidateStatus, createdAt, updatedAt, startedAt, completedAt, cancelRequestedAt]
           properties:
             id:
               type: string
@@ -3556,6 +3557,15 @@ components:
             sourceRevisionId:
               type: string
               format: uuid
+            workTitle:
+              type: string
+            chapterTitle:
+              type: string
+            chapterOrdinal:
+              type: integer
+              minimum: 1
+            canManage:
+              type: boolean
             sourceLanguage:
               type: string
             targetLanguage:
@@ -3691,7 +3701,7 @@ components:
               const: TEST
         features:
           type: object
-          required: [importProcessingEnabled, cultivationEnabled, commerceSandboxEnabled]
+          required: [importProcessingEnabled, cultivationEnabled, commerceSandboxEnabled, translationFakePreviewEnabled]
           properties:
             importProcessingEnabled:
               type: boolean
@@ -3702,6 +3712,9 @@ components:
             commerceSandboxEnabled:
               type: boolean
               const: false
+            translationFakePreviewEnabled:
+              type: boolean
+              description: True only when the postgres and translation-fake profiles and provider, API and worker opt-in flags are active.
     GoogleSignInBootstrap:
       type: object
       additionalProperties: false

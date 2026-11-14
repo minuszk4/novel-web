@@ -161,6 +161,7 @@ async function installReaderRoutes(
         importProcessingEnabled: false,
         cultivationEnabled: false,
         commerceSandboxEnabled: false,
+        translationFakePreviewEnabled: false,
       },
     }),
   );
@@ -464,6 +465,7 @@ async function installCultivationSessionRoutes(
         importProcessingEnabled: false,
         cultivationEnabled: featureEnabled,
         commerceSandboxEnabled: false,
+        translationFakePreviewEnabled: false,
       },
     }),
   );
@@ -1338,6 +1340,220 @@ async function selectReaderTextWithMouse(page: Page, anchor: string, quote: stri
   await page.mouse.move(coordinates.end.x + 2, coordinates.end.y, { steps: 8 });
   await page.mouse.up();
 }
+
+test('account Reader starts and tracks a clearly fake local translation preview', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 360, height: 800 });
+  await installReaderRoutes(page, 200, false);
+  await page.unroute('**/api/v1/system/status');
+  await page.route('**/api/v1/system/status', (route) =>
+    json(route, {
+      apiVersion: '4.2.1',
+      environment: 'test',
+      integrations: {
+        googleOidcEnabled: false,
+        momoTestEnabled: false,
+        momoEnvironment: 'disabled',
+      },
+      features: {
+        importProcessingEnabled: false,
+        cultivationEnabled: false,
+        commerceSandboxEnabled: false,
+        translationFakePreviewEnabled: true,
+      },
+    }),
+  );
+
+  const jobId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  await page.route('**/api/v1/translation/jobs', async (route) => {
+    const request = route.request();
+    expect(request.method()).toBe('POST');
+    expect(request.headers()['x-csrf-token']).toBe('A'.repeat(43));
+    expect(request.headers()['idempotency-key']).toMatch(/^[A-Za-z0-9._~-]{16,128}$/);
+    expect(request.postDataJSON()).toEqual({
+      chapterId: chapterIds[0],
+      sourceRevisionId: revisionId,
+      targetLanguage: 'en',
+    });
+    await route.fulfill({
+      status: 202,
+      headers: { location: `/api/v1/translation/jobs/${jobId}` },
+      contentType: 'application/json',
+      body: JSON.stringify({
+        jobId,
+        status: 'queued',
+        chapterId: chapterIds[0],
+        sourceRevisionId: revisionId,
+        sourceLanguage: 'vi',
+        targetLanguage: 'en',
+        providerId: 'fake-local',
+        totalUnits: 2,
+        replayed: false,
+      }),
+    });
+  });
+  await page.route(`**/api/v1/translation/jobs/${jobId}`, (route) =>
+    json(route, {
+      job: {
+        id: jobId,
+        workId,
+        chapterId: chapterIds[0],
+        sourceRevisionId: revisionId,
+        workTitle: work.title,
+        chapterTitle: chapters[0].title,
+        chapterOrdinal: 1,
+        canManage: true,
+        sourceLanguage: 'vi',
+        targetLanguage: 'en',
+        providerId: 'fake-local',
+        status: 'review_required',
+        totalUnits: 2,
+        completedUnits: 2,
+        failedUnits: 0,
+        queuedUnits: 0,
+        runningUnits: 0,
+        retryWaitUnits: 0,
+        cancelledUnits: 0,
+        failureCode: null,
+        candidateId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+        candidateStatus: 'ready_for_review',
+        createdAt: '2026-11-14T10:00:00Z',
+        updatedAt: '2026-11-14T10:00:01Z',
+        startedAt: '2026-11-14T10:00:00Z',
+        completedAt: '2026-11-14T10:00:01Z',
+        cancelRequestedAt: null,
+      },
+      terminalUnits: 2,
+      progressPercent: 100,
+    }),
+  );
+
+  await page.goto(`/app/reader/${workId}`);
+  await expect(page.getByRole('heading', { name: 'Cánh cửa mở' })).toBeVisible();
+  await expect(page.getByText('BẢN THỬ · KẾT QUẢ GIẢ')).toBeVisible();
+  await page.getByRole('button', { name: 'Tạo bản xem thử' }).click();
+
+  await expect(page).toHaveURL(new RegExp(`/app/translation/jobs/${jobId}$`));
+  await expect(page.getByRole('heading', { name: 'Cánh cửa mở' })).toBeVisible();
+  await expect(page.getByText('Một đoạn văn bản riêng tư.', { exact: true })).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Bản thử đã tạo xong' })).toBeVisible();
+  await expect(page.getByText(/không phải bản dịch dùng được/)).toBeVisible();
+  await expect(page.getByText('Bản xem thử chưa được xuất bản')).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Quay lại chương' })).toHaveAttribute(
+    'href',
+    `/app/reader/${workId}/${chapterIds[0]}`,
+  );
+  await page.screenshot({
+    path: test.info().outputPath('translation-preview-mobile-360x800.png'),
+    fullPage: false,
+  });
+  await expectNoAxeViolations(page);
+  const dimensions = await page.evaluate(() => ({
+    document: document.documentElement.scrollWidth,
+    viewport: document.documentElement.clientWidth,
+  }));
+  expect(dimensions.document).toBeLessThanOrEqual(dimensions.viewport);
+});
+
+test('account Reader hides the local translation preview unless the API opt-in is active', async ({
+  page,
+}) => {
+  await installReaderRoutes(page, 200, false);
+  await page.goto(`/app/reader/${workId}`);
+  await expect(page.getByRole('heading', { name: 'Cánh cửa mở' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Tạo bản xem thử' })).toHaveCount(0);
+  await expect(page.getByLabel('Bản xem thử dịch cục bộ')).toHaveCount(0);
+});
+
+test('translation job confirms writer cancellation and returns a terminal status', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 360, height: 800 });
+  await installReaderRoutes(page, 200, false);
+  const jobId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+  const cancelEventId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+  let jobStatus: 'queued' | 'cancelled' = 'queued';
+
+  await page.route(`**/api/v1/translation/jobs/${jobId}`, (route) => {
+    const cancelled = jobStatus === 'cancelled';
+    return json(
+      route,
+      {
+        job: {
+          id: jobId,
+          workId,
+          chapterId: chapterIds[0],
+          sourceRevisionId: revisionId,
+          workTitle: work.title,
+          chapterTitle: chapters[0].title,
+          chapterOrdinal: 1,
+          canManage: true,
+          sourceLanguage: 'vi',
+          targetLanguage: 'en',
+          providerId: 'fake-local',
+          status: jobStatus,
+          totalUnits: 1,
+          completedUnits: 0,
+          failedUnits: 0,
+          queuedUnits: cancelled ? 0 : 1,
+          runningUnits: 0,
+          retryWaitUnits: 0,
+          cancelledUnits: cancelled ? 1 : 0,
+          failureCode: null,
+          candidateId: null,
+          candidateStatus: null,
+          createdAt: '2026-11-14T10:00:00Z',
+          updatedAt: '2026-11-14T10:00:01Z',
+          startedAt: null,
+          completedAt: cancelled ? '2026-11-14T10:00:02Z' : null,
+          cancelRequestedAt: null,
+        },
+        terminalUnits: cancelled ? 1 : 0,
+        progressPercent: cancelled ? 100 : 0,
+      },
+      200,
+    );
+  });
+  await page.route(`**/api/v1/translation/jobs/${jobId}/cancel`, async (route) => {
+    const request = route.request();
+    expect(request.method()).toBe('POST');
+    expect(request.headers()['x-csrf-token']).toBe('A'.repeat(43));
+    expect(request.headers()['idempotency-key']).toMatch(/^[A-Za-z0-9._~-]{16,128}$/);
+    jobStatus = 'cancelled';
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        jobId,
+        jobStatus,
+        cancelledUnits: 1,
+        cancelledAttempts: 0,
+        replayed: false,
+        outboxEventId: cancelEventId,
+      }),
+    });
+  });
+
+  await page.goto(`/app/translation/jobs/${jobId}`);
+  await expect(page.getByRole('heading', { name: 'Đang chờ xử lý thử' })).toBeVisible();
+  const cancelButton = page.getByRole('button', { name: 'Dừng bản xem thử' });
+  await cancelButton.scrollIntoViewIfNeeded();
+  await cancelButton.click();
+  const dialog = page.getByRole('dialog', { name: 'Bạn muốn dừng job này?' });
+  await expect(dialog).toBeVisible();
+  await expectNoAxeViolations(page);
+
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+  await expect(cancelButton).toBeFocused();
+  await cancelButton.click();
+  await dialog.getByRole('button', { name: 'Xác nhận dừng' }).click();
+
+  await expect(page.getByRole('heading', { name: 'Đã dừng bản thử' })).toBeVisible();
+  await expect(page.getByText('100%')).toBeVisible();
+  await expectNoAxeViolations(page);
+});
 
 test('account Reader opens the annotation composer from a real mouse text selection', async ({
   page,

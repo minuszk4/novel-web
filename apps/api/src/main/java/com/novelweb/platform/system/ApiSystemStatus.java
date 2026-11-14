@@ -9,5 +9,6 @@ public record ApiSystemStatus(
   public record Features(
       boolean importProcessingEnabled,
       boolean cultivationEnabled,
-      boolean commerceSandboxEnabled) {}
+      boolean commerceSandboxEnabled,
+      boolean translationFakePreviewEnabled) {}
 }

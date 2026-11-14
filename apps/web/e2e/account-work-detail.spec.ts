@@ -66,6 +66,7 @@ async function installAccountSession(
         importProcessingEnabled: true,
         cultivationEnabled: false,
         commerceSandboxEnabled: false,
+        translationFakePreviewEnabled: false,
       },
     }),
   );

@@ -127,6 +127,7 @@ async function installAccountRoutes(
         importProcessingEnabled: true,
         cultivationEnabled: false,
         commerceSandboxEnabled: false,
+        translationFakePreviewEnabled: false,
       },
     }),
   );

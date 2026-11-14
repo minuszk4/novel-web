@@ -1,0 +1,12 @@
+@if (canStart()) {
+  <section class="translation-preview-launch" aria-label="Bản xem thử dịch cục bộ">
+    <span class="translation-preview-badge">BẢN THỬ · KẾT QUẢ GIẢ</span>
+    <p>Không gọi dịch vụ ngoài, không tính phí; nội dung trả về chỉ là placeholder.</p>
+    <button class="button button-outline" type="button" [disabled]="busy()" (click)="start()">
+      {{ busy() ? 'Đang gửi…' : retryingSameIntent() ? 'Gửi lại cùng yêu cầu' : 'Tạo bản xem thử' }}
+    </button>
+    @if (errorMessage(); as error) {
+      <p class="translation-preview-error" role="alert">{{ error }}</p>
+    }
+  </section>
+}

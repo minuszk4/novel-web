@@ -70,6 +70,7 @@ async function installAcceptedAccountRoutes(page: Page): Promise<void> {
         importProcessingEnabled: false,
         cultivationEnabled: false,
         commerceSandboxEnabled: false,
+        translationFakePreviewEnabled: false,
       },
     }),
   );

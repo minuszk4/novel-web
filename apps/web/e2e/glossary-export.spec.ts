@@ -149,6 +149,7 @@ async function installExportRoutes(
           importProcessingEnabled: false,
           cultivationEnabled: false,
           commerceSandboxEnabled: false,
+          translationFakePreviewEnabled: false,
         },
       },
     }),

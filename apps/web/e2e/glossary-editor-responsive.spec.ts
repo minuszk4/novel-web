@@ -102,6 +102,7 @@ async function installRoutes(page: import('@playwright/test').Page): Promise<voi
           importProcessingEnabled: false,
           cultivationEnabled: false,
           commerceSandboxEnabled: false,
+          translationFakePreviewEnabled: false,
         },
       },
     }),

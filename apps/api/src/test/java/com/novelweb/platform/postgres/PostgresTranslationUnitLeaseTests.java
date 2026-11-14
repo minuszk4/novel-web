@@ -892,6 +892,10 @@ class PostgresTranslationUnitLeaseTests {
     TranslationJobStatusService.StatusResult queued =
         jobStatusService.findVisible(fixture.userId(), fixture.jobId()).orElseThrow();
     assertEquals("queued", queued.job().status());
+    assertEquals("Synthetic translation source", queued.job().workTitle());
+    assertEquals("Chapter 1", queued.job().chapterTitle());
+    assertEquals(1, queued.job().chapterOrdinal());
+    assertTrue(queued.job().canManage());
     assertEquals(2, queued.job().totalUnits());
     assertEquals(2, queued.job().queuedUnits());
     assertEquals(0, queued.progressPercent());

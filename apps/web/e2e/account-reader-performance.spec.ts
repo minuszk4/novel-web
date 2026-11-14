@@ -188,6 +188,7 @@ async function installPerformanceRoutes(page: Page): Promise<{
           importProcessingEnabled: false,
           cultivationEnabled: false,
           commerceSandboxEnabled: false,
+          translationFakePreviewEnabled: false,
         },
       });
     }

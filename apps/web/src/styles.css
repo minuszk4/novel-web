@@ -3818,6 +3818,45 @@ label:has(input:focus-visible) {
   min-height: 17px;
   font-size: 7px;
 }
+.translation-preview-launch {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px clamp(12px, 3vw, 30px);
+  border-bottom: 1px solid var(--border-soft);
+  background: color-mix(in srgb, var(--primary-soft) 48%, var(--surface));
+}
+.translation-preview-badge {
+  flex: 0 0 auto;
+  border: 1px solid var(--primary);
+  border-radius: 999px;
+  padding: 5px 8px;
+  color: var(--primary-dark);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+.translation-preview-launch > p {
+  flex: 1 1 auto;
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.translation-preview-launch .button {
+  min-height: 44px;
+  flex: 0 0 auto;
+}
+.translation-preview-error {
+  flex-basis: 100%;
+  color: var(--error) !important;
+}
+.translation-preview-launch:has(.translation-preview-error) {
+  flex-wrap: wrap;
+}
+.translation-preview-launch button:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 2px;
+}
 .reader-account-bar {
   position: relative;
   min-height: 36px;
@@ -3846,6 +3885,20 @@ label:has(input:focus-visible) {
 }
 .reader-account-sync {
   color: #626871;
+}
+@media (max-width: 640px) {
+  .translation-preview-launch {
+    flex-wrap: wrap;
+    gap: 7px;
+  }
+  .translation-preview-launch > p {
+    flex-basis: calc(100% - 128px);
+    min-width: 180px;
+  }
+  .translation-preview-launch .button {
+    margin-left: auto;
+    padding-inline: 12px;
+  }
 }
 .reader-mode-switch {
   display: flex;
