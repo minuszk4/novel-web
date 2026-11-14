@@ -31,6 +31,17 @@ novel:
     fake:
       enabled: ${NOVEL_TRANSLATION_FAKE_ENABLED:false}
       api-enabled: ${NOVEL_TRANSLATION_FAKE_API_ENABLED:false}
+  payment:
+    momo:
+      test:
+        enabled: ${NOVEL_MOMO_TEST_ENABLED:false}
+        environment: ${MOMO_ENV:}
+        partner-code: ${MOMO_TEST_PARTNER_CODE:}
+        access-key: ${MOMO_TEST_ACCESS_KEY:}
+        secret-key: ${MOMO_TEST_SECRET_KEY:}
+        base-url: ${MOMO_TEST_BASE_URL:}
+        ipn-url: ${MOMO_TEST_IPN_URL:}
+        redirect-url: ${MOMO_TEST_REDIRECT_URL:}
   web:
     cors:
       allowed-origins:
