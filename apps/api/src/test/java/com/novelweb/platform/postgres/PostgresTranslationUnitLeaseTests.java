@@ -10,12 +10,14 @@ import com.novelweb.translation.jobs.TranslationAttemptCompletionRepository;
 import com.novelweb.translation.jobs.TranslationAttemptCompletionService;
 import com.novelweb.translation.jobs.TranslationAttemptRepository;
 import com.novelweb.translation.jobs.TranslationAttemptService;
+import com.novelweb.translation.jobs.TranslationFakeLocalWorkerService;
 import com.novelweb.translation.jobs.TranslationJobService;
 import com.novelweb.translation.jobs.TranslationUnitLeaseRepository;
 import com.novelweb.translation.jobs.TranslationUnitLeaseService;
 import com.novelweb.translation.provider.TranslationBillingUnit;
 import com.novelweb.translation.provider.TranslationResponse;
 import com.novelweb.translation.provider.TranslationResponse.SegmentResult;
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.sql.Connection;
@@ -41,7 +43,9 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
 
 @SpringBootTest
-@ActiveProfiles("postgres")
+@ActiveProfiles({"postgres", "translation-fake"})
+@org.springframework.test.context.TestPropertySource(
+    properties = "novel.translation.fake.enabled=true")
 @EnabledIfSystemProperty(named = "postgres.integration", matches = "true")
 class PostgresTranslationUnitLeaseTests {
 
@@ -56,6 +60,8 @@ class PostgresTranslationUnitLeaseTests {
   @Autowired private TranslationAttemptService attemptService;
 
   @Autowired private TranslationAttemptCompletionService completionService;
+
+  @Autowired private TranslationFakeLocalWorkerService fakeLocalWorkerService;
 
   @AfterEach
   void cleanFixtures() throws Exception {
@@ -189,8 +195,7 @@ class PostgresTranslationUnitLeaseTests {
   }
 
   @Test
-  void staleLeaseCannotStartAttemptAndReclaimedRunningAttemptBlocksAmbiguousRedispatch()
-      throws Exception {
+  void fakeLocalAttemptCanResumeAfterLeaseReclaimWithoutCreatingAnotherAttempt() throws Exception {
     Fixture fixture = createQueuedJob(1);
     TranslationUnitLeaseRepository.Lease firstLease =
         leaseService.claimNext("translation-attempt-old", Duration.ofSeconds(60)).orElseThrow();
@@ -202,13 +207,45 @@ class PostgresTranslationUnitLeaseTests {
     assertThrows(
         TranslationAttemptRepository.StaleLeaseException.class,
         () -> attemptService.begin(firstLease));
-    assertThrows(
-        TranslationAttemptRepository.UnresolvedAttemptException.class,
-        () -> attemptService.begin(reclaimedLease));
+    TranslationAttemptRepository.StartResult resumed = attemptService.begin(reclaimedLease);
 
     assertEquals(firstAttempt.attemptId(), findOnlyAttemptId(firstLease.unitId()));
+    assertEquals(firstAttempt.attemptId(), resumed.attemptId());
+    assertTrue(resumed.replayed());
+    assertTrue(resumed.dispatchAllowed());
     assertEquals(1, readAttemptCount(firstLease.unitId()));
+    assertEquals(1, countAttemptRequestedEvents(firstLease.unitId()));
     assertEquals("translating", readJobStatus(fixture.jobId()));
+  }
+
+  @Test
+  void ambiguousNonFakeProviderAttemptCannotBeAutomaticallyResumed() throws Exception {
+    Fixture fixture = createQueuedJob(1);
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement update =
+            connection.prepareStatement(
+                "UPDATE translation_jobs SET provider_id = 'deep-l' WHERE id = ?")) {
+      update.setObject(1, fixture.jobId());
+      assertEquals(1, update.executeUpdate());
+    }
+    TranslationUnitLeaseRepository.Lease oldLease =
+        leaseService
+            .claimNext("translation-attempt-real-old", Duration.ofSeconds(60))
+            .orElseThrow();
+    TranslationAttemptRepository.StartResult oldAttempt = attemptService.begin(oldLease);
+    expireLease(oldLease.unitId());
+    TranslationUnitLeaseRepository.Lease currentLease =
+        leaseService
+            .claimNext("translation-attempt-real-current", Duration.ofSeconds(60))
+            .orElseThrow();
+
+    assertThrows(
+        TranslationAttemptRepository.UnresolvedAttemptException.class,
+        () -> attemptService.begin(currentLease));
+
+    assertEquals(oldAttempt.attemptId(), findOnlyAttemptId(oldLease.unitId()));
+    assertEquals(1, readAttemptCount(oldLease.unitId()));
+    assertEquals(1, countAttemptRequestedEvents(oldLease.unitId()));
   }
 
   @Test
@@ -223,8 +260,20 @@ class PostgresTranslationUnitLeaseTests {
     }
     TranslationUnitLeaseRepository.Lease firstLease =
         leaseService.claimNext("translation-attempt-cap-a", Duration.ofSeconds(60)).orElseThrow();
-    attemptService.begin(firstLease);
-    expireLease(firstLease.unitId());
+    TranslationAttemptRepository.StartResult firstAttempt = attemptService.begin(firstLease);
+    try (Connection connection = dataSource.getConnection()) {
+      execute(
+          connection,
+          "UPDATE translation_attempts SET outcome = 'temporary', "
+              + "completed_at = clock_timestamp() WHERE id = ?",
+          firstAttempt.attemptId());
+      execute(
+          connection,
+          "UPDATE translation_units SET status = 'retry_wait', lease_owner = NULL, "
+              + "lease_token = NULL, lease_until = NULL, heartbeat_at = NULL "
+              + "WHERE id = ?",
+          firstLease.unitId());
+    }
     TranslationUnitLeaseRepository.Lease secondLease =
         leaseService.claimNext("translation-attempt-cap-b", Duration.ofSeconds(60)).orElseThrow();
 
@@ -354,6 +403,61 @@ class PostgresTranslationUnitLeaseTests {
     assertEquals("running", readAttemptOutcome(attempt.attemptId()));
     assertEquals(0, countCandidates(fixture.jobId()));
     assertEquals(0, countUnitCompletedEvents(fixture.jobId()));
+  }
+
+  @Test
+  void explicitFakeWorkerLoadsBoundedSourceRunsOfflineAndPersistsEstimateAndCandidate()
+      throws Exception {
+    Fixture fixture = createQueuedJob(1);
+
+    TranslationFakeLocalWorkerService.WorkResult result =
+        fakeLocalWorkerService
+            .processNext("translation-fake-worker", Duration.ofSeconds(60))
+            .orElseThrow();
+    UUID sourceSegmentId = sourceSegmentIds(result.unitId()).getFirst();
+
+    assertTrue(result.dispatched());
+    assertFalse(result.resumed());
+    assertEquals(fixture.jobId(), result.jobId());
+    assertEquals("ready_for_review", result.completion().candidateStatus());
+    assertEquals("review_required", result.completion().jobStatus());
+    assertEquals(
+        "[fake vi->en] " + readSourceText(sourceSegmentId),
+        readCandidateTranslation(result.completion().candidateId(), sourceSegmentId));
+    assertEquals(0, readAttemptEstimate(result.attemptId()).compareTo(BigDecimal.ZERO));
+    assertEquals("USD", readAttemptEstimateCurrency(result.attemptId()));
+    assertEquals("CODE_POINT", readAttemptEstimateUnit(result.attemptId()));
+    assertEquals("fake-free-v1", readAttemptPricingVersion(result.attemptId()));
+    assertEquals("succeeded", readAttemptOutcome(result.attemptId()));
+    assertEquals(1, countAttemptRequestedEvents(result.unitId()));
+    assertEquals(1, countUnitCompletedEvents(fixture.jobId()));
+    assertTrue(
+        fakeLocalWorkerService
+            .processNext("translation-fake-worker", Duration.ofSeconds(60))
+            .isEmpty());
+  }
+
+  @Test
+  void fakeWorkerResumesTheSameDeterministicAttemptAfterExpiredLease() throws Exception {
+    Fixture fixture = createQueuedJob(1);
+    TranslationUnitLeaseRepository.Lease originalLease =
+        leaseService.claimNext("translation-fake-worker-old", Duration.ofSeconds(60)).orElseThrow();
+    TranslationAttemptRepository.StartResult originalAttempt = attemptService.begin(originalLease);
+    expireLease(originalLease.unitId());
+
+    TranslationFakeLocalWorkerService.WorkResult result =
+        fakeLocalWorkerService
+            .processNext("translation-fake-worker-restarted", Duration.ofSeconds(60))
+            .orElseThrow();
+
+    assertTrue(result.dispatched());
+    assertTrue(result.resumed());
+    assertEquals(originalAttempt.attemptId(), result.attemptId());
+    assertEquals(1, readAttemptCount(originalLease.unitId()));
+    assertEquals(1, countAttempts(originalLease.unitId()));
+    assertEquals(1, countAttemptRequestedEvents(originalLease.unitId()));
+    assertEquals(1, countUnitCompletedEvents(fixture.jobId()));
+    assertEquals("review_required", readJobStatus(fixture.jobId()));
   }
 
   private Optional<TranslationUnitLeaseRepository.Lease> claimAfterBarrier(
@@ -667,6 +771,60 @@ class PostgresTranslationUnitLeaseTests {
                     + "WHERE candidate_id = ? AND source_segment_id = ?")) {
       select.setObject(1, candidateId);
       select.setObject(2, sourceSegmentId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getString(1);
+      }
+    }
+  }
+
+  private String readSourceText(UUID sourceSegmentId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement("SELECT source_text FROM segments WHERE id = ?")) {
+      select.setObject(1, sourceSegmentId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getString(1);
+      }
+    }
+  }
+
+  private BigDecimal readAttemptEstimate(UUID attemptId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT estimate_amount FROM translation_attempts WHERE id = ?")) {
+      select.setObject(1, attemptId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getBigDecimal(1);
+      }
+    }
+  }
+
+  private String readAttemptEstimateCurrency(UUID attemptId) throws SQLException {
+    return readAttemptTextField(attemptId, "estimate_currency");
+  }
+
+  private String readAttemptEstimateUnit(UUID attemptId) throws SQLException {
+    return readAttemptTextField(attemptId, "estimated_billing_unit");
+  }
+
+  private String readAttemptPricingVersion(UUID attemptId) throws SQLException {
+    return readAttemptTextField(attemptId, "pricing_version");
+  }
+
+  private String readAttemptTextField(UUID attemptId, String field) throws SQLException {
+    if (!List.of("estimate_currency", "estimated_billing_unit", "pricing_version")
+        .contains(field)) {
+      throw new IllegalArgumentException("Unsupported attempt field");
+    }
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT " + field + " FROM translation_attempts WHERE id = ?")) {
+      select.setObject(1, attemptId);
       try (ResultSet row = select.executeQuery()) {
         assertTrue(row.next());
         return row.getString(1);

@@ -1,5 +1,7 @@
 package com.novelweb.translation.jobs;
 
+import com.novelweb.translation.provider.TranslationCostEstimate;
+import com.novelweb.translation.provider.TranslationProviderExecutionGate.TranslationExecutionResult;
 import com.novelweb.translation.provider.TranslationResponse;
 import com.novelweb.translation.provider.TranslationResponse.SegmentResult;
 import java.nio.charset.StandardCharsets;
@@ -35,16 +37,29 @@ public class TranslationAttemptCompletionRepository {
 
   public CompletionResult complete(
       TranslationUnitLeaseRepository.Lease lease, TranslationResponse response) {
+    return complete(lease, response, null);
+  }
+
+  public CompletionResult completeExecution(
+      TranslationUnitLeaseRepository.Lease lease, TranslationExecutionResult execution) {
+    Objects.requireNonNull(execution, "provider execution result is required");
+    return complete(lease, execution.response(), execution.estimate());
+  }
+
+  private CompletionResult complete(
+      TranslationUnitLeaseRepository.Lease lease,
+      TranslationResponse response,
+      TranslationCostEstimate estimate) {
     try (Connection connection = dataSource.getConnection()) {
       connection.setTransactionIsolation(Connection.TRANSACTION_READ_COMMITTED);
       connection.setAutoCommit(false);
       try {
         UnitContext unit = lockUnitContext(connection, lease);
-        int attemptNo = lease.attemptCount() + 1;
         List<SourceSegment> sourceSegments = loadUnitSegments(connection, lease.unitId());
         List<TranslatedSegment> translations = validateAndOrder(response, sourceSegments);
         byte[] responseSha256 = responseSha256(translations);
-        AttemptContext attempt = lockAttempt(connection, lease, attemptNo, response.attemptId());
+        AttemptContext attempt = lockAttempt(connection, lease.unitId(), response.attemptId());
+        int attemptNo = attempt.attemptNo();
 
         if ("succeeded".equals(unit.status()) && "succeeded".equals(attempt.outcome())) {
           if (attempt.responseSha256() == null
@@ -71,7 +86,7 @@ public class TranslationAttemptCompletionRepository {
 
         Candidate candidate = lockOrCreateCandidate(connection, unit);
         insertCandidateSegments(connection, candidate.id(), unit, translations);
-        finishAttempt(connection, attempt.id(), response, responseSha256);
+        finishAttempt(connection, attempt.id(), response, estimate, responseSha256);
         markUnitSucceeded(connection, lease, attemptNo);
         JobProgress progress = refreshJobProgress(connection, unit.jobId());
         String candidateStatus =
@@ -188,27 +203,22 @@ public class TranslationAttemptCompletionRepository {
     return List.copyOf(ordered);
   }
 
-  private static AttemptContext lockAttempt(
-      Connection connection,
-      TranslationUnitLeaseRepository.Lease lease,
-      int attemptNo,
-      UUID attemptId)
+  private static AttemptContext lockAttempt(Connection connection, UUID unitId, UUID attemptId)
       throws SQLException {
     try (PreparedStatement select =
         connection.prepareStatement(
             """
-                SELECT id, provider_id, outcome, request_sha256, response_sha256
-                FROM translation_attempts
-                WHERE id = ? AND unit_id = ? AND attempt_no = ?
+                SELECT id, attempt_no, provider_id, outcome, request_sha256, response_sha256
+                FROM translation_attempts WHERE id = ? AND unit_id = ?
                 FOR UPDATE
                 """)) {
       select.setObject(1, attemptId);
-      select.setObject(2, lease.unitId());
-      select.setInt(3, attemptNo);
+      select.setObject(2, unitId);
       try (ResultSet row = select.executeQuery()) {
         if (!row.next()) throw new AttemptNotFoundException();
         return new AttemptContext(
             row.getObject("id", UUID.class),
+            row.getInt("attempt_no"),
             row.getString("provider_id"),
             row.getString("outcome"),
             row.getBytes("request_sha256"),
@@ -224,7 +234,10 @@ public class TranslationAttemptCompletionRepository {
         || !lease.leaseToken().equals(unit.leaseToken())
         || !lease.sourceRevisionId().equals(unit.sourceRevisionId())
         || unit.leaseUntil() == null
-        || unit.attemptCount() != lease.attemptCount() + 1
+        || unit.attemptCount() != attempt.attemptNo()
+        || (attempt.attemptNo() != lease.attemptCount() + 1
+            && !("fake-local".equals(attempt.providerId())
+                && attempt.attemptNo() == lease.attemptCount()))
         || !"running".equals(attempt.outcome())
         || !unit.providerId().equals(attempt.providerId())
         || attempt.requestSha256() == null
@@ -341,23 +354,41 @@ public class TranslationAttemptCompletionRepository {
   }
 
   private static void finishAttempt(
-      Connection connection, UUID attemptId, TranslationResponse response, byte[] responseSha256)
+      Connection connection,
+      UUID attemptId,
+      TranslationResponse response,
+      TranslationCostEstimate estimate,
+      byte[] responseSha256)
       throws SQLException {
     try (PreparedStatement update =
         connection.prepareStatement(
             """
                 UPDATE translation_attempts
                 SET provider_request_id = ?, provider_model = ?, outcome = 'succeeded',
-                    response_sha256 = ?, billed_units = ?, billed_billing_unit = ?,
-                    completed_at = clock_timestamp()
+                    response_sha256 = ?, estimate_amount = ?, estimate_currency = ?,
+                    estimated_units = ?, estimated_billing_unit = ?, pricing_version = ?,
+                    billed_units = ?, billed_billing_unit = ?, completed_at = clock_timestamp()
                 WHERE id = ? AND outcome = 'running' AND completed_at IS NULL
                 """)) {
       update.setString(1, response.providerRequestId());
       update.setString(2, response.providerModel());
       update.setBytes(3, responseSha256);
-      update.setLong(4, response.billedUnits());
-      update.setString(5, response.billingUnit().name());
-      update.setObject(6, attemptId);
+      if (estimate == null) {
+        update.setNull(4, java.sql.Types.NUMERIC);
+        update.setNull(5, java.sql.Types.VARCHAR);
+        update.setNull(6, java.sql.Types.BIGINT);
+        update.setNull(7, java.sql.Types.VARCHAR);
+        update.setNull(8, java.sql.Types.VARCHAR);
+      } else {
+        update.setBigDecimal(4, estimate.amount());
+        update.setString(5, estimate.currency());
+        update.setLong(6, estimate.billableUnits());
+        update.setString(7, estimate.billingUnit().name());
+        update.setString(8, estimate.pricingVersion());
+      }
+      update.setLong(9, response.billedUnits());
+      update.setString(10, response.billingUnit().name());
+      update.setObject(11, attemptId);
       if (update.executeUpdate() != 1) throw new CompletionConflictException();
     }
   }
@@ -628,7 +659,12 @@ public class TranslationAttemptCompletionRepository {
       UUID sourceSegmentId, int ordinal, String translatedText, byte[] translatedSha256) {}
 
   private record AttemptContext(
-      UUID id, String providerId, String outcome, byte[] requestSha256, byte[] responseSha256) {}
+      UUID id,
+      int attemptNo,
+      String providerId,
+      String outcome,
+      byte[] requestSha256,
+      byte[] responseSha256) {}
 
   private record Candidate(UUID id, String status, String jobStatus) {}
 

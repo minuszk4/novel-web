@@ -33,7 +33,7 @@ class TranslationAttemptCompletionServiceTests {
     assertThrows(
         NullPointerException.class, () -> service.complete(leaseWithNullJob(), response()));
     assertThrows(NullPointerException.class, () -> service.complete(lease(), null));
-    assertThrows(IllegalArgumentException.class, () -> service.complete(lease(3, 3), response()));
+    assertThrows(IllegalArgumentException.class, () -> service.complete(lease(4, 3), response()));
     verifyNoInteractions(repository);
   }
 

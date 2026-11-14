@@ -67,6 +67,27 @@ public class TranslationAttemptRepository {
           throw new StaleLeaseException();
         }
         if (previousStart.isPresent()) throw new InvalidAttemptContextException();
+        if (context.attemptCount() > 0 && "fake-local".equals(context.providerId())) {
+          Optional<ExistingAttempt> resumable =
+              findAttempt(connection, lease.unitId(), context.attemptCount());
+          if (resumable.isPresent() && "running".equals(resumable.orElseThrow().outcome())) {
+            ExistingAttempt existing = resumable.orElseThrow();
+            if (!MessageDigest.isEqual(existing.requestSha256(), requestSha256)) {
+              throw new AttemptConflictException();
+            }
+            connection.commit();
+            return new StartResult(
+                existing.id(),
+                context.jobId(),
+                lease.unitId(),
+                context.attemptCount(),
+                context.providerId(),
+                requestSha256,
+                existing.outcome(),
+                true,
+                true);
+          }
+        }
         if (context.attemptCount() >= context.maxAttempts()) {
           throw new AttemptsExhaustedException();
         }
