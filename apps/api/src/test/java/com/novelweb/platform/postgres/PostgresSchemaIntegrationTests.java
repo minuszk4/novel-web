@@ -124,6 +124,7 @@ import tools.jackson.databind.ObjectMapper;
       "novel.features.cultivation-enabled=true",
       "novel.library.cursor.hmac-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
       "novel.imports.staging.root=${java.io.tmpdir}/novel-web-import-postgres-tests",
+      "novel.imports.parser.poll-delay=PT1H",
       "novel.imports.staging.max-upload-bytes=1024",
       "novel.imports.staging.upload-target-ttl=10m",
       "novel.imports.staging.job-ttl=1h",
@@ -11892,6 +11893,7 @@ class PostgresSchemaIntegrationTests {
       assertEquals(200, result.getResponse().getStatus());
       latest = objectMapper.readTree(result.getResponse().getContentAsString());
       if (expectedStatus.equals(latest.path("status").asText())) return latest;
+      importParseService.processNext();
       Thread.sleep(50);
     }
     throw new AssertionError(

@@ -6,11 +6,16 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.novelweb.translation.jobs.TranslationAttemptCompletionRepository;
+import com.novelweb.translation.jobs.TranslationAttemptCompletionService;
 import com.novelweb.translation.jobs.TranslationAttemptRepository;
 import com.novelweb.translation.jobs.TranslationAttemptService;
 import com.novelweb.translation.jobs.TranslationJobService;
 import com.novelweb.translation.jobs.TranslationUnitLeaseRepository;
 import com.novelweb.translation.jobs.TranslationUnitLeaseService;
+import com.novelweb.translation.provider.TranslationBillingUnit;
+import com.novelweb.translation.provider.TranslationResponse;
+import com.novelweb.translation.provider.TranslationResponse.SegmentResult;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.sql.Connection;
@@ -49,6 +54,8 @@ class PostgresTranslationUnitLeaseTests {
   @Autowired private TranslationUnitLeaseService leaseService;
 
   @Autowired private TranslationAttemptService attemptService;
+
+  @Autowired private TranslationAttemptCompletionService completionService;
 
   @AfterEach
   void cleanFixtures() throws Exception {
@@ -228,6 +235,127 @@ class PostgresTranslationUnitLeaseTests {
     assertEquals(1, countAttempts(firstLease.unitId()));
   }
 
+  @Test
+  void successfulCompletionStoresCandidateAndPublishesOnlyAfterEveryUnitSucceeds()
+      throws Exception {
+    Fixture fixture = createQueuedJob(101);
+    TranslationUnitLeaseRepository.Lease firstLease =
+        leaseService.claimNext("translation-complete-a", Duration.ofSeconds(60)).orElseThrow();
+    TranslationUnitLeaseRepository.Lease secondLease =
+        leaseService.claimNext("translation-complete-b", Duration.ofSeconds(60)).orElseThrow();
+    TranslationAttemptRepository.StartResult firstAttempt = attemptService.begin(firstLease);
+    TranslationAttemptRepository.StartResult secondAttempt = attemptService.begin(secondLease);
+
+    TranslationAttemptCompletionRepository.CompletionResult firstResult =
+        completionService.complete(
+            firstLease, response(firstAttempt.attemptId(), firstLease.unitId()));
+    TranslationAttemptCompletionRepository.CompletionResult secondResult =
+        completionService.complete(
+            secondLease, response(secondAttempt.attemptId(), secondLease.unitId()));
+    TranslationAttemptCompletionRepository.CompletionResult replay =
+        completionService.complete(
+            secondLease, response(secondAttempt.attemptId(), secondLease.unitId()));
+
+    assertEquals("partial", firstResult.candidateStatus());
+    assertEquals("translating", firstResult.jobStatus());
+    assertEquals("ready_for_review", secondResult.candidateStatus());
+    assertEquals("review_required", secondResult.jobStatus());
+    assertEquals(firstResult.candidateId(), secondResult.candidateId());
+    assertTrue(replay.replayed());
+    assertEquals(secondResult.candidateId(), replay.candidateId());
+    assertEquals(1, countCandidates(fixture.jobId()));
+    assertEquals(101, countCandidateSegments(secondResult.candidateId()));
+    assertEquals(1, countCandidateReadyEvents(fixture.jobId()));
+    assertEquals(2, countUnitCompletedEvents(fixture.jobId()));
+    assertEquals("review_required", readJobStatus(fixture.jobId()));
+    assertEquals(2, readCompletedUnits(fixture.jobId()));
+    assertEquals("succeeded", readUnitStatus(firstLease.unitId()));
+    assertEquals("succeeded", readUnitStatus(secondLease.unitId()));
+    assertEquals("succeeded", readAttemptOutcome(secondAttempt.attemptId()));
+    UUID persistedSegmentId = sourceSegmentIds(secondLease.unitId()).getFirst();
+    assertEquals(
+        "[fake vi->en] translated " + persistedSegmentId,
+        readCandidateTranslation(secondResult.candidateId(), persistedSegmentId));
+    assertEquals(32, readAttemptResponseHash(secondAttempt.attemptId()).length);
+  }
+
+  @Test
+  void reclaimedLeaseCannotPersistStaleCandidateOrCompleteTheUnit() throws Exception {
+    Fixture fixture = createQueuedJob(1);
+    TranslationUnitLeaseRepository.Lease oldLease =
+        leaseService.claimNext("translation-complete-old", Duration.ofSeconds(60)).orElseThrow();
+    TranslationAttemptRepository.StartResult attempt = attemptService.begin(oldLease);
+    expireLease(oldLease.unitId());
+    TranslationUnitLeaseRepository.Lease currentLease =
+        leaseService
+            .claimNext("translation-complete-current", Duration.ofSeconds(60))
+            .orElseThrow();
+
+    assertThrows(
+        TranslationAttemptCompletionRepository.StaleLeaseException.class,
+        () ->
+            completionService.complete(oldLease, response(attempt.attemptId(), oldLease.unitId())));
+
+    assertEquals("running", readUnitStatus(currentLease.unitId()));
+    assertEquals("running", readAttemptOutcome(attempt.attemptId()));
+    assertEquals(0, countCandidates(fixture.jobId()));
+    assertEquals(0, countCandidateSegmentsForJob(fixture.jobId()));
+    assertEquals(0, countUnitCompletedEvents(fixture.jobId()));
+    assertEquals(1, readAttemptCount(currentLease.unitId()));
+  }
+
+  @Test
+  void incompleteProviderOutputLeavesAttemptAndUnitUnchanged() throws Exception {
+    Fixture fixture = createQueuedJob(1);
+    TranslationUnitLeaseRepository.Lease lease =
+        leaseService
+            .claimNext("translation-complete-invalid", Duration.ofSeconds(60))
+            .orElseThrow();
+    TranslationAttemptRepository.StartResult attempt = attemptService.begin(lease);
+    TranslationResponse invalid =
+        new TranslationResponse(
+            attempt.attemptId(),
+            "fake-" + attempt.attemptId(),
+            "fake-local",
+            List.of(new SegmentResult(UUID.randomUUID(), "unmapped output")),
+            0,
+            TranslationBillingUnit.CODE_POINT);
+
+    assertThrows(
+        TranslationAttemptCompletionRepository.InvalidCompletionException.class,
+        () -> completionService.complete(lease, invalid));
+
+    assertEquals("running", readUnitStatus(lease.unitId()));
+    assertEquals("running", readAttemptOutcome(attempt.attemptId()));
+    assertEquals(0, countCandidates(fixture.jobId()));
+    assertEquals(0, countUnitCompletedEvents(fixture.jobId()));
+  }
+
+  @Test
+  void changedSourceRevisionCannotBecomeAReviewableCandidate() throws Exception {
+    Fixture fixture = createQueuedJob(1);
+    TranslationUnitLeaseRepository.Lease lease =
+        leaseService
+            .claimNext("translation-complete-stale-source", Duration.ofSeconds(60))
+            .orElseThrow();
+    TranslationAttemptRepository.StartResult attempt = attemptService.begin(lease);
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement update =
+            connection.prepareStatement("UPDATE chapters SET status = 'draft' WHERE id = ?")) {
+      update.setObject(1, fixture.chapterId());
+      assertEquals(1, update.executeUpdate());
+    }
+
+    assertThrows(
+        TranslationAttemptCompletionRepository.StaleSourceException.class,
+        () -> completionService.complete(lease, response(attempt.attemptId(), lease.unitId())));
+
+    assertEquals("running", readUnitStatus(lease.unitId()));
+    assertEquals("running", readAttemptOutcome(attempt.attemptId()));
+    assertEquals(0, countCandidates(fixture.jobId()));
+    assertEquals(0, countUnitCompletedEvents(fixture.jobId()));
+  }
+
   private Optional<TranslationUnitLeaseRepository.Lease> claimAfterBarrier(
       String workerId, CountDownLatch ready, CountDownLatch start) throws InterruptedException {
     ready.countDown();
@@ -322,6 +450,11 @@ class PostgresTranslationUnitLeaseTests {
     try (Connection connection = dataSource.getConnection()) {
       connection.setAutoCommit(false);
       try {
+        execute(
+            connection,
+            "DELETE FROM translation_candidate_segments WHERE job_id = ?",
+            fixture.jobId());
+        execute(connection, "DELETE FROM translation_candidates WHERE job_id = ?", fixture.jobId());
         execute(connection, "DELETE FROM translation_jobs WHERE id = ?", fixture.jobId());
         execute(
             connection, "DELETE FROM segments WHERE chapter_revision_id = ?", fixture.revisionId());
@@ -416,6 +549,140 @@ class PostgresTranslationUnitLeaseTests {
       try (ResultSet row = select.executeQuery()) {
         assertTrue(row.next());
         return row.getLong(1);
+      }
+    }
+  }
+
+  private TranslationResponse response(UUID attemptId, UUID unitId) throws SQLException {
+    List<SegmentResult> translations =
+        sourceSegmentIds(unitId).stream()
+            .map(id -> new SegmentResult(id, "[fake vi->en] translated " + id))
+            .toList();
+    return new TranslationResponse(
+        attemptId,
+        "fake-" + attemptId,
+        "fake-local",
+        translations,
+        0,
+        TranslationBillingUnit.CODE_POINT);
+  }
+
+  private List<UUID> sourceSegmentIds(UUID unitId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT source_segment_id FROM translation_unit_segments "
+                    + "WHERE unit_id = ? ORDER BY segment_ordinal")) {
+      select.setObject(1, unitId);
+      try (ResultSet rows = select.executeQuery()) {
+        List<UUID> ids = new ArrayList<>();
+        while (rows.next()) ids.add(rows.getObject(1, UUID.class));
+        return List.copyOf(ids);
+      }
+    }
+  }
+
+  private long countCandidates(UUID jobId) throws SQLException {
+    return countBySql("SELECT COUNT(*) FROM translation_candidates WHERE job_id = ?", jobId);
+  }
+
+  private long countCandidateSegments(UUID candidateId) throws SQLException {
+    return countBySql(
+        "SELECT COUNT(*) FROM translation_candidate_segments WHERE candidate_id = ?", candidateId);
+  }
+
+  private long countCandidateSegmentsForJob(UUID jobId) throws SQLException {
+    return countBySql(
+        "SELECT COUNT(*) FROM translation_candidate_segments WHERE job_id = ?", jobId);
+  }
+
+  private long countUnitCompletedEvents(UUID jobId) throws SQLException {
+    return countBySql(
+        "SELECT COUNT(*) FROM translation_outbox_events "
+            + "WHERE aggregate_id = ? AND event_type = 'translation.unit.completed'",
+        jobId);
+  }
+
+  private long countCandidateReadyEvents(UUID jobId) throws SQLException {
+    return countBySql(
+        "SELECT COUNT(*) FROM translation_outbox_events "
+            + "WHERE aggregate_id = ? AND event_type = 'translation.candidate.ready'",
+        jobId);
+  }
+
+  private long countBySql(String sql, UUID id) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select = connection.prepareStatement(sql)) {
+      select.setObject(1, id);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getLong(1);
+      }
+    }
+  }
+
+  private int readCompletedUnits(UUID jobId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT completed_units FROM translation_jobs WHERE id = ?")) {
+      select.setObject(1, jobId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getInt(1);
+      }
+    }
+  }
+
+  private String readUnitStatus(UUID unitId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement("SELECT status FROM translation_units WHERE id = ?")) {
+      select.setObject(1, unitId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getString(1);
+      }
+    }
+  }
+
+  private String readAttemptOutcome(UUID attemptId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement("SELECT outcome FROM translation_attempts WHERE id = ?")) {
+      select.setObject(1, attemptId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getString(1);
+      }
+    }
+  }
+
+  private String readCandidateTranslation(UUID candidateId, UUID sourceSegmentId)
+      throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT translated_text FROM translation_candidate_segments "
+                    + "WHERE candidate_id = ? AND source_segment_id = ?")) {
+      select.setObject(1, candidateId);
+      select.setObject(2, sourceSegmentId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getString(1);
+      }
+    }
+  }
+
+  private byte[] readAttemptResponseHash(UUID attemptId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT response_sha256 FROM translation_attempts WHERE id = ?")) {
+      select.setObject(1, attemptId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getBytes(1);
       }
     }
   }
