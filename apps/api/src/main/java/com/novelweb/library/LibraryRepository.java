@@ -424,6 +424,137 @@ public class LibraryRepository {
     }
   }
 
+  public WorkRecord createPrivateAuthoredWork(
+      UUID ownerUserId,
+      String title,
+      String author,
+      String sourceLanguage,
+      String idempotencyKey,
+      byte[] requestHash) {
+    Objects.requireNonNull(ownerUserId, "owner user id is required");
+    Objects.requireNonNull(requestHash, "request hash is required");
+    UUID workId = UUID.randomUUID();
+    try (Connection connection = dataSource.getConnection()) {
+      connection.setAutoCommit(false);
+      try {
+        try (PreparedStatement owner =
+            connection.prepareStatement(
+                "SELECT id FROM users WHERE id = ? AND status = 'active' FOR UPDATE")) {
+          owner.setObject(1, ownerUserId);
+          try (ResultSet row = owner.executeQuery()) {
+            if (!row.next()) throw new WorkNotFoundException();
+          }
+        }
+
+        try (PreparedStatement prior =
+            connection.prepareStatement(
+                """
+                    SELECT request_sha256, work_id FROM authoring_manuscript_creations
+                    WHERE actor_user_id = ? AND idempotency_key = ?
+                    """)) {
+          prior.setObject(1, ownerUserId);
+          prior.setString(2, idempotencyKey);
+          try (ResultSet row = prior.executeQuery()) {
+            if (row.next()) {
+              if (!MessageDigest.isEqual(requestHash, row.getBytes("request_sha256"))) {
+                throw new IdempotencyKeyReusedException();
+              }
+              UUID priorWorkId = row.getObject("work_id", UUID.class);
+              WorkRecord replay;
+              try (PreparedStatement select =
+                  connection.prepareStatement(
+                      workSelect()
+                          + " WHERE w.id = ? AND w.owner_user_id = ? AND w.deleted_at IS NULL GROUP BY w.id")) {
+                select.setObject(1, priorWorkId);
+                select.setObject(2, ownerUserId);
+                try (ResultSet work = select.executeQuery()) {
+                  if (!work.next()) throw new WorkNotFoundException();
+                  replay = work(work);
+                }
+              }
+              connection.commit();
+              return replay;
+            }
+          }
+        }
+
+        UUID libraryId = null;
+        try (PreparedStatement select =
+            connection.prepareStatement(
+                """
+                    SELECT id FROM libraries
+                    WHERE owner_user_id = ? AND workspace_id IS NULL AND deleted_at IS NULL
+                    ORDER BY is_default DESC, created_at ASC, id ASC
+                    LIMIT 1 FOR UPDATE
+                    """)) {
+          select.setObject(1, ownerUserId);
+          try (ResultSet row = select.executeQuery()) {
+            if (row.next()) libraryId = row.getObject("id", UUID.class);
+          }
+        }
+        if (libraryId == null) {
+          libraryId = UUID.randomUUID();
+          try (PreparedStatement insert =
+              connection.prepareStatement(
+                  """
+                      INSERT INTO libraries (id, owner_user_id, name, is_default)
+                      VALUES (?, ?, 'Tác phẩm của tôi', TRUE)
+                      """)) {
+            insert.setObject(1, libraryId);
+            insert.setObject(2, ownerUserId);
+            insert.executeUpdate();
+          }
+        }
+
+        WorkRecord created;
+        try (PreparedStatement insert =
+            connection.prepareStatement(
+                """
+                    INSERT INTO works (id, library_id, owner_user_id, title, author, source_language,
+                                       source_kind, visibility, status)
+                    VALUES (?, ?, ?, ?, ?, ?, 'authored', 'private', 'active')
+                    RETURNING id, library_id, owner_user_id, title, author, source_language,
+                              visibility, status, source_hash, created_at, 0 AS chapter_count
+                    """)) {
+          insert.setObject(1, workId);
+          insert.setObject(2, libraryId);
+          insert.setObject(3, ownerUserId);
+          insert.setString(4, title);
+          insert.setString(5, author);
+          insert.setString(6, sourceLanguage);
+          try (ResultSet row = insert.executeQuery()) {
+            row.next();
+            created = work(row);
+          }
+        }
+        try (PreparedStatement insert =
+            connection.prepareStatement(
+                """
+                    INSERT INTO authoring_manuscript_creations
+                        (actor_user_id, idempotency_key, request_sha256, work_id)
+                    VALUES (?, ?, ?, ?)
+                    """)) {
+          insert.setObject(1, ownerUserId);
+          insert.setString(2, idempotencyKey);
+          insert.setBytes(3, requestHash);
+          insert.setObject(4, workId);
+          insert.executeUpdate();
+        }
+        connection.commit();
+        return created;
+      } catch (SQLException | RuntimeException exception) {
+        connection.rollback();
+        throw exception;
+      }
+    } catch (WorkNotFoundException exception) {
+      throw exception;
+    } catch (SQLException exception) {
+      throw new IllegalStateException("Unable to create a private authored work", exception);
+    }
+  }
+
+  public static class IdempotencyKeyReusedException extends RuntimeException {}
+
   public Optional<WorkRecord> findWork(UUID ownerUserId, UUID workId) {
     Objects.requireNonNull(ownerUserId, "owner user id is required");
     Objects.requireNonNull(workId, "work id is required");

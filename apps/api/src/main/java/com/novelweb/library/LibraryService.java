@@ -1,5 +1,6 @@
 package com.novelweb.library;
 
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -86,6 +87,44 @@ public class LibraryService {
       throw new IllegalArgumentException("language must be at least 2 characters");
     return repository.createPrivateImportedWork(
         ownerUserId, libraryId, title, author, language, sourceHash.clone());
+  }
+
+  public LibraryRepository.WorkRecord createPrivateAuthoredWork(
+      UUID ownerUserId,
+      String requestedTitle,
+      String requestedAuthor,
+      String requestedLanguage,
+      String idempotencyKey) {
+    Objects.requireNonNull(ownerUserId, "owner user id is required");
+    String title = requiredText(requestedTitle, "title", 300);
+    String author = requestedAuthor == null ? "" : optionalText(requestedAuthor, "author", 200);
+    String language = requiredText(requestedLanguage, "language", 35);
+    if (language.length() < 2)
+      throw new IllegalArgumentException("language must be at least 2 characters");
+    if (idempotencyKey == null || !idempotencyKey.matches("[A-Za-z0-9._~-]{16,128}")) {
+      throw new IllegalArgumentException("Idempotency-Key must contain 16 to 128 safe characters");
+    }
+    return repository.createPrivateAuthoredWork(
+        ownerUserId,
+        title,
+        author,
+        language,
+        idempotencyKey,
+        authoredWorkRequestHash(title, author, language));
+  }
+
+  private static byte[] authoredWorkRequestHash(String title, String author, String language) {
+    try {
+      MessageDigest digest = MessageDigest.getInstance("SHA-256");
+      for (String value : List.of(title, author, language)) {
+        byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
+        digest.update(ByteBuffer.allocate(Integer.BYTES).putInt(bytes.length).array());
+        digest.update(bytes);
+      }
+      return digest.digest();
+    } catch (NoSuchAlgorithmException exception) {
+      throw new IllegalStateException("SHA-256 is unavailable", exception);
+    }
   }
 
   public Optional<LibraryRepository.WorkRecord> findOwnedWork(UUID ownerUserId, UUID workId) {

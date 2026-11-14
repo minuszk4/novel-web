@@ -202,7 +202,8 @@ class PostgresSchemaIntegrationTests {
           "import_jobs",
           "import_actor_rate_limits",
           "import_parse_jobs",
-          "import_commits");
+          "import_commits",
+          "authoring_manuscript_creations");
 
   @Autowired private DataSource dataSource;
 
@@ -283,7 +284,7 @@ class PostgresSchemaIntegrationTests {
             connection.prepareStatement("SELECT COUNT(*) FROM databasechangelog");
         ResultSet changesets = changesetCount.executeQuery()) {
       changesets.next();
-      assertEquals(100, changesets.getInt(1), "unexpected number of applied changesets");
+      assertEquals(101, changesets.getInt(1), "unexpected number of applied changesets");
     }
 
     Set<String> actualTables = new HashSet<>();
@@ -7056,6 +7057,122 @@ class PostgresSchemaIntegrationTests {
   }
 
   @Test
+  void authoringCreateIsPrivateCsrfProtectedAndIdempotent() throws Exception {
+    UUID ownerId = createSessionTestUser("Authoring Draft Owner");
+    UUID workId = null;
+    try {
+      addCurrentPolicyAcceptances(ownerId);
+      SessionService.IssuedSession ownerSession = sessionService.create(ownerId).orElseThrow();
+      jakarta.servlet.http.Cookie ownerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", ownerSession.cookieValue());
+      String ownerCsrf = csrfTokenService.tokenFor(ownerSession.cookieValue());
+      String key = "authoring-create-draft-0001";
+      String requestBody =
+          "{\"title\":\"  The Private Draft  \",\"author\":\"  Pen Name  \",\"language\":\"vi\"}";
+
+      MvcResult missingCsrf =
+          mockMvc
+              .perform(
+                  post("/api/v1/authoring/manuscripts")
+                      .header("Idempotency-Key", key)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(requestBody)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(403, missingCsrf.getResponse().getStatus());
+      assertTrue(missingCsrf.getResponse().getContentAsString().contains("CSRF_FAILED"));
+
+      MvcResult created =
+          mockMvc
+              .perform(
+                  post("/api/v1/authoring/manuscripts")
+                      .header("Idempotency-Key", key)
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(requestBody)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(201, created.getResponse().getStatus());
+      assertTrue(created.getResponse().getHeader("Cache-Control").contains("no-store"));
+      JsonNode body = objectMapper.readTree(created.getResponse().getContentAsString());
+      workId = UUID.fromString(body.path("id").asText());
+      assertEquals("draft", body.path("publicationState").asText());
+      assertEquals("private", body.path("visibility").asText());
+      assertEquals("The Private Draft", body.path("title").asText());
+      assertEquals("Pen Name", body.path("author").asText());
+      assertFalse(body.has("ownerUserId"));
+      assertFalse(body.has("sourceHash"));
+
+      MvcResult replay =
+          mockMvc
+              .perform(
+                  post("/api/v1/authoring/manuscripts")
+                      .header("Idempotency-Key", key)
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(requestBody)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(201, replay.getResponse().getStatus());
+      assertEquals(
+          workId,
+          UUID.fromString(
+              objectMapper
+                  .readTree(replay.getResponse().getContentAsString())
+                  .path("id")
+                  .asText()));
+      assertEquals(
+          created.getResponse().getContentAsString(), replay.getResponse().getContentAsString());
+
+      MvcResult keyCollision =
+          mockMvc
+              .perform(
+                  post("/api/v1/authoring/manuscripts")
+                      .header("Idempotency-Key", key)
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"title\":\"Different title\",\"language\":\"vi\"}")
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(409, keyCollision.getResponse().getStatus());
+      assertTrue(
+          keyCollision.getResponse().getContentAsString().contains("IDEMPOTENCY_KEY_REUSED"));
+
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement select =
+              connection.prepareStatement(
+                  """
+                      SELECT w.owner_user_id, w.source_kind, w.visibility, w.status,
+                             l.workspace_id, l.is_default
+                      FROM works w JOIN libraries l ON l.id = w.library_id
+                      WHERE w.id = ?
+                      """)) {
+        select.setObject(1, workId);
+        try (ResultSet row = select.executeQuery()) {
+          assertTrue(row.next());
+          assertEquals(ownerId, row.getObject("owner_user_id", UUID.class));
+          assertEquals("authored", row.getString("source_kind"));
+          assertEquals("private", row.getString("visibility"));
+          assertEquals("active", row.getString("status"));
+          assertNull(row.getObject("workspace_id"));
+          assertTrue(row.getBoolean("is_default"));
+        }
+      }
+      assertEquals(1, authoredWorkCount(ownerId));
+    } finally {
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement delete =
+              connection.prepareStatement(
+                  "DELETE FROM authoring_manuscript_creations WHERE actor_user_id = ?")) {
+        delete.setObject(1, ownerId);
+        delete.executeUpdate();
+      }
+      deleteLibraryUserData(ownerId, workId);
+      deleteSessionTestUser(ownerId);
+    }
+  }
+
+  @Test
   void privateLibraryCoreScopesOwnersDefaultsPrivateAndRejectsDuplicateHashesAndOrder()
       throws Exception {
     UUID ownerId = createSessionTestUser("Library Owner");
@@ -12012,6 +12129,19 @@ class PostgresSchemaIntegrationTests {
         PreparedStatement select =
             connection.prepareStatement("SELECT COUNT(*) FROM works WHERE library_id = ?")) {
       select.setObject(1, libraryId);
+      try (ResultSet row = select.executeQuery()) {
+        row.next();
+        return row.getInt(1);
+      }
+    }
+  }
+
+  private int authoredWorkCount(UUID ownerId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT COUNT(*) FROM works WHERE owner_user_id = ? AND source_kind = 'authored'")) {
+      select.setObject(1, ownerId);
       try (ResultSet row = select.executeQuery()) {
         row.next();
         return row.getInt(1);

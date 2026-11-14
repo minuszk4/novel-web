@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 6.23.0
+  version: 6.24.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -38,6 +38,9 @@ tags:
   - name: Translation
     description: Explicitly opted-in fake-local translation job lifecycle; external providers, reviewer publication and paid usage are unavailable.
     x-implementation-status: local-preview
+  - name: Authoring
+    description: Private-first author manuscript drafts; collaboration and publication are not available.
+    x-implementation-status: partial
 paths:
   /api/v1/glossaries:
     get:
@@ -1381,6 +1384,68 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+  /api/v1/authoring/manuscripts:
+    post:
+      operationId: createPrivateManuscriptDraft
+      tags: [Authoring]
+      x-implementation-status: implemented-postgres-profile
+      summary: Create a private manuscript draft
+      description: >-
+        Creates an authored work in the actor's personal library, creating a private default library if needed.
+        The actor is derived from the authenticated session; library, owner, source kind and private visibility are
+        server controlled. Current Terms and Privacy acceptance, session-bound CSRF and an Idempotency-Key are
+        required. Repeating the same key and normalized request returns the same manuscript; reusing a key with
+        different values returns 409. This creates only an unpublished metadata shell; chapters, revisions,
+        collaborator access, rights assertions, preview, schedules and publication are separate workflows.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: Reuse this exact key and request when retrying an uncertain create result.
+          schema:
+            type: string
+            minLength: 16
+            maxLength: 128
+            pattern: '^[A-Za-z0-9._~-]{16,128}$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateManuscriptRequest'
+      responses:
+        '201':
+          description: Private unpublished manuscript metadata shell.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreatedManuscript'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '409':
+          description: Idempotency-Key was already used with different normalized fields.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
   /api/v1/works:
     get:
       operationId: listPrivateWorks
@@ -3484,6 +3549,50 @@ components:
         type: string
         pattern: '^"annotation-[1-9][0-9]*"$'
   schemas:
+    CreateManuscriptRequest:
+      type: object
+      additionalProperties: false
+      required: [title, language]
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 300
+        author:
+          type: string
+          maxLength: 200
+          default: ''
+        language:
+          type: string
+          minLength: 2
+          maxLength: 35
+          example: vi
+    CreatedManuscript:
+      type: object
+      additionalProperties: false
+      required: [id, title, author, language, publicationState, visibility, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        title:
+          type: string
+          maxLength: 300
+        author:
+          type: string
+          maxLength: 200
+        language:
+          type: string
+          maxLength: 35
+        publicationState:
+          type: string
+          const: draft
+        visibility:
+          type: string
+          const: private
+        createdAt:
+          type: string
+          format: date-time
     TranslationEnqueueRequest:
       type: object
       additionalProperties: false
