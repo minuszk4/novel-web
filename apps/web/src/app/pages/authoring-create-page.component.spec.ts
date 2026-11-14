@@ -62,7 +62,7 @@ describe('AuthoringCreatePageComponent', () => {
     ).toBe('true');
   });
 
-  it('creates only a private metadata draft and announces that chapter editing is unavailable', async () => {
+  it('creates a private metadata draft and links to the chapter outline', async () => {
     const fixture = TestBed.createComponent(AuthoringCreatePageComponent);
     fixture.detectChanges();
     fixture.componentInstance.updateTitle(inputEvent(' Hành trình tu luyện '));
@@ -78,11 +78,14 @@ describe('AuthoringCreatePageComponent', () => {
       expect.stringMatching(/^[A-Za-z0-9._~-]{16,128}$/),
     );
     expect(fixture.nativeElement.textContent).toContain('ĐÃ LƯU RIÊNG TƯ');
-    expect(fixture.nativeElement.textContent).toContain('chưa có màn hình soạn chương');
-    expect(fixture.nativeElement.textContent).toContain('chưa được xuất bản hay chia sẻ');
+    expect(fixture.nativeElement.textContent).toContain('chưa thể nhập nội dung chương');
+    expect(fixture.nativeElement.textContent).toContain('xuất bản hay chia sẻ tác phẩm');
     expect(fixture.nativeElement.querySelector('a.button-primary')?.getAttribute('href')).toBe(
-      '/app/library',
+      `/app/authoring/${createdDraft.id}/chapters`,
     );
+    expect(
+      fixture.nativeElement.querySelector('a[routerLink="/app/library"]')?.textContent,
+    ).toContain('Về thư viện');
   });
 
   it('retries an uncertain create with the exact same body and idempotency key', async () => {

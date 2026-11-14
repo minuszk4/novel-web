@@ -46,6 +46,14 @@ export const routes: Routes = [
           ),
         title: 'Tạo bản thảo — Novel',
       },
+      {
+        path: 'authoring/:workId/chapters',
+        loadComponent: () =>
+          import('./pages/authoring-outline-page.component').then(
+            (page) => page.AuthoringOutlinePageComponent,
+          ),
+        title: 'Dàn ý bản thảo — Novel',
+      },
       { path: 'home', component: HomePageComponent, title: 'Trang chủ — Novel' },
       { path: 'library', component: LibraryPageComponent, title: 'Thư viện — Novel' },
       {

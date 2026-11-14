@@ -1,0 +1,210 @@
+<section class="page-wrap authoring-outline-page">
+  <header class="page-heading authoring-outline-heading">
+    <p class="eyebrow">AUTHOR STUDIO · BẢN THỬ</p>
+    <h1 #pageHeading tabindex="-1">Dàn ý bản thảo</h1>
+    <p>Thêm tên chương và sắp xếp theo thứ tự. Chương mới hiện chưa có nội dung.</p>
+  </header>
+
+  @if (policy.status() !== 'accepted') {
+    <section
+      class="authoring-outline-panel authoring-outline-sign-in"
+      aria-labelledby="outline-sign-in-title"
+    >
+      <span class="authoring-outline-mark" aria-hidden="true">✎</span>
+      <div>
+        <p class="eyebrow">BẢN THẢO RIÊNG TƯ</p>
+        <h2 id="outline-sign-in-title">Đăng nhập để mở dàn ý</h2>
+        <p>Dàn ý được lưu trong thư viện tài khoản của bạn, không nằm trong dữ liệu demo.</p>
+        <a
+          class="button button-primary"
+          [routerLink]="['/sign-in']"
+          [queryParams]="{ returnTo: returnTo }"
+          >Đăng nhập bằng Google</a
+        >
+      </div>
+    </section>
+  } @else if (pageState() === 'loading') {
+    <p class="authoring-outline-status" role="status" aria-live="polite">
+      Đang tải dàn ý riêng tư…
+    </p>
+  } @else if (pageState() === 'error') {
+    <section
+      class="authoring-outline-panel authoring-outline-error-state"
+      aria-labelledby="outline-error-title"
+    >
+      <h2 id="outline-error-title">Chưa mở được dàn ý</h2>
+      <p class="authoring-outline-error" role="alert">{{ pageErrorMessage(pageError()) }}</p>
+      @if (recoveryUrl; as url) {
+        <a class="button button-primary" [routerLink]="url" [queryParams]="recoveryQueryParams">
+          {{ recoveryLabel }}
+        </a>
+      } @else {
+        <button class="button button-primary" type="button" (click)="retryFirstPage()">
+          Tải lại dàn ý
+        </button>
+        <a class="button button-outline" routerLink="/app/library">Về thư viện</a>
+      }
+    </section>
+  } @else {
+    <aside class="authoring-outline-privacy" aria-label="Thông tin về phạm vi dàn ý">
+      <span aria-hidden="true">▣</span>
+      <div>
+        <strong>Riêng tư mặc định</strong>
+        <p>Chỉ bạn có thể xem mục lục này. Hiện tại mỗi chương chỉ lưu tên, ngôn ngữ và thứ tự.</p>
+      </div>
+    </aside>
+
+    @if (createAnnouncement()) {
+      <p class="authoring-outline-announcement" role="status" aria-live="polite">
+        {{ createAnnouncement() }}
+      </p>
+    }
+
+    <section class="authoring-outline-panel" aria-labelledby="outline-list-title">
+      <div class="authoring-outline-list-heading">
+        <div>
+          <p class="eyebrow">MỤC LỤC RIÊNG TƯ</p>
+          <h2 id="outline-list-title">Các chương</h2>
+        </div>
+        <button
+          #addChapterButton
+          class="button button-primary"
+          type="button"
+          (click)="openAddForm()"
+        >
+          Thêm chương
+        </button>
+      </div>
+
+      @if (isAddFormOpen()) {
+        <section class="authoring-outline-add" aria-labelledby="outline-add-title">
+          <div class="authoring-outline-add-heading">
+            <div>
+              <p class="eyebrow">CHƯƠNG TRỐNG</p>
+              <h3 id="outline-add-title">Thêm vào dàn ý</h3>
+            </div>
+            <p>Chỉ tạo tên và thứ tự; bạn chưa thể nhập nội dung chương.</p>
+          </div>
+
+          <form novalidate (submit)="addChapter($event)">
+            <label for="authoring-chapter-title">
+              <span>Tên chương <span aria-hidden="true">*</span></span>
+              <input
+                #chapterTitleInput
+                id="authoring-chapter-title"
+                type="text"
+                autocomplete="off"
+                required
+                [value]="chapterTitle()"
+                [disabled]="isCreating() || isCreateUncertain()"
+                [attr.aria-invalid]="titleError() ? 'true' : null"
+                aria-describedby="authoring-chapter-title-help"
+                [attr.aria-errormessage]="titleError() ? 'authoring-chapter-title-error' : null"
+                (input)="updateChapterTitle($event)"
+                placeholder="Ví dụ: Đêm đầu tiên ở Thanh Vân Tông"
+              />
+              <span id="authoring-chapter-title-help" class="authoring-outline-help">
+                {{ chapterTitleLength }} / 300 ký tự · Chương mới chưa có văn bản.
+              </span>
+              @if (titleError(); as error) {
+                <span id="authoring-chapter-title-error" class="authoring-outline-field-error">
+                  {{ error }}
+                </span>
+              }
+            </label>
+
+            @if (createError(); as error) {
+              <div class="authoring-outline-error" role="alert" aria-live="assertive">
+                <p>{{ error }}</p>
+                @if (recoveryUrl; as url) {
+                  <a [routerLink]="url" [queryParams]="recoveryQueryParams">{{ recoveryLabel }}</a>
+                }
+              </div>
+            }
+            @if (isCreateUncertain()) {
+              <p class="authoring-outline-retry-note" role="status" aria-live="polite">
+                Hệ thống sẽ gửi lại đúng tên và mã an toàn để tránh tạo chương trùng.
+              </p>
+            }
+
+            <div class="authoring-outline-form-actions">
+              <button
+                class="button button-outline"
+                type="button"
+                [disabled]="isCreating() || isCreateUncertain()"
+                (click)="closeAddForm()"
+              >
+                Hủy
+              </button>
+              <button class="button button-primary" type="submit" [disabled]="isCreating()">
+                {{
+                  isCreating()
+                    ? 'Đang thêm chương…'
+                    : isCreateUncertain()
+                      ? 'Thử xác nhận lại'
+                      : 'Thêm chương trống'
+                }}
+              </button>
+            </div>
+          </form>
+        </section>
+      }
+
+      @if (chapters().length) {
+        <p class="authoring-outline-count" role="status" aria-live="polite">
+          Đang hiển thị {{ chapters().length }} chương đã tải.
+        </p>
+        <ol class="authoring-outline-list">
+          @for (chapter of chapters(); track chapter.id) {
+            <li class="authoring-outline-row">
+              <span class="authoring-outline-ordinal">Chương {{ chapter.ordinal }}</span>
+              <span class="authoring-outline-chapter-title">{{ chapter.title }}</span>
+              <span class="authoring-outline-language">{{ chapter.language }}</span>
+              <span
+                class="authoring-outline-availability"
+                [class.has-content]="chapter.contentAvailable"
+              >
+                {{ chapterAvailability(chapter) }}
+              </span>
+            </li>
+          }
+        </ol>
+      } @else {
+        <div class="authoring-outline-empty">
+          <span class="authoring-outline-empty-mark" aria-hidden="true">☷</span>
+          <h3>Chưa có chương nào</h3>
+          <p>
+            Thêm chương đầu tiên để tạo dàn ý. Chương mới chỉ lưu tên và thứ tự, chưa lưu nội dung.
+          </p>
+          <button class="button button-outline" type="button" (click)="openAddForm()">
+            Thêm chương đầu tiên
+          </button>
+        </div>
+      }
+
+      @if (moreError(); as error) {
+        <div class="authoring-outline-error" role="alert">
+          <p>{{ pageErrorMessage(error) }}</p>
+          @if (recoveryUrl; as url) {
+            <a [routerLink]="url" [queryParams]="recoveryQueryParams">{{ recoveryLabel }}</a>
+          } @else {
+            <button class="text-button" type="button" (click)="loadMore()">Thử tải thêm</button>
+          }
+        </div>
+      }
+
+      @if (nextCursor()) {
+        <button
+          class="button button-outline authoring-outline-load-more"
+          type="button"
+          [disabled]="isLoadingMore() || !!recoveryUrl"
+          (click)="loadMore()"
+        >
+          {{ isLoadingMore() ? 'Đang tải chương…' : 'Tải thêm chương' }}
+        </button>
+      }
+    </section>
+
+    <a class="authoring-outline-back" routerLink="/app/library">← Về thư viện</a>
+  }
+</section>

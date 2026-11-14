@@ -27,11 +27,14 @@
         <p class="eyebrow">ĐÃ LƯU RIÊNG TƯ</p>
         <h2 id="authoring-success-title">{{ draft.title }}</h2>
         <p>
-          Bản thảo đã được tạo trong thư viện cá nhân. Hiện Novel chưa có màn hình soạn chương; nội
-          dung tác phẩm chưa được xuất bản hay chia sẻ.
+          Bản thảo đã được tạo riêng tư. Bạn có thể thêm tên chương vào dàn ý, nhưng hiện chưa thể
+          nhập nội dung chương, xuất bản hay chia sẻ tác phẩm.
         </p>
         <div class="authoring-actions">
-          <a class="button button-primary" routerLink="/app/library">Về thư viện</a>
+          <a class="button button-primary" [routerLink]="['/app/authoring', draft.id, 'chapters']">
+            Mở dàn ý chương
+          </a>
+          <a class="button button-outline" routerLink="/app/library">Về thư viện</a>
           <button class="button button-outline" type="button" (click)="createAnother()">
             Tạo bản thảo khác
           </button>

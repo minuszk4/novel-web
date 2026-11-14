@@ -1,0 +1,184 @@
+import { expect, expectNoAxeViolations, test } from './support';
+
+const baseUrl = 'http://localhost:4300';
+const newChapterTitle = 'Live E2E Blank Outline Chapter';
+
+test('private chapter outline reads and creates metadata through the real API and PostgreSQL', async ({
+  page,
+}) => {
+  const sessionToken = process.env['LIBRARY_LIVE_TEST_SESSION_TOKEN'];
+  const workId = process.env['AUTHORING_OUTLINE_LIVE_TEST_WORK_ID'];
+  const screenshotPath = process.env['AUTHORING_OUTLINE_LIVE_TEST_SCREENSHOT'];
+
+  test.skip(
+    !sessionToken || !workId || !screenshotPath,
+    'run tools/e2e/run-library-postgres.ps1 -IncludeAuthoringOutline to supply the disposable authored-work fixture',
+  );
+  expect(sessionToken, 'run with the disposable PostgreSQL fixture harness').toMatch(
+    /^[A-Za-z0-9_-]{43}$/,
+  );
+  expect(workId).toMatch(/^[0-9a-f-]{36}$/i);
+
+  await page.setViewportSize({ width: 360, height: 800 });
+  await page.context().addCookies([
+    {
+      name: '__Host-novel_session',
+      value: sessionToken!,
+      domain: 'localhost',
+      path: '/',
+      httpOnly: true,
+      secure: true,
+      sameSite: 'Lax',
+    },
+  ]);
+
+  const listResponsePromise = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'GET' &&
+      new URL(response.url()).pathname === `/api/v1/authoring/manuscripts/${workId}/chapters`,
+  );
+  await page.goto(`${baseUrl}/app/authoring/${workId}/chapters`);
+  const listResponse = await listResponsePromise;
+  expect(listResponse.status()).toBe(200);
+  const listText = await listResponse.text();
+  const firstPage = JSON.parse(listText) as {
+    items: Array<{ id: string; ordinal: number }>;
+    nextCursor: string | null;
+  };
+  expect(firstPage.items).toHaveLength(25);
+  expect(firstPage.items[0].ordinal).toBe(1);
+  expect(firstPage.items[24].ordinal).toBe(25);
+  expect(firstPage.nextCursor).toMatch(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+  expect(listResponse.headers()['cache-control']).toContain('no-store');
+  expect(listText).not.toMatch(/"(?:sourceText|normalizedContent|segments|content)"\s*:/i);
+  await expect(page.getByRole('heading', { name: 'Dàn ý bản thảo' })).toBeVisible();
+  await expect(page.getByText('Live Translation Chapter', { exact: true })).toBeVisible();
+  await expect(page.getByText('Live Outline Seed 25', { exact: true })).toBeVisible();
+  await expect(page.getByText('Có nội dung đọc được', { exact: true })).toBeVisible();
+  await expect(page.getByText('Chỉ bạn có thể xem mục lục này')).toBeVisible();
+  await expect(page.getByRole('link', { name: /Mở trình soạn thảo|Mở chương/ })).toHaveCount(0);
+  await expectNoAxeViolations(page);
+
+  const cursorRequestPromise = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return (
+      response.request().method() === 'GET' &&
+      url.pathname === `/api/v1/authoring/manuscripts/${workId}/chapters` &&
+      url.searchParams.has('cursor')
+    );
+  });
+  await page.getByRole('button', { name: 'Tải thêm chương' }).click();
+  const cursorResponse = await cursorRequestPromise;
+  expect(cursorResponse.status()).toBe(200);
+  expect(cursorResponse.headers()['cache-control']).toContain('no-store');
+  const secondPageText = await cursorResponse.text();
+  const secondPage = JSON.parse(secondPageText) as {
+    items: Array<{ id: string; ordinal: number }>;
+    nextCursor: string | null;
+  };
+  expect(secondPage.items).toHaveLength(1);
+  expect(secondPage.items[0].ordinal).toBe(26);
+  expect(secondPage.nextCursor).toBeNull();
+  expect(secondPageText).not.toMatch(/"(?:sourceText|normalizedContent|segments|content)"\s*:/i);
+  await expect(page.getByText('Live Outline Seed 26', { exact: true })).toBeVisible();
+  await expectNoAxeViolations(page);
+  const storedValues = await page.evaluate(() => ({
+    local: Object.values(localStorage),
+    session: Object.values(sessionStorage),
+  }));
+  expect(JSON.stringify(storedValues)).not.toContain(firstPage.nextCursor!);
+
+  const addButton = page.getByRole('button', { name: 'Thêm chương' });
+  await addButton.focus();
+  await page.keyboard.press('Enter');
+  await expectNoAxeViolations(page);
+  const input = page.getByLabel('Tên chương');
+  await expect(input).toBeFocused();
+  await page.keyboard.type(newChapterTitle);
+  await page.keyboard.press('Tab');
+  await expect(page.getByRole('button', { name: 'Hủy' })).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(page.getByRole('button', { name: 'Thêm chương trống' })).toBeFocused();
+  const csrfPromise = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'GET' &&
+      new URL(response.url()).pathname === '/api/v1/auth/csrf',
+  );
+  const createPromise = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' &&
+      new URL(response.url()).pathname === `/api/v1/authoring/manuscripts/${workId}/chapters`,
+  );
+  await page.keyboard.press('Enter');
+  const [csrf, create] = await Promise.all([csrfPromise, createPromise]);
+  expect(csrf.status()).toBe(200);
+  expect(create.status()).toBe(201);
+
+  const token = ((await csrf.json()) as { token: string }).token;
+  const headers = create.request().headers();
+  expect(headers['x-csrf-token']).toBe(token);
+  expect(headers['idempotency-key']).toMatch(/^[A-Za-z0-9._~-]{16,128}$/);
+  const idempotencyKey = headers['idempotency-key'];
+  expect(create.request().postDataJSON()).toEqual({ title: newChapterTitle });
+  const created = (await create.json()) as {
+    id: string;
+    workId: string;
+    ordinal: number;
+    title: string;
+    status: string;
+  };
+  expect(created).toMatchObject({
+    workId,
+    ordinal: 27,
+    title: newChapterTitle,
+    status: 'draft',
+  });
+  expect(created.id).toMatch(/^[0-9a-f-]{36}$/i);
+  await expect(page.getByRole('status').filter({ hasText: 'Đã thêm Chương 27' })).toBeVisible();
+  const createdRow = page.getByRole('listitem').filter({ hasText: newChapterTitle });
+  await expect(createdRow.getByText(newChapterTitle, { exact: true })).toBeVisible();
+  await expect(createdRow.getByText('Chưa có nội dung', { exact: true })).toBeVisible();
+  await expect(page.getByRole('listitem')).toHaveCount(27);
+  await expect(page.getByRole('button', { name: 'Thêm chương' })).toBeFocused();
+
+  const replay = await page.request.post(
+    `${baseUrl}/api/v1/authoring/manuscripts/${workId}/chapters`,
+    {
+      headers: { 'X-CSRF-Token': token, 'Idempotency-Key': idempotencyKey },
+      data: { title: newChapterTitle },
+    },
+  );
+  expect(replay.status()).toBe(201);
+  expect(await replay.json()).toMatchObject({
+    id: created.id,
+    workId,
+    ordinal: 27,
+    title: newChapterTitle,
+    status: 'draft',
+  });
+
+  const widths = await page.evaluate(() => ({
+    client: document.documentElement.clientWidth,
+    scroll: document.documentElement.scrollWidth,
+  }));
+  expect(widths.scroll).toBeLessThanOrEqual(widths.client);
+  await page.screenshot({ path: screenshotPath!, fullPage: true });
+
+  for (const viewport of [
+    { width: 640, height: 450 },
+    { width: 1280, height: 900 },
+  ]) {
+    await page.setViewportSize(viewport);
+    await page.getByRole('button', { name: 'Thêm chương', exact: true }).click();
+    await expect(page.getByLabel('Tên chương')).toBeVisible();
+    const responsiveWidths = await page.evaluate(() => ({
+      client: document.documentElement.clientWidth,
+      scroll: document.documentElement.scrollWidth,
+    }));
+    expect(responsiveWidths.scroll).toBeLessThanOrEqual(responsiveWidths.client);
+    await expectNoAxeViolations(page);
+    await page.getByRole('button', { name: 'Hủy' }).click();
+    await expect(page.getByLabel('Tên chương')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Thêm chương', exact: true })).toBeFocused();
+  }
+});

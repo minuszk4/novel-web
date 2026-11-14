@@ -102,8 +102,8 @@ test('Author Studio creates and replays a private draft through the real API and
   expect(createdBody.id).toMatch(/^[0-9a-f-]{36}$/i);
 
   await expect(page.getByRole('heading', { name: title! })).toBeVisible();
-  await expect(page.getByText(/chưa có màn hình soạn chương/)).toBeVisible();
-  await expect(page.getByText(/chưa được xuất bản hay chia sẻ/)).toBeVisible();
+  await expect(page.getByText(/chưa thể nhập nội dung chương/)).toBeVisible();
+  await expect(page.getByText(/xuất bản hay chia sẻ tác phẩm/)).toBeVisible();
   await expect(page.getByRole('button', { name: 'Tạo bản thảo riêng tư' })).toHaveCount(0);
 
   const replay = await page.evaluate(

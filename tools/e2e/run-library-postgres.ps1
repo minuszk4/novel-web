@@ -1,7 +1,8 @@
 param(
     [int]$PostgresPortStart = 55432,
     [int]$PostgresPortEnd = 55480,
-    [switch]$IncludeTranslationPreview
+    [switch]$IncludeTranslationPreview,
+    [switch]$IncludeAuthoringOutline
 )
 
 $ErrorActionPreference = 'Stop'
@@ -50,6 +51,7 @@ $environmentNames = @(
     'LIBRARY_LIVE_TEST_SESSION_TOKEN', 'LIBRARY_LIVE_TEST_LIBRARY_ID',
     'NOVEL_IMPORT_STAGING_ROOT', 'LIBRARY_LIVE_TEST_WORK_IDS', 'LIBRARY_LIVE_TEST_SCREENSHOT', 'READER_LIVE_TEST_WORK_ID',
     'AUTHORING_LIVE_TEST_TITLE', 'AUTHORING_LIVE_TEST_SCREENSHOT',
+    'AUTHORING_OUTLINE_LIVE_TEST_WORK_ID', 'AUTHORING_OUTLINE_LIVE_TEST_SCREENSHOT',
     'TRANSLATION_LIVE_TEST_WORK_ID', 'TRANSLATION_LIVE_TEST_CHAPTER_ID', 'TRANSLATION_LIVE_TEST_SCREENSHOT',
     'READER_LIVE_TEST_CHAPTER_ID', 'READER_LIVE_TEST_SCREENSHOT',
     'WORK_DETAIL_LIVE_TEST_SCREENSHOT', 'PRIVATE_IMPORT_LIVE_TEST_SCREENSHOT',
@@ -94,6 +96,8 @@ $glossaryActiveRevisionId = [guid]::NewGuid()
 $glossaryDraftRevisionId = [guid]::NewGuid()
 $glossaryTermId = [guid]::NewGuid()
 $authoringTitle = "Live E2E Authored Draft $userId"
+$authoringOutlineTitle = 'Live E2E Blank Outline Chapter'
+$secondWorkSourceKind = if ($IncludeTranslationPreview -or $IncludeAuthoringOutline) { 'authored' } else { 'imported' }
 $readerSourceText = 'Live E2E source text is served from PostgreSQL.'
 $readerSourceHash = [Convert]::ToHexString(
     [System.Security.Cryptography.SHA256]::HashData([System.Text.Encoding]::UTF8.GetBytes($readerSourceText))
@@ -109,6 +113,7 @@ $privateImportScreenshotPath = Join-Path $evidenceDirectory 'private-import-comm
 $glossaryImportScreenshotPath = Join-Path $evidenceDirectory 'glossary-import-live.png'
 $glossaryEditorScreenshotPath = Join-Path $evidenceDirectory 'glossary-editor-live.png'
 $authoringScreenshotPath = Join-Path $evidenceDirectory 'authoring-create-live.png'
+$authoringOutlineScreenshotPath = Join-Path $evidenceDirectory 'authoring-outline-live.png'
 $buildLog = Join-Path $evidenceDirectory 'api-build.log'
 $apiStdout = Join-Path $evidenceDirectory 'api-stdout.log'
 $apiStderr = Join-Path $evidenceDirectory 'api-stderr.log'
@@ -216,10 +221,10 @@ INSERT INTO sessions (id_hash, user_id, expires_at)
 VALUES (decode('$sessionHash', 'hex'), '$userId', clock_timestamp() + INTERVAL '1 day');
 INSERT INTO libraries (id, owner_user_id, name, visibility, is_default)
 VALUES ('$libraryId', '$userId', 'Live E2E Library', 'private', TRUE);
-INSERT INTO works (id, library_id, owner_user_id, title, author, source_language, visibility, status)
+INSERT INTO works (id, library_id, owner_user_id, title, author, source_language, source_kind, visibility, status)
 VALUES
-('$firstWorkId', '$libraryId', '$userId', 'Live E2E Novel One', 'E2E Author', 'vi', 'private', 'active'),
-('$secondWorkId', '$libraryId', '$userId', 'Live E2E Novel Two', 'E2E Author', 'en', 'private', 'active');
+('$firstWorkId', '$libraryId', '$userId', 'Live E2E Novel One', 'E2E Author', 'vi', 'imported', 'private', 'active'),
+('$secondWorkId', '$libraryId', '$userId', 'Live E2E Novel Two', 'E2E Author', 'en', '$secondWorkSourceKind', 'private', 'active');
 INSERT INTO volumes (id, work_id, ordinal, title)
 VALUES
 ('$readerVolumeId', '$firstWorkId', 1, 'Live E2E Volume'),
@@ -228,6 +233,7 @@ INSERT INTO chapters (id, work_id, volume_id, ordinal, title, source_language, s
 VALUES
 ('$readerChapterId', '$firstWorkId', '$readerVolumeId', 1, 'Live Reader Chapter', 'en', '$readerRevisionId', 'ready'),
 ('$translationChapterId', '$secondWorkId', '$translationVolumeId', 1, 'Live Translation Chapter', 'en', '$translationRevisionId', 'ready');
+$(if ($IncludeAuthoringOutline) { "INSERT INTO chapters (id, work_id, volume_id, ordinal, title, source_language, source_revision_id, status) SELECT gen_random_uuid(), '$secondWorkId', NULL, seed.ordinal, 'Live Outline Seed ' || seed.ordinal, 'en', NULL, 'draft' FROM generate_series(2, 26) AS seed(ordinal);" } else { '' })
 INSERT INTO chapter_revisions (id, chapter_id, revision_no, source_format, normalized_content, content_hash, created_by_user_id)
 VALUES
 ('$readerRevisionId', '$readerChapterId', 1, 'plain_text', '$readerSourceText', decode('$readerSourceHash', 'hex'), '$userId'),
@@ -270,6 +276,10 @@ COMMIT;
     $env:GLOSSARY_EDITOR_LIVE_TEST_SCREENSHOT = $glossaryEditorScreenshotPath
     $env:AUTHORING_LIVE_TEST_TITLE = $authoringTitle
     $env:AUTHORING_LIVE_TEST_SCREENSHOT = $authoringScreenshotPath
+    if ($IncludeAuthoringOutline) {
+        $env:AUTHORING_OUTLINE_LIVE_TEST_WORK_ID = [string]$secondWorkId
+        $env:AUTHORING_OUTLINE_LIVE_TEST_SCREENSHOT = $authoringOutlineScreenshotPath
+    }
     $translationJobScreenshot = Join-Path $evidenceDirectory 'translation-job-live.png'
     if ($IncludeTranslationPreview) {
         $env:TRANSLATION_LIVE_TEST_WORK_ID = [string]$secondWorkId
@@ -289,6 +299,7 @@ COMMIT;
             'e2e/cultivation-live-postgres.spec.ts'
         )
         if ($IncludeTranslationPreview) { $e2eSpecs += 'e2e/translation-live-postgres.spec.ts' }
+        if ($IncludeAuthoringOutline) { $e2eSpecs += 'e2e/authoring-outline-live-postgres.spec.ts' }
         & npm.cmd run test:e2e:postgres -- $e2eSpecs *>&1 | Tee-Object -FilePath $e2eLog
         $e2eExit = $LASTEXITCODE
     } finally { Pop-Location }
@@ -322,6 +333,14 @@ COMMIT;
         $translationParts = ([string]$translationSummary).Trim() -split '\|'
         if ($translationParts.Count -ne 4 -or $translationParts[0] -ne '1' -or $translationParts[1] -notin @('t', 'true') -or $translationParts[2] -ne '1' -or $translationParts[3] -ne '1') {
             throw "PostgreSQL fake-local translation invariants failed after browser journey: $translationSummary"
+        }
+    }
+    if ($IncludeAuthoringOutline) {
+        $authoringOutlineSummary = & $docker @composeArguments exec -T postgres psql -v ON_ERROR_STOP=1 -tA -U novelweb -d novelweb -c "SELECT COUNT(*)::text || '|' || COALESCE(bool_and(w.source_kind = 'authored' AND w.visibility = 'private' AND w.status = 'active' AND ch.ordinal = 27 AND ch.volume_id IS NULL AND ch.status = 'draft' AND ch.source_revision_id IS NULL), FALSE)::text || '|' || COALESCE(SUM((SELECT COUNT(*) FROM chapter_revisions r WHERE r.chapter_id = ch.id)), 0)::text || '|' || COALESCE(SUM((SELECT COUNT(*) FROM authoring_chapter_creations c WHERE c.actor_user_id = '$userId' AND c.work_id = w.id AND c.chapter_id = ch.id)), 0)::text FROM chapters ch JOIN works w ON w.id = ch.work_id WHERE w.id = '$secondWorkId' AND ch.title = '$authoringOutlineTitle';"
+        if ($LASTEXITCODE -ne 0) { throw 'Could not verify the blank authored chapter in disposable PostgreSQL.' }
+        $authoringOutlineParts = ([string]$authoringOutlineSummary).Trim() -split '\|'
+        if ($authoringOutlineParts.Count -ne 4 -or $authoringOutlineParts[0] -ne '1' -or $authoringOutlineParts[1] -notin @('t', 'true') -or $authoringOutlineParts[2] -ne '0' -or $authoringOutlineParts[3] -ne '1') {
+            throw "PostgreSQL authoring outline invariants failed after browser journey: $authoringOutlineSummary"
         }
     }
     $result = 'PASS'
@@ -362,7 +381,7 @@ COMMIT;
     }
     $duration = [math]::Round(((Get-Date) - $startedAt).TotalSeconds, 1)
     @(
-        '# Browser journey: frontend to PostgreSQL import, Library, Reader, cultivation and fake-local translation'
+        '# Browser journey: frontend to PostgreSQL import, Library, Reader, authoring outline, cultivation and fake-local translation'
         ''
         "- Date: $($startedAt.ToString('yyyy-MM-dd HH:mm:ss zzz'))"
         "- Result: $result"
@@ -372,17 +391,18 @@ COMMIT;
         "- Schema: $appliedChangesets/$expectedChangesets Liquibase changesets applied before fixture setup"
         '- Browser: Playwright Chromium, Angular dev-server proxy to the real API'
         '- Authoring: real authenticated metadata create, same-key replay, changed-payload 409, private authored work persisted, one idempotency receipt, zero volumes/chapters'
-        "- Journey: session cookie/policy → rights receipt → upload/parse/preview/private commit → refreshed Library → Work Detail → Reader source/bookmark, then opt-in → server-timed Reader session → XP award → private profile/activity → glossary import/draft edit/revision preview$(if ($IncludeTranslationPreview) { ' → fake-local Reader translation → redacted job status → unpublished PostgreSQL candidate' } else { '' })"
+        "- Journey: session cookie/policy → rights receipt → upload/parse/preview/private commit → refreshed Library → Work Detail → Reader source/bookmark, then opt-in → server-timed Reader session → XP award → private profile/activity → glossary import/draft edit/revision preview$(if ($IncludeTranslationPreview) { ' → fake-local Reader translation → redacted job status → unpublished PostgreSQL candidate' } else { '' })$(if ($IncludeAuthoringOutline) { ' → private authoring chapter outline → CSRF/idempotent blank-chapter creation' } else { '' })"
         '- Cultivation feature flag: enabled only in this random disposable API process; prior process value restored during cleanup'
         $(if ($IncludeTranslationPreview) { '- Translation feature/provider/API/worker flags: fake-local only, enabled only in this random disposable API process; no external NMT provider was configured or called; prior process values restored during cleanup' } else { '- Translation fake-local flags: forced false for this disposable API process; prior process values restored during cleanup' })
         "- PostgreSQL cultivation ledger: $cultivationLedgerXp XP across $cultivationLedgerEntries entries for the synthetic user"
         $(if ($glossaryParts.Count -eq 8) { "- PostgreSQL glossary import/editor after revision preview: version $($glossaryParts[0]), active revision $($glossaryParts[1]), latest draft $($glossaryParts[2]), $($glossaryParts[3]) immutable term rows, $($glossaryParts[4]) aliases, one idempotency receipt and one apply row; preview did not create a revision or change the active pointer" } else { '- PostgreSQL glossary import/editor: not verified' })
+        $(if ($authoringOutlineParts.Count -eq 4) { "- PostgreSQL authoring outline: one private authored blank chapter at ordinal 27, zero content revisions and one idempotency receipt after replay" } else { '- PostgreSQL authoring outline: not requested' })
         $(if ($translationParts.Count -eq 4) { "- PostgreSQL fake-local translation: $($translationParts[0]) job, $($translationParts[2]) successful attempt and $($translationParts[3]) unpublished candidate segment verified with the fake marker" } else { '- PostgreSQL fake-local translation: not requested' })
         '- API route mocks: none'
         "- Elapsed: $duration seconds"
         "- Cleanup: $cleanup"
         "- Staging cleanup: $stagingCleanup"
-        "- Screenshots: $([System.IO.Path]::GetFileName($screenshotPath)), $([System.IO.Path]::GetFileName($workDetailScreenshotPath)), $([System.IO.Path]::GetFileName($readerScreenshotPath)), $([System.IO.Path]::GetFileName($glossaryImportScreenshotPath)), $([System.IO.Path]::GetFileName($glossaryEditorScreenshotPath)), $([System.IO.Path]::GetFileName($authoringScreenshotPath))$(if ($IncludeTranslationPreview) { ', translation-job-live.png' } else { '' }), private-import-commit-live.png, private-import-detail-live.png, private-import-reader-live.png, private-import-html-commit-live.png, private-import-html-detail-live.png, private-import-html-reader-live.png, private-import-markdown-commit-live.png, private-import-markdown-detail-live.png, private-import-markdown-reader-live.png, private-import-epub-commit-live.png, private-import-epub-detail-live.png, private-import-epub-reader-live.png"
+        "- Screenshots: $([System.IO.Path]::GetFileName($screenshotPath)), $([System.IO.Path]::GetFileName($workDetailScreenshotPath)), $([System.IO.Path]::GetFileName($readerScreenshotPath)), $([System.IO.Path]::GetFileName($glossaryImportScreenshotPath)), $([System.IO.Path]::GetFileName($glossaryEditorScreenshotPath)), $([System.IO.Path]::GetFileName($authoringScreenshotPath))$(if ($IncludeAuthoringOutline) { ', authoring-outline-live.png' } else { '' })$(if ($IncludeTranslationPreview) { ', translation-job-live.png' } else { '' }), private-import-commit-live.png, private-import-detail-live.png, private-import-reader-live.png, private-import-html-commit-live.png, private-import-html-detail-live.png, private-import-html-reader-live.png, private-import-markdown-commit-live.png, private-import-markdown-detail-live.png, private-import-markdown-reader-live.png, private-import-epub-commit-live.png, private-import-epub-detail-live.png, private-import-epub-reader-live.png"
         '- Logs: api-build.log, api-stdout.log, api-stderr.log, playwright.log'
         $(if ($failure) { "- Failure: $failure" } else { '- Failure: none' })
         ''
