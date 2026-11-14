@@ -9,6 +9,7 @@ const csrfToken = 'A'.repeat(43);
 const idempotencyKey = 'author-draft-create-key-0001';
 const createdAt = '2026-11-14T12:00:00Z';
 const chapterId = '22222222-2222-4222-8222-222222222222';
+const revisionId = '44444444-4444-4444-8444-444444444444';
 const chapterCreatedAt = '2026-11-14T12:30:00Z';
 const createdDraft = {
   id: workId,
@@ -243,6 +244,194 @@ describe('AuthoringApiService', () => {
       api.createPrivateChapter(workId, '😀'.repeat(301), idempotencyKey),
     ).rejects.toMatchObject({ code: 'INVALID_CHAPTER', status: 400 });
     http.expectNone((request) => request.url.includes('/chapters'));
+  });
+
+  it('reads a strict private draft snapshot and binds the response ETag to revision zero', async () => {
+    const pending = api.getPrivateChapterDraft(workId, chapterId);
+    const request = http.expectOne(
+      `/api/v1/authoring/manuscripts/${workId}/chapters/${chapterId}/draft`,
+    );
+    expect(request.request.method).toBe('GET');
+    request.flush(
+      {
+        id: chapterId,
+        workId,
+        title: 'Chương một',
+        status: 'draft',
+        revisionNo: 0,
+        sourceFormat: null,
+        normalizedContent: '',
+        segments: [],
+        updatedAt: chapterCreatedAt,
+      },
+      {
+        status: 200,
+        statusText: 'OK',
+        headers: new HttpHeaders({ 'Cache-Control': 'no-store', ETag: '"draft-0"' }),
+      },
+    );
+
+    await expect(pending).resolves.toMatchObject({
+      id: chapterId,
+      workId,
+      revisionNo: 0,
+      normalizedContent: '',
+      etag: '"draft-0"',
+    });
+  });
+
+  it('rejects a draft response that contains private metadata or an ETag/body version mismatch', async () => {
+    const pending = api.getPrivateChapterDraft(workId, chapterId);
+    http.expectOne(`/api/v1/authoring/manuscripts/${workId}/chapters/${chapterId}/draft`).flush(
+      {
+        id: chapterId,
+        workId,
+        title: 'Chương một',
+        status: 'draft',
+        revisionNo: 1,
+        sourceFormat: 'plain_text',
+        normalizedContent: 'Nội dung riêng tư',
+        segments: [
+          {
+            ordinal: 1,
+            type: 'paragraph',
+            sourceText: 'Nội dung riêng tư',
+            stableAnchor: 'chapter-one-p1',
+          },
+        ],
+        updatedAt: chapterCreatedAt,
+        contentHash: 'secret',
+      },
+      {
+        status: 200,
+        statusText: 'OK',
+        headers: new HttpHeaders({ 'Cache-Control': 'no-store', ETag: '"draft-2"' }),
+      },
+    );
+    await expect(pending).rejects.toMatchObject({
+      status: 502,
+      code: 'INVALID_DRAFT_RESPONSE',
+    });
+  });
+
+  it('saves a complete immutable revision with the supplied ETag, CSRF and stable retry key', async () => {
+    const input = {
+      sourceFormat: 'plain_text' as const,
+      normalizedContent: 'Đêm xuống.\n\nÁnh trăng hiện ra.',
+      segments: [
+        {
+          ordinal: 1,
+          type: 'paragraph' as const,
+          sourceText: 'Đêm xuống.',
+          stableAnchor: 'chapter-one-p1',
+        },
+        {
+          ordinal: 2,
+          type: 'paragraph' as const,
+          sourceText: 'Ánh trăng hiện ra.',
+          stableAnchor: 'chapter-one-p2',
+        },
+      ],
+    };
+    const pending = api.savePrivateChapterDraftRevision(
+      workId,
+      chapterId,
+      '"draft-0"',
+      input,
+      idempotencyKey,
+    );
+    await flushCsrf(http);
+
+    const request = http.expectOne(
+      `/api/v1/authoring/manuscripts/${workId}/chapters/${chapterId}/revisions`,
+    );
+    expect(request.request.method).toBe('POST');
+    expect(request.request.headers.get('X-CSRF-Token')).toBe(csrfToken);
+    expect(request.request.headers.get('If-Match')).toBe('"draft-0"');
+    expect(request.request.headers.get('Idempotency-Key')).toBe(idempotencyKey);
+    expect(request.request.body).toEqual(input);
+    request.flush(
+      {
+        id: revisionId,
+        chapterId,
+        revisionNo: 1,
+        sourceFormat: 'plain_text',
+        createdAt: chapterCreatedAt,
+      },
+      {
+        status: 201,
+        statusText: 'Created',
+        headers: new HttpHeaders({ 'Cache-Control': 'no-store', ETag: '"draft-1"' }),
+      },
+    );
+
+    await expect(pending).resolves.toMatchObject({
+      id: revisionId,
+      revisionNo: 1,
+      etag: '"draft-1"',
+    });
+  });
+
+  it('preserves the authoritative ETag on a stale-version response', async () => {
+    const input = {
+      sourceFormat: 'plain_text' as const,
+      normalizedContent: 'My version',
+      segments: [],
+    };
+    const pending = api.savePrivateChapterDraftRevision(
+      workId,
+      chapterId,
+      '"draft-2"',
+      input,
+      idempotencyKey,
+    );
+    await flushCsrf(http);
+    http
+      .expectOne(`/api/v1/authoring/manuscripts/${workId}/chapters/${chapterId}/revisions`)
+      .flush(
+        { code: 'DRAFT_REVISION_STALE', currentEtag: '"draft-3"' },
+        { status: 412, statusText: 'Precondition Failed' },
+      );
+
+    await expect(pending).rejects.toMatchObject({
+      status: 412,
+      code: 'DRAFT_REVISION_STALE',
+      currentEtag: '"draft-3"',
+    });
+  });
+
+  it('validates draft revision bounds and ordered unique segment anchors before networking', async () => {
+    const base = {
+      sourceFormat: 'plain_text' as const,
+      normalizedContent: 'Body',
+      segments: [
+        {
+          ordinal: 1,
+          type: 'paragraph' as const,
+          sourceText: 'Body',
+          stableAnchor: 'chapter-p1',
+        },
+      ],
+    };
+    await expect(
+      api.savePrivateChapterDraftRevision(workId, chapterId, 'W/"draft-0"', base, idempotencyKey),
+    ).rejects.toMatchObject({ status: 400, code: 'INVALID_DRAFT_REVISION' });
+    await expect(
+      api.savePrivateChapterDraftRevision(
+        workId,
+        chapterId,
+        '"draft-0"',
+        {
+          ...base,
+          segments: [base.segments[0], { ...base.segments[0], ordinal: 1 }],
+        },
+        idempotencyKey,
+      ),
+    ).rejects.toMatchObject({ status: 400, code: 'INVALID_DRAFT_REVISION' });
+    await expect(
+      api.savePrivateChapterDraftRevision(workId, chapterId, '"draft-0"', base, 'short'),
+    ).rejects.toMatchObject({ status: 400, code: 'INVALID_DRAFT_REVISION' });
+    http.expectNone((request) => request.url.includes('/revisions'));
   });
 });
 

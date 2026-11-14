@@ -1,0 +1,388 @@
+:host {
+  display: block;
+}
+
+.chapter-editor-page {
+  width: min(100%, 980px);
+  padding-bottom: 100px;
+}
+
+.chapter-editor-heading {
+  margin-bottom: 20px;
+}
+
+.chapter-editor-heading h1 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: clamp(28px, 5vw, 40px);
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.chapter-editor-heading h1:focus-visible {
+  border-radius: 3px;
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 4px;
+}
+
+.chapter-editor-heading > p:last-child {
+  max-width: 700px;
+  margin: 8px 0 0;
+  color: var(--muted);
+}
+
+.chapter-editor-back {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  margin: -8px 0 14px;
+  color: var(--primary-dark);
+  font-weight: 650;
+}
+
+.chapter-editor-panel,
+.chapter-editor-privacy,
+.chapter-editor-conflict,
+.chapter-editor-message {
+  min-width: 0;
+  padding: 22px;
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow-soft);
+}
+
+.chapter-editor-privacy {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 16px;
+  border-color: #d9dceb;
+  background: #f8f8fc;
+  box-shadow: none;
+}
+
+.chapter-editor-privacy > span {
+  display: grid;
+  flex: 0 0 40px;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  border: 1px solid #dfe2f0;
+  border-radius: 11px;
+  color: var(--primary);
+  background: #fff;
+  font-size: 20px;
+}
+
+.chapter-editor-privacy strong {
+  display: block;
+}
+
+.chapter-editor-privacy p,
+.chapter-editor-message > p:not(.eyebrow) {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.chapter-editor-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.chapter-editor-toolbar .eyebrow,
+.chapter-editor-message .eyebrow,
+.chapter-editor-conflict .eyebrow {
+  margin: 0 0 5px;
+}
+
+.chapter-editor-toolbar h2,
+.chapter-editor-message h2,
+.chapter-editor-conflict h2 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 22px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.chapter-editor-save-state {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 7px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  color: var(--muted);
+  background: var(--surface-soft);
+  font-size: 12px;
+  line-height: 1.3;
+}
+
+.chapter-editor-save-state[data-state='saved'] {
+  border-color: #cfe5d6;
+  color: #1b5b31;
+  background: var(--success-soft);
+}
+
+.chapter-editor-save-state[data-state='uncertain'],
+.chapter-editor-save-state[data-state='conflict'] {
+  border-color: #edcfaa;
+  color: var(--warning);
+  background: var(--warning-soft);
+}
+
+.chapter-editor-save-state[data-state='error'] {
+  border-color: #edc9ca;
+  color: var(--error);
+  background: #fff7f7;
+}
+
+.chapter-editor-state-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 8px;
+  border-radius: 50%;
+  background: currentcolor;
+}
+
+.chapter-editor-field {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.chapter-editor-label {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.chapter-editor-field textarea,
+.chapter-editor-conflict textarea {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  min-height: 360px;
+  resize: vertical;
+  padding: 16px;
+  border: 1px solid #cfd3db;
+  border-radius: 8px;
+  color: var(--text);
+  background: #fff;
+  font-family: var(--font-display);
+  font-size: 17px;
+  line-height: 1.75;
+  overflow-wrap: anywhere;
+  tab-size: 2;
+}
+
+.chapter-editor-field textarea:focus-visible,
+.chapter-editor-conflict textarea:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.chapter-editor-field textarea:disabled {
+  color: var(--muted);
+  background: #f1f2f4;
+}
+
+.chapter-editor-field textarea[aria-invalid='true'] {
+  border-color: var(--error);
+}
+
+.chapter-editor-field textarea::placeholder {
+  color: #737986;
+  font-family: var(--font-ui);
+  font-size: 14px;
+}
+
+.chapter-editor-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.chapter-editor-meta p {
+  margin: 0;
+}
+
+.chapter-editor-inline-error,
+.chapter-editor-error,
+.chapter-editor-error-box {
+  color: var(--error);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.chapter-editor-inline-error {
+  margin: 8px 0 0;
+}
+
+.chapter-editor-error-box {
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid #edc9ca;
+  border-radius: 8px;
+  background: #fff7f7;
+}
+
+.chapter-editor-error-box p {
+  margin: 0;
+}
+
+.chapter-editor-error-box p + p,
+.chapter-editor-error-box a {
+  display: inline-block;
+  margin-top: 7px;
+}
+
+.chapter-editor-actions,
+.chapter-editor-conflict-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.chapter-editor-actions .button,
+.chapter-editor-message .button {
+  min-height: 46px;
+}
+
+.chapter-editor-conflict {
+  margin-top: 16px;
+  border-color: #edcfaa;
+  box-shadow: none;
+}
+
+.chapter-editor-conflict > p:not(.eyebrow) {
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.chapter-editor-conflict label {
+  display: block;
+  margin: 16px 0 7px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.chapter-editor-conflict textarea {
+  min-height: 200px;
+  background: var(--surface-soft);
+}
+
+.chapter-editor-status,
+.chapter-editor-footer {
+  min-height: 24px;
+  margin: 12px 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.chapter-editor-message {
+  display: grid;
+  justify-items: start;
+  gap: 12px;
+  max-width: 680px;
+}
+
+.chapter-editor-message > p {
+  margin: 0;
+}
+
+.chapter-editor-error {
+  margin: 0;
+}
+
+.chapter-editor-message .button {
+  margin-top: 2px;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (max-width: 720px) {
+  .chapter-editor-panel,
+  .chapter-editor-privacy,
+  .chapter-editor-conflict,
+  .chapter-editor-message {
+    padding: 16px;
+  }
+
+  .chapter-editor-toolbar {
+    align-items: flex-start;
+  }
+
+  .chapter-editor-field textarea {
+    min-height: 320px;
+    padding: 13px;
+    font-size: 16px;
+  }
+
+  .chapter-editor-meta {
+    display: grid;
+    gap: 4px;
+  }
+}
+
+@media (max-width: 520px) {
+  .chapter-editor-toolbar {
+    display: grid;
+    gap: 10px;
+  }
+
+  .chapter-editor-save-state {
+    justify-self: start;
+    max-width: 100%;
+    white-space: normal;
+  }
+
+  .chapter-editor-actions,
+  .chapter-editor-actions .button,
+  .chapter-editor-conflict-actions,
+  .chapter-editor-conflict-actions .button,
+  .chapter-editor-message .button {
+    width: 100%;
+  }
+
+  .chapter-editor-actions,
+  .chapter-editor-conflict-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

@@ -45,6 +45,43 @@ export interface CreatedPrivateChapter {
   createdAt: string;
 }
 
+export type PrivateDraftSourceFormat = 'plain_text' | 'markdown' | 'xhtml' | 'epub_xhtml';
+
+export interface PrivateDraftSegment {
+  ordinal: number;
+  type: 'paragraph' | 'heading' | 'quote' | 'image_ref';
+  sourceText: string;
+  stableAnchor: string;
+}
+
+export interface PrivateAuthoredChapterDraft {
+  id: string;
+  workId: string;
+  title: string;
+  status: 'draft';
+  revisionNo: number;
+  sourceFormat: PrivateDraftSourceFormat | null;
+  normalizedContent: string;
+  segments: PrivateDraftSegment[];
+  updatedAt: string;
+  etag: string;
+}
+
+export interface SavePrivateDraftRevisionInput {
+  sourceFormat: PrivateDraftSourceFormat;
+  normalizedContent: string;
+  segments: PrivateDraftSegment[];
+}
+
+export interface CreatedPrivateDraftRevision {
+  id: string;
+  chapterId: string;
+  revisionNo: number;
+  sourceFormat: PrivateDraftSourceFormat;
+  createdAt: string;
+  etag: string;
+}
+
 const manuscriptsUrl = '/api/v1/authoring/manuscripts';
 const csrfUrl = '/api/v1/auth/csrf';
 const requestTimeoutMs = 5_000;
@@ -54,6 +91,22 @@ const csrfTokenPattern = /^[A-Za-z0-9_-]{43}$/;
 const idempotencyKeyPattern = /^[A-Za-z0-9._~-]{16,128}$/;
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const cursorPattern = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
+const draftEtagPattern = /^"draft-(0|[1-9][0-9]*)"$/;
+const draftAnchorPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;
+const draftFormats = new Set<PrivateDraftSourceFormat>([
+  'plain_text',
+  'markdown',
+  'xhtml',
+  'epub_xhtml',
+]);
+const draftSegmentTypes = new Set<PrivateDraftSegment['type']>([
+  'paragraph',
+  'heading',
+  'quote',
+  'image_ref',
+]);
+const maxDraftBytes = 10_485_760;
+const maxDraftSegmentBytes = 1_048_576;
 const responseFields = new Set([
   'id',
   'title',
@@ -170,6 +223,74 @@ export class AuthoringApiService {
     }
   }
 
+  async getPrivateChapterDraft(
+    workId: string,
+    chapterId: string,
+  ): Promise<PrivateAuthoredChapterDraft> {
+    if (!isUuid(workId) || !isUuid(chapterId)) {
+      throw new AuthoringApiError(400, 'INVALID_DRAFT_QUERY');
+    }
+    try {
+      const response = await firstValueFrom(
+        this.http
+          .get<unknown>(`${manuscriptsUrl}/${workId}/chapters/${chapterId}/draft`, {
+            observe: 'response',
+          })
+          .pipe(timeout(requestTimeoutMs)),
+      );
+      if (response.status !== 200 || response.headers.get('Cache-Control') !== 'no-store') {
+        throw invalidDraftResponse();
+      }
+      return parsePrivateDraft(response.body, workId, chapterId, response.headers.get('ETag'));
+    } catch (error) {
+      throw toAuthoringApiError(error);
+    }
+  }
+
+  async savePrivateChapterDraftRevision(
+    workId: string,
+    chapterId: string,
+    ifMatch: string,
+    input: SavePrivateDraftRevisionInput,
+    idempotencyKey: string,
+  ): Promise<CreatedPrivateDraftRevision> {
+    if (
+      !isUuid(workId) ||
+      !isUuid(chapterId) ||
+      !isDraftEtag(ifMatch) ||
+      !isValidDraftInput(input) ||
+      !idempotencyKeyPattern.test(idempotencyKey)
+    ) {
+      throw new AuthoringApiError(400, 'INVALID_DRAFT_REVISION');
+    }
+
+    try {
+      const headers = (await this.csrfHeaders())
+        .set('Content-Type', 'application/json')
+        .set('If-Match', ifMatch)
+        .set('Idempotency-Key', idempotencyKey);
+      const response = await firstValueFrom(
+        this.http
+          .post<unknown>(`${manuscriptsUrl}/${workId}/chapters/${chapterId}/revisions`, input, {
+            headers,
+            observe: 'response',
+          })
+          .pipe(timeout(requestTimeoutMs)),
+      );
+      if (response.status !== 201 || response.headers.get('Cache-Control') !== 'no-store') {
+        throw invalidDraftRevisionResponse();
+      }
+      return parseCreatedDraftRevision(
+        response.body,
+        chapterId,
+        input.sourceFormat,
+        response.headers.get('ETag'),
+      );
+    } catch (error) {
+      throw toAuthoringApiError(error);
+    }
+  }
+
   private async csrfHeaders(): Promise<HttpHeaders> {
     const response: unknown = await firstValueFrom(
       this.http.get<unknown>(csrfUrl).pipe(timeout(requestTimeoutMs)),
@@ -189,6 +310,7 @@ export class AuthoringApiError extends Error {
   constructor(
     readonly status: number,
     readonly code: string | null,
+    readonly currentEtag: string | null = null,
   ) {
     super(code ?? 'AUTHORING_UNAVAILABLE');
     this.name = 'AuthoringApiError';
@@ -301,6 +423,157 @@ function parseCreatedChapter(
   return value as unknown as CreatedPrivateChapter;
 }
 
+function parsePrivateDraft(
+  value: unknown,
+  expectedWorkId: string,
+  expectedChapterId: string,
+  etag: string | null,
+): PrivateAuthoredChapterDraft {
+  if (
+    !isRecord(value) ||
+    hasUnexpectedFields(value, [
+      'id',
+      'workId',
+      'title',
+      'status',
+      'revisionNo',
+      'sourceFormat',
+      'normalizedContent',
+      'segments',
+      'updatedAt',
+    ]) ||
+    value['id'] !== expectedChapterId ||
+    value['workId'] !== expectedWorkId ||
+    !isBoundedString(value['title'], 1, 300) ||
+    value['status'] !== 'draft' ||
+    !Number.isSafeInteger(value['revisionNo']) ||
+    (value['revisionNo'] as number) < 0 ||
+    !isNullableDraftFormat(value['sourceFormat']) ||
+    typeof value['normalizedContent'] !== 'string' ||
+    utf8Bytes(value['normalizedContent']) > maxDraftBytes ||
+    !Array.isArray(value['segments']) ||
+    value['segments'].length > 10_000 ||
+    !isInstant(value['updatedAt']) ||
+    !isDraftEtag(etag) ||
+    draftEtagRevision(etag) !== value['revisionNo']
+  ) {
+    throw invalidDraftResponse();
+  }
+
+  const parsedSegments = value['segments'].map(parsePrivateDraftSegment);
+  const segments = parsedSegments.filter((segment): segment is PrivateDraftSegment => !!segment);
+  if (
+    segments.length !== parsedSegments.length ||
+    !areDraftSegmentsOrderedAndBounded(segments) ||
+    (value['revisionNo'] === 0 &&
+      (value['sourceFormat'] !== null ||
+        value['normalizedContent'] !== '' ||
+        segments.length > 0)) ||
+    (value['revisionNo'] > 0 &&
+      (!isDraftFormat(value['sourceFormat']) || value['normalizedContent'].length === 0))
+  ) {
+    throw invalidDraftResponse();
+  }
+  return { ...(value as unknown as Omit<PrivateAuthoredChapterDraft, 'etag'>), segments, etag };
+}
+
+function parsePrivateDraftSegment(value: unknown): PrivateDraftSegment | null {
+  if (
+    !isRecord(value) ||
+    hasUnexpectedFields(value, ['ordinal', 'type', 'sourceText', 'stableAnchor']) ||
+    !Number.isSafeInteger(value['ordinal']) ||
+    (value['ordinal'] as number) < 1 ||
+    typeof value['type'] !== 'string' ||
+    !draftSegmentTypes.has(value['type'] as PrivateDraftSegment['type']) ||
+    typeof value['sourceText'] !== 'string' ||
+    utf8Bytes(value['sourceText']) > maxDraftSegmentBytes ||
+    typeof value['stableAnchor'] !== 'string' ||
+    !draftAnchorPattern.test(value['stableAnchor'])
+  ) {
+    return null;
+  }
+  return value as unknown as PrivateDraftSegment;
+}
+
+function parseCreatedDraftRevision(
+  value: unknown,
+  expectedChapterId: string,
+  expectedFormat: PrivateDraftSourceFormat,
+  etag: string | null,
+): CreatedPrivateDraftRevision {
+  if (
+    !isRecord(value) ||
+    hasUnexpectedFields(value, ['id', 'chapterId', 'revisionNo', 'sourceFormat', 'createdAt']) ||
+    !isUuid(value['id']) ||
+    value['chapterId'] !== expectedChapterId ||
+    !Number.isSafeInteger(value['revisionNo']) ||
+    (value['revisionNo'] as number) < 1 ||
+    value['sourceFormat'] !== expectedFormat ||
+    !isInstant(value['createdAt']) ||
+    !isDraftEtag(etag) ||
+    draftEtagRevision(etag) !== value['revisionNo']
+  ) {
+    throw invalidDraftRevisionResponse();
+  }
+  return { ...(value as unknown as Omit<CreatedPrivateDraftRevision, 'etag'>), etag };
+}
+
+function isValidDraftInput(value: SavePrivateDraftRevisionInput): boolean {
+  if (
+    !value ||
+    !isDraftFormat(value.sourceFormat) ||
+    typeof value.normalizedContent !== 'string' ||
+    value.normalizedContent.length === 0 ||
+    utf8Bytes(value.normalizedContent) > maxDraftBytes ||
+    !Array.isArray(value.segments) ||
+    value.segments.length > 10_000
+  ) {
+    return false;
+  }
+  return areDraftSegmentsOrderedAndBounded(value.segments);
+}
+
+function areDraftSegmentsOrderedAndBounded(segments: PrivateDraftSegment[]): boolean {
+  let totalBytes = 0;
+  const anchors = new Set<string>();
+  return segments.every((segment, index) => {
+    if (
+      !segment ||
+      segment.ordinal !== index + 1 ||
+      !draftSegmentTypes.has(segment.type) ||
+      typeof segment.sourceText !== 'string' ||
+      utf8Bytes(segment.sourceText) > maxDraftSegmentBytes ||
+      !draftAnchorPattern.test(segment.stableAnchor) ||
+      anchors.has(segment.stableAnchor)
+    ) {
+      return false;
+    }
+    totalBytes += utf8Bytes(segment.sourceText);
+    anchors.add(segment.stableAnchor);
+    return totalBytes <= maxDraftBytes;
+  });
+}
+
+function isDraftEtag(value: unknown): value is string {
+  return typeof value === 'string' && draftEtagPattern.test(value);
+}
+
+function draftEtagRevision(value: string): number {
+  return Number(value.slice(7, -1));
+}
+
+function isDraftFormat(value: unknown): value is PrivateDraftSourceFormat {
+  return typeof value === 'string' && draftFormats.has(value as PrivateDraftSourceFormat);
+}
+
+function isNullableDraftFormat(value: unknown): value is PrivateDraftSourceFormat | null {
+  return value === null || isDraftFormat(value);
+}
+
+function utf8Bytes(value: string): number {
+  return new TextEncoder().encode(value).byteLength;
+}
+
 function hasUnexpectedFields(value: Record<string, unknown>, allowed: string[]): boolean {
   return (
     Object.keys(value).length !== allowed.length ||
@@ -327,7 +600,11 @@ function toAuthoringApiError(error: unknown): AuthoringApiError {
       isRecord(error.error) && typeof error.error['code'] === 'string'
         ? error.error['code'].slice(0, 80)
         : null;
-    return new AuthoringApiError(error.status, code);
+    const currentEtag =
+      isRecord(error.error) && isDraftEtag(error.error['currentEtag'])
+        ? error.error['currentEtag']
+        : null;
+    return new AuthoringApiError(error.status, code, currentEtag);
   }
   return new AuthoringApiError(0, null);
 }
@@ -342,6 +619,14 @@ function invalidOutlineResponse(): AuthoringApiError {
 
 function invalidChapterResponse(): AuthoringApiError {
   return new AuthoringApiError(502, 'INVALID_CHAPTER_RESPONSE');
+}
+
+function invalidDraftResponse(): AuthoringApiError {
+  return new AuthoringApiError(502, 'INVALID_DRAFT_RESPONSE');
+}
+
+function invalidDraftRevisionResponse(): AuthoringApiError {
+  return new AuthoringApiError(502, 'INVALID_DRAFT_REVISION_RESPONSE');
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

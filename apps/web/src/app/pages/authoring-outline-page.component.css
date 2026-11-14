@@ -141,10 +141,9 @@
 
 .authoring-outline-row {
   display: grid;
-  grid-template-columns: minmax(90px, 0.35fr) minmax(0, 1fr) minmax(64px, 0.22fr) minmax(
-      130px,
-      0.45fr
-    );
+  grid-template-columns:
+    minmax(90px, 0.35fr) minmax(0, 1fr) minmax(64px, 0.22fr) minmax(130px, 0.45fr)
+    auto;
   align-items: center;
   gap: 12px;
   min-width: 0;
@@ -178,6 +177,12 @@
   border-color: #cfe5d6;
   color: #1b5b31;
   background: var(--success-soft);
+}
+
+.authoring-outline-edit {
+  min-height: 42px;
+  padding-inline: 12px;
+  white-space: nowrap;
 }
 
 .authoring-outline-empty {
@@ -383,6 +388,12 @@
     text-align: right;
   }
 
+  .authoring-outline-edit {
+    grid-column: 1 / -1;
+    grid-row: 3;
+    justify-self: start;
+  }
+
   .authoring-outline-add-heading {
     display: grid;
     gap: 7px;
@@ -419,5 +430,9 @@
   .authoring-outline-availability {
     max-width: 150px;
     white-space: normal;
+  }
+
+  .authoring-outline-edit {
+    width: 100%;
   }
 }

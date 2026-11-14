@@ -47,6 +47,7 @@ export class AuthoringOutlinePageComponent {
   protected readonly createAnnouncement = signal('');
   protected readonly isCreating = signal(false);
   protected readonly isCreateUncertain = signal(false);
+  protected readonly requestedWorkIdView = signal<string | null>(null);
 
   private readonly route = inject(ActivatedRoute);
   private readonly api = inject(AuthoringApiService);
@@ -73,6 +74,7 @@ export class AuthoringOutlinePageComponent {
   constructor() {
     this.route.paramMap.pipe(takeUntilDestroyed(this.destroyRef)).subscribe((params) => {
       this.requestedWorkId = params.get('workId');
+      this.requestedWorkIdView.set(this.requestedWorkId);
       this.isAddFormOpen.set(false);
       this.chapterTitle.set('');
       this.isCreating.set(false);

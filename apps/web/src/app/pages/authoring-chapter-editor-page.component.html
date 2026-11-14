@@ -1,0 +1,192 @@
+<section class="page-wrap chapter-editor-page">
+  <header class="chapter-editor-heading">
+    <a class="chapter-editor-back" [routerLink]="returnTo">← Về dàn ý</a>
+    <p class="eyebrow">AUTHOR STUDIO · BẢN THỬ</p>
+    <h1 #editorHeading tabindex="-1">{{ draft()?.title ?? 'Soạn chương' }}</h1>
+    <p>
+      Viết bản thảo riêng tư. Nội dung chỉ hiển thị dưới dạng văn bản thuần trong trình soạn thảo.
+    </p>
+  </header>
+
+  @if (pageState() === 'guest') {
+    <section
+      class="chapter-editor-panel chapter-editor-message"
+      aria-labelledby="editor-sign-in-title"
+    >
+      <p class="eyebrow">BẢN THẢO RIÊNG TƯ</p>
+      <h2 id="editor-sign-in-title">Đăng nhập để viết chương</h2>
+      <p>Nội dung được lưu trong bản thảo của tài khoản bạn.</p>
+      <a
+        class="button button-primary"
+        [routerLink]="['/sign-in']"
+        [queryParams]="{ returnTo: returnTo }"
+      >
+        Đăng nhập bằng Google
+      </a>
+    </section>
+  } @else if (pageState() === 'loading') {
+    <p class="chapter-editor-status" role="status" aria-live="polite">
+      Đang tải bản thảo riêng tư…
+    </p>
+  } @else if (pageState() === 'error') {
+    <section
+      class="chapter-editor-panel chapter-editor-message"
+      aria-labelledby="editor-error-title"
+    >
+      <h2 id="editor-error-title">Chưa mở được chương</h2>
+      <p class="chapter-editor-error" role="alert">
+        @if (pageError()?.status === 401) {
+          Phiên đăng nhập đã hết hạn. Hãy đăng nhập lại để tiếp tục.
+        } @else if (pageError()?.status === 403) {
+          Tài khoản hiện không có quyền mở chương này.
+        } @else if (pageError()?.status === 404) {
+          Chương không còn khả dụng trong bản thảo này.
+        } @else {
+          Chưa tải được nội dung. Kiểm tra kết nối rồi thử lại.
+        }
+      </p>
+      @if (recoveryUrl; as url) {
+        <a class="button button-primary" [routerLink]="url" [queryParams]="recoveryQueryParams">
+          {{ recoveryLabel }}
+        </a>
+      } @else {
+        <button class="button button-primary" type="button" (click)="retryLoad()">
+          Tải lại chương
+        </button>
+        <a class="button button-outline" [routerLink]="returnTo">Về dàn ý</a>
+      }
+    </section>
+  } @else {
+    <aside class="chapter-editor-privacy" aria-label="Thông tin về quyền riêng tư">
+      <span aria-hidden="true">▣</span>
+      <div>
+        <strong>Bản thảo riêng tư</strong>
+        <p>Chưa xuất bản và chưa có chức năng xem thử bản dịch cho chương này.</p>
+      </div>
+    </aside>
+
+    <section class="chapter-editor-panel" aria-labelledby="chapter-editor-title">
+      <div class="chapter-editor-toolbar">
+        <div>
+          <p class="eyebrow">SOẠN THẢO</p>
+          <h2 id="chapter-editor-title">Nội dung chương</h2>
+        </div>
+        <p
+          class="chapter-editor-save-state"
+          [attr.data-state]="saveState()"
+          role="status"
+          aria-live="polite"
+        >
+          <span class="chapter-editor-state-dot" aria-hidden="true"></span>
+          {{ saveStatusText }}
+        </p>
+      </div>
+
+      <label class="chapter-editor-field" for="chapter-draft-content">
+        <span class="chapter-editor-label">Văn bản bản thảo</span>
+        <textarea
+          id="chapter-draft-content"
+          rows="18"
+          spellcheck="true"
+          autocapitalize="sentences"
+          autocomplete="off"
+          [value]="content()"
+          [disabled]="saveState() === 'uncertain'"
+          [attr.aria-invalid]="contentLimitError ? 'true' : null"
+          aria-describedby="chapter-editor-help chapter-editor-count chapter-editor-limit"
+          (input)="updateContent($event)"
+          placeholder="Bắt đầu viết chương của bạn…"
+        ></textarea>
+      </label>
+
+      <div class="chapter-editor-meta">
+        <p id="chapter-editor-help">
+          Tự lưu sau khi bạn ngừng gõ. Mỗi lần lưu tạo một phiên bản mới.
+        </p>
+        <p id="chapter-editor-count">{{ byteLength() | number }} / 10.485.760 byte</p>
+      </div>
+      @if (contentLimitError; as error) {
+        <p id="chapter-editor-limit" class="chapter-editor-inline-error">{{ error }}</p>
+      } @else {
+        <span id="chapter-editor-limit" class="sr-only">Giới hạn nội dung: 10 MiB.</span>
+      }
+
+      @if (saveError(); as error) {
+        <div class="chapter-editor-error-box" role="alert">
+          <p>{{ errorMessage(error) }}</p>
+          @if (recoveryUrl; as url) {
+            <a [routerLink]="url" [queryParams]="recoveryQueryParams">{{ recoveryLabel }}</a>
+          }
+          @if (saveState() === 'uncertain') {
+            <p>Giữ nguyên nội dung. Lần xác nhận lại sẽ dùng đúng yêu cầu và mã an toàn cũ.</p>
+          }
+        </div>
+      }
+
+      <div class="chapter-editor-actions">
+        @if (saveState() === 'uncertain') {
+          <button class="button button-primary" type="button" (click)="retryUncertainSave()">
+            {{ isSaving() ? 'Đang xác nhận…' : 'Xác nhận lưu lại' }}
+          </button>
+        } @else {
+          <button
+            class="button button-primary"
+            type="button"
+            [disabled]="!canSave"
+            (click)="saveNow()"
+          >
+            {{ isSaving() ? 'Đang lưu…' : 'Lưu ngay' }}
+          </button>
+        }
+        <a class="button button-outline" [routerLink]="returnTo">Quay lại dàn ý</a>
+      </div>
+    </section>
+
+    @if (saveState() === 'conflict') {
+      <section class="chapter-editor-conflict" aria-labelledby="chapter-conflict-title">
+        <p class="eyebrow">CẦN CHỌN PHIÊN BẢN</p>
+        <h2 id="chapter-conflict-title">Bản thảo đã đổi trên máy chủ</h2>
+        <p>
+          Nội dung bạn đang viết vẫn còn trong màn hình. Chọn cách xử lý sau khi xem bản máy chủ.
+        </p>
+        @if (isLoadingRemote()) {
+          <p role="status" aria-live="polite">Đang tải phiên bản mới nhất…</p>
+        } @else if (remoteDraft(); as remote) {
+          <label for="chapter-remote-content"
+            >Phiên bản máy chủ · phiên bản {{ remote.revisionNo }}</label
+          >
+          <textarea
+            id="chapter-remote-content"
+            rows="10"
+            readonly
+            [value]="remote.normalizedContent"
+          ></textarea>
+          <div class="chapter-editor-conflict-actions">
+            <button class="button button-outline" type="button" (click)="useRemoteVersion()">
+              Dùng bản máy chủ
+            </button>
+            <button class="button button-primary" type="button" (click)="saveMyVersionAsNext()">
+              Ghi bản của tôi thành phiên bản tiếp theo
+            </button>
+          </div>
+        } @else {
+          @if (conflictError()) {
+            <p class="chapter-editor-error" role="alert">
+              Chưa tải được bản mới nhất. Nội dung đang viết vẫn được giữ ở đây.
+            </p>
+          }
+          <button
+            class="button button-outline"
+            type="button"
+            [disabled]="isLoadingRemote()"
+            (click)="reloadRemoteVersion()"
+          >
+            Tải lại bản máy chủ
+          </button>
+        }
+      </section>
+    }
+
+    <p class="chapter-editor-footer" role="status" aria-live="polite">{{ announcement() }}</p>
+  }
+</section>

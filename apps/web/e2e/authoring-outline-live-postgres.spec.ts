@@ -56,7 +56,10 @@ test('private chapter outline reads and creates metadata through the real API an
   await expect(page.getByText('Live Outline Seed 25', { exact: true })).toBeVisible();
   await expect(page.getByText('Có nội dung đọc được', { exact: true })).toBeVisible();
   await expect(page.getByText('Chỉ bạn có thể xem mục lục này')).toBeVisible();
-  await expect(page.getByRole('link', { name: /Mở trình soạn thảo|Mở chương/ })).toHaveCount(0);
+  await expect(page.getByRole('link', { name: 'Viết chương' })).toHaveCount(24);
+  await expect(
+    page.getByRole('listitem').filter({ hasText: 'Live Translation Chapter' }).getByRole('link'),
+  ).toHaveCount(0);
   await expectNoAxeViolations(page);
 
   const cursorRequestPromise = page.waitForResponse((response) => {

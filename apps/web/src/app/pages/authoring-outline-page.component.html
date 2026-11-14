@@ -166,6 +166,14 @@
               >
                 {{ chapterAvailability(chapter) }}
               </span>
+              @if (chapter.status === 'draft') {
+                <a
+                  class="button button-outline authoring-outline-edit"
+                  [routerLink]="['/app/authoring', requestedWorkIdView(), 'chapters', chapter.id]"
+                >
+                  {{ chapter.contentAvailable ? 'Tiếp tục viết' : 'Viết chương' }}
+                </a>
+              }
             </li>
           }
         </ol>

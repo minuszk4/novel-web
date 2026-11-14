@@ -109,6 +109,28 @@ describe('AuthoringOutlinePageComponent', () => {
     expect(fixture.nativeElement.querySelector('a[href*="/reader/"]')).toBeNull();
   });
 
+  it('links private draft rows to the chapter editor while keeping ready rows read-only', async () => {
+    api.listPrivateChapters.mockResolvedValue(
+      page([
+        chapter(firstChapterId, 1, 'Chưa viết'),
+        chapter(secondChapterId, 2, 'Đã sẵn sàng', 'ready'),
+      ]),
+    );
+    const fixture = TestBed.createComponent(AuthoringOutlinePageComponent);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    const draftLink = fixture.nativeElement.querySelector(
+      `a[href="/app/authoring/${workId}/chapters/${firstChapterId}"]`,
+    );
+    expect(draftLink?.textContent).toContain('Viết chương');
+    const readyRow = [...fixture.nativeElement.querySelectorAll('.authoring-outline-row')].find(
+      (row: Element) => row.textContent?.includes('Đã sẵn sàng'),
+    );
+    expect(readyRow?.querySelector('a')).toBeNull();
+  });
+
   it('moves keyboard focus into the title field when the add form opens', async () => {
     const fixture = TestBed.createComponent(AuthoringOutlinePageComponent);
     fixture.detectChanges();
