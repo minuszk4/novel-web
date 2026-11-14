@@ -122,20 +122,27 @@
               <a [routerLink]="url" [queryParams]="recoveryQueryParams">{{
                 url === '/sign-in' ? 'Đăng nhập lại' : 'Xem chính sách tài khoản'
               }}</a>
-            } @else {
-              <button class="text-button" type="button" (click)="loadMore()">Thử tải thêm</button>
             }
           </div>
         }
 
-        @if (nextCursor()) {
+        @if (!recoveryUrl && (nextCursor() || moreError())) {
           <button
             class="button button-outline authoring-manuscripts-load-more"
             type="button"
-            [disabled]="isLoadingMore() || !!recoveryUrl"
-            (click)="loadMore()"
+            [attr.aria-disabled]="isLoadingMore()"
+            [attr.aria-busy]="isLoadingMore()"
+            (click)="continueListing()"
           >
-            {{ isLoadingMore() ? 'Đang tải…' : 'Tải thêm bản thảo' }}
+            {{
+              isLoadingMore()
+                ? 'Đang tải…'
+                : resetToFirstPageRequired
+                  ? 'Tải lại danh sách từ đầu'
+                  : moreError()
+                    ? 'Thử tải thêm'
+                    : 'Tải thêm bản thảo'
+            }}
           </button>
         }
       </section>

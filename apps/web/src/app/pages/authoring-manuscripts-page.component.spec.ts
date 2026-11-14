@@ -121,6 +121,83 @@ describe('AuthoringManuscriptsPageComponent', () => {
     expect(fixture.nativeElement.querySelector('.authoring-manuscripts-load-more')).toBeNull();
   });
 
+  it('shows one retry action and reuses the same cursor after a temporary failure', async () => {
+    api.listPrivateManuscripts
+      .mockResolvedValueOnce(page([manuscript()], 'YWJj.ZGVm'))
+      .mockRejectedValueOnce(new AuthoringApiError(503, 'STORE_UNAVAILABLE'))
+      .mockResolvedValueOnce(page([manuscript(secondWorkId, 'Bản thảo thứ hai')]));
+    const fixture = TestBed.createComponent(AuthoringManuscriptsPageComponent);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    const loadMore = fixture.nativeElement.querySelector(
+      '.authoring-manuscripts-load-more',
+    ) as HTMLButtonElement;
+    loadMore.click();
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    expect(fixture.nativeElement.querySelectorAll('.authoring-manuscripts-load-more')).toHaveLength(
+      1,
+    );
+    expect(
+      fixture.nativeElement.querySelector('.authoring-manuscripts-more-error button'),
+    ).toBeNull();
+    expect(
+      (fixture.nativeElement.querySelector('.authoring-manuscripts-load-more') as HTMLButtonElement)
+        .textContent,
+    ).toContain('Thử tải thêm');
+    expect(fixture.nativeElement.querySelectorAll('.authoring-manuscript-card')).toHaveLength(1);
+
+    (
+      fixture.nativeElement.querySelector('.authoring-manuscripts-load-more') as HTMLButtonElement
+    ).click();
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    expect(api.listPrivateManuscripts).toHaveBeenNthCalledWith(2, 'YWJj.ZGVm', 25);
+    expect(api.listPrivateManuscripts).toHaveBeenNthCalledWith(3, 'YWJj.ZGVm', 25);
+    expect(fixture.nativeElement.textContent).toContain('Bản thảo thứ hai');
+    expect(fixture.nativeElement.querySelectorAll('.authoring-manuscript-card')).toHaveLength(2);
+  });
+
+  it('restarts from the first page instead of retrying an invalid cursor', async () => {
+    api.listPrivateManuscripts
+      .mockResolvedValueOnce(page([manuscript()], 'YWJj.ZGVm'))
+      .mockRejectedValueOnce(new AuthoringApiError(400, 'INVALID_AUTHORING_CURSOR'))
+      .mockResolvedValueOnce(page([manuscript()]));
+    const fixture = TestBed.createComponent(AuthoringManuscriptsPageComponent);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    (
+      fixture.nativeElement.querySelector('.authoring-manuscripts-load-more') as HTMLButtonElement
+    ).click();
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    expect(fixture.nativeElement.textContent).toContain('Trang danh sách không còn hợp lệ');
+    expect(fixture.nativeElement.querySelectorAll('.authoring-manuscripts-load-more')).toHaveLength(
+      1,
+    );
+    expect(
+      (fixture.nativeElement.querySelector('.authoring-manuscripts-load-more') as HTMLButtonElement)
+        .textContent,
+    ).toContain('Tải lại danh sách từ đầu');
+
+    (
+      fixture.nativeElement.querySelector('.authoring-manuscripts-load-more') as HTMLButtonElement
+    ).click();
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    expect(api.listPrivateManuscripts).toHaveBeenNthCalledWith(2, 'YWJj.ZGVm', 25);
+    expect(api.listPrivateManuscripts).toHaveBeenNthCalledWith(3, undefined, 25);
+    expect(fixture.nativeElement.querySelector('.authoring-manuscripts-more-error')).toBeNull();
+  });
+
   it('retains a safe error state with an explicit retry', async () => {
     api.listPrivateManuscripts.mockRejectedValueOnce(
       new AuthoringApiError(503, 'STORE_UNAVAILABLE'),

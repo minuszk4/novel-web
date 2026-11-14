@@ -162,12 +162,110 @@ for (const viewport of [
     await expectNoAxeViolations(page);
     await page.screenshot({ path: testInfo.outputPath(`authoring-list-${viewport.width}.png`) });
 
-    await page.getByRole('link', { name: 'Mở dàn ý chương của Hành trình tu luyện' }).click();
+    await expect(page.getByRole('heading', { name: 'Tác phẩm của tôi' })).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(page.getByRole('link', { name: '+ Tạo bản thảo' })).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(
+      page.getByRole('link', { name: 'Mở dàn ý chương của Hành trình tu luyện' }),
+    ).toBeFocused();
+    await page.keyboard.press('Enter');
     await expect(page).toHaveURL(`/app/authoring/${workId}/chapters`);
     await expect(page.getByRole('heading', { name: 'Dàn ý bản thảo' })).toBeVisible();
     await expectNoAxeViolations(page);
   });
 }
+
+test('keyboard users can retry one failed cursor page without losing focus or loaded rows', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 360, height: 800 });
+  await installAccount(page);
+  let continuationAttempts = 0;
+  await page.route('**/api/v1/authoring/manuscripts**', async (route) => {
+    const url = new URL(route.request().url());
+    if (route.request().method() !== 'GET' || url.pathname !== '/api/v1/authoring/manuscripts') {
+      return route.continue();
+    }
+    if (url.searchParams.has('cursor')) {
+      continuationAttempts += 1;
+      if (continuationAttempts === 1) {
+        return route.fulfill({
+          status: 503,
+          contentType: 'application/json',
+          body: JSON.stringify({ code: 'STORE_UNAVAILABLE' }),
+        });
+      }
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        headers: { 'Cache-Control': 'no-store', Pragma: 'no-cache' },
+        body: JSON.stringify({
+          items: [
+            {
+              id: '22222222-2222-4222-8222-222222222222',
+              title: 'Bản thảo trang kế',
+              author: '',
+              language: 'vi',
+              visibility: 'private',
+              publicationState: 'draft',
+              chapterCount: 0,
+              createdAt: '2026-11-14T12:00:00Z',
+            },
+          ],
+          nextCursor: null,
+        }),
+      });
+    }
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      headers: { 'Cache-Control': 'no-store', Pragma: 'no-cache' },
+      body: JSON.stringify({
+        items: [
+          {
+            id: workId,
+            title: 'Bản thảo trang đầu',
+            author: '',
+            language: 'vi',
+            visibility: 'private',
+            publicationState: 'draft',
+            chapterCount: 1,
+            createdAt: '2026-11-15T12:00:00Z',
+          },
+        ],
+        nextCursor: 'YWJj.ZGVm',
+      }),
+    });
+  });
+
+  await page.goto('/app/authoring');
+  await expect(page.getByRole('heading', { name: 'Tác phẩm của tôi' })).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(page.getByRole('link', { name: '+ Tạo bản thảo' })).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(
+    page.getByRole('link', { name: 'Mở dàn ý chương của Bản thảo trang đầu' }),
+  ).toBeFocused();
+  await page.keyboard.press('Tab');
+  const continuation = page.getByRole('button', { name: 'Tải thêm bản thảo' });
+  await expect(continuation).toBeFocused();
+  await page.keyboard.press('Enter');
+
+  await expect(page.getByRole('alert')).toContainText('Danh sách tạm thời chưa sử dụng được');
+  await expect(page.getByRole('button', { name: 'Thử tải thêm' })).toBeFocused();
+  await expect(page.getByRole('button', { name: 'Thử tải thêm' })).toHaveCount(1);
+  await expect(page.getByRole('heading', { name: 'Bản thảo trang đầu' })).toBeVisible();
+  await expectNoAxeViolations(page);
+  await page.keyboard.press('Enter');
+
+  await expect(page.locator('.authoring-manuscripts-page [role="status"]')).toContainText(
+    'Đã tải 2 bản thảo.',
+  );
+  await expect(page.getByRole('heading', { name: 'Bản thảo trang kế' })).toBeVisible();
+  expect(continuationAttempts).toBe(2);
+  await expectNoAxeViolations(page);
+});
 
 test('shows a private first-work empty state and offers creation', async ({ page }) => {
   await installAccount(page);

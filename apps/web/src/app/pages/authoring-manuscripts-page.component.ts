@@ -30,10 +30,14 @@ export class AuthoringManuscriptsPageComponent {
   private readonly api = inject(AuthoringApiService);
   private loadToken = 0;
   private readonly consumedCursors = new Set<string>();
+  private focusedHeading?: HTMLHeadingElement;
 
   @ViewChild('pageHeading')
   private set pageHeading(heading: ElementRef<HTMLHeadingElement> | undefined) {
-    heading?.nativeElement.focus({ preventScroll: true });
+    if (heading && heading.nativeElement !== this.focusedHeading) {
+      this.focusedHeading = heading.nativeElement;
+      heading.nativeElement.focus({ preventScroll: true });
+    }
   }
 
   constructor() {
@@ -55,6 +59,15 @@ export class AuthoringManuscriptsPageComponent {
     if (this.recoveryUrl === '/sign-in') return { returnTo: '/app/authoring' };
     if (this.recoveryUrl === '/app/setup') return { returnUrl: '/app/authoring' };
     return {};
+  }
+
+  protected get resetToFirstPageRequired(): boolean {
+    return requiresFirstPageReset(this.moreError());
+  }
+
+  protected continueListing(): Promise<void> {
+    if (this.isLoadingMore() || this.pageState() !== 'ready') return Promise.resolve();
+    return this.resetToFirstPageRequired ? this.retryFirstPage() : this.loadMore();
   }
 
   async retryFirstPage(): Promise<void> {
@@ -96,7 +109,11 @@ export class AuthoringManuscriptsPageComponent {
       }
       this.announcement.set(`Đã tải ${this.manuscripts().length} bản thảo.`);
     } catch (error) {
-      if (token === this.loadToken) this.moreError.set(toAuthoringError(error));
+      if (token === this.loadToken) {
+        const listError = toAuthoringError(error);
+        this.moreError.set(listError);
+        if (requiresFirstPageReset(listError)) this.nextCursor.set(null);
+      }
     } finally {
       if (token === this.loadToken) this.isLoadingMore.set(false);
     }
@@ -149,4 +166,12 @@ export class AuthoringManuscriptsPageComponent {
 
 function toAuthoringError(error: unknown): AuthoringApiError {
   return error instanceof AuthoringApiError ? error : new AuthoringApiError(0, null);
+}
+
+function requiresFirstPageReset(error: AuthoringApiError | null): boolean {
+  return (
+    error?.code === 'INVALID_AUTHORING_CURSOR' ||
+    error?.code === 'INVALID_AUTHORING_QUERY' ||
+    error?.code === 'INVALID_AUTHORING_MANUSCRIPT_LIST_RESPONSE'
+  );
 }
