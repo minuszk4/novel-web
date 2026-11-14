@@ -2,7 +2,8 @@ param(
     [int]$PostgresPortStart = 55432,
     [int]$PostgresPortEnd = 55480,
     [switch]$IncludeTranslationPreview,
-    [switch]$IncludeAuthoringOutline
+    [switch]$IncludeAuthoringOutline,
+    [switch]$IncludeAuthoringDraftApi
 )
 
 $ErrorActionPreference = 'Stop'
@@ -201,6 +202,20 @@ try {
     }
     if (-not $schemaReady) { throw "The disposable PostgreSQL database did not reach the source schema with $expectedChangesets changesets." }
 
+    if ($IncludeAuthoringDraftApi) {
+        $draftApiTestLog = Join-Path $evidenceDirectory 'authoring-draft-api-test.log'
+        Push-Location $apiDirectory
+        try {
+            & .\mvnw.cmd -B -ntp -Ppostgres '-Dpostgres.integration=true' `
+                '-Dtest=PostgresSchemaIntegrationTests#authoringDraftRevisionsArePrivateVersionedIdempotentAndReaderHidden' test *> $draftApiTestLog
+            $draftApiTestExit = $LASTEXITCODE
+        } finally { Pop-Location }
+        if ($draftApiTestExit -ne 0) {
+            Get-Content -LiteralPath $draftApiTestLog -Tail 80
+            throw "Private authoring draft API integration test failed (exit $draftApiTestExit)."
+        }
+    }
+
     $fixtureSql = @"
 BEGIN;
 INSERT INTO users (id, display_name, contact_email, email_verified_at, status)
@@ -381,7 +396,7 @@ COMMIT;
     }
     $duration = [math]::Round(((Get-Date) - $startedAt).TotalSeconds, 1)
     @(
-        '# Browser journey: frontend to PostgreSQL import, Library, Reader, authoring outline, cultivation and fake-local translation'
+        '# Browser journey: frontend to PostgreSQL import, Library, Reader, authoring, cultivation and fake-local translation'
         ''
         "- Date: $($startedAt.ToString('yyyy-MM-dd HH:mm:ss zzz'))"
         "- Result: $result"
@@ -391,7 +406,9 @@ COMMIT;
         "- Schema: $appliedChangesets/$expectedChangesets Liquibase changesets applied before fixture setup"
         '- Browser: Playwright Chromium, Angular dev-server proxy to the real API'
         '- Authoring: real authenticated metadata create, same-key replay, changed-payload 409, private authored work persisted, one idempotency receipt, zero volumes/chapters'
-        "- Journey: session cookie/policy → rights receipt → upload/parse/preview/private commit → refreshed Library → Work Detail → Reader source/bookmark, then opt-in → server-timed Reader session → XP award → private profile/activity → glossary import/draft edit/revision preview$(if ($IncludeTranslationPreview) { ' → fake-local Reader translation → redacted job status → unpublished PostgreSQL candidate' } else { '' })$(if ($IncludeAuthoringOutline) { ' → private authoring chapter outline → CSRF/idempotent blank-chapter creation' } else { '' })"
+        $(if ($IncludeAuthoringDraftApi) { '- Authoring draft API integration: 1/1 PostgreSQL-backed test passed for policy/CSRF/owner gates, draft ETags, immutable revisions, exact replay, key collision, stale-version response, transactional row counts, and Reader/publication isolation' } else { '- Authoring draft API integration: not requested' })
+        "- Browser journey: session cookie/policy → rights receipt → upload/parse/preview/private commit → refreshed Library → Work Detail → Reader source/bookmark, then opt-in → server-timed Reader session → XP award → private profile/activity → glossary import/draft edit/revision preview$(if ($IncludeTranslationPreview) { ' → fake-local Reader translation → redacted job status → unpublished PostgreSQL candidate' } else { '' })$(if ($IncludeAuthoringOutline) { ' → private authoring chapter outline → CSRF/idempotent blank-chapter creation' } else { '' })"
+        $(if ($IncludeAuthoringDraftApi) { '- Separate PostgreSQL authoring draft API test: 1/1 passed for owner/policy/CSRF gates, ETags, immutable writes, exact replay, stale-version response, outline/Reader isolation, and persisted row counts; see authoring-draft-api-test.log' } else { '- Separate PostgreSQL authoring draft API test: not requested' })
         '- Cultivation feature flag: enabled only in this random disposable API process; prior process value restored during cleanup'
         $(if ($IncludeTranslationPreview) { '- Translation feature/provider/API/worker flags: fake-local only, enabled only in this random disposable API process; no external NMT provider was configured or called; prior process values restored during cleanup' } else { '- Translation fake-local flags: forced false for this disposable API process; prior process values restored during cleanup' })
         "- PostgreSQL cultivation ledger: $cultivationLedgerXp XP across $cultivationLedgerEntries entries for the synthetic user"
@@ -403,7 +420,7 @@ COMMIT;
         "- Cleanup: $cleanup"
         "- Staging cleanup: $stagingCleanup"
         "- Screenshots: $([System.IO.Path]::GetFileName($screenshotPath)), $([System.IO.Path]::GetFileName($workDetailScreenshotPath)), $([System.IO.Path]::GetFileName($readerScreenshotPath)), $([System.IO.Path]::GetFileName($glossaryImportScreenshotPath)), $([System.IO.Path]::GetFileName($glossaryEditorScreenshotPath)), $([System.IO.Path]::GetFileName($authoringScreenshotPath))$(if ($IncludeAuthoringOutline) { ', authoring-outline-live.png' } else { '' })$(if ($IncludeTranslationPreview) { ', translation-job-live.png' } else { '' }), private-import-commit-live.png, private-import-detail-live.png, private-import-reader-live.png, private-import-html-commit-live.png, private-import-html-detail-live.png, private-import-html-reader-live.png, private-import-markdown-commit-live.png, private-import-markdown-detail-live.png, private-import-markdown-reader-live.png, private-import-epub-commit-live.png, private-import-epub-detail-live.png, private-import-epub-reader-live.png"
-        '- Logs: api-build.log, api-stdout.log, api-stderr.log, playwright.log'
+        "- Logs: api-build.log, api-stdout.log, api-stderr.log, playwright.log$(if ($IncludeAuthoringDraftApi) { ', authoring-draft-api-test.log' } else { '' })"
         $(if ($failure) { "- Failure: $failure" } else { '- Failure: none' })
         ''
         'The synthetic user, accepted test-only policy rows, session hash, library and works existed only in this randomly named disposable PostgreSQL project. The persistent novel-web-local project was not targeted.'

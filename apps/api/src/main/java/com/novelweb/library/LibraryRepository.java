@@ -1112,6 +1112,276 @@ public class LibraryRepository {
     }
   }
 
+  public DraftRevisionWrite savePrivateAuthoredDraftRevision(
+      UUID ownerUserId,
+      UUID workId,
+      UUID chapterId,
+      int expectedRevisionNo,
+      String idempotencyKey,
+      byte[] requestHash,
+      String sourceFormat,
+      String normalizedContent,
+      byte[] contentHash,
+      List<SegmentInput> segments) {
+    Objects.requireNonNull(ownerUserId, "owner user id is required");
+    Objects.requireNonNull(workId, "work id is required");
+    Objects.requireNonNull(chapterId, "chapter id is required");
+    Objects.requireNonNull(requestHash, "request hash is required");
+    if (requestHash.length != 32 || contentHash == null || contentHash.length != 32) {
+      throw new IllegalArgumentException("revision hashes must be SHA-256");
+    }
+    UUID revisionId = UUID.randomUUID();
+    try (Connection connection = dataSource.getConnection()) {
+      connection.setAutoCommit(false);
+      try {
+        try (PreparedStatement actor =
+            connection.prepareStatement(
+                "SELECT id FROM users WHERE id = ? AND status = 'active' FOR UPDATE")) {
+          actor.setObject(1, ownerUserId);
+          try (ResultSet row = actor.executeQuery()) {
+            if (!row.next()) throw new ChapterNotFoundException();
+          }
+        }
+
+        int currentRevisionNo;
+        try (PreparedStatement lock =
+            connection.prepareStatement(
+                """
+                    SELECT COALESCE(current_revision.revision_no, 0) AS current_revision_no
+                    FROM chapters c
+                    JOIN works w ON w.id = c.work_id
+                    JOIN libraries l ON l.id = w.library_id
+                    JOIN users u ON u.id = w.owner_user_id
+                    LEFT JOIN chapter_revisions current_revision
+                      ON current_revision.id = c.source_revision_id
+                     AND current_revision.chapter_id = c.id
+                    WHERE c.id = ? AND c.work_id = ? AND w.owner_user_id = ?
+                      AND w.source_kind = 'authored' AND w.visibility = 'private'
+                      AND w.status = 'active' AND w.deleted_at IS NULL
+                      AND l.owner_user_id = w.owner_user_id AND l.workspace_id IS NULL
+                      AND l.visibility = 'private' AND l.deleted_at IS NULL
+                      AND u.status = 'active' AND c.status = 'draft' AND c.deleted_at IS NULL
+                    FOR UPDATE OF c, w, l
+                    """)) {
+          lock.setObject(1, chapterId);
+          lock.setObject(2, workId);
+          lock.setObject(3, ownerUserId);
+          try (ResultSet row = lock.executeQuery()) {
+            if (!row.next()) throw new ChapterNotFoundException();
+            currentRevisionNo = row.getInt("current_revision_no");
+          }
+        }
+
+        try (PreparedStatement prior =
+            connection.prepareStatement(
+                """
+                    SELECT request_sha256, revision_id
+                    FROM authoring_chapter_revision_writes
+                    WHERE actor_user_id = ? AND chapter_id = ? AND idempotency_key = ?
+                    """)) {
+          prior.setObject(1, ownerUserId);
+          prior.setObject(2, chapterId);
+          prior.setString(3, idempotencyKey);
+          try (ResultSet row = prior.executeQuery()) {
+            if (row.next()) {
+              if (!MessageDigest.isEqual(requestHash, row.getBytes("request_sha256"))) {
+                throw new IdempotencyKeyReusedException();
+              }
+              RevisionRecord replay;
+              try (PreparedStatement select =
+                  connection.prepareStatement(
+                      """
+                          SELECT id, chapter_id, revision_no, source_format, content_hash, created_at
+                          FROM chapter_revisions WHERE id = ? AND chapter_id = ?
+                          """)) {
+                select.setObject(1, row.getObject("revision_id", UUID.class));
+                select.setObject(2, chapterId);
+                try (ResultSet revision = select.executeQuery()) {
+                  if (!revision.next()) throw new ChapterNotFoundException();
+                  replay = revision(revision);
+                }
+              }
+              connection.commit();
+              return new DraftRevisionWrite(replay, true);
+            }
+          }
+        }
+
+        if (expectedRevisionNo != currentRevisionNo) {
+          throw new DraftRevisionConflictException(currentRevisionNo);
+        }
+        int nextRevisionNo = currentRevisionNo + 1;
+        RevisionRecord created;
+        try (PreparedStatement insert =
+            connection.prepareStatement(
+                """
+                    INSERT INTO chapter_revisions
+                        (id, chapter_id, revision_no, source_format, normalized_content,
+                         content_hash, created_by_user_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    RETURNING id, chapter_id, revision_no, source_format, content_hash, created_at
+                    """)) {
+          insert.setObject(1, revisionId);
+          insert.setObject(2, chapterId);
+          insert.setInt(3, nextRevisionNo);
+          insert.setString(4, sourceFormat);
+          insert.setString(5, normalizedContent);
+          insert.setBytes(6, contentHash);
+          insert.setObject(7, ownerUserId);
+          try (ResultSet row = insert.executeQuery()) {
+            row.next();
+            created = revision(row);
+          }
+        }
+
+        try (PreparedStatement insertSegment =
+            connection.prepareStatement(
+                """
+                    INSERT INTO segments
+                        (id, chapter_revision_id, ordinal, segment_type, source_text, stable_anchor, checksum)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """)) {
+          for (SegmentInput segment : segments) {
+            insertSegment.setObject(1, UUID.randomUUID());
+            insertSegment.setObject(2, revisionId);
+            insertSegment.setInt(3, segment.ordinal());
+            insertSegment.setString(4, segment.type());
+            insertSegment.setString(5, segment.sourceText());
+            insertSegment.setString(6, segment.stableAnchor());
+            insertSegment.setBytes(7, segment.checksum());
+            insertSegment.addBatch();
+          }
+          insertSegment.executeBatch();
+        }
+
+        try (PreparedStatement update =
+            connection.prepareStatement(
+                """
+                    UPDATE chapters
+                    SET source_revision_id = ?, status = 'draft', updated_at = clock_timestamp()
+                    WHERE id = ? AND work_id = ? AND status = 'draft'
+                    """)) {
+          update.setObject(1, revisionId);
+          update.setObject(2, chapterId);
+          update.setObject(3, workId);
+          if (update.executeUpdate() != 1) throw new ChapterNotFoundException();
+        }
+
+        try (PreparedStatement receipt =
+            connection.prepareStatement(
+                """
+                    INSERT INTO authoring_chapter_revision_writes
+                        (actor_user_id, work_id, chapter_id, idempotency_key, request_sha256, revision_id)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """)) {
+          receipt.setObject(1, ownerUserId);
+          receipt.setObject(2, workId);
+          receipt.setObject(3, chapterId);
+          receipt.setString(4, idempotencyKey);
+          receipt.setBytes(5, requestHash);
+          receipt.setObject(6, revisionId);
+          receipt.executeUpdate();
+        }
+
+        connection.commit();
+        return new DraftRevisionWrite(created, false);
+      } catch (SQLException | RuntimeException exception) {
+        connection.rollback();
+        throw exception;
+      }
+    } catch (ChapterNotFoundException | DraftRevisionConflictException exception) {
+      throw exception;
+    } catch (SQLException exception) {
+      if ("23505".equals(exception.getSQLState())) throw new DuplicateRevisionException();
+      throw new IllegalStateException("Unable to save the private authored draft", exception);
+    }
+  }
+
+  public Optional<PrivateAuthoredDraftRecord> findPrivateAuthoredDraft(
+      UUID ownerUserId, UUID workId, UUID chapterId) {
+    Objects.requireNonNull(ownerUserId, "owner user id is required");
+    Objects.requireNonNull(workId, "work id is required");
+    Objects.requireNonNull(chapterId, "chapter id is required");
+    try (Connection connection = dataSource.getConnection()) {
+      connection.setTransactionIsolation(Connection.TRANSACTION_REPEATABLE_READ);
+      connection.setReadOnly(true);
+      connection.setAutoCommit(false);
+      try (PreparedStatement select =
+          connection.prepareStatement(
+              """
+                  SELECT c.id, c.work_id, c.title,
+                         COALESCE(r.revision_no, 0) AS revision_no,
+                         r.source_format, r.normalized_content,
+                         COALESCE(r.created_at, c.updated_at) AS draft_updated_at
+                  FROM chapters c
+                  JOIN works w ON w.id = c.work_id
+                  JOIN libraries l ON l.id = w.library_id
+                  JOIN users u ON u.id = w.owner_user_id
+                  LEFT JOIN chapter_revisions r
+                    ON r.id = c.source_revision_id AND r.chapter_id = c.id
+                  WHERE c.id = ? AND c.work_id = ? AND w.owner_user_id = ?
+                    AND w.source_kind = 'authored' AND w.visibility = 'private'
+                    AND w.status = 'active' AND w.deleted_at IS NULL
+                    AND l.owner_user_id = w.owner_user_id AND l.workspace_id IS NULL
+                    AND l.visibility = 'private' AND l.deleted_at IS NULL
+                    AND u.status = 'active' AND c.status = 'draft' AND c.deleted_at IS NULL
+                  """)) {
+        select.setObject(1, chapterId);
+        select.setObject(2, workId);
+        select.setObject(3, ownerUserId);
+        try (ResultSet row = select.executeQuery()) {
+          if (!row.next()) {
+            connection.commit();
+            return Optional.empty();
+          }
+          UUID draftChapterId = row.getObject("id", UUID.class);
+          int revisionNo = row.getInt("revision_no");
+          String sourceFormat = row.getString("source_format");
+          String normalizedContent = row.getString("normalized_content");
+          Instant updatedAt = row.getObject("draft_updated_at", OffsetDateTime.class).toInstant();
+          List<DraftSegmentRecord> segments = new ArrayList<>();
+          if (revisionNo > 0) {
+            try (PreparedStatement selectSegments =
+                connection.prepareStatement(
+                    """
+                        SELECT s.ordinal, s.segment_type, s.source_text, s.stable_anchor
+                        FROM segments s JOIN chapter_revisions r ON r.id = s.chapter_revision_id
+                        WHERE r.chapter_id = ? AND r.revision_no = ?
+                        ORDER BY s.ordinal
+                        """)) {
+              selectSegments.setObject(1, draftChapterId);
+              selectSegments.setInt(2, revisionNo);
+              try (ResultSet segmentRows = selectSegments.executeQuery()) {
+                while (segmentRows.next()) {
+                  segments.add(
+                      new DraftSegmentRecord(
+                          segmentRows.getInt("ordinal"),
+                          segmentRows.getString("segment_type"),
+                          segmentRows.getString("source_text"),
+                          segmentRows.getString("stable_anchor")));
+                }
+              }
+            }
+          }
+          PrivateAuthoredDraftRecord draft =
+              new PrivateAuthoredDraftRecord(
+                  draftChapterId,
+                  row.getObject("work_id", UUID.class),
+                  row.getString("title"),
+                  revisionNo,
+                  sourceFormat,
+                  normalizedContent == null ? "" : normalizedContent,
+                  updatedAt,
+                  segments);
+          connection.commit();
+          return Optional.of(draft);
+        }
+      }
+    } catch (SQLException exception) {
+      throw new IllegalStateException("Unable to load the private authored draft", exception);
+    }
+  }
+
   public Optional<ChapterRecord> findChapter(UUID ownerUserId, UUID chapterId) {
     Objects.requireNonNull(ownerUserId, "owner user id is required");
     Objects.requireNonNull(chapterId, "chapter id is required");
@@ -1357,6 +1627,25 @@ public class LibraryRepository {
     }
   }
 
+  public record DraftRevisionWrite(RevisionRecord revision, boolean replayed) {}
+
+  public record DraftSegmentRecord(
+      int ordinal, String type, String sourceText, String stableAnchor) {}
+
+  public record PrivateAuthoredDraftRecord(
+      UUID chapterId,
+      UUID workId,
+      String title,
+      int revisionNo,
+      String sourceFormat,
+      String normalizedContent,
+      Instant updatedAt,
+      List<DraftSegmentRecord> segments) {
+    public PrivateAuthoredDraftRecord {
+      segments = List.copyOf(segments);
+    }
+  }
+
   public record AssetRecord(
       UUID id,
       UUID ownerUserId,
@@ -1399,6 +1688,18 @@ public class LibraryRepository {
   public static class OrderConflictException extends LibraryRepositoryException {}
 
   public static class DuplicateRevisionException extends LibraryRepositoryException {}
+
+  public static class DraftRevisionConflictException extends LibraryRepositoryException {
+    private final int currentRevisionNo;
+
+    public DraftRevisionConflictException(int currentRevisionNo) {
+      this.currentRevisionNo = currentRevisionNo;
+    }
+
+    public int currentRevisionNo() {
+      return currentRevisionNo;
+    }
+  }
 
   public static class DuplicateAssetException extends LibraryRepositoryException {}
 

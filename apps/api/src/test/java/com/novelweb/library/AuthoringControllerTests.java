@@ -345,6 +345,189 @@ class AuthoringControllerTests {
     verifyNoInteractions(libraryService);
   }
 
+  @Test
+  void privateDraftReadReturnsVersionAndContentWithoutCaching() throws Exception {
+    when(policyService.requiredAcceptance(actorId))
+        .thenReturn(PolicyService.RequiredAcceptance.COMPLETE);
+    UUID workId = UUID.randomUUID();
+    UUID chapterId = UUID.randomUUID();
+    when(libraryService.getPrivateAuthoredDraft(actorId, workId, chapterId))
+        .thenReturn(
+            new LibraryRepository.PrivateAuthoredDraftRecord(
+                chapterId,
+                workId,
+                "Chapter One",
+                3,
+                "plain_text",
+                "The private body.",
+                Instant.EPOCH,
+                List.of(
+                    new LibraryRepository.DraftSegmentRecord(
+                        1, "paragraph", "The private body.", "chapter-one-p1"))));
+
+    var response =
+        mockMvc
+            .perform(
+                get(
+                        "/api/v1/authoring/manuscripts/{workId}/chapters/{chapterId}/draft",
+                        workId,
+                        chapterId)
+                    .principal(authentication()))
+            .andReturn()
+            .getResponse();
+
+    assertEquals(200, response.getStatus());
+    assertEquals("\"draft-3\"", response.getHeader("ETag"));
+    assertTrue(response.getHeader("Cache-Control").contains("no-store"));
+    String body = response.getContentAsString();
+    assertTrue(body.contains("The private body."));
+    assertTrue(body.contains("chapter-one-p1"));
+    assertTrue(body.contains("\"status\":\"draft\""));
+    assertTrue(!body.contains("contentHash"));
+    assertTrue(!body.contains("ownerUserId"));
+    verify(libraryService).getPrivateAuthoredDraft(actorId, workId, chapterId);
+  }
+
+  @Test
+  void privateDraftReadRequiresSessionAndCurrentPolicy() throws Exception {
+    UUID workId = UUID.randomUUID();
+    UUID chapterId = UUID.randomUUID();
+    String path = "/api/v1/authoring/manuscripts/{workId}/chapters/{chapterId}/draft";
+
+    var anonymous = mockMvc.perform(get(path, workId, chapterId)).andReturn().getResponse();
+    assertEquals(401, anonymous.getStatus());
+
+    when(policyService.requiredAcceptance(actorId))
+        .thenReturn(PolicyService.RequiredAcceptance.REQUIRED);
+    var blocked =
+        mockMvc
+            .perform(get(path, workId, chapterId).principal(authentication()))
+            .andReturn()
+            .getResponse();
+    assertEquals(403, blocked.getStatus());
+    assertTrue(blocked.getContentAsString().contains("POLICY_ACCEPTANCE_REQUIRED"));
+    verifyNoInteractions(libraryService);
+  }
+
+  @Test
+  void draftRevisionRequiresIfMatchAndStrictBodyBeforeServiceAccess() throws Exception {
+    when(policyService.requiredAcceptance(actorId))
+        .thenReturn(PolicyService.RequiredAcceptance.COMPLETE);
+    UUID workId = UUID.randomUUID();
+    UUID chapterId = UUID.randomUUID();
+    String path = "/api/v1/authoring/manuscripts/{workId}/chapters/{chapterId}/revisions";
+    String validBody =
+        "{\"sourceFormat\":\"plain_text\",\"normalizedContent\":\"Body\"," + "\"segments\":[]}";
+
+    var missingMatch =
+        mockMvc
+            .perform(
+                post(path, workId, chapterId)
+                    .principal(authentication())
+                    .header("Idempotency-Key", "draft-revision-save-0001")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(validBody))
+            .andReturn()
+            .getResponse();
+    assertEquals(428, missingMatch.getStatus());
+    assertTrue(missingMatch.getContentAsString().contains("DRAFT_REVISION_PRECONDITION_REQUIRED"));
+
+    var invalidMatch =
+        mockMvc
+            .perform(
+                post(path, workId, chapterId)
+                    .principal(authentication())
+                    .header("If-Match", "W/\"draft-0\"")
+                    .header("Idempotency-Key", "draft-revision-save-0001")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(validBody))
+            .andReturn()
+            .getResponse();
+    assertEquals(400, invalidMatch.getStatus());
+    assertTrue(invalidMatch.getContentAsString().contains("INVALID_DRAFT_REVISION_ETAG"));
+
+    var unknownBodyField =
+        mockMvc
+            .perform(
+                post(path, workId, chapterId)
+                    .principal(authentication())
+                    .header("If-Match", "\"draft-0\"")
+                    .header("Idempotency-Key", "draft-revision-save-0001")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(
+                        "{\"sourceFormat\":\"plain_text\",\"normalizedContent\":\"Body\","
+                            + "\"segments\":[],\"status\":\"ready\"}"))
+            .andReturn()
+            .getResponse();
+    assertEquals(400, unknownBodyField.getStatus());
+    assertTrue(unknownBodyField.getContentAsString().contains("INVALID_DRAFT_REVISION"));
+    verifyNoInteractions(libraryService);
+  }
+
+  @Test
+  void draftRevisionWriteReturnsImmutableRevisionAndNextEtag() throws Exception {
+    when(policyService.requiredAcceptance(actorId))
+        .thenReturn(PolicyService.RequiredAcceptance.COMPLETE);
+    UUID workId = UUID.randomUUID();
+    UUID chapterId = UUID.randomUUID();
+    UUID revisionId = UUID.randomUUID();
+    when(libraryService.savePrivateAuthoredDraftRevision(
+            actorId,
+            workId,
+            chapterId,
+            0,
+            "draft-revision-save-0001",
+            "plain_text",
+            "First paragraph.",
+            List.of(
+                new LibraryService.NewSegment(
+                    1, "paragraph", "First paragraph.", "chapter-one-p1"))))
+        .thenReturn(
+            new LibraryRepository.DraftRevisionWrite(
+                new LibraryRepository.RevisionRecord(
+                    revisionId, chapterId, 1, "plain_text", new byte[32], Instant.EPOCH),
+                false));
+
+    var response =
+        mockMvc
+            .perform(
+                post(
+                        "/api/v1/authoring/manuscripts/{workId}/chapters/{chapterId}/revisions",
+                        workId,
+                        chapterId)
+                    .principal(authentication())
+                    .header("If-Match", "\"draft-0\"")
+                    .header("Idempotency-Key", "draft-revision-save-0001")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(
+                        "{\"sourceFormat\":\"plain_text\",\"normalizedContent\":\"First paragraph.\","
+                            + "\"segments\":[{\"ordinal\":1,\"type\":\"paragraph\","
+                            + "\"sourceText\":\"First paragraph.\","
+                            + "\"stableAnchor\":\"chapter-one-p1\"}]}"))
+            .andReturn()
+            .getResponse();
+
+    assertEquals(201, response.getStatus());
+    assertEquals("\"draft-1\"", response.getHeader("ETag"));
+    assertTrue(response.getHeader("Cache-Control").contains("no-store"));
+    String body = response.getContentAsString();
+    assertTrue(body.contains(revisionId.toString()));
+    assertTrue(body.contains("\"revisionNo\":1"));
+    assertTrue(!body.contains("normalizedContent"));
+    verify(libraryService)
+        .savePrivateAuthoredDraftRevision(
+            actorId,
+            workId,
+            chapterId,
+            0,
+            "draft-revision-save-0001",
+            "plain_text",
+            "First paragraph.",
+            List.of(
+                new LibraryService.NewSegment(
+                    1, "paragraph", "First paragraph.", "chapter-one-p1")));
+  }
+
   private TestingAuthenticationToken authentication() {
     return new TestingAuthenticationToken(
         new SessionService.SessionPrincipal(actorId, Instant.MAX), null);

@@ -136,13 +136,17 @@ public class ApiSecurityConfiguration {
                     .permitAll();
                 authorize.requestMatchers(HttpMethod.POST, "/api/v1/imports").permitAll();
                 authorize
-                    .requestMatchers(HttpMethod.GET, "/api/v1/authoring/manuscripts/*/chapters")
+                    .requestMatchers(
+                        HttpMethod.GET,
+                        "/api/v1/authoring/manuscripts/*/chapters",
+                        "/api/v1/authoring/manuscripts/*/chapters/*/draft")
                     .permitAll();
                 authorize
                     .requestMatchers(
                         HttpMethod.POST,
                         "/api/v1/authoring/manuscripts",
-                        "/api/v1/authoring/manuscripts/*/chapters")
+                        "/api/v1/authoring/manuscripts/*/chapters",
+                        "/api/v1/authoring/manuscripts/*/chapters/*/revisions")
                     .permitAll();
                 authorize.requestMatchers(HttpMethod.PUT, "/api/v1/imports/*/content").permitAll();
                 authorize.requestMatchers(HttpMethod.GET, "/api/v1/imports/*").permitAll();

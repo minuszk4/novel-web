@@ -6,6 +6,7 @@ import com.novelweb.identity.session.SessionService;
 import com.novelweb.platform.web.CorrelationIdFilter;
 import jakarta.servlet.http.HttpServletRequest;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -26,9 +27,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-/**
- * Private-first creation of author-owned work. Publishing is a separate, unimplemented workflow.
- */
+/** Private-first owner authoring. Publishing is a separate, unimplemented workflow. */
 @RestController
 @RequestMapping("/api/v1/authoring/manuscripts")
 @Profile("postgres")
@@ -201,6 +200,134 @@ public class AuthoringController {
         .body(new ChapterOutlineResponse(items, nextCursor));
   }
 
+  @GetMapping("/{workId}/chapters/{chapterId}/draft")
+  public ResponseEntity<?> getDraftContent(
+      Authentication authentication,
+      @PathVariable UUID workId,
+      @PathVariable UUID chapterId,
+      HttpServletRequest request) {
+    Optional<UUID> actor = actorUserId(authentication);
+    if (actor.isEmpty())
+      return problem(
+          HttpStatus.UNAUTHORIZED,
+          "UNAUTHENTICATED",
+          "Sign in to open this chapter draft.",
+          request);
+    ResponseEntity<?> policyGate = policyGate(actor.orElseThrow(), request);
+    if (policyGate != null) return policyGate;
+
+    LibraryRepository.PrivateAuthoredDraftRecord draft =
+        libraryService.getPrivateAuthoredDraft(actor.orElseThrow(), workId, chapterId);
+    List<DraftSegment> segments =
+        draft.segments().stream()
+            .map(
+                segment ->
+                    new DraftSegment(
+                        segment.ordinal(),
+                        segment.type(),
+                        segment.sourceText(),
+                        segment.stableAnchor()))
+            .toList();
+    return ResponseEntity.ok()
+        .cacheControl(CacheControl.noStore())
+        .header(HttpHeaders.PRAGMA, "no-cache")
+        .header(HttpHeaders.ETAG, draftEtag(draft.revisionNo()))
+        .body(
+            new DraftContentResponse(
+                draft.chapterId(),
+                draft.workId(),
+                draft.title(),
+                "draft",
+                draft.revisionNo(),
+                draft.sourceFormat(),
+                draft.normalizedContent(),
+                segments,
+                draft.updatedAt()));
+  }
+
+  @PostMapping("/{workId}/chapters/{chapterId}/revisions")
+  public ResponseEntity<?> saveDraftRevision(
+      Authentication authentication,
+      @PathVariable UUID workId,
+      @PathVariable UUID chapterId,
+      @RequestBody SaveDraftRevisionRequest body,
+      @RequestHeader(value = HttpHeaders.IF_MATCH, required = false) String ifMatch,
+      @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+      HttpServletRequest request) {
+    Optional<UUID> actor = actorUserId(authentication);
+    if (actor.isEmpty())
+      return problem(
+          HttpStatus.UNAUTHORIZED,
+          "UNAUTHENTICATED",
+          "Sign in to save this chapter draft.",
+          request);
+    ResponseEntity<?> policyGate = policyGate(actor.orElseThrow(), request);
+    if (policyGate != null) return policyGate;
+    if (body == null || body.hasUnknownFields() || body.segments() == null)
+      return problem(
+          HttpStatus.BAD_REQUEST,
+          "INVALID_DRAFT_REVISION",
+          "Request body must include a segment list and contain only supported fields.",
+          request);
+    if (ifMatch == null)
+      return problem(
+          HttpStatus.PRECONDITION_REQUIRED,
+          "DRAFT_REVISION_PRECONDITION_REQUIRED",
+          "Read the current draft and provide its ETag in If-Match before saving.",
+          request);
+    Integer expectedRevisionNo = parseDraftEtag(ifMatch);
+    if (expectedRevisionNo == null)
+      return problem(
+          HttpStatus.BAD_REQUEST,
+          "INVALID_DRAFT_REVISION_ETAG",
+          "If-Match must be the strong draft ETag returned by the draft read endpoint.",
+          request);
+    if (idempotencyKey == null || !idempotencyKey.matches("[A-Za-z0-9._~-]{16,128}"))
+      return problem(
+          HttpStatus.BAD_REQUEST,
+          "INVALID_IDEMPOTENCY_KEY",
+          "Provide a 16 to 128 character Idempotency-Key for this save attempt.",
+          request);
+
+    List<LibraryService.NewSegment> segments = new ArrayList<>();
+    if (body.segments() != null) {
+      for (SaveDraftSegment segment : body.segments()) {
+        if (segment == null || segment.hasUnknownFields()) {
+          return problem(
+              HttpStatus.BAD_REQUEST,
+              "INVALID_DRAFT_REVISION",
+              "Each segment must contain only the supported segment fields.",
+              request);
+        }
+        segments.add(
+            new LibraryService.NewSegment(
+                segment.ordinal(), segment.type(), segment.sourceText(), segment.stableAnchor()));
+      }
+    }
+    LibraryRepository.DraftRevisionWrite saved =
+        libraryService.savePrivateAuthoredDraftRevision(
+            actor.orElseThrow(),
+            workId,
+            chapterId,
+            expectedRevisionNo,
+            idempotencyKey,
+            body.sourceFormat(),
+            body.normalizedContent(),
+            segments);
+    LibraryRepository.RevisionRecord revision = saved.revision();
+    return ResponseEntity.status(HttpStatus.CREATED)
+        .cacheControl(CacheControl.noStore())
+        .header(HttpHeaders.PRAGMA, "no-cache")
+        .header(HttpHeaders.ETAG, draftEtag(revision.revisionNo()))
+        .body(
+            new CreatedDraftRevisionResponse(
+                revision.id(),
+                revision.chapterId(),
+                revision.revisionNo(),
+                revision.sourceFormat(),
+                revision.createdAt()));
+  }
+
   @ExceptionHandler(IllegalArgumentException.class)
   public ResponseEntity<ProblemDetail> invalidRequest(
       IllegalArgumentException exception, HttpServletRequest request) {
@@ -222,6 +349,42 @@ public class AuthoringController {
         HttpStatus.NOT_FOUND,
         "MANUSCRIPT_NOT_FOUND",
         "The private authored manuscript is not available.",
+        request);
+  }
+
+  @ExceptionHandler(LibraryRepository.ChapterNotFoundException.class)
+  public ResponseEntity<ProblemDetail> chapterNotFound(HttpServletRequest request) {
+    return problem(
+        HttpStatus.NOT_FOUND,
+        "DRAFT_CHAPTER_NOT_FOUND",
+        "The private authored draft chapter is not available.",
+        request);
+  }
+
+  @ExceptionHandler(LibraryRepository.DraftRevisionConflictException.class)
+  public ResponseEntity<ProblemDetail> staleDraftRevision(
+      LibraryRepository.DraftRevisionConflictException exception, HttpServletRequest request) {
+    ProblemDetail body =
+        ProblemDetail.forStatusAndDetail(
+            HttpStatus.PRECONDITION_FAILED,
+            "The draft changed after it was read. Reload it before saving again.");
+    body.setTitle(HttpStatus.PRECONDITION_FAILED.getReasonPhrase());
+    body.setProperty("code", "DRAFT_REVISION_STALE");
+    body.setProperty("currentEtag", draftEtag(exception.currentRevisionNo()));
+    Object value = request.getAttribute(CorrelationIdFilter.REQUEST_ATTRIBUTE);
+    body.setProperty("correlationId", value instanceof String id ? id : "unavailable");
+    return ResponseEntity.status(HttpStatus.PRECONDITION_FAILED)
+        .cacheControl(CacheControl.noStore())
+        .header(HttpHeaders.PRAGMA, "no-cache")
+        .body(body);
+  }
+
+  @ExceptionHandler(LibraryRepository.DuplicateRevisionException.class)
+  public ResponseEntity<ProblemDetail> duplicateDraftRevision(HttpServletRequest request) {
+    return problem(
+        HttpStatus.CONFLICT,
+        "DUPLICATE_DRAFT_REVISION",
+        "An identical normalized chapter revision already exists.",
         request);
   }
 
@@ -284,6 +447,19 @@ public class AuthoringController {
       return Optional.empty();
     }
     return Optional.of(principal.userId());
+  }
+
+  private static String draftEtag(int revisionNo) {
+    return "\"draft-" + revisionNo + "\"";
+  }
+
+  private static Integer parseDraftEtag(String value) {
+    if (value == null || !value.matches("\\\"draft-(0|[1-9][0-9]*)\\\"")) return null;
+    try {
+      return Integer.parseInt(value.substring(7, value.length() - 1));
+    } catch (NumberFormatException exception) {
+      return null;
+    }
   }
 
   private static ResponseEntity<ProblemDetail> problem(
@@ -361,6 +537,95 @@ public class AuthoringController {
     }
   }
 
+  public static final class SaveDraftRevisionRequest {
+    private String sourceFormat;
+    private String normalizedContent;
+    private List<SaveDraftSegment> segments;
+    private boolean unknownFields;
+
+    public String sourceFormat() {
+      return sourceFormat;
+    }
+
+    public String normalizedContent() {
+      return normalizedContent;
+    }
+
+    public List<SaveDraftSegment> segments() {
+      return segments;
+    }
+
+    boolean hasUnknownFields() {
+      return unknownFields;
+    }
+
+    public void setSourceFormat(String sourceFormat) {
+      this.sourceFormat = sourceFormat;
+    }
+
+    public void setNormalizedContent(String normalizedContent) {
+      this.normalizedContent = normalizedContent;
+    }
+
+    public void setSegments(List<SaveDraftSegment> segments) {
+      this.segments = segments;
+    }
+
+    @JsonAnySetter
+    public void captureUnknownField(String name, Object ignoredValue) {
+      unknownFields = true;
+    }
+  }
+
+  public static final class SaveDraftSegment {
+    private int ordinal;
+    private String type;
+    private String sourceText;
+    private String stableAnchor;
+    private boolean unknownFields;
+
+    public int ordinal() {
+      return ordinal;
+    }
+
+    public String type() {
+      return type;
+    }
+
+    public String sourceText() {
+      return sourceText;
+    }
+
+    public String stableAnchor() {
+      return stableAnchor;
+    }
+
+    boolean hasUnknownFields() {
+      return unknownFields;
+    }
+
+    public void setOrdinal(int ordinal) {
+      this.ordinal = ordinal;
+    }
+
+    public void setType(String type) {
+      this.type = type;
+    }
+
+    public void setSourceText(String sourceText) {
+      this.sourceText = sourceText;
+    }
+
+    public void setStableAnchor(String stableAnchor) {
+      this.stableAnchor = stableAnchor;
+    }
+
+    @JsonAnySetter
+    public void captureUnknownField(String name, Object ignoredValue) {
+      unknownFields = true;
+    }
+  }
+
   public record CreatedManuscriptResponse(
       UUID id,
       String title,
@@ -393,4 +658,24 @@ public class AuthoringController {
       items = List.copyOf(items);
     }
   }
+
+  public record DraftSegment(int ordinal, String type, String sourceText, String stableAnchor) {}
+
+  public record DraftContentResponse(
+      UUID id,
+      UUID workId,
+      String title,
+      String status,
+      int revisionNo,
+      String sourceFormat,
+      String normalizedContent,
+      List<DraftSegment> segments,
+      Instant updatedAt) {
+    public DraftContentResponse {
+      segments = List.copyOf(segments);
+    }
+  }
+
+  public record CreatedDraftRevisionResponse(
+      UUID id, UUID chapterId, int revisionNo, String sourceFormat, Instant createdAt) {}
 }

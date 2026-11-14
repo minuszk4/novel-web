@@ -285,57 +285,58 @@ public class LibraryService {
       List<NewSegment> requestedSegments) {
     Objects.requireNonNull(ownerUserId, "owner user id is required");
     Objects.requireNonNull(chapterId, "chapter id is required");
-    String sourceFormat = requiredText(requestedFormat, "source format", 24);
-    if (!Set.of("plain_text", "markdown", "xhtml", "epub_xhtml").contains(sourceFormat)) {
-      throw new IllegalArgumentException("unsupported source format");
-    }
-    Objects.requireNonNull(normalizedContent, "normalized content is required");
-    int normalizedBytes = normalizedContent.getBytes(StandardCharsets.UTF_8).length;
-    if (normalizedBytes == 0 || normalizedBytes > 10_485_760) {
-      throw new IllegalArgumentException(
-          "normalized content must be non-empty and not exceed 10 MiB");
-    }
-    List<NewSegment> sourceSegments =
-        requestedSegments == null ? List.of() : List.copyOf(requestedSegments);
-    if (sourceSegments.size() > 10_000) throw new IllegalArgumentException("too many segments");
-    List<LibraryRepository.SegmentInput> segments = new ArrayList<>(sourceSegments.size());
-    Set<String> anchors = new HashSet<>();
-    long totalSegmentBytes = 0;
-    for (int index = 0; index < sourceSegments.size(); index++) {
-      NewSegment segment = Objects.requireNonNull(sourceSegments.get(index), "segment is required");
-      if (segment.ordinal() != index + 1) {
-        throw new IllegalArgumentException("segment ordinals must be contiguous and start at one");
-      }
-      String type = requiredText(segment.type(), "segment type", 16);
-      if (!Set.of("paragraph", "heading", "quote", "image_ref").contains(type)) {
-        throw new IllegalArgumentException("unsupported segment type");
-      }
-      String sourceText =
-          Objects.requireNonNull(segment.sourceText(), "segment source text is required");
-      int segmentBytes = sourceText.getBytes(StandardCharsets.UTF_8).length;
-      if (segmentBytes > 1_048_576) {
-        throw new IllegalArgumentException("segment source text exceeds 1 MiB");
-      }
-      totalSegmentBytes += segmentBytes;
-      if (totalSegmentBytes > 10_485_760) {
-        throw new IllegalArgumentException("all segment source text must not exceed 10 MiB");
-      }
-      String anchor = requiredText(segment.stableAnchor(), "stable anchor", 160);
-      if (!anchor.matches("[A-Za-z0-9][A-Za-z0-9._:-]{0,159}") || !anchors.add(anchor)) {
-        throw new IllegalArgumentException(
-            "stable anchors must be unique and use the supported format");
-      }
-      segments.add(
-          new LibraryRepository.SegmentInput(
-              segment.ordinal(), type, sourceText, anchor, sha256(sourceText)));
-    }
+    ValidatedRevision revision =
+        validateRevision(requestedFormat, normalizedContent, requestedSegments);
     return repository.appendChapterRevision(
         ownerUserId,
         chapterId,
-        sourceFormat,
-        normalizedContent,
-        sha256(normalizedContent),
-        segments);
+        revision.sourceFormat(),
+        revision.normalizedContent(),
+        sha256(revision.normalizedContent()),
+        revision.segments());
+  }
+
+  public LibraryRepository.DraftRevisionWrite savePrivateAuthoredDraftRevision(
+      UUID ownerUserId,
+      UUID workId,
+      UUID chapterId,
+      int expectedRevisionNo,
+      String idempotencyKey,
+      String requestedFormat,
+      String normalizedContent,
+      List<NewSegment> requestedSegments) {
+    Objects.requireNonNull(ownerUserId, "owner user id is required");
+    Objects.requireNonNull(workId, "work id is required");
+    Objects.requireNonNull(chapterId, "chapter id is required");
+    if (expectedRevisionNo < 0) throw new IllegalArgumentException("revision must not be negative");
+    String key = requiredText(idempotencyKey, "idempotency key", 128);
+    if (!key.matches("[A-Za-z0-9._~-]{16,128}")) {
+      throw new IllegalArgumentException("Idempotency-Key must contain 16 to 128 safe characters");
+    }
+    ValidatedRevision revision =
+        validateRevision(requestedFormat, normalizedContent, requestedSegments);
+    byte[] requestHash = draftRequestHash(expectedRevisionNo, revision);
+    return repository.savePrivateAuthoredDraftRevision(
+        ownerUserId,
+        workId,
+        chapterId,
+        expectedRevisionNo,
+        key,
+        requestHash,
+        revision.sourceFormat(),
+        revision.normalizedContent(),
+        sha256(revision.normalizedContent()),
+        revision.segments());
+  }
+
+  public LibraryRepository.PrivateAuthoredDraftRecord getPrivateAuthoredDraft(
+      UUID ownerUserId, UUID workId, UUID chapterId) {
+    Objects.requireNonNull(ownerUserId, "owner user id is required");
+    Objects.requireNonNull(workId, "work id is required");
+    Objects.requireNonNull(chapterId, "chapter id is required");
+    return repository
+        .findPrivateAuthoredDraft(ownerUserId, workId, chapterId)
+        .orElseThrow(LibraryRepository.ChapterNotFoundException::new);
   }
 
   public Optional<LibraryRepository.ChapterRecord> findOwnedChapter(
@@ -396,6 +397,80 @@ public class LibraryService {
     }
   }
 
+  private static ValidatedRevision validateRevision(
+      String requestedFormat, String normalizedContent, List<NewSegment> requestedSegments) {
+    String sourceFormat = requiredText(requestedFormat, "source format", 24);
+    if (!Set.of("plain_text", "markdown", "xhtml", "epub_xhtml").contains(sourceFormat)) {
+      throw new IllegalArgumentException("unsupported source format");
+    }
+    Objects.requireNonNull(normalizedContent, "normalized content is required");
+    int normalizedBytes = normalizedContent.getBytes(StandardCharsets.UTF_8).length;
+    if (normalizedBytes == 0 || normalizedBytes > 10_485_760) {
+      throw new IllegalArgumentException(
+          "normalized content must be non-empty and not exceed 10 MiB");
+    }
+    List<NewSegment> sourceSegments =
+        requestedSegments == null ? List.of() : List.copyOf(requestedSegments);
+    if (sourceSegments.size() > 10_000) throw new IllegalArgumentException("too many segments");
+    List<LibraryRepository.SegmentInput> segments = new ArrayList<>(sourceSegments.size());
+    Set<String> anchors = new HashSet<>();
+    long totalSegmentBytes = 0;
+    for (int index = 0; index < sourceSegments.size(); index++) {
+      NewSegment segment = Objects.requireNonNull(sourceSegments.get(index), "segment is required");
+      if (segment.ordinal() != index + 1) {
+        throw new IllegalArgumentException("segment ordinals must be contiguous and start at one");
+      }
+      String type = requiredText(segment.type(), "segment type", 16);
+      if (!Set.of("paragraph", "heading", "quote", "image_ref").contains(type)) {
+        throw new IllegalArgumentException("unsupported segment type");
+      }
+      String sourceText =
+          Objects.requireNonNull(segment.sourceText(), "segment source text is required");
+      int segmentBytes = sourceText.getBytes(StandardCharsets.UTF_8).length;
+      if (segmentBytes > 1_048_576) {
+        throw new IllegalArgumentException("segment source text exceeds 1 MiB");
+      }
+      totalSegmentBytes += segmentBytes;
+      if (totalSegmentBytes > 10_485_760) {
+        throw new IllegalArgumentException("all segment source text must not exceed 10 MiB");
+      }
+      String anchor = requiredText(segment.stableAnchor(), "stable anchor", 160);
+      if (!anchor.matches("[A-Za-z0-9][A-Za-z0-9._:-]{0,159}") || !anchors.add(anchor)) {
+        throw new IllegalArgumentException(
+            "stable anchors must be unique and use the supported format");
+      }
+      segments.add(
+          new LibraryRepository.SegmentInput(
+              segment.ordinal(), type, sourceText, anchor, sha256(sourceText)));
+    }
+    return new ValidatedRevision(sourceFormat, normalizedContent, List.copyOf(segments));
+  }
+
+  private static byte[] draftRequestHash(int expectedRevisionNo, ValidatedRevision revision) {
+    try {
+      MessageDigest digest = MessageDigest.getInstance("SHA-256");
+      digest.update(ByteBuffer.allocate(Integer.BYTES).putInt(expectedRevisionNo).array());
+      updateHashField(digest, revision.sourceFormat());
+      updateHashField(digest, revision.normalizedContent());
+      digest.update(ByteBuffer.allocate(Integer.BYTES).putInt(revision.segments().size()).array());
+      for (LibraryRepository.SegmentInput segment : revision.segments()) {
+        digest.update(ByteBuffer.allocate(Integer.BYTES).putInt(segment.ordinal()).array());
+        updateHashField(digest, segment.type());
+        updateHashField(digest, segment.sourceText());
+        updateHashField(digest, segment.stableAnchor());
+      }
+      return digest.digest();
+    } catch (NoSuchAlgorithmException exception) {
+      throw new IllegalStateException("SHA-256 is unavailable", exception);
+    }
+  }
+
+  private static void updateHashField(MessageDigest digest, String value) {
+    byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
+    digest.update(ByteBuffer.allocate(Integer.BYTES).putInt(bytes.length).array());
+    digest.update(bytes);
+  }
+
   private static String requiredText(String value, String field, int maxLength) {
     String normalized = value == null ? "" : value.trim();
     if (normalized.isEmpty() || normalized.length() > maxLength) {
@@ -414,6 +489,11 @@ public class LibraryService {
   }
 
   public record NewSegment(int ordinal, String type, String sourceText, String stableAnchor) {}
+
+  private record ValidatedRevision(
+      String sourceFormat,
+      String normalizedContent,
+      List<LibraryRepository.SegmentInput> segments) {}
 
   public record Page<T>(List<T> items, String nextCursor) {
     public Page {
