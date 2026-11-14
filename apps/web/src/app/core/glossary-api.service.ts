@@ -344,10 +344,9 @@ export class GlossaryApiService {
       const response = await firstValueFrom(
         this.http
           .post<unknown>(`${glossariesUrl}/${glossaryId}/terms/import-preview`, file, {
-            headers: new HttpHeaders({
-              'Content-Type': mediaType(format),
-              'If-Match': etag,
-            }),
+            headers: (await this.csrfHeaders())
+              .set('Content-Type', mediaType(format))
+              .set('If-Match', etag),
             observe: 'response',
           })
           .pipe(timeout(requestTimeoutMs)),

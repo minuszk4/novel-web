@@ -312,12 +312,16 @@ describe('GlossaryApiService', () => {
   it('previews the selected raw file using the current ETag without persisting it', async () => {
     const file = new File(['{"version":1,"terms":[]}'], 'terms.json', { type: 'application/json' });
     const pending = service.previewImport(glossaryId, '"v4"', file);
+    http.expectOne({ method: 'GET', url: '/api/v1/auth/csrf' }).flush({ token: csrfToken });
+    await Promise.resolve();
+    await Promise.resolve();
     const request = http.expectOne({
       method: 'POST',
       url: `/api/v1/glossaries/${glossaryId}/terms/import-preview`,
     });
     expect(request.request.headers.get('Content-Type')).toBe('application/json');
     expect(request.request.headers.get('If-Match')).toBe('"v4"');
+    expect(request.request.headers.get('X-CSRF-Token')).toBe(csrfToken);
     expect(request.request.body).toBe(file);
     request.flush(previewPayload, { headers: new HttpHeaders({ ETag: '"v4"' }) });
 
@@ -427,6 +431,9 @@ describe('GlossaryApiService', () => {
 
   it('preserves safe row and field issues returned for an invalid import file', async () => {
     const pending = service.previewImport(glossaryId, '"v4"', new File(['{}'], 'terms.json'));
+    http.expectOne({ method: 'GET', url: '/api/v1/auth/csrf' }).flush({ token: csrfToken });
+    await Promise.resolve();
+    await Promise.resolve();
     http
       .expectOne({ method: 'POST', url: `/api/v1/glossaries/${glossaryId}/terms/import-preview` })
       .flush(
@@ -487,6 +494,9 @@ describe('GlossaryApiService', () => {
 
   it('rejects malformed preview payloads instead of exposing partially trusted state', async () => {
     const pending = service.previewImport(glossaryId, '"v4"', new File(['{}'], 'terms.json'));
+    http.expectOne({ method: 'GET', url: '/api/v1/auth/csrf' }).flush({ token: csrfToken });
+    await Promise.resolve();
+    await Promise.resolve();
     http
       .expectOne({ method: 'POST', url: `/api/v1/glossaries/${glossaryId}/terms/import-preview` })
       .flush(

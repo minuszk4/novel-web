@@ -47,7 +47,8 @@ $environmentNames = @(
     'LIBRARY_LIVE_TEST_SESSION_TOKEN', 'LIBRARY_LIVE_TEST_LIBRARY_ID',
     'NOVEL_IMPORT_STAGING_ROOT', 'LIBRARY_LIVE_TEST_WORK_IDS', 'LIBRARY_LIVE_TEST_SCREENSHOT', 'READER_LIVE_TEST_WORK_ID',
     'READER_LIVE_TEST_CHAPTER_ID', 'READER_LIVE_TEST_SCREENSHOT',
-    'WORK_DETAIL_LIVE_TEST_SCREENSHOT', 'PRIVATE_IMPORT_LIVE_TEST_SCREENSHOT'
+    'WORK_DETAIL_LIVE_TEST_SCREENSHOT', 'PRIVATE_IMPORT_LIVE_TEST_SCREENSHOT',
+    'GLOSSARY_LIVE_TEST_GLOSSARY_ID', 'GLOSSARY_LIVE_TEST_SCREENSHOT'
 )
 $previousEnvironment = @{}
 foreach ($name in $environmentNames) {
@@ -63,6 +64,7 @@ $stagingCleanup = 'Not created'
 $appliedChangesets = 0
 $cultivationLedgerXp = 0
 $cultivationLedgerEntries = 0
+$glossaryParts = @()
 $startedAt = Get-Date
 $postgresPassword = [guid]::NewGuid().ToString('N')
 $sessionBytes = New-Object byte[] 32
@@ -78,6 +80,10 @@ $readerChapterId = [guid]::NewGuid()
 $readerVolumeId = [guid]::NewGuid()
 $readerRevisionId = [guid]::NewGuid()
 $readerSegmentId = [guid]::NewGuid()
+$glossaryId = [guid]::NewGuid()
+$glossaryActiveRevisionId = [guid]::NewGuid()
+$glossaryDraftRevisionId = [guid]::NewGuid()
+$glossaryTermId = [guid]::NewGuid()
 $readerSourceText = 'Live E2E source text is served from PostgreSQL.'
 $readerSourceHash = [Convert]::ToHexString(
     [System.Security.Cryptography.SHA256]::HashData([System.Text.Encoding]::UTF8.GetBytes($readerSourceText))
@@ -86,6 +92,7 @@ $screenshotPath = Join-Path $evidenceDirectory 'account-library-live.png'
 $readerScreenshotPath = Join-Path $evidenceDirectory 'account-reader-live.png'
 $workDetailScreenshotPath = Join-Path $evidenceDirectory 'account-work-detail-live.png'
 $privateImportScreenshotPath = Join-Path $evidenceDirectory 'private-import-commit-live.png'
+$glossaryImportScreenshotPath = Join-Path $evidenceDirectory 'glossary-import-live.png'
 $buildLog = Join-Path $evidenceDirectory 'api-build.log'
 $apiStdout = Join-Path $evidenceDirectory 'api-stdout.log'
 $apiStderr = Join-Path $evidenceDirectory 'api-stderr.log'
@@ -196,6 +203,21 @@ INSERT INTO chapter_revisions (id, chapter_id, revision_no, source_format, norma
 VALUES ('$readerRevisionId', '$readerChapterId', 1, 'plain_text', '$readerSourceText', decode('$readerSourceHash', 'hex'), '$userId');
 INSERT INTO segments (id, chapter_revision_id, ordinal, segment_type, source_text, stable_anchor, checksum)
 VALUES ('$readerSegmentId', '$readerRevisionId', 1, 'paragraph', '$readerSourceText', 'live-reader-p1', decode('$readerSourceHash', 'hex'));
+INSERT INTO glossaries (id, owner_user_id, name, scope_type, source_language, target_language, version)
+VALUES ('$glossaryId', '$userId', 'E2E Glossary Import', 'USER_GLOBAL', 'zh-Hans', 'vi', 4);
+INSERT INTO glossary_revisions (id, glossary_id, revision_no, created_by_user_id)
+VALUES ('$glossaryActiveRevisionId', '$glossaryId', 1, '$userId');
+INSERT INTO glossary_revisions (id, glossary_id, revision_no, parent_revision_id, created_by_user_id)
+VALUES ('$glossaryDraftRevisionId', '$glossaryId', 2, '$glossaryActiveRevisionId', '$userId');
+INSERT INTO glossary_terms (id, revision_id, ordinal, source_term, target_term, case_policy, match_mode)
+VALUES
+    ('$glossaryTermId', '$glossaryActiveRevisionId', 1, '金丹', 'Kim Đan', 'INSENSITIVE', 'WHOLE_PHRASE'),
+    ('$glossaryTermId', '$glossaryDraftRevisionId', 1, '金丹', 'Kim Đan', 'INSENSITIVE', 'WHOLE_PHRASE');
+INSERT INTO glossary_aliases (revision_id, term_id, ordinal, alias_text)
+VALUES
+    ('$glossaryActiveRevisionId', '$glossaryTermId', 1, 'Golden Core'),
+    ('$glossaryDraftRevisionId', '$glossaryTermId', 1, 'Golden Core');
+UPDATE glossaries SET active_revision_id = '$glossaryActiveRevisionId' WHERE id = '$glossaryId';
 COMMIT;
 "@
     & $docker @composeArguments exec -T postgres psql -v ON_ERROR_STOP=1 -U novelweb -d novelweb -c $fixtureSql
@@ -210,9 +232,11 @@ COMMIT;
     $env:READER_LIVE_TEST_SCREENSHOT = $readerScreenshotPath
     $env:WORK_DETAIL_LIVE_TEST_SCREENSHOT = $workDetailScreenshotPath
     $env:PRIVATE_IMPORT_LIVE_TEST_SCREENSHOT = $privateImportScreenshotPath
+    $env:GLOSSARY_LIVE_TEST_GLOSSARY_ID = [string]$glossaryId
+    $env:GLOSSARY_LIVE_TEST_SCREENSHOT = $glossaryImportScreenshotPath
     Push-Location $webDirectory
     try {
-        & npm.cmd run test:e2e:postgres -- e2e/library-live-postgres.spec.ts e2e/reader-live-postgres.spec.ts e2e/work-detail-live-postgres.spec.ts e2e/private-import-live-postgres.spec.ts e2e/private-import-formats-live-postgres.spec.ts e2e/cultivation-live-postgres.spec.ts *>&1 | Tee-Object -FilePath $e2eLog
+        & npm.cmd run test:e2e:postgres -- e2e/library-live-postgres.spec.ts e2e/reader-live-postgres.spec.ts e2e/work-detail-live-postgres.spec.ts e2e/private-import-live-postgres.spec.ts e2e/private-import-formats-live-postgres.spec.ts e2e/glossary-import-live-postgres.spec.ts e2e/cultivation-live-postgres.spec.ts *>&1 | Tee-Object -FilePath $e2eLog
         $e2eExit = $LASTEXITCODE
     } finally { Pop-Location }
     if ($e2eExit -ne 0) { throw "Live FE/API/PostgreSQL Playwright journey failed (exit $e2eExit)." }
@@ -225,6 +249,12 @@ COMMIT;
     $cultivationLedgerEntries = [int]$ledgerParts[1]
     if ($cultivationLedgerXp -lt 1 -or $cultivationLedgerEntries -lt 1) {
         throw "Expected at least one XP award in the disposable PostgreSQL ledger; found $cultivationLedgerXp XP across $cultivationLedgerEntries entries."
+    }
+    $glossarySummary = & $docker @composeArguments exec -T postgres psql -v ON_ERROR_STOP=1 -tA -U novelweb -d novelweb -c "SELECT g.version::text || '|' || active.revision_no::text || '|' || latest.revision_no::text || '|' || (SELECT COUNT(*) FROM glossary_terms t JOIN glossary_revisions r ON r.id = t.revision_id WHERE r.glossary_id = g.id)::text || '|' || (SELECT COUNT(*) FROM glossary_aliases a JOIN glossary_revisions r ON r.id = a.revision_id WHERE r.glossary_id = g.id)::text || '|' || (SELECT COUNT(*) FROM glossary_import_apply_idempotency i WHERE i.glossary_id = g.id)::text || '|' || (SELECT COUNT(*) FROM glossary_import_apply_rows i WHERE i.glossary_id = g.id)::text || '|' || (SELECT COUNT(*) FROM glossary_terms t WHERE t.revision_id = latest.id AND t.source_term = '丹田' AND t.target_term = 'Đan điền') FROM glossaries g JOIN glossary_revisions active ON active.glossary_id = g.id AND active.id = g.active_revision_id JOIN LATERAL (SELECT id, revision_no FROM glossary_revisions WHERE glossary_id = g.id ORDER BY revision_no DESC LIMIT 1) latest ON TRUE WHERE g.id = '$glossaryId';"
+    if ($LASTEXITCODE -ne 0) { throw 'Could not verify the imported glossary draft in disposable PostgreSQL.' }
+    $glossaryParts = ([string]$glossarySummary).Trim() -split '\|'
+    if ($glossaryParts.Count -ne 8 -or $glossaryParts[0] -ne '5' -or $glossaryParts[1] -ne '1' -or $glossaryParts[2] -ne '3' -or $glossaryParts[3] -ne '4' -or $glossaryParts[4] -ne '4' -or $glossaryParts[5] -ne '1' -or $glossaryParts[6] -ne '1' -or $glossaryParts[7] -ne '1') {
+        throw "PostgreSQL glossary draft invariants failed after browser import: $glossarySummary"
     }
     $result = 'PASS'
 } catch {
@@ -276,11 +306,12 @@ COMMIT;
         '- Journey: session cookie/policy → rights receipt → upload/parse/preview/private commit → refreshed Library → Work Detail → Reader source/bookmark, then opt-in → server-timed Reader session → XP award → private profile/activity'
         '- Cultivation feature flag: enabled only in this random disposable API process; prior process value restored during cleanup'
         "- PostgreSQL cultivation ledger: $cultivationLedgerXp XP across $cultivationLedgerEntries entries for the synthetic user"
+        $(if ($glossaryParts.Count -eq 8) { "- PostgreSQL glossary import: version $($glossaryParts[0]), active revision $($glossaryParts[1]), latest draft $($glossaryParts[2]), $($glossaryParts[3]) immutable term rows, $($glossaryParts[4]) aliases, one idempotency receipt and one apply row" } else { '- PostgreSQL glossary import: not verified' })
         '- API route mocks: none'
         "- Elapsed: $duration seconds"
         "- Cleanup: $cleanup"
         "- Staging cleanup: $stagingCleanup"
-        "- Screenshots: $([System.IO.Path]::GetFileName($screenshotPath)), $([System.IO.Path]::GetFileName($workDetailScreenshotPath)), $([System.IO.Path]::GetFileName($readerScreenshotPath)), private-import-commit-live.png, private-import-detail-live.png, private-import-reader-live.png, private-import-html-commit-live.png, private-import-html-detail-live.png, private-import-html-reader-live.png, private-import-markdown-commit-live.png, private-import-markdown-detail-live.png, private-import-markdown-reader-live.png, private-import-epub-commit-live.png, private-import-epub-detail-live.png, private-import-epub-reader-live.png"
+        "- Screenshots: $([System.IO.Path]::GetFileName($screenshotPath)), $([System.IO.Path]::GetFileName($workDetailScreenshotPath)), $([System.IO.Path]::GetFileName($readerScreenshotPath)), $([System.IO.Path]::GetFileName($glossaryImportScreenshotPath)), private-import-commit-live.png, private-import-detail-live.png, private-import-reader-live.png, private-import-html-commit-live.png, private-import-html-detail-live.png, private-import-html-reader-live.png, private-import-markdown-commit-live.png, private-import-markdown-detail-live.png, private-import-markdown-reader-live.png, private-import-epub-commit-live.png, private-import-epub-detail-live.png, private-import-epub-reader-live.png"
         '- Logs: api-build.log, api-stdout.log, api-stderr.log, playwright.log'
         $(if ($failure) { "- Failure: $failure" } else { '- Failure: none' })
         ''
