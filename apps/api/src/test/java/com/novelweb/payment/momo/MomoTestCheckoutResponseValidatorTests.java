@@ -138,7 +138,15 @@ class MomoTestCheckoutResponseValidatorTests {
       String payUrl) {
     MomoSignatureCodec.CreateWalletResponse unsigned =
         new MomoSignatureCodec.CreateWalletResponse(
-            partnerCode, requestId, orderId, amountVnd, RESPONSE_TIME, resultCode, payUrl, "");
+            partnerCode,
+            requestId,
+            orderId,
+            amountVnd,
+            "Successful.",
+            RESPONSE_TIME,
+            resultCode,
+            payUrl,
+            "");
     try {
       Mac mac = Mac.getInstance("HmacSHA256");
       mac.init(new SecretKeySpec(SECRET_KEY.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
@@ -151,6 +159,7 @@ class MomoTestCheckoutResponseValidatorTests {
           requestId,
           orderId,
           amountVnd,
+          unsigned.message(),
           RESPONSE_TIME,
           resultCode,
           payUrl,

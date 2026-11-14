@@ -145,6 +145,8 @@ public final class MomoSignatureCodec {
         + accessKey
         + "&amount="
         + response.amountVnd()
+        + "&message="
+        + response.message()
         + "&orderId="
         + response.orderId()
         + "&partnerCode="
@@ -248,6 +250,7 @@ public final class MomoSignatureCodec {
       String requestId,
       String orderId,
       Long amountVnd,
+      String message,
       Long responseTime,
       Integer resultCode,
       String payUrl,
@@ -258,6 +261,7 @@ public final class MomoSignatureCodec {
           && requestId != null
           && orderId != null
           && amountVnd != null
+          && message != null
           && responseTime != null
           && resultCode != null
           && payUrl != null;

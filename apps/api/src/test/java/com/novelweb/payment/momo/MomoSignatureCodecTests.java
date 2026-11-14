@@ -91,15 +91,17 @@ class MomoSignatureCodecTests {
             "request-2026-0001",
             "order-2026-0001",
             1_000L,
+            "Successful.",
             1_763_164_801_234L,
             0,
             "https://test-payment.momo.vn/v2/gateway/pay"
                 + "?t=synthetic-ticket&s=synthetic-signature",
-            "e32d041e08e190d38853b38d0c7fbd7a3726c835d16f6fd294f1b8d9480abd91");
+            "b1b8e157a91208126f97b521123df14261bcc5fae2ea9f3eccd9950856f19695");
 
     assertThat(MomoSignatureCodec.canonicalCreateWalletResponse(response, ACCESS_KEY))
         .isEqualTo(
-            "accessKey=novel-test-access&amount=1000&orderId=order-2026-0001"
+            "accessKey=novel-test-access&amount=1000&message=Successful."
+                + "&orderId=order-2026-0001"
                 + "&partnerCode=MOMOTEST123&payUrl=https://test-payment.momo.vn/v2/gateway/pay"
                 + "?t=synthetic-ticket&s=synthetic-signature&requestId=request-2026-0001"
                 + "&responseTime=1763164801234&resultCode=0");
@@ -112,6 +114,22 @@ class MomoSignatureCodecTests {
                     response.requestId(),
                     response.orderId(),
                     1_001L,
+                    response.message(),
+                    response.responseTime(),
+                    response.resultCode(),
+                    response.payUrl(),
+                    response.signature()),
+                ACCESS_KEY,
+                SECRET_KEY))
+        .isFalse();
+    assertThat(
+            MomoSignatureCodec.verifyCreateWalletResponse(
+                new MomoSignatureCodec.CreateWalletResponse(
+                    response.partnerCode(),
+                    response.requestId(),
+                    response.orderId(),
+                    response.amountVnd(),
+                    "Tampered message",
                     response.responseTime(),
                     response.resultCode(),
                     response.payUrl(),
