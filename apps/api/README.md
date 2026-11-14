@@ -71,12 +71,13 @@ To run only the Checkstyle gate:
 
 The default profile skips PostgreSQL integration tests; use the documented PostgreSQL profile when validating database-backed behavior.
 
-## Run PostgreSQL and apply the baseline migration
+## Run PostgreSQL and apply the current schema
 
 From `apps/api`:
 
 ```powershell
-docker compose --profile database up -d postgres
+docker compose --profile database config --quiet
+docker compose --profile database up -d --wait --wait-timeout 90 postgres
 docker compose --profile database ps
 docker compose exec postgres pg_isready -U novelweb -d novelweb
 ```
@@ -97,7 +98,11 @@ docker compose exec postgres psql -U novelweb -d novelweb -c "SELECT table_name 
 
 The host `psql` binary is optional; the PostgreSQL image already includes the client. If host `psql` is installed, connect with `psql -h localhost -p 5432 -U novelweb -d novelweb`.
 
-The `postgres` Maven profile is opt-in. It reads `.env` for local connection values and uses a five-connection Hikari pool. If Docker is unavailable, point the same `.env` values at an existing PostgreSQL 17 server. The sample password is local-only; never reuse it outside development.
+**Use an existing PostgreSQL 17 server instead of Docker:** create/choose a database and role on that server, then set `DATABASE_URL`, `DATABASE_USERNAME` and `DATABASE_PASSWORD` in `.env` to that host/role. For example, keep the JDBC form `jdbc:postgresql://<host>:<port>/<database>` and use the exact credentials of the role you created. Do not start the Compose service in this mode. `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` and `POSTGRES_PORT` configure only the Compose container; the official image applies its initialization password only when its data volume is empty. Changing `POSTGRES_PASSWORD` later does not rotate a role in an existing volume; the [official PostgreSQL image documentation](https://hub.docker.com/_/postgres) confirms initialization variables are applied only to an empty data directory.
+
+Starting the PostgreSQL-profile API runs Liquibase and may change the selected database schema. The persistent local `novel-web-local` database was last checked at 55 changesets/26 application tables while current source has 103/60. Do not point the API at that volume until you have a private backup and have reviewed the schema gap. Validate recovery against a fresh disposable database first by running `tools/e2e/run-postgres-recovery.ps1` from the repository root; never reset the persistent project with `down --volumes`.
+
+The `postgres` Maven profile is opt-in. It reads `DATABASE_URL`, `DATABASE_USERNAME` and `DATABASE_PASSWORD` from `.env` and uses a five-connection Hikari pool. The Compose container additionally reads `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` and `POSTGRES_PORT`. The sample password is local-only; never reuse it outside development.
 
 Stop PostgreSQL while keeping the local data volume with `docker compose --profile database stop postgres`. Do not add `-v` unless you explicitly intend to delete that volume.
 
