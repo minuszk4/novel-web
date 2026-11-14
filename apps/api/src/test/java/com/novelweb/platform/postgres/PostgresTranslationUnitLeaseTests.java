@@ -1,9 +1,13 @@
 package com.novelweb.platform.postgres;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.novelweb.translation.jobs.TranslationAttemptRepository;
+import com.novelweb.translation.jobs.TranslationAttemptService;
 import com.novelweb.translation.jobs.TranslationJobService;
 import com.novelweb.translation.jobs.TranslationUnitLeaseRepository;
 import com.novelweb.translation.jobs.TranslationUnitLeaseService;
@@ -43,6 +47,8 @@ class PostgresTranslationUnitLeaseTests {
   @Autowired private TranslationJobService jobService;
 
   @Autowired private TranslationUnitLeaseService leaseService;
+
+  @Autowired private TranslationAttemptService attemptService;
 
   @AfterEach
   void cleanFixtures() throws Exception {
@@ -147,6 +153,79 @@ class PostgresTranslationUnitLeaseTests {
     assertEquals("translating", readJobStatus(fixture.jobId()));
     assertJobProgress(fixture.jobId(), "translating", 0, 0, true);
     assertEquals(1, countRunningUnits(fixture.jobId()));
+  }
+
+  @Test
+  void attemptStartIsBodyFreeAndIdempotentForTheSameLease() throws Exception {
+    Fixture fixture = createQueuedJob(1);
+    TranslationUnitLeaseRepository.Lease lease =
+        leaseService.claimNext("translation-attempt-worker", Duration.ofSeconds(60)).orElseThrow();
+
+    TranslationAttemptRepository.StartResult first = attemptService.begin(lease);
+    TranslationAttemptRepository.StartResult duplicate = attemptService.begin(lease);
+
+    assertEquals(1, first.attemptNo());
+    assertEquals("fake-local", first.providerId());
+    assertEquals(32, first.requestSha256().length);
+    assertFalse(first.replayed());
+    assertTrue(first.dispatchAllowed());
+    assertEquals(first.attemptId(), duplicate.attemptId());
+    assertTrue(duplicate.replayed());
+    assertFalse(duplicate.dispatchAllowed());
+    assertEquals(first.requestSha256().length, duplicate.requestSha256().length);
+    assertEquals(1, readAttemptCount(lease.unitId()));
+    assertEquals(1, countAttempts(lease.unitId()));
+    assertEquals(1, countAttemptRequestedEvents(lease.unitId()));
+    assertAttemptContainsOnlySafeMetadata(first);
+    assertAttemptRequestedEventContainsOnlyIdentifiers(first);
+    assertEquals(fixture.jobId(), first.jobId());
+  }
+
+  @Test
+  void staleLeaseCannotStartAttemptAndReclaimedRunningAttemptBlocksAmbiguousRedispatch()
+      throws Exception {
+    Fixture fixture = createQueuedJob(1);
+    TranslationUnitLeaseRepository.Lease firstLease =
+        leaseService.claimNext("translation-attempt-old", Duration.ofSeconds(60)).orElseThrow();
+    TranslationAttemptRepository.StartResult firstAttempt = attemptService.begin(firstLease);
+    expireLease(firstLease.unitId());
+    TranslationUnitLeaseRepository.Lease reclaimedLease =
+        leaseService.claimNext("translation-attempt-new", Duration.ofSeconds(60)).orElseThrow();
+
+    assertThrows(
+        TranslationAttemptRepository.StaleLeaseException.class,
+        () -> attemptService.begin(firstLease));
+    assertThrows(
+        TranslationAttemptRepository.UnresolvedAttemptException.class,
+        () -> attemptService.begin(reclaimedLease));
+
+    assertEquals(firstAttempt.attemptId(), findOnlyAttemptId(firstLease.unitId()));
+    assertEquals(1, readAttemptCount(firstLease.unitId()));
+    assertEquals("translating", readJobStatus(fixture.jobId()));
+  }
+
+  @Test
+  void attemptCountCannotExceedUnitMaximum() throws Exception {
+    Fixture fixture = createQueuedJob(1);
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement update =
+            connection.prepareStatement(
+                "UPDATE translation_units SET max_attempts = 1 WHERE job_id = ?")) {
+      update.setObject(1, fixture.jobId());
+      assertEquals(1, update.executeUpdate());
+    }
+    TranslationUnitLeaseRepository.Lease firstLease =
+        leaseService.claimNext("translation-attempt-cap-a", Duration.ofSeconds(60)).orElseThrow();
+    attemptService.begin(firstLease);
+    expireLease(firstLease.unitId());
+    TranslationUnitLeaseRepository.Lease secondLease =
+        leaseService.claimNext("translation-attempt-cap-b", Duration.ofSeconds(60)).orElseThrow();
+
+    assertThrows(
+        TranslationAttemptRepository.AttemptsExhaustedException.class,
+        () -> attemptService.begin(secondLease));
+    assertEquals(1, readAttemptCount(firstLease.unitId()));
+    assertEquals(1, countAttempts(firstLease.unitId()));
   }
 
   private Optional<TranslationUnitLeaseRepository.Lease> claimAfterBarrier(
@@ -311,6 +390,111 @@ class PostgresTranslationUnitLeaseTests {
       try (ResultSet row = select.executeQuery()) {
         assertTrue(row.next());
         return row.getString(1);
+      }
+    }
+  }
+
+  private int readAttemptCount(UUID unitId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT attempt_count FROM translation_units WHERE id = ?")) {
+      select.setObject(1, unitId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getInt(1);
+      }
+    }
+  }
+
+  private long countAttempts(UUID unitId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT COUNT(*) FROM translation_attempts WHERE unit_id = ?")) {
+      select.setObject(1, unitId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getLong(1);
+      }
+    }
+  }
+
+  private UUID findOnlyAttemptId(UUID unitId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement("SELECT id FROM translation_attempts WHERE unit_id = ?")) {
+      select.setObject(1, unitId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        UUID attemptId = row.getObject(1, UUID.class);
+        assertFalse(row.next());
+        return attemptId;
+      }
+    }
+  }
+
+  private void assertAttemptContainsOnlySafeMetadata(
+      TranslationAttemptRepository.StartResult result) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT provider_id, outcome, request_sha256, failure_code, provider_request_id "
+                    + "FROM translation_attempts WHERE id = ?")) {
+      select.setObject(1, result.attemptId());
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        assertEquals("fake-local", row.getString("provider_id"));
+        assertEquals("running", row.getString("outcome"));
+        assertEquals(result.requestSha256().length, row.getBytes("request_sha256").length);
+        assertTrue(row.getString("failure_code") == null);
+        assertTrue(row.getString("provider_request_id") == null);
+      }
+    }
+  }
+
+  private long countAttemptRequestedEvents(UUID unitId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT COUNT(*) FROM translation_outbox_events "
+                    + "WHERE aggregate_id = (SELECT job_id FROM translation_units WHERE id = ?) "
+                    + "AND event_type = 'translation.unit.attempt_requested'")) {
+      select.setObject(1, unitId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getLong(1);
+      }
+    }
+  }
+
+  private void assertAttemptRequestedEventContainsOnlyIdentifiers(
+      TranslationAttemptRepository.StartResult result) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                """
+                    SELECT event_type, correlation_id, deduplication_key,
+                           payload->>'jobId' AS payload_job_id,
+                           payload->>'unitId' AS payload_unit_id,
+                           payload->>'attemptId' AS payload_attempt_id,
+                           payload->>'attemptNo' AS payload_attempt_no,
+                           (payload - 'jobId' - 'unitId' - 'attemptId' - 'attemptNo') = '{}'::jsonb
+                               AS only_identifiers
+                    FROM translation_outbox_events WHERE correlation_id = ?
+                    """)) {
+      select.setObject(1, result.attemptId());
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        assertEquals("translation.unit.attempt_requested", row.getString("event_type"));
+        assertEquals(result.attemptId(), row.getObject("correlation_id", UUID.class));
+        assertEquals("attempt-start-" + result.attemptId(), row.getString("deduplication_key"));
+        assertEquals(result.jobId().toString(), row.getString("payload_job_id"));
+        assertEquals(result.unitId().toString(), row.getString("payload_unit_id"));
+        assertEquals(result.attemptId().toString(), row.getString("payload_attempt_id"));
+        assertEquals("1", row.getString("payload_attempt_no"));
+        assertTrue(row.getBoolean("only_identifiers"));
+        assertFalse(row.next());
       }
     }
   }
