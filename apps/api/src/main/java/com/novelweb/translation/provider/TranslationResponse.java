@@ -31,7 +31,15 @@ public record TranslationResponse(
     if (segments == null || segments.isEmpty()) {
       throw new IllegalArgumentException("At least one translated segment is required");
     }
+    if (segments.size() > 5000) {
+      throw new IllegalArgumentException("At most 5000 translated segments are accepted");
+    }
     segments = List.copyOf(segments);
+    long translatedCodePoints =
+        segments.stream().mapToLong(segment -> codePoints(segment.translatedText())).sum();
+    if (translatedCodePoints > 10_000_000) {
+      throw new IllegalArgumentException("Translated response exceeds its total text limit");
+    }
     if (billedUnits < 0 || billingUnit == null) {
       throw new IllegalArgumentException("Billed units and their meter must be valid");
     }
@@ -68,11 +76,18 @@ public record TranslationResponse(
         + "]";
   }
 
+  private static int codePoints(String value) {
+    return value.codePointCount(0, value.length());
+  }
+
   public record SegmentResult(UUID id, String translatedText) {
 
     public SegmentResult {
       if (id == null || translatedText == null || translatedText.isBlank()) {
         throw new IllegalArgumentException("Translated segment ID and text are required");
+      }
+      if (codePoints(translatedText) > 1_000_000) {
+        throw new IllegalArgumentException("Translated segment exceeds its text limit");
       }
     }
 
@@ -81,7 +96,7 @@ public record TranslationResponse(
       return "SegmentResult[id="
           + id
           + ", translatedCodePoints="
-          + translatedText.codePointCount(0, translatedText.length())
+          + codePoints(translatedText)
           + "]";
     }
   }

@@ -32,12 +32,29 @@ public record TranslationRequest(
     if (glossaryInstructions.size() > 500) {
       throw new IllegalArgumentException("At most 500 glossary instructions may be submitted");
     }
+    for (GlossaryInstruction instruction : glossaryInstructions) {
+      if (codePoints(instruction.sourceTerm()) > 512
+          || (instruction.targetTerm() != null && codePoints(instruction.targetTerm()) > 4096)) {
+        throw new IllegalArgumentException("Glossary instruction text exceeds its bound");
+      }
+    }
   }
 
   public long sourceCodePoints() {
-    return segments.stream()
-        .mapToLong(segment -> segment.sourceText().codePointCount(0, segment.sourceText().length()))
-        .sum();
+    return segments.stream().mapToLong(segment -> codePoints(segment.sourceText())).sum();
+  }
+
+  public long requestCodePoints() {
+    long glossaryCodePoints =
+        glossaryInstructions.stream()
+            .mapToLong(
+                instruction ->
+                    (long) codePoints(instruction.sourceTerm())
+                        + (instruction.targetTerm() == null
+                            ? 0
+                            : codePoints(instruction.targetTerm())))
+            .sum();
+    return sourceCodePoints() + glossaryCodePoints;
   }
 
   public void validateAgainst(TranslationProviderCapabilities capabilities)
@@ -49,7 +66,7 @@ public record TranslationRequest(
       throw new TranslationProviderException(TranslationProviderFailure.UNSUPPORTED_LANGUAGE, null);
     }
     if (segments.size() > capabilities.maxSegmentsPerRequest()
-        || sourceCodePoints() > capabilities.maxCodePointsPerRequest()
+        || requestCodePoints() > capabilities.maxCodePointsPerRequest()
         || segments.stream()
             .anyMatch(
                 segment ->
@@ -58,6 +75,10 @@ public record TranslationRequest(
         || (!glossaryInstructions.isEmpty() && !capabilities.glossaryInstructionsSupported())) {
       throw new TranslationProviderException(TranslationProviderFailure.INPUT_REJECTED, null);
     }
+  }
+
+  private static int codePoints(String value) {
+    return value.codePointCount(0, value.length());
   }
 
   @Override
@@ -83,11 +104,7 @@ public record TranslationRequest(
 
     @Override
     public String toString() {
-      return "Segment[id="
-          + id
-          + ", sourceCodePoints="
-          + sourceText.codePointCount(0, sourceText.length())
-          + "]";
+      return "Segment[id=" + id + ", sourceCodePoints=" + codePoints(sourceText) + "]";
     }
   }
 
