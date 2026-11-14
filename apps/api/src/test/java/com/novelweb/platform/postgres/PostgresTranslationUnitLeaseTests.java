@@ -3,6 +3,7 @@ package com.novelweb.platform.postgres;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -18,6 +19,7 @@ import com.novelweb.translation.jobs.TranslationJobCancelService;
 import com.novelweb.translation.jobs.TranslationJobRetryRepository;
 import com.novelweb.translation.jobs.TranslationJobRetryService;
 import com.novelweb.translation.jobs.TranslationJobService;
+import com.novelweb.translation.jobs.TranslationJobStatusService;
 import com.novelweb.translation.jobs.TranslationUnitLeaseRepository;
 import com.novelweb.translation.jobs.TranslationUnitLeaseService;
 import com.novelweb.translation.provider.TranslationBillingUnit;
@@ -71,6 +73,8 @@ class PostgresTranslationUnitLeaseTests {
   @Autowired private TranslationJobRetryService jobRetryService;
 
   @Autowired private TranslationJobCancelService jobCancelService;
+
+  @Autowired private TranslationJobStatusService jobStatusService;
 
   @Autowired private TranslationUnitLeaseService leaseService;
 
@@ -877,6 +881,41 @@ class PostgresTranslationUnitLeaseTests {
                 "translation-cancel-external-001"));
     assertEquals("queued", readJobStatus(nonFakeFixture.jobId()));
     assertEquals(0, countOutboxEvents(nonFakeFixture.jobId(), "translation.job.cancel_requested"));
+  }
+
+  @Test
+  void visibleJobStatusReportsOnlyProgressMetadataAndHidesInaccessibleJobs() throws Exception {
+    // The planner batches up to 100 short segments into one unit; exceed that limit to
+    // exercise an observable partial-progress state between worker completions.
+    Fixture fixture = createQueuedJob(101);
+
+    TranslationJobStatusService.StatusResult queued =
+        jobStatusService.findVisible(fixture.userId(), fixture.jobId()).orElseThrow();
+    assertEquals("queued", queued.job().status());
+    assertEquals(2, queued.job().totalUnits());
+    assertEquals(2, queued.job().queuedUnits());
+    assertEquals(0, queued.progressPercent());
+    assertNull(queued.job().candidateId());
+    assertTrue(
+        jobStatusService
+            .findVisible(createUser("outside translation status fixture"), fixture.jobId())
+            .isEmpty());
+
+    fakeLocalWorkerService.processNext("translation-status-worker", Duration.ofSeconds(60));
+    TranslationJobStatusService.StatusResult partial =
+        jobStatusService.findVisible(fixture.userId(), fixture.jobId()).orElseThrow();
+    assertEquals("translating", partial.job().status());
+    assertEquals(1, partial.job().completedUnits());
+    assertEquals(1, partial.job().queuedUnits());
+    assertEquals(50, partial.progressPercent());
+
+    fakeLocalWorkerService.processNext("translation-status-worker", Duration.ofSeconds(60));
+    TranslationJobStatusService.StatusResult review =
+        jobStatusService.findVisible(fixture.userId(), fixture.jobId()).orElseThrow();
+    assertEquals("review_required", review.job().status());
+    assertEquals("ready_for_review", review.job().candidateStatus());
+    assertEquals(100, review.progressPercent());
+    assertEquals(0, review.job().runningUnits());
   }
 
   private Optional<TranslationUnitLeaseRepository.Lease> claimAfterBarrier(

@@ -27,6 +27,10 @@ novel:
   environment: ${NOVEL_ENVIRONMENT:local}
   features:
     cultivation-enabled: ${NOVEL_FEATURE_CULTIVATION_ENABLED:false}
+  translation:
+    fake:
+      enabled: ${NOVEL_TRANSLATION_FAKE_ENABLED:false}
+      api-enabled: ${NOVEL_TRANSLATION_FAKE_API_ENABLED:false}
   web:
     cors:
       allowed-origins:

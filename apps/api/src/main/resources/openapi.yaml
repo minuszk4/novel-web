@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 6.20.0
+  version: 6.21.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -14,7 +14,7 @@ info:
     Source-only Reader manifest, chapter-content, progress, reader-preferences, bookmarks, private annotations and private reading-history routes are implemented in the PostgreSQL profile.
     History is derived from the latest saved progress per accessible readable work, is visible for 365 days, and never returns chapter body text.
     Versioned cultivation catalogs, authenticated profile settings, private daily XP activity and bounded private Reader sessions with atomic XP awards are implemented in the PostgreSQL profile. The approved starting policy awards 1 XP per complete active Reader minute, capped at 120 XP per UTC day; same-day sub-minute remainder does not cross UTC midnight; top-ups and unlocks award none. Cultivation is feature-gated and off by default pending the rank-threshold pilot and release reviews.
-    Scoped glossary storage, actor-scoped catalog listing/creation, active and writer-only latest-revision reads, version-checked immutable draft creation, authenticated diff/lint/match preview, lint-gated revision publication with append-only audit, strict JSON/CSV/TSV import preview and resolved atomic draft apply, and active/writer-only latest snapshot export are implemented in the PostgreSQL profile; translation remains unavailable.
+    Scoped glossary storage, actor-scoped catalog listing/creation, active and writer-only latest-revision reads, version-checked immutable draft creation, authenticated diff/lint/match preview, lint-gated revision publication with append-only audit, strict JSON/CSV/TSV import preview and resolved atomic draft apply, and active/writer-only latest snapshot export are implemented in the PostgreSQL profile. Translation job enqueue/status/retry/cancel are available only as an explicit fake-local development preview and never call an external NMT provider.
 servers:
   - url: http://127.0.0.1:8080
 tags:
@@ -33,8 +33,11 @@ tags:
     description: Private rank catalog/profile, bounded Reader-session lifecycle and feature-gated server-timed XP awards/activity in the PostgreSQL profile.
     x-implementation-status: partial
   - name: Glossary
-    description: Actor-scoped catalog listing/creation, active-revision reads, immutable drafts, publication and resolved import apply are implemented in the PostgreSQL profile; translation remains planned.
+    description: Actor-scoped catalog listing/creation, active-revision reads, immutable drafts, publication and resolved import apply are implemented in the PostgreSQL profile.
     x-implementation-status: partial
+  - name: Translation
+    description: Explicitly opted-in fake-local translation job lifecycle; external providers, reviewer publication and paid usage are unavailable.
+    x-implementation-status: local-preview
 paths:
   /api/v1/glossaries:
     get:
@@ -3248,6 +3251,218 @@ paths:
           $ref: '#/components/responses/Problem'
         '403':
           $ref: '#/components/responses/Problem'
+  /api/v1/translation/jobs:
+    post:
+      operationId: enqueueFakeLocalTranslationJob
+      tags: [Translation]
+      x-implementation-status: local-preview
+      summary: Queue an offline fake-local translation preview
+      description: >-
+        Available only when the PostgreSQL and translation-fake profiles, NOVEL_TRANSLATION_FAKE_ENABLED=true
+        and NOVEL_TRANSLATION_FAKE_API_ENABLED=true are all configured. This request snapshots one current ready
+        chapter revision, plans bounded translation units and returns an asynchronous job; the placeholder worker
+        is separately gated. It does not call a real translation provider, charge money or publish a candidate.
+        The actor must have readable access to the chapter and current Terms/Privacy acceptance. Session-bound CSRF
+        is required. A replay of the same actor/chapter/key/request returns the original job.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            minLength: 16
+            maxLength: 128
+            pattern: '^[A-Za-z0-9._~-]{16,128}$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TranslationEnqueueRequest'
+      responses:
+        '202':
+          description: The local preview job was queued.
+          headers:
+            Location:
+              schema:
+                type: string
+                format: uri-reference
+            Retry-After:
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TranslationEnqueueResponse'
+        '200':
+          description: The same request was replayed; the original job is returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TranslationEnqueueResponse'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '413':
+          $ref: '#/components/responses/Problem'
+        '422':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/translation/jobs/{jobId}:
+    get:
+      operationId: getTranslationJobStatus
+      tags: [Translation]
+      x-implementation-status: local-preview
+      summary: Read translation job progress metadata
+      description: >-
+        Returns only identifiers, language pair, stable state/failure code, unit counters and candidate status;
+        source and translated text are never returned. Requires readable access to the containing library and
+        current Terms/Privacy acceptance. Responses are no-store. Active jobs include Retry-After: 2 for polling.
+      security:
+        - appSession: []
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Private progress metadata for the accessible job.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TranslationJobStatusResponse'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/translation/jobs/{jobId}/retry:
+    post:
+      operationId: retryFailedTranslationJob
+      tags: [Translation]
+      x-implementation-status: local-preview
+      summary: Retry remaining eligible fake-local units
+      description: >-
+        Requeues failed units below their attempt ceiling only when the source revision/hash is still current.
+        Workspace owners/admins/editors and personal-library owners may act; readers and unrelated users receive
+        the same not-found response. A raw idempotency key is never persisted. Session-bound CSRF and current
+        Terms/Privacy acceptance are required. This operation cannot dispatch a real external provider.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            minLength: 16
+            maxLength: 128
+            pattern: '^[A-Za-z0-9._~-]{16,128}$'
+      responses:
+        '202':
+          description: Eligible units were queued for another local attempt.
+          headers:
+            Location:
+              schema:
+                type: string
+                format: uri-reference
+            Retry-After:
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TranslationRetryResponse'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/translation/jobs/{jobId}/cancel:
+    post:
+      operationId: cancelFakeLocalTranslationJob
+      tags: [Translation]
+      x-implementation-status: local-preview
+      summary: Cancel active fake-local translation work
+      description: >-
+        Atomically cancels queued/running/retry-wait units, ends fake-local running attempts and clears leases.
+        A late worker completion is fenced before candidate writes. If completion wins the row lock first and the
+        job reaches review_required, cancellation is rejected. Real provider cancellation/refund is not supported.
+        Requires writable library access, current Terms/Privacy acceptance and session-bound CSRF.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            minLength: 16
+            maxLength: 128
+            pattern: '^[A-Za-z0-9._~-]{16,128}$'
+      responses:
+        '200':
+          description: The active local job was cancelled or the same cancellation was replayed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TranslationCancelResponse'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
 components:
   securitySchemes:
     appSession:
@@ -3267,6 +3482,175 @@ components:
         type: string
         pattern: '^"annotation-[1-9][0-9]*"$'
   schemas:
+    TranslationEnqueueRequest:
+      type: object
+      additionalProperties: false
+      required: [chapterId, sourceRevisionId, targetLanguage]
+      properties:
+        chapterId:
+          type: string
+          format: uuid
+        sourceRevisionId:
+          type: string
+          format: uuid
+        targetLanguage:
+          type: string
+          minLength: 2
+          maxLength: 35
+          example: en
+    TranslationEnqueueResponse:
+      type: object
+      additionalProperties: false
+      required: [jobId, status, chapterId, sourceRevisionId, sourceLanguage, targetLanguage, providerId, totalUnits, replayed]
+      properties:
+        jobId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [queued, preparing, translating, retry_wait, review_required, completed, failed, cancel_requested, cancelled]
+        chapterId:
+          type: string
+          format: uuid
+        sourceRevisionId:
+          type: string
+          format: uuid
+        sourceLanguage:
+          type: string
+        targetLanguage:
+          type: string
+        providerId:
+          type: string
+          const: fake-local
+        totalUnits:
+          type: integer
+          minimum: 1
+        replayed:
+          type: boolean
+    TranslationJobStatusResponse:
+      type: object
+      additionalProperties: false
+      required: [job, terminalUnits, progressPercent]
+      properties:
+        terminalUnits:
+          type: integer
+          minimum: 0
+        progressPercent:
+          type: integer
+          minimum: 0
+          maximum: 100
+        job:
+          type: object
+          additionalProperties: false
+          required: [id, workId, chapterId, sourceRevisionId, sourceLanguage, targetLanguage, providerId, status, totalUnits, completedUnits, failedUnits, queuedUnits, runningUnits, retryWaitUnits, cancelledUnits, failureCode, candidateId, candidateStatus, createdAt, updatedAt, startedAt, completedAt, cancelRequestedAt]
+          properties:
+            id:
+              type: string
+              format: uuid
+            workId:
+              type: string
+              format: uuid
+            chapterId:
+              type: string
+              format: uuid
+            sourceRevisionId:
+              type: string
+              format: uuid
+            sourceLanguage:
+              type: string
+            targetLanguage:
+              type: string
+            providerId:
+              type: string
+              const: fake-local
+            status:
+              type: string
+              enum: [queued, preparing, translating, validating, retry_wait, review_required, completed, failed, cancel_requested, cancelled]
+            totalUnits:
+              type: integer
+              minimum: 0
+            completedUnits:
+              type: integer
+              minimum: 0
+            failedUnits:
+              type: integer
+              minimum: 0
+            queuedUnits:
+              type: integer
+              minimum: 0
+            runningUnits:
+              type: integer
+              minimum: 0
+            retryWaitUnits:
+              type: integer
+              minimum: 0
+            cancelledUnits:
+              type: integer
+              minimum: 0
+            failureCode:
+              type: [string, 'null']
+            candidateId:
+              type: [string, 'null']
+              format: uuid
+            candidateStatus:
+              anyOf:
+                - type: string
+                  enum: [assembling, partial, ready_for_review, rejected, published, superseded, stale]
+                - type: 'null'
+            createdAt:
+              type: string
+              format: date-time
+            updatedAt:
+              type: string
+              format: date-time
+            startedAt:
+              type: [string, 'null']
+              format: date-time
+            completedAt:
+              type: [string, 'null']
+              format: date-time
+            cancelRequestedAt:
+              type: [string, 'null']
+              format: date-time
+    TranslationRetryResponse:
+      type: object
+      additionalProperties: false
+      required: [jobId, jobStatus, retriedUnits, replayed, outboxEventId]
+      properties:
+        jobId:
+          type: string
+          format: uuid
+        jobStatus:
+          type: string
+        retriedUnits:
+          type: integer
+          minimum: 0
+        replayed:
+          type: boolean
+        outboxEventId:
+          type: string
+          format: uuid
+    TranslationCancelResponse:
+      type: object
+      additionalProperties: false
+      required: [jobId, jobStatus, cancelledUnits, cancelledAttempts, replayed, outboxEventId]
+      properties:
+        jobId:
+          type: string
+          format: uuid
+        jobStatus:
+          type: string
+        cancelledUnits:
+          type: integer
+          minimum: 0
+        cancelledAttempts:
+          type: integer
+          minimum: 0
+        replayed:
+          type: boolean
+        outboxEventId:
+          type: string
+          format: uuid
     Health:
       type: object
       required: [status]
