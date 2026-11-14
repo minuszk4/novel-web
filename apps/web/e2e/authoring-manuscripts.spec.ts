@@ -106,7 +106,9 @@ test('demo visitor sees sign-in and never requests the owner manuscript list', a
   await expectNoAxeViolations(page);
 });
 
+// Model the 180×400 CSS viewport of a 360×800 screen at 200%; this is not native browser zoom.
 for (const viewport of [
+  { name: 'effective 200% zoom proxy 360×800 → 180×400 CSS', width: 180, height: 400 },
   { name: 'mobile 360×800', width: 360, height: 800 },
   { name: 'reflow 640×450', width: 640, height: 450 },
   { name: 'desktop 1280×900', width: 1280, height: 900 },
