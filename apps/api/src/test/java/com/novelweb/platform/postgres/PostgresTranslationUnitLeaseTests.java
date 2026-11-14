@@ -556,6 +556,41 @@ class PostgresTranslationUnitLeaseTests {
   }
 
   @Test
+  void sanitizedProviderFailureMatrixNeverChangesSourceOrCreatesCurrentTranslation()
+      throws Exception {
+    List<TranslationProviderException> failures =
+        List.of(
+            new TranslationProviderException(TranslationProviderFailure.TIMEOUT, null),
+            new TranslationProviderException(
+                TranslationProviderFailure.RATE_LIMITED, Duration.ofSeconds(2)),
+            new TranslationProviderException(TranslationProviderFailure.TEMPORARY, null),
+            new TranslationProviderException(TranslationProviderFailure.INVALID_RESPONSE, null),
+            new TranslationProviderException(
+                TranslationProviderFailure.BILLING_LIMIT_EXCEEDED, null));
+
+    for (TranslationProviderException failure : failures) {
+      Fixture fixture = createQueuedJob(1);
+      UUID sourceSegmentId = sourceSegmentIds(unitIds(fixture.jobId()).getFirst()).getFirst();
+      String originalSource = readSourceText(sourceSegmentId);
+      TranslationUnitLeaseRepository.Lease lease =
+          leaseService
+              .claimNext("translation-failure-matrix-" + failure.failure(), Duration.ofSeconds(60))
+              .orElseThrow();
+      TranslationAttemptRepository.StartResult attempt = attemptService.begin(lease);
+
+      failureService.record(lease, attempt.attemptId(), failure);
+
+      assertEquals(fixture.revisionId(), readCurrentSourceRevisionId(fixture.chapterId()));
+      assertEquals(originalSource, readSourceText(sourceSegmentId));
+      assertEquals(0, countCandidates(fixture.jobId()));
+      assertEquals(0, countCandidateSegmentsForJob(fixture.jobId()));
+      assertEquals(0, countCurrentTranslationVersions(fixture.chapterId()));
+      assertEquals(0, countCandidateReadyEvents(fixture.jobId()));
+      assertTrue(outboxPayloadsContainIdentifiersOnly(fixture.jobId()));
+    }
+  }
+
+  @Test
   void expiredLeaseCannotCommitAnAttemptFailure() throws Exception {
     Fixture fixture = createQueuedJob(1);
     TranslationUnitLeaseRepository.Lease lease =
@@ -1718,6 +1753,12 @@ class PostgresTranslationUnitLeaseTests {
         "SELECT COUNT(*) FROM translation_candidate_segments WHERE job_id = ?", jobId);
   }
 
+  private long countCurrentTranslationVersions(UUID chapterId) throws SQLException {
+    return countBySql(
+        "SELECT COUNT(*) FROM translation_versions WHERE chapter_id = ? AND status = 'current'",
+        chapterId);
+  }
+
   private long countUnitCompletedEvents(UUID jobId) throws SQLException {
     return countBySql(
         "SELECT COUNT(*) FROM translation_outbox_events "
@@ -1942,6 +1983,18 @@ class PostgresTranslationUnitLeaseTests {
       try (ResultSet row = select.executeQuery()) {
         assertTrue(row.next());
         return row.getString(1);
+      }
+    }
+  }
+
+  private UUID readCurrentSourceRevisionId(UUID chapterId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement("SELECT source_revision_id FROM chapters WHERE id = ?")) {
+      select.setObject(1, chapterId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getObject(1, UUID.class);
       }
     }
   }
