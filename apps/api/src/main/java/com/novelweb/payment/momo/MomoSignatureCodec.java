@@ -51,6 +51,21 @@ public final class MomoSignatureCodec {
     return MessageDigest.isEqual(expected, supplied);
   }
 
+  /** Verifies MoMo's signed one-time checkout-create response before its fields are consumed. */
+  public static boolean verifyCreateWalletResponse(
+      CreateWalletResponse response, String accessKey, String secretKey) {
+    if (response == null
+        || !response.hasAllSignedFields()
+        || response.signature() == null
+        || !HEX_SIGNATURE.matcher(response.signature()).matches()) {
+      return false;
+    }
+
+    byte[] expected = hmac(canonicalCreateWalletResponse(response, accessKey), secretKey);
+    byte[] supplied = HexFormat.of().parseHex(response.signature());
+    return MessageDigest.isEqual(expected, supplied);
+  }
+
   static String canonicalCreateWallet(CreateWalletRequest request, String accessKey) {
     requireAccessKey(accessKey);
     return "accessKey="
@@ -103,6 +118,26 @@ public final class MomoSignatureCodec {
         + notification.resultCode()
         + "&transId="
         + notification.transactionId();
+  }
+
+  static String canonicalCreateWalletResponse(CreateWalletResponse response, String accessKey) {
+    requireAccessKey(accessKey);
+    return "accessKey="
+        + accessKey
+        + "&amount="
+        + response.amountVnd()
+        + "&orderId="
+        + response.orderId()
+        + "&partnerCode="
+        + response.partnerCode()
+        + "&payUrl="
+        + response.payUrl()
+        + "&requestId="
+        + response.requestId()
+        + "&responseTime="
+        + response.responseTime()
+        + "&resultCode="
+        + response.resultCode();
   }
 
   private static byte[] hmac(String canonicalData, String secretKey) {
@@ -177,6 +212,27 @@ public final class MomoSignatureCodec {
           && responseTime != null
           && resultCode != null
           && transactionId != null;
+    }
+  }
+
+  public record CreateWalletResponse(
+      String partnerCode,
+      String requestId,
+      String orderId,
+      Long amountVnd,
+      Long responseTime,
+      Integer resultCode,
+      String payUrl,
+      String signature) {
+
+    private boolean hasAllSignedFields() {
+      return partnerCode != null
+          && requestId != null
+          && orderId != null
+          && amountVnd != null
+          && responseTime != null
+          && resultCode != null
+          && payUrl != null;
     }
   }
 }
