@@ -2852,6 +2852,63 @@ label:has(input:focus-visible) {
 .glossary-empty-terms {
   min-height: 180px;
 }
+.glossary-import-entry {
+  min-height: 42px;
+  margin-top: 4px;
+}
+.glossary-import-heading,
+.glossary-import-file,
+.glossary-import-row,
+.glossary-import-saved {
+  min-width: 0;
+  border: 1px solid var(--border-soft);
+  border-radius: 11px;
+  background: var(--surface);
+}
+.glossary-import-heading {
+  margin: 20px 0 18px;
+  padding: 21px 23px;
+}
+.glossary-import-heading h1,
+.glossary-import-file h2,
+.glossary-import-results h2,
+.glossary-import-saved h2 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.glossary-import-heading h1 {
+  font-size: clamp(26px, 4vw, 36px);
+  line-height: 1.2;
+}
+.glossary-import-heading > .eyebrow,
+.glossary-import-row-heading .eyebrow,
+.glossary-import-file .eyebrow,
+.glossary-import-results .eyebrow {
+  margin: 0 0 7px;
+}
+.glossary-import-version,
+.glossary-import-base-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 13px;
+}
+.glossary-import-version span,
+.glossary-import-base-summary span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  max-width: 100%;
+  padding: 4px 9px;
+  border-radius: 999px;
+  color: #51586a;
+  background: #f0f1f4;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.glossary-draft-warning,
 .privacy-footnote {
   display: flex;
   gap: 8px;
@@ -5101,6 +5158,9 @@ button.reader-chapter-nav {
   .glossary-term-target {
     padding-top: 8px;
     border-top: 1px solid var(--border-soft);
+  }
+  .glossary-detail-heading .glossary-import-entry {
+    width: 100%;
   }
   .library-page .page-heading > .button {
     display: none;

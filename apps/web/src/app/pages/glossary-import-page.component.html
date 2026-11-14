@@ -1,0 +1,535 @@
+<section class="page-wrap glossary-page glossary-import-page">
+  <a class="back-link glossary-back-link" [routerLink]="['/app/glossaries', glossaryId()]">
+    ← Chi tiết glossary
+  </a>
+
+  @if (state() === 'loading') {
+    <p class="library-status-message library-sync-message" role="status" aria-live="polite">
+      Đang tải thông tin glossary…
+    </p>
+  } @else if (state() === 'guest') {
+    <div class="empty-state-panel glossary-empty">
+      <h1>Đăng nhập để nhập thuật ngữ</h1>
+      <p>Luồng nhập chỉ dùng trong phiên tài khoản đã xác nhận điều khoản.</p>
+      <a
+        class="button button-primary"
+        [routerLink]="['/sign-in']"
+        [queryParams]="{ returnTo: '/app/glossaries/' + glossaryId() + '/import' }"
+        >Đăng nhập</a
+      >
+    </div>
+  } @else if (state() === 'not-found') {
+    <div class="empty-state-panel glossary-empty" role="alert">
+      <h1>Không tìm thấy glossary</h1>
+      <p>Glossary có thể đã bị xóa hoặc tài khoản của bạn không còn quyền truy cập.</p>
+      <a class="button button-outline" routerLink="/app/glossaries">Về danh sách</a>
+    </div>
+  } @else if (state() === 'error') {
+    <div class="library-status-message library-sync-error" role="alert">
+      <span>{{ operationError() }}</span>
+      @if (requiresSignIn()) {
+        <a
+          class="text-link"
+          [routerLink]="['/sign-in']"
+          [queryParams]="{ returnTo: '/app/glossaries/' + glossaryId() + '/import' }"
+          >Đăng nhập lại</a
+        >
+      } @else {
+        <button class="text-button" type="button" (click)="retryLoad()">Tải lại</button>
+      }
+    </div>
+  } @else if (state() === 'read-only') {
+    <div class="empty-state-panel glossary-empty">
+      <span class="glossary-empty-mark" aria-hidden="true">文</span>
+      <h1>Glossary này chỉ cho phép xem</h1>
+      <p>Bạn không thể nhập hoặc lưu thuật ngữ trong phạm vi này.</p>
+      <a class="button button-primary" [routerLink]="['/app/glossaries', glossaryId()]">
+        Xem glossary
+      </a>
+    </div>
+  } @else if (snapshot(); as current) {
+    <header class="glossary-import-heading">
+      <p class="eyebrow">NHẬP THUẬT NGỮ · {{ scopeLabel(current.glossary.scope) }}</p>
+      <h1>{{ current.glossary.name }}</h1>
+      <p class="glossary-language-pair">
+        {{ languageLabel(current.glossary.sourceLanguage) }}
+        <span aria-hidden="true">→</span>
+        {{ languageLabel(current.glossary.targetLanguage) }}
+      </p>
+      <div class="glossary-import-version" aria-label="Phiên bản glossary">
+        <span
+          >Bản đang áp dụng: {{ current.glossary.activeRevisionNumber ?? 'chưa xuất bản' }}</span
+        >
+        <span>Phiên bản hiện tại: {{ current.glossary.version }}</span>
+        @if (current.glossary.latestRevisionNumber !== null) {
+          <span>Bản nháp mới nhất: {{ current.glossary.latestRevisionNumber }}</span>
+        }
+      </div>
+      @if (draftIsAhead()) {
+        <p class="glossary-draft-warning" role="status">
+          Bản nháp chưa xuất bản. Bản xem trước sẽ so sánh với bản nháp mới nhất, không tự thay đổi
+          bản đang áp dụng.
+        </p>
+      }
+    </header>
+
+    @if (state() === 'saved' && applyResult(); as result) {
+      <section class="glossary-import-saved" aria-labelledby="glossary-import-saved-heading">
+        <span class="glossary-import-success-mark" aria-hidden="true">✓</span>
+        <h2 id="glossary-import-saved-heading" tabindex="-1">
+          Đã lưu bản nháp {{ result.draft.revisionNumber }}
+        </h2>
+        <p>
+          Đã xử lý {{ result.rows.length }} dòng; bỏ qua {{ result.skippedRows }} dòng. Bản đang áp
+          dụng vẫn là {{ snapshot()?.glossary?.activeRevisionNumber ?? 'chưa xuất bản' }}. Bản nháp
+          chưa được xuất bản.
+        </p>
+        @if (result.replayed) {
+          <p class="glossary-form-help">Máy chủ xác nhận đây là kết quả của lần lưu trước.</p>
+        }
+        <a class="button button-primary" [routerLink]="['/app/glossaries', glossaryId()]">
+          Quay lại glossary
+        </a>
+      </section>
+    } @else if (state() === 'ready') {
+      <section class="glossary-import-file" aria-labelledby="glossary-import-file-heading">
+        <div>
+          <p class="eyebrow">TỆP CỦA BẠN</p>
+          <h2 id="glossary-import-file-heading">Chọn tệp thuật ngữ</h2>
+          <p class="glossary-form-help">
+            Hỗ trợ JSON v1, CSV hoặc TSV UTF-8, tối đa 1 MiB. Chọn tệp chỉ đọc tên và kích thước; dữ
+            liệu chỉ được gửi khi bạn bấm xem trước.
+          </p>
+        </div>
+        <div class="glossary-template-actions" aria-label="Tải tệp mẫu">
+          <button class="button button-outline" type="button" (click)="downloadTemplate('JSON')">
+            Tải mẫu JSON
+          </button>
+          <button class="button button-outline" type="button" (click)="downloadTemplate('CSV')">
+            Tải mẫu CSV
+          </button>
+          <button class="button button-outline" type="button" (click)="downloadTemplate('TSV')">
+            Tải mẫu TSV
+          </button>
+        </div>
+        <label class="glossary-file-picker">
+          <span>Chọn tệp JSON, CSV hoặc TSV</span>
+          <input
+            type="file"
+            accept=".json,.csv,.tsv,application/json,text/csv,text/tab-separated-values"
+            [disabled]="busy() !== null || !!applyAttempt()"
+            (change)="onFileSelected($event)"
+          />
+        </label>
+        @if (selectedFile(); as file) {
+          <div class="glossary-selected-file">
+            <div>
+              <strong>{{ file.name }}</strong>
+              <span>{{ file.size }} byte · {{ file.name.split('.').at(-1)?.toUpperCase() }}</span>
+            </div>
+            <button
+              class="text-button"
+              type="button"
+              [disabled]="isEditingLocked()"
+              (click)="removeFile()"
+            >
+              Bỏ tệp
+            </button>
+          </div>
+        }
+        @if (fileError(); as message) {
+          <p class="glossary-import-error" role="alert">{{ message }}</p>
+        }
+        @if (!preview() && operationError(); as message) {
+          <div class="glossary-import-error-panel" role="alert">
+            <p>{{ message }}</p>
+            @if (requiresSignIn()) {
+              <a
+                class="text-link"
+                [routerLink]="['/sign-in']"
+                [queryParams]="{ returnTo: '/app/glossaries/' + glossaryId() + '/import' }"
+                >Đăng nhập lại</a
+              >
+            }
+            @if (issues().length) {
+              <div class="glossary-import-issues" aria-label="Lỗi trong tệp">
+                <h3>{{ issueCount() ?? issues().length }} lỗi cần xem</h3>
+                @if (issuesTruncated()) {
+                  <p>Đang hiển thị {{ issues().length }} lỗi đầu tiên để giữ danh sách gọn.</p>
+                }
+                <ul>
+                  @for (issue of issues(); track $index) {
+                    <li>
+                      @if (issue.rowNumber > 0) {
+                        <button class="text-button" type="button" (click)="focusIssue(issue)">
+                          Dòng {{ issue.rowNumber }}{{ issue.field ? ', ' + issue.field : '' }}:
+                          {{ issue.message }}
+                        </button>
+                      } @else {
+                        <span>{{ issue.message }}</span>
+                      }
+                    </li>
+                  }
+                </ul>
+              </div>
+            }
+          </div>
+        }
+        <div class="glossary-import-primary-action">
+          <button
+            class="button button-primary"
+            type="button"
+            [disabled]="!canPreview()"
+            (click)="requestPreview()"
+          >
+            {{
+              busy() === 'preview'
+                ? 'Đang xem trước…'
+                : staleNotice()
+                  ? 'Xem trước lại'
+                  : 'Xem trước nhập'
+            }}
+          </button>
+          @if (busy() === 'preview') {
+            <span role="status" aria-live="polite">Đang kiểm tra tệp và các xung đột…</span>
+          }
+        </div>
+      </section>
+
+      @if (preview(); as result) {
+        <section class="glossary-import-results" aria-labelledby="glossary-import-results-heading">
+          <div class="glossary-import-results-heading">
+            <div>
+              <p class="eyebrow">XEM TRƯỚC · PHIÊN BẢN {{ result.glossaryVersion }}</p>
+              <h2 id="glossary-import-results-heading" tabindex="-1">Kết quả xem trước</h2>
+            </div>
+            <span class="glossary-term-count">{{ result.counts.imported }} dòng</span>
+          </div>
+          <p class="glossary-import-summary" role="status" aria-live="polite">
+            Phạm vi {{ scopeLabel(result.scope) }} · {{ result.counts.add }} dòng mới ·
+            {{ result.counts.update }} dòng cập nhật · {{ result.counts.unchanged }} dòng không đổi
+            · {{ result.counts.requiresResolution }} dòng cần xử lý.
+          </p>
+          <div class="glossary-import-base-summary">
+            <span>Bản đang áp dụng: {{ result.activeRevisionNumber ?? 'chưa xuất bản' }}</span>
+            <span>Bản làm cơ sở: {{ result.baseRevisionNumber ?? 'chưa có' }}</span>
+            <span>Phiên bản đối chiếu: {{ result.glossaryVersion }}</span>
+          </div>
+          @if (!result.currentTerms.length) {
+            <p class="glossary-import-empty-base">
+              Glossary hiện chưa có thuật ngữ làm cơ sở. Các dòng hợp lệ sẽ được thêm mới.
+            </p>
+          }
+          <p class="glossary-import-impact">
+            Chưa thể tính ảnh hưởng đến bản dịch vì hệ thống chưa có dữ liệu bản dịch.
+          </p>
+
+          @for (candidate of result.importedTerms; track candidate.rowNumber) {
+            @if (editorFor(candidate); as draft) {
+              <article
+                class="glossary-import-row"
+                [class.glossary-import-row-blocked]="
+                  candidate.matchesTruncated || draft.action === null
+                "
+                [id]="'glossary-import-row-' + candidate.rowNumber"
+                tabindex="-1"
+                [attr.aria-describedby]="
+                  issueFor(candidate) ? 'glossary-import-issue-' + candidate.rowNumber : null
+                "
+              >
+                <header class="glossary-import-row-heading">
+                  <div>
+                    <p class="eyebrow">
+                      DÒNG {{ candidate.rowNumber }} · {{ candidate.suggestedAction }}
+                    </p>
+                    <h3>{{ candidate.importedTerm.sourceTerm }}</h3>
+                    <p class="glossary-import-row-copy">{{ actionDescription(candidate) }}</p>
+                  </div>
+                  @if (candidate.suggestedAction === 'UNCHANGED') {
+                    <span class="glossary-import-unchanged">Không đổi · bỏ qua mặc định</span>
+                  }
+                </header>
+
+                @if (currentMatches(candidate).length) {
+                  <div class="glossary-import-matches" aria-label="Thuật ngữ hiện có trùng mẫu">
+                    @for (match of currentMatches(candidate); track match.id) {
+                      <div class="glossary-import-match">
+                        <span class="glossary-import-match-number">Mục {{ match.ordinal }}</span>
+                        <strong>{{ match.sourceTerm }}</strong>
+                        <span>{{
+                          match.doNotTranslate
+                            ? 'Giữ nguyên'
+                            : match.targetTerm || 'Chưa có cách dịch'
+                        }}</span>
+                        @if (match.aliases.length) {
+                          <small>Bí danh: {{ match.aliases.join(' · ') }}</small>
+                        }
+                      </div>
+                    }
+                  </div>
+                }
+
+                @if (candidate.matchesTruncated) {
+                  <p class="glossary-import-truncated" role="alert">
+                    Không thể gộp từ danh sách một phần. Hãy bỏ qua dòng này, sửa glossary ở nơi có
+                    quyền chỉnh sửa rồi yêu cầu xem trước mới.
+                  </p>
+                }
+
+                @if (candidate.suggestedAction !== 'UNCHANGED') {
+                  <div
+                    class="glossary-import-decisions"
+                    role="group"
+                    [attr.aria-label]="'Quyết định cho ' + candidate.importedTerm.sourceTerm"
+                  >
+                    @for (action of allowedActions(candidate); track action) {
+                      <button
+                        class="button"
+                        [class.button-primary]="draft.action === action"
+                        [class.button-outline]="draft.action !== action"
+                        type="button"
+                        [disabled]="isEditingLocked()"
+                        [attr.aria-pressed]="draft.action === action"
+                        [attr.aria-label]="actionLabel(action, candidate)"
+                        (click)="setAction(candidate, action)"
+                      >
+                        @switch (action) {
+                          @case ('ADD') {
+                            Thêm mục
+                          }
+                          @case ('REPLACE') {
+                            Thay thế
+                          }
+                          @case ('MERGE') {
+                            Gộp bí danh
+                          }
+                          @case ('SKIP') {
+                            Bỏ qua dòng
+                          }
+                        }
+                      </button>
+                    }
+                  </div>
+                } @else {
+                  <p class="glossary-import-skip-note">
+                    Dòng không đổi, không làm phát sinh bản nháp nếu bị bỏ qua.
+                  </p>
+                }
+
+                @if (
+                  draft.action === 'MERGE' &&
+                  candidate.existingMatches.length > 1 &&
+                  !draft.targetTermId
+                ) {
+                  <label class="glossary-import-field glossary-import-target-picker">
+                    <span>Chọn thuật ngữ hiện có để gộp</span>
+                    <select
+                      [disabled]="isEditingLocked()"
+                      (change)="setMergeTarget(candidate, $event)"
+                    >
+                      <option value="">Chọn một thuật ngữ</option>
+                      @for (match of currentMatches(candidate); track match.id) {
+                        <option [value]="match.id">
+                          Mục {{ match.ordinal }} · {{ match.sourceTerm }}
+                        </option>
+                      }
+                    </select>
+                  </label>
+                }
+
+                @if (draft.action === 'MERGE' && draft.targetTermId) {
+                  <p class="glossary-import-merge-explanation">
+                    Gộp sẽ giữ thuật ngữ nguồn, bản dịch, độ ưu tiên, chính sách hoa/thường, cờ giữ
+                    nguyên và ghi chú hiện tại; bí danh từ tệp được thêm nếu chưa trùng. Kết quả
+                    cuối bên dưới có thể chỉnh sửa trước khi lưu.
+                  </p>
+                }
+                @if (draft.action === 'REPLACE') {
+                  <p class="glossary-import-replace-explanation">
+                    Thay thế toàn bộ trường bằng dữ liệu đang sửa bên dưới và giữ mã ổn định của
+                    thuật ngữ hiện có.
+                  </p>
+                }
+
+                @if (
+                  draft.action === 'ADD' ||
+                  draft.action === 'REPLACE' ||
+                  (draft.action === 'MERGE' && draft.targetTermId)
+                ) {
+                  <div class="glossary-import-term-form">
+                    <label class="glossary-import-field">
+                      <span>Thuật ngữ nguồn</span>
+                      <input
+                        type="text"
+                        maxlength="512"
+                        [value]="draft.term.sourceTerm"
+                        [disabled]="isEditingLocked()"
+                        (input)="setText(candidate, 'sourceTerm', $event)"
+                      />
+                    </label>
+                    <label class="glossary-import-field">
+                      <span>Cách dịch</span>
+                      <input
+                        type="text"
+                        maxlength="4096"
+                        [value]="draft.term.targetTerm ?? ''"
+                        [disabled]="isEditingLocked()"
+                        (input)="setText(candidate, 'targetTerm', $event)"
+                      />
+                    </label>
+                    <label class="glossary-import-field glossary-import-field-wide">
+                      <span>Bí danh <small>mỗi dòng một bí danh, tối đa 25</small></span>
+                      <textarea
+                        rows="3"
+                        [value]="draft.aliasesText"
+                        [disabled]="isEditingLocked()"
+                        (input)="setAliases(candidate, $event)"
+                      ></textarea>
+                    </label>
+                    <label class="glossary-import-field">
+                      <span>Độ ưu tiên</span>
+                      <input
+                        type="number"
+                        step="1"
+                        min="-1000000"
+                        max="1000000"
+                        [value]="draft.priorityText"
+                        [disabled]="isEditingLocked()"
+                        (input)="setPriority(candidate, $event)"
+                      />
+                    </label>
+                    <label class="glossary-import-field">
+                      <span>Quy tắc hoa/thường</span>
+                      <select
+                        [value]="draft.term.casePolicy"
+                        [disabled]="isEditingLocked()"
+                        (change)="setCasePolicy(candidate, $event)"
+                      >
+                        <option value="SENSITIVE">Phân biệt</option>
+                        <option value="INSENSITIVE">Không phân biệt</option>
+                      </select>
+                    </label>
+                    <label class="glossary-import-field glossary-import-field-wide">
+                      <span>Ghi chú ngữ cảnh <small>tối đa 2.000 ký tự</small></span>
+                      <textarea
+                        rows="2"
+                        maxlength="2000"
+                        [value]="draft.term.contextNote ?? ''"
+                        [disabled]="isEditingLocked()"
+                        (input)="setText(candidate, 'contextNote', $event)"
+                      ></textarea>
+                    </label>
+                    <label class="glossary-import-checkbox">
+                      <input
+                        type="checkbox"
+                        [checked]="draft.term.doNotTranslate"
+                        [disabled]="isEditingLocked()"
+                        (change)="setDoNotTranslate(candidate, $event)"
+                      />
+                      <span>Giữ nguyên thuật ngữ nguồn khi dịch</span>
+                    </label>
+                  </div>
+                }
+
+                @if (termError(candidate, draft); as validationMessage) {
+                  <p class="glossary-import-field-error" role="alert">{{ validationMessage }}</p>
+                }
+                @if (issueFor(candidate); as issue) {
+                  <p
+                    class="glossary-import-field-error"
+                    [id]="'glossary-import-issue-' + candidate.rowNumber"
+                    role="alert"
+                  >
+                    {{ issue.message }}{{ issue.field ? ' · ' + issue.field : '' }}
+                  </p>
+                }
+              </article>
+            }
+          }
+
+          @if (operationError(); as message) {
+            <div class="glossary-import-error-panel" role="alert">
+              <p>{{ message }}</p>
+              @if (issues().length) {
+                <div class="glossary-import-issues" aria-label="Lỗi cần sửa">
+                  <h3>{{ issueCount() ?? issues().length }} lỗi cần sửa</h3>
+                  @if (issuesTruncated()) {
+                    <p>Đang hiển thị {{ issues().length }} lỗi đầu tiên.</p>
+                  }
+                  <ul>
+                    @for (issue of issues(); track $index) {
+                      <li>
+                        @if (issue.rowNumber > 0) {
+                          <button class="text-button" type="button" (click)="focusIssue(issue)">
+                            Dòng {{ issue.rowNumber }}{{ issue.field ? ', ' + issue.field : '' }}:
+                            {{ issue.message }}
+                          </button>
+                        } @else {
+                          <span>{{ issue.message }}</span>
+                        }
+                      </li>
+                    }
+                  </ul>
+                </div>
+              }
+              @if (hasGeneralIssue() && selectedFile()) {
+                <button
+                  class="button button-outline"
+                  type="button"
+                  [disabled]="busy() !== null"
+                  (click)="retryPreview()"
+                >
+                  Tải lại bản xem trước
+                </button>
+              }
+              @if (staleNotice() && selectedFile()) {
+                <button
+                  class="button button-outline"
+                  type="button"
+                  [disabled]="busy() !== null"
+                  (click)="retryPreview()"
+                >
+                  Xem trước lại theo phiên bản mới
+                </button>
+              }
+            </div>
+          }
+
+          @if (noChanges()) {
+            <p class="glossary-import-no-changes" role="status">
+              Không có thay đổi để lưu. Glossary vẫn giữ nguyên.
+            </p>
+          }
+          @if (applyAttempt()) {
+            <p class="glossary-import-retry-warning" role="alert">
+              Lần lưu trước chưa rõ kết quả. Các lựa chọn đang được khóa để gửi lại nguyên văn cùng
+              mã yêu cầu.
+            </p>
+          }
+          <div class="glossary-import-save-bar">
+            <div>
+              <strong>{{ result.counts.imported }} dòng trong bản xem trước</strong>
+              <span>Chỉ lưu bản nháp; thao tác này không xuất bản glossary.</span>
+            </div>
+            <button
+              class="button button-primary"
+              type="button"
+              [disabled]="busy() !== null || (!canApply() && !applyAttempt())"
+              (click)="saveDraft()"
+            >
+              @if (busy() === 'prepare-apply') {
+                Đang chuẩn bị…
+              } @else if (busy() === 'apply') {
+                Đang lưu bản nháp…
+              } @else if (applyAttempt()) {
+                Gửi lại đúng yêu cầu lưu
+              } @else {
+                Lưu bản nháp
+              }
+            </button>
+          </div>
+        </section>
+      }
+    }
+  }
+</section>

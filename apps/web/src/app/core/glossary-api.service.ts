@@ -33,6 +33,11 @@ export interface GlossaryPage {
   nextCursor: string | null;
 }
 
+export interface GlossaryMetadataSnapshot {
+  glossary: GlossaryCatalogItem;
+  etag: string;
+}
+
 export interface GlossaryCurrentTerm {
   id: string;
   ordinal: number;
@@ -171,6 +176,8 @@ export class GlossaryApiError extends Error {
     readonly currentEtag: string | null = null,
     readonly rowNumber: number | null = null,
     readonly issues: GlossaryImportIssue[] = [],
+    readonly issueCount: number | null = null,
+    readonly issuesTruncated: boolean = false,
   ) {
     super(message);
     this.name = 'GlossaryApiError';
@@ -235,6 +242,23 @@ export class GlossaryApiService {
         this.http.get<unknown>(`${glossariesUrl}/${glossaryId}`).pipe(timeout(requestTimeoutMs)),
       );
       return parseCatalogItem(value, glossaryId);
+    } catch (error) {
+      throw toGlossaryApiError(error);
+    }
+  }
+
+  async getGlossarySnapshot(glossaryId: string): Promise<GlossaryMetadataSnapshot> {
+    if (!isUuid(glossaryId)) throw invalidQuery();
+    try {
+      const response = await firstValueFrom(
+        this.http
+          .get<unknown>(`${glossariesUrl}/${glossaryId}`, { observe: 'response' })
+          .pipe(timeout(requestTimeoutMs)),
+      );
+      const glossary = parseCatalogItem(response.body, glossaryId);
+      const etag = response.headers.get('ETag');
+      if (!isEtag(etag) || etag !== `"v${glossary.version}"`) throw invalidResponse();
+      return { glossary, etag };
     } catch (error) {
       throw toGlossaryApiError(error);
     }
@@ -793,6 +817,12 @@ function toGlossaryApiError(error: unknown): GlossaryApiError {
       isRecord(body) && isPositiveInteger(body['rowNumber']) ? body['rowNumber'] : null;
     const issues =
       isRecord(body) && Array.isArray(body['issues']) ? parseIssues(body['issues']) : [];
+    const issueCount =
+      isRecord(body) && isNonNegativeInteger(body['issueCount']) ? body['issueCount'] : null;
+    const issuesTruncated =
+      isRecord(body) && typeof body['issuesTruncated'] === 'boolean'
+        ? body['issuesTruncated']
+        : issueCount !== null && issueCount > issues.length;
     const message =
       code === 'GLOSSARY_VERSION_STALE'
         ? 'GLOSSARY_VERSION_STALE'
@@ -806,6 +836,8 @@ function toGlossaryApiError(error: unknown): GlossaryApiError {
       parseEtag(error.headers.get('ETag')),
       rowNumber,
       issues,
+      issueCount,
+      issuesTruncated,
     );
   }
   return new GlossaryApiError('GLOSSARY_REQUEST_FAILED', -1, null);

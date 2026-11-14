@@ -198,6 +198,49 @@ describe('GlossaryApiService', () => {
     await expect(mismatched).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
   });
 
+  it('loads a strong metadata ETag for an unpublished glossary and checks its version', async () => {
+    const pending = service.getGlossarySnapshot(glossaryId);
+    http.expectOne({ method: 'GET', url: `/api/v1/glossaries/${glossaryId}` }).flush(
+      {
+        id: glossaryId,
+        name: 'Tu luyện',
+        scope: 'LIBRARY',
+        sourceLanguage: 'zh-Hans',
+        targetLanguage: 'vi',
+        version: 1,
+        activeRevisionId: null,
+        activeRevisionNumber: null,
+        latestRevisionNumber: 1,
+        createdAt: timestamp,
+        canWrite: true,
+      },
+      { headers: new HttpHeaders({ ETag: '"v1"' }) },
+    );
+    await expect(pending).resolves.toMatchObject({
+      glossary: { id: glossaryId, version: 1, activeRevisionId: null },
+      etag: '"v1"',
+    });
+
+    const mismatched = service.getGlossarySnapshot(glossaryId);
+    http.expectOne({ method: 'GET', url: `/api/v1/glossaries/${glossaryId}` }).flush(
+      {
+        id: glossaryId,
+        name: 'Tu luyện',
+        scope: 'LIBRARY',
+        sourceLanguage: 'zh-Hans',
+        targetLanguage: 'vi',
+        version: 2,
+        activeRevisionId: null,
+        activeRevisionNumber: null,
+        latestRevisionNumber: 1,
+        createdAt: timestamp,
+        canWrite: true,
+      },
+      { headers: new HttpHeaders({ ETag: '"v1"' }) },
+    );
+    await expect(mismatched).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+  });
+
   it('creates a private user glossary with CSRF and a matching version ETag', async () => {
     const pending = service.createUserGlossary({
       name: '  Personal terms  ',
@@ -406,6 +449,8 @@ describe('GlossaryApiService', () => {
     await expect(pending).rejects.toMatchObject({
       status: 422,
       code: 'GLOSSARY_IMPORT_INVALID',
+      issueCount: 1,
+      issuesTruncated: false,
       issues: [
         {
           code: 'REQUIRED_FIELD_MISSING',

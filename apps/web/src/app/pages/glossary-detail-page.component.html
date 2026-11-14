@@ -54,6 +54,14 @@
           <span class="glossary-draft-badge">Có bản nháp chưa xuất bản</span>
         }
       </div>
+      @if (item.canWrite) {
+        <a
+          class="button button-primary glossary-import-entry"
+          [routerLink]="['/app/glossaries', item.id, 'import']"
+        >
+          Nhập thuật ngữ
+        </a>
+      }
     </header>
 
     @if (!item.activeRevisionId) {

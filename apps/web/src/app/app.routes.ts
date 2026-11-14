@@ -81,6 +81,14 @@ export const routes: Routes = [
         title: 'Thuật ngữ — Novel',
       },
       {
+        path: 'glossaries/:glossaryId/import',
+        loadComponent: () =>
+          import('./pages/glossary-import-page.component').then(
+            (page) => page.GlossaryImportPageComponent,
+          ),
+        title: 'Nhập thuật ngữ — Novel',
+      },
+      {
         path: 'glossaries/:glossaryId',
         loadComponent: () =>
           import('./pages/glossary-detail-page.component').then(
