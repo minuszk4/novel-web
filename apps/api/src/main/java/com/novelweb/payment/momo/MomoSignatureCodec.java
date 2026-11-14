@@ -30,6 +30,13 @@ public final class MomoSignatureCodec {
     return HexFormat.of().formatHex(hmac(canonicalCreateWallet(request, accessKey), secretKey));
   }
 
+  /** Signs a MoMo order-status query using its distinct request field set. */
+  public static String signQueryOrder(
+      QueryOrderRequest request, String accessKey, String secretKey) {
+    Objects.requireNonNull(request, "query-order request is required");
+    return HexFormat.of().formatHex(hmac(canonicalQueryOrder(request, accessKey), secretKey));
+  }
+
   /**
    * Verifies the exact documented IPN fields. Malformed or incomplete notifications fail closed;
    * order ownership, environment and amount matching remain the payment service's responsibility.
@@ -88,6 +95,18 @@ public final class MomoSignatureCodec {
         + request.requestId()
         + "&requestType="
         + WALLET_REQUEST_TYPE;
+  }
+
+  static String canonicalQueryOrder(QueryOrderRequest request, String accessKey) {
+    requireAccessKey(accessKey);
+    return "accessKey="
+        + accessKey
+        + "&orderId="
+        + request.orderId()
+        + "&partnerCode="
+        + request.partnerCode()
+        + "&requestId="
+        + request.requestId();
   }
 
   static String canonicalNotification(PaymentNotification notification, String accessKey) {
@@ -182,6 +201,15 @@ public final class MomoSignatureCodec {
       Objects.requireNonNull(
           redirectUrl, "redirectUrl is required; use an empty string when absent");
       Objects.requireNonNull(requestId, "requestId is required");
+    }
+  }
+
+  public record QueryOrderRequest(String partnerCode, String requestId, String orderId) {
+
+    public QueryOrderRequest {
+      Objects.requireNonNull(partnerCode, "partnerCode is required");
+      Objects.requireNonNull(requestId, "requestId is required");
+      Objects.requireNonNull(orderId, "orderId is required");
     }
   }
 

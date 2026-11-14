@@ -27,6 +27,20 @@ class MomoSignatureCodecTests {
   }
 
   @Test
+  void signsStatusQueryWithItsDistinctCanonicalFieldSet() {
+    MomoSignatureCodec.QueryOrderRequest request =
+        new MomoSignatureCodec.QueryOrderRequest(
+            "MOMOTEST123", "request-2026-0002", "order-2026-0001");
+
+    assertThat(MomoSignatureCodec.canonicalQueryOrder(request, ACCESS_KEY))
+        .isEqualTo(
+            "accessKey=novel-test-access&orderId=order-2026-0001"
+                + "&partnerCode=MOMOTEST123&requestId=request-2026-0002");
+    assertThat(MomoSignatureCodec.signQueryOrder(request, ACCESS_KEY, SECRET_KEY))
+        .isEqualTo("656caca6e32e30fb223fdb42a4bfcf1828d60a7f5ade818852b7153956f26328");
+  }
+
+  @Test
   void rejectsWalletAmountsOutsideTheDocumentedVndRange() {
     assertThatIllegalArgumentException().isThrownBy(() -> createWalletRequest(999L));
     assertThat(
