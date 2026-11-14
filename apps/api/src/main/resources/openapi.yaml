@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 6.16.0
+  version: 6.17.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -14,7 +14,7 @@ info:
     Source-only Reader manifest, chapter-content, progress, reader-preferences, bookmarks, private annotations and private reading-history routes are implemented in the PostgreSQL profile.
     History is derived from the latest saved progress per accessible readable work, is visible for 365 days, and never returns chapter body text.
     Versioned cultivation catalogs, authenticated profile settings, private daily XP activity and bounded private Reader sessions with atomic XP awards are implemented in the PostgreSQL profile. The approved starting policy awards 1 XP per complete active Reader minute, capped at 120 XP per UTC day; top-ups and unlocks award none. Cultivation is feature-gated and off by default while the frontend Reader integration and rank-threshold pilot remain pending.
-    Scoped glossary storage, actor-scoped catalog listing/creation, active-revision reads, version-checked immutable draft creation, lint-gated revision publication with append-only audit, and strict JSON/CSV/TSV import preview and resolved atomic draft apply are implemented in the PostgreSQL profile; translation remains unavailable.
+    Scoped glossary storage, actor-scoped catalog listing/creation, active and writer-only latest-revision reads, version-checked immutable draft creation, lint-gated revision publication with append-only audit, and strict JSON/CSV/TSV import preview and resolved atomic draft apply are implemented in the PostgreSQL profile; translation remains unavailable.
 servers:
   - url: http://127.0.0.1:8080
 tags:
@@ -592,6 +592,53 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GlossaryActiveRevision'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/glossaries/{glossaryId}/latest-revision:
+    get:
+      operationId: getLatestWritableGlossaryRevision
+      tags: [Glossary]
+      x-implementation-status: implemented-postgres-profile
+      summary: Read the latest glossary revision as a writer
+      description: >-
+        Returns the latest immutable revision to the current actor only if they can write the glossary. This may be
+        an unpublished draft newer than the active revision. USER_GLOBAL glossaries require their owner; library,
+        work, volume and chapter glossaries require current library write access. A missing, empty, inactive,
+        inaccessible or read-only glossary is concealed as 404. Current Terms and Privacy acceptance is required.
+        This safe GET does not require CSRF. The representation is private, non-cacheable and carries the current
+        glossary version ETag; later draft writes must use that ETag in If-Match.
+      security:
+        - appSession: []
+      parameters:
+        - name: glossaryId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The latest immutable snapshot visible only to a current glossary writer.
+          headers:
+            ETag:
+              required: true
+              schema:
+                type: string
+                pattern: '^"v[1-9][0-9]*"$'
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GlossaryWritableRevision'
         '401':
           $ref: '#/components/responses/Problem'
         '403':
@@ -5022,6 +5069,52 @@ components:
           format: int64
           minimum: 1
         activeRevisionId:
+          type: string
+          format: uuid
+        revisionNumber:
+          type: integer
+          minimum: 1
+        parentRevisionId:
+          type: [string, 'null']
+          format: uuid
+        revisionCreatedAt:
+          type: string
+          format: date-time
+        terms:
+          type: array
+          maxItems: 1000
+          items:
+            $ref: '#/components/schemas/GlossaryTerm'
+    GlossaryWritableRevision:
+      type: object
+      additionalProperties: false
+      required:
+        [glossaryId, name, scope, sourceLanguage, targetLanguage, version, activeRevisionId, revisionId, revisionNumber, parentRevisionId, revisionCreatedAt, terms]
+      description: The latest revision for a writable actor; it may be newer than activeRevisionId. A null activeRevisionId means no revision has been published.
+      properties:
+        glossaryId:
+          type: string
+          format: uuid
+        name:
+          type: string
+          maxLength: 300
+        scope:
+          type: string
+          enum: [USER_GLOBAL, LIBRARY, WORK, VOLUME, CHAPTER]
+        sourceLanguage:
+          type: string
+          maxLength: 64
+        targetLanguage:
+          type: string
+          maxLength: 64
+        version:
+          type: integer
+          format: int64
+          minimum: 1
+        activeRevisionId:
+          type: [string, 'null']
+          format: uuid
+        revisionId:
           type: string
           format: uuid
         revisionNumber:

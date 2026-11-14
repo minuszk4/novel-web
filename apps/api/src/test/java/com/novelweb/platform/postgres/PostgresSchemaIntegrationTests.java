@@ -1021,6 +1021,223 @@ class PostgresSchemaIntegrationTests {
   }
 
   @Test
+  void glossaryLatestRevisionRouteReturnsOnlyTheLatestSnapshotToWriters() throws Exception {
+    UUID ownerId = createSessionTestUser("Glossary Latest Owner");
+    UUID editorId = createSessionTestUser("Glossary Latest Editor");
+    UUID readerId = createSessionTestUser("Glossary Latest Reader");
+    UUID blockedId = createSessionTestUser("Glossary Latest Policy Blocked");
+    UUID outsiderId = createSessionTestUser("Glossary Latest Outsider");
+    UUID workspaceId = UUID.randomUUID();
+    UUID libraryId = UUID.randomUUID();
+    UUID glossaryId = UUID.randomUUID();
+    UUID emptyGlossaryId = UUID.randomUUID();
+    UUID firstTermId = UUID.randomUUID();
+    UUID addedTermId = UUID.randomUUID();
+    try {
+      addCurrentPolicyAcceptances(ownerId);
+      addCurrentPolicyAcceptances(editorId);
+      addCurrentPolicyAcceptances(readerId);
+      addCurrentPolicyAcceptances(outsiderId);
+      SessionService.IssuedSession ownerSession = sessionService.create(ownerId).orElseThrow();
+      SessionService.IssuedSession editorSession = sessionService.create(editorId).orElseThrow();
+      SessionService.IssuedSession readerSession = sessionService.create(readerId).orElseThrow();
+      SessionService.IssuedSession blockedSession = sessionService.create(blockedId).orElseThrow();
+      SessionService.IssuedSession outsiderSession =
+          sessionService.create(outsiderId).orElseThrow();
+      var ownerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", ownerSession.cookieValue());
+      var editorCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", editorSession.cookieValue());
+      var readerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", readerSession.cookieValue());
+      var blockedCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", blockedSession.cookieValue());
+      var outsiderCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", outsiderSession.cookieValue());
+
+      try (Connection connection = dataSource.getConnection()) {
+        connection.setAutoCommit(false);
+        try {
+          try (PreparedStatement insertWorkspace =
+              connection.prepareStatement(
+                  "INSERT INTO workspaces (id, name, created_by_user_id) VALUES (?, ?, ?)")) {
+            insertWorkspace.setObject(1, workspaceId);
+            insertWorkspace.setString(2, "Glossary latest revision fixture");
+            insertWorkspace.setObject(3, ownerId);
+            assertEquals(1, insertWorkspace.executeUpdate());
+          }
+          try (PreparedStatement insertMember =
+              connection.prepareStatement(
+                  "INSERT INTO workspace_members (workspace_id, user_id, role) VALUES (?, ?, ?)")) {
+            for (var member :
+                List.of(
+                    new Object[] {ownerId, "owner"},
+                    new Object[] {editorId, "editor"},
+                    new Object[] {readerId, "reader"})) {
+              insertMember.setObject(1, workspaceId);
+              insertMember.setObject(2, member[0]);
+              insertMember.setString(3, (String) member[1]);
+              insertMember.addBatch();
+            }
+            assertEquals(3, insertMember.executeBatch().length);
+          }
+          try (PreparedStatement insertLibrary =
+              connection.prepareStatement(
+                  "INSERT INTO libraries (id, owner_user_id, workspace_id, name, is_default)"
+                      + " VALUES (?, ?, ?, 'Glossary latest fixture', FALSE)")) {
+            insertLibrary.setObject(1, libraryId);
+            insertLibrary.setObject(2, ownerId);
+            insertLibrary.setObject(3, workspaceId);
+            assertEquals(1, insertLibrary.executeUpdate());
+          }
+          try (PreparedStatement insertGlossary =
+              connection.prepareStatement(
+                  "INSERT INTO glossaries"
+                      + " (id, library_id, name, scope_type, source_language, target_language)"
+                      + " VALUES (?, ?, ?, 'LIBRARY', 'zh-Hans', 'vi')")) {
+            insertGlossary.setObject(1, glossaryId);
+            insertGlossary.setObject(2, libraryId);
+            insertGlossary.setString(3, "Library glossary with drafts");
+            assertEquals(1, insertGlossary.executeUpdate());
+            insertGlossary.setObject(1, emptyGlossaryId);
+            insertGlossary.setString(3, "Empty library glossary");
+            assertEquals(1, insertGlossary.executeUpdate());
+          }
+          connection.commit();
+        } catch (SQLException | RuntimeException exception) {
+          connection.rollback();
+          throw exception;
+        }
+      }
+
+      GlossaryRevisionWriteRepository.DraftCreated firstDraft =
+          glossaryRevisionWriteRepository.createDraftRevision(
+              ownerId,
+              glossaryId,
+              1,
+              List.of(
+                  new GlossaryRevisionWriteRepository.TermDraft(
+                      firstTermId,
+                      "金丹",
+                      "Kim Đan",
+                      5,
+                      GlossaryMatcher.CasePolicy.INSENSITIVE,
+                      GlossaryMatcher.MatchMode.WHOLE_PHRASE,
+                      false,
+                      "published value",
+                      List.of("Golden Core"))));
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement activate =
+              connection.prepareStatement(
+                  "UPDATE glossaries SET active_revision_id = ? WHERE id = ?")) {
+        activate.setObject(1, firstDraft.revisionId());
+        activate.setObject(2, glossaryId);
+        assertEquals(1, activate.executeUpdate());
+      }
+      GlossaryRevisionWriteRepository.DraftCreated latestDraft =
+          glossaryRevisionWriteRepository.createDraftRevision(
+              editorId,
+              glossaryId,
+              2,
+              List.of(
+                  new GlossaryRevisionWriteRepository.TermDraft(
+                      firstTermId,
+                      "金丹",
+                      "Kim Đan (draft)",
+                      5,
+                      GlossaryMatcher.CasePolicy.INSENSITIVE,
+                      GlossaryMatcher.MatchMode.WHOLE_PHRASE,
+                      false,
+                      "latest draft value",
+                      List.of("Golden Core", "Golden Elixir")),
+                  new GlossaryRevisionWriteRepository.TermDraft(
+                      addedTermId,
+                      "元婴",
+                      "Nguyên Anh",
+                      6,
+                      GlossaryMatcher.CasePolicy.INSENSITIVE,
+                      GlossaryMatcher.MatchMode.WHOLE_PHRASE,
+                      false,
+                      null,
+                      List.of())));
+
+      String route = "/api/v1/glossaries/{glossaryId}/latest-revision";
+      assertEquals(
+          401, mockMvc.perform(get(route, glossaryId)).andReturn().getResponse().getStatus());
+
+      MvcResult policyBlocked =
+          mockMvc.perform(get(route, glossaryId).cookie(blockedCookie)).andReturn();
+      assertEquals(403, policyBlocked.getResponse().getStatus());
+      assertTrue(
+          policyBlocked.getResponse().getContentAsString().contains("POLICY_ACCEPTANCE_REQUIRED"));
+
+      for (var writerCookie : List.of(ownerCookie, editorCookie)) {
+        MvcResult writerRead =
+            mockMvc.perform(get(route, glossaryId).cookie(writerCookie)).andReturn();
+        assertEquals(200, writerRead.getResponse().getStatus());
+        assertEquals("\"v3\"", writerRead.getResponse().getHeader(HttpHeaders.ETAG));
+        assertTrue(
+            writerRead.getResponse().getHeader(HttpHeaders.CACHE_CONTROL).contains("no-store"));
+        assertTrue(writerRead.getResponse().getHeader(HttpHeaders.PRAGMA).contains("no-cache"));
+        JsonNode body = objectMapper.readTree(writerRead.getResponse().getContentAsString());
+        assertEquals(glossaryId.toString(), body.path("glossaryId").asText());
+        assertEquals(firstDraft.revisionId().toString(), body.path("activeRevisionId").asText());
+        assertEquals(latestDraft.revisionId().toString(), body.path("revisionId").asText());
+        assertEquals(2, body.path("revisionNumber").asInt());
+        assertEquals("Kim Đan (draft)", body.path("terms").get(0).path("targetTerm").asText());
+        assertEquals("Golden Elixir", body.path("terms").get(0).path("aliases").get(1).asText());
+        assertEquals(addedTermId.toString(), body.path("terms").get(1).path("id").asText());
+      }
+
+      MvcResult readerRead =
+          mockMvc.perform(get(route, glossaryId).cookie(readerCookie)).andReturn();
+      assertEquals(404, readerRead.getResponse().getStatus());
+      MvcResult outsiderRead =
+          mockMvc.perform(get(route, glossaryId).cookie(outsiderCookie)).andReturn();
+      assertEquals(404, outsiderRead.getResponse().getStatus());
+      MvcResult emptyRead =
+          mockMvc.perform(get(route, emptyGlossaryId).cookie(ownerCookie)).andReturn();
+      assertEquals(404, emptyRead.getResponse().getStatus());
+
+      MvcResult activeRead =
+          mockMvc
+              .perform(
+                  get("/api/v1/glossaries/{glossaryId}/active-revision", glossaryId)
+                      .cookie(readerCookie))
+              .andReturn();
+      assertEquals(200, activeRead.getResponse().getStatus());
+      JsonNode activeBody = objectMapper.readTree(activeRead.getResponse().getContentAsString());
+      assertEquals(
+          firstDraft.revisionId().toString(), activeBody.path("activeRevisionId").asText());
+      assertEquals("Kim Đan", activeBody.path("terms").get(0).path("targetTerm").asText());
+    } finally {
+      try (Connection connection = dataSource.getConnection()) {
+        try (PreparedStatement deleteGlossaries =
+            connection.prepareStatement("DELETE FROM glossaries WHERE id IN (?, ?)")) {
+          deleteGlossaries.setObject(1, glossaryId);
+          deleteGlossaries.setObject(2, emptyGlossaryId);
+          deleteGlossaries.executeUpdate();
+        }
+        try (PreparedStatement deleteLibrary =
+            connection.prepareStatement("DELETE FROM libraries WHERE id = ?")) {
+          deleteLibrary.setObject(1, libraryId);
+          deleteLibrary.executeUpdate();
+        }
+        try (PreparedStatement deleteWorkspace =
+            connection.prepareStatement("DELETE FROM workspaces WHERE id = ?")) {
+          deleteWorkspace.setObject(1, workspaceId);
+          deleteWorkspace.executeUpdate();
+        }
+      }
+      deleteSessionTestUser(ownerId);
+      deleteSessionTestUser(editorId);
+      deleteSessionTestUser(readerId);
+      deleteSessionTestUser(blockedId);
+      deleteSessionTestUser(outsiderId);
+    }
+  }
+
+  @Test
   void glossaryPublicationRouteLintsLocksVersionsAndWritesImmutableAudit() throws Exception {
     UUID ownerId = createSessionTestUser("Glossary Publish Owner");
     UUID blockedId = createSessionTestUser("Glossary Publish Policy Blocked");

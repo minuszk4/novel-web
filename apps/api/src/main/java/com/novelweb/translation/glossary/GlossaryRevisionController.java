@@ -71,6 +71,45 @@ public class GlossaryRevisionController {
         .body(activeRevision);
   }
 
+  @GetMapping("/{glossaryId}/latest-revision")
+  public ResponseEntity<?> getLatestRevisionForWriter(
+      Authentication authentication, @PathVariable UUID glossaryId, HttpServletRequest request) {
+    Optional<UUID> actor = actorUserId(authentication);
+    if (actor.isEmpty()) {
+      return problem(
+          HttpStatus.UNAUTHORIZED,
+          "UNAUTHENTICATED",
+          "Sign in to view the latest glossary revision.",
+          request);
+    }
+    ResponseEntity<?> policyGate = policyGate(actor.orElseThrow(), request);
+    if (policyGate != null) return policyGate;
+
+    Optional<GlossaryRepository.WritableRevisionSnapshot> snapshot;
+    try {
+      snapshot = readRepository.loadLatestRevisionForWriter(actor.orElseThrow(), glossaryId);
+    } catch (IllegalStateException exception) {
+      return problem(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          "GLOSSARY_UNAVAILABLE",
+          "The latest glossary revision could not be loaded. Please try again.",
+          request);
+    }
+    if (snapshot.isEmpty()) {
+      return problem(
+          HttpStatus.NOT_FOUND,
+          "NOT_FOUND",
+          "The glossary or its latest writable revision is unavailable.",
+          request);
+    }
+    GlossaryRepository.WritableRevisionSnapshot latestRevision = snapshot.orElseThrow();
+    return ResponseEntity.ok()
+        .header(HttpHeaders.ETAG, etag(latestRevision.version()))
+        .cacheControl(CacheControl.noStore())
+        .header(HttpHeaders.PRAGMA, "no-cache")
+        .body(latestRevision);
+  }
+
   @PostMapping("/{glossaryId}/revisions")
   public ResponseEntity<?> createDraftRevision(
       Authentication authentication,

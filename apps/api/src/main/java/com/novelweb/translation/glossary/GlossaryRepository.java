@@ -17,7 +17,7 @@ import javax.sql.DataSource;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Repository;
 
-/** Loads only the active immutable glossary revision visible to the authenticated actor. */
+/** Loads immutable glossary revisions visible to the authenticated actor. */
 @Repository
 @Profile("postgres")
 public class GlossaryRepository {
@@ -38,6 +38,31 @@ public class GlossaryRepository {
           WHERE g.id = ? AND g.deleted_at IS NULL
             AND ((g.scope_type = 'USER_GLOBAL' AND g.owner_user_id = ?)
                  OR (g.library_id IS NOT NULL AND can_access_library(g.library_id, ?, FALSE)))
+          ORDER BY t.ordinal, a.ordinal
+          """;
+
+  private static final String LATEST_WRITABLE_REVISION_QUERY =
+      """
+          SELECT g.id AS glossary_id, g.name, g.scope_type, g.source_language, g.target_language,
+                 g.version AS glossary_version, g.active_revision_id,
+                 r.id AS revision_id, r.revision_no, r.parent_revision_id, r.created_at AS revision_created_at,
+                 t.id AS term_id, t.ordinal AS term_ordinal, t.source_term, t.target_term,
+                 t.priority, t.case_policy, t.match_mode, t.do_not_translate, t.context_note,
+                 a.ordinal AS alias_ordinal, a.alias_text
+          FROM glossaries g
+          JOIN users actor ON actor.id = ? AND actor.status = 'active'
+          JOIN LATERAL (
+              SELECT candidate.id, candidate.revision_no, candidate.parent_revision_id, candidate.created_at
+              FROM glossary_revisions candidate
+              WHERE candidate.glossary_id = g.id
+              ORDER BY candidate.revision_no DESC
+              LIMIT 1
+          ) r ON TRUE
+          LEFT JOIN glossary_terms t ON t.revision_id = r.id
+          LEFT JOIN glossary_aliases a ON a.revision_id = t.revision_id AND a.term_id = t.id
+          WHERE g.id = ? AND g.deleted_at IS NULL
+            AND ((g.scope_type = 'USER_GLOBAL' AND g.owner_user_id = ?)
+                 OR (g.library_id IS NOT NULL AND can_access_library(g.library_id, ?, TRUE)))
           ORDER BY t.ordinal, a.ordinal
           """;
 
@@ -66,6 +91,34 @@ public class GlossaryRepository {
       }
     } catch (SQLException exception) {
       throw new IllegalStateException("Unable to load the active glossary revision", exception);
+    }
+  }
+
+  /**
+   * Returns the latest immutable revision only to actors who can currently write the glossary.
+   * Missing, empty, inaccessible or inactive-actor glossaries are concealed as empty.
+   */
+  public Optional<WritableRevisionSnapshot> loadLatestRevisionForWriter(
+      UUID actorUserId, UUID glossaryId) {
+    Objects.requireNonNull(actorUserId, "actor user id is required");
+    Objects.requireNonNull(glossaryId, "glossary id is required");
+
+    try (Connection connection = dataSource.getConnection()) {
+      connection.setReadOnly(true);
+      connection.setTransactionIsolation(Connection.TRANSACTION_REPEATABLE_READ);
+      connection.setAutoCommit(false);
+      try {
+        Optional<WritableRevisionSnapshot> result =
+            readLatestWritableRevision(connection, actorUserId, glossaryId);
+        connection.commit();
+        return result;
+      } catch (SQLException | RuntimeException exception) {
+        connection.rollback();
+        throw exception;
+      }
+    } catch (SQLException exception) {
+      throw new IllegalStateException(
+          "Unable to load the latest writable glossary revision", exception);
     }
   }
 
@@ -101,8 +154,56 @@ public class GlossaryRepository {
     }
   }
 
+  private static Optional<WritableRevisionSnapshot> readLatestWritableRevision(
+      Connection connection, UUID actorUserId, UUID glossaryId) throws SQLException {
+    try (PreparedStatement select = connection.prepareStatement(LATEST_WRITABLE_REVISION_QUERY)) {
+      select.setObject(1, actorUserId);
+      select.setObject(2, glossaryId);
+      select.setObject(3, actorUserId);
+      select.setObject(4, actorUserId);
+      try (ResultSet rows = select.executeQuery()) {
+        WritableRevisionMetadata metadata = null;
+        Map<UUID, TermAccumulator> terms = new LinkedHashMap<>();
+        while (rows.next()) {
+          if (metadata == null) metadata = writableRevisionMetadata(rows);
+          UUID termId = rows.getObject("term_id", UUID.class);
+          if (termId == null) continue;
+
+          TermAccumulator term = terms.get(termId);
+          if (term == null) {
+            term = term(rows);
+            terms.put(termId, term);
+          }
+          String alias = rows.getString("alias_text");
+          if (alias != null) term.aliases.add(alias);
+        }
+        if (metadata == null) return Optional.empty();
+
+        List<TermRecord> termRecords =
+            terms.values().stream().map(TermAccumulator::toRecord).toList();
+        return Optional.of(metadata.toSnapshot(termRecords));
+      }
+    }
+  }
+
   private static SnapshotMetadata metadata(ResultSet row) throws SQLException {
     return new SnapshotMetadata(
+        row.getObject("glossary_id", UUID.class),
+        row.getString("name"),
+        GlossaryMatcher.Scope.valueOf(row.getString("scope_type")),
+        row.getString("source_language"),
+        row.getString("target_language"),
+        row.getLong("glossary_version"),
+        row.getObject("active_revision_id", UUID.class),
+        row.getObject("revision_id", UUID.class),
+        row.getInt("revision_no"),
+        row.getObject("parent_revision_id", UUID.class),
+        row.getObject("revision_created_at", OffsetDateTime.class).toInstant());
+  }
+
+  private static WritableRevisionMetadata writableRevisionMetadata(ResultSet row)
+      throws SQLException {
+    return new WritableRevisionMetadata(
         row.getObject("glossary_id", UUID.class),
         row.getString("name"),
         GlossaryMatcher.Scope.valueOf(row.getString("scope_type")),
@@ -175,6 +276,31 @@ public class GlossaryRepository {
     }
   }
 
+  public record WritableRevisionSnapshot(
+      UUID glossaryId,
+      String name,
+      GlossaryMatcher.Scope scope,
+      String sourceLanguage,
+      String targetLanguage,
+      long version,
+      UUID activeRevisionId,
+      UUID revisionId,
+      int revisionNumber,
+      UUID parentRevisionId,
+      Instant revisionCreatedAt,
+      List<TermRecord> terms) {
+    public WritableRevisionSnapshot {
+      Objects.requireNonNull(glossaryId, "glossary id is required");
+      Objects.requireNonNull(name, "glossary name is required");
+      Objects.requireNonNull(scope, "glossary scope is required");
+      Objects.requireNonNull(sourceLanguage, "source language is required");
+      Objects.requireNonNull(targetLanguage, "target language is required");
+      Objects.requireNonNull(revisionId, "revision id is required");
+      Objects.requireNonNull(revisionCreatedAt, "revision creation time is required");
+      terms = List.copyOf(terms);
+    }
+  }
+
   public record TermRecord(
       UUID id,
       int ordinal,
@@ -217,6 +343,36 @@ public class GlossaryRepository {
           targetLanguage,
           version,
           activeRevisionId,
+          revisionNumber,
+          parentRevisionId,
+          revisionCreatedAt,
+          terms);
+    }
+  }
+
+  private record WritableRevisionMetadata(
+      UUID glossaryId,
+      String name,
+      GlossaryMatcher.Scope scope,
+      String sourceLanguage,
+      String targetLanguage,
+      long version,
+      UUID activeRevisionId,
+      UUID revisionId,
+      int revisionNumber,
+      UUID parentRevisionId,
+      Instant revisionCreatedAt) {
+
+    private WritableRevisionSnapshot toSnapshot(List<TermRecord> terms) {
+      return new WritableRevisionSnapshot(
+          glossaryId,
+          name,
+          scope,
+          sourceLanguage,
+          targetLanguage,
+          version,
+          activeRevisionId,
+          revisionId,
           revisionNumber,
           parentRevisionId,
           revisionCreatedAt,
