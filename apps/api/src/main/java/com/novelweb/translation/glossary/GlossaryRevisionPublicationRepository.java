@@ -268,8 +268,8 @@ public class GlossaryRevisionPublicationRepository {
     try (PreparedStatement select =
         connection.prepareStatement(
             """
-                SELECT t.id, t.source_term, t.target_term, t.priority, t.case_policy, t.match_mode,
-                       t.do_not_translate, a.alias_text
+                SELECT t.id, t.ordinal, t.source_term, t.target_term, t.priority, t.case_policy,
+                       t.match_mode, t.do_not_translate, t.context_note, a.alias_text
                 FROM glossary_terms t
                 LEFT JOIN glossary_aliases a ON a.revision_id = t.revision_id AND a.term_id = t.id
                 WHERE t.revision_id = ?
@@ -304,7 +304,9 @@ public class GlossaryRevisionPublicationRepository {
                         term.priority(),
                         term.casePolicy(),
                         term.matchMode(),
-                        term.doNotTranslate()))
+                        term.doNotTranslate(),
+                        term.ordinal(),
+                        term.contextNote()))
             .toList();
     return new GlossaryRevisionPreviewService.GlossaryRevision(
         glossaryId, revision.revisionId(), revision.parentRevisionId(), matcherTerms);
@@ -313,12 +315,14 @@ public class GlossaryRevisionPublicationRepository {
   private static TermAccumulator accumulator(ResultSet row, UUID termId) throws SQLException {
     return new TermAccumulator(
         termId,
+        row.getInt("ordinal"),
         row.getString("source_term"),
         row.getString("target_term"),
         row.getInt("priority"),
         GlossaryMatcher.CasePolicy.valueOf(row.getString("case_policy")),
         GlossaryMatcher.MatchMode.valueOf(row.getString("match_mode")),
         row.getBoolean("do_not_translate"),
+        row.getString("context_note"),
         new ArrayList<>());
   }
 
@@ -405,12 +409,14 @@ public class GlossaryRevisionPublicationRepository {
 
   private record TermAccumulator(
       UUID id,
+      int ordinal,
       String sourceTerm,
       String targetTerm,
       int priority,
       GlossaryMatcher.CasePolicy casePolicy,
       GlossaryMatcher.MatchMode matchMode,
       boolean doNotTranslate,
+      String contextNote,
       List<String> aliases) {}
 
   public static class GlossaryNotFoundException extends RuntimeException {}

@@ -1453,6 +1453,10 @@ class PostgresSchemaIntegrationTests {
       JsonNode firstPreviewBody =
           objectMapper.readTree(firstPreview.getResponse().getContentAsString());
       assertEquals(1, firstPreviewBody.path("changeCount").asInt());
+      JsonNode firstPreviewChange = firstPreviewBody.path("changes").get(0);
+      assertTrue(firstPreviewChange.path("before").isNull());
+      assertEquals(1, firstPreviewChange.path("after").path("ordinal").asInt());
+      assertEquals("rank name", firstPreviewChange.path("after").path("contextNote").asText());
       assertEquals(1, firstPreviewBody.path("warningCount").asInt());
       assertEquals(2, firstPreviewBody.path("matchCount").asInt());
       assertTrue(firstPreviewBody.path("canPublish").asBoolean());

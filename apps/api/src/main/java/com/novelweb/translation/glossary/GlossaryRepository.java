@@ -269,7 +269,9 @@ public class GlossaryRepository {
                           term.priority(),
                           term.casePolicy(),
                           term.matchMode(),
-                          term.doNotTranslate()))
+                          term.doNotTranslate(),
+                          term.ordinal(),
+                          term.contextNote()))
               .toList();
       return new GlossaryRevisionPreviewService.GlossaryRevision(
           glossaryId, activeRevisionId, parentRevisionId, matcherTerms);

@@ -158,6 +158,59 @@ class GlossaryRevisionPreviewServiceTests {
   }
 
   @Test
+  void diffIncludesTermOrderAndContextNoteChanges() {
+    UUID glossaryId = id("editorial-diff-glossary");
+    UUID baseId = id("editorial-diff-base");
+    UUID proposedId = id("editorial-diff-proposed");
+    UUID termId = id("editorial-diff-term");
+    GlossaryMatcher.Term before =
+        new GlossaryMatcher.Term(
+            termId,
+            baseId,
+            "zh-Hans",
+            "金丹",
+            "Kim Đan",
+            List.of("Golden Core"),
+            WORK,
+            0,
+            INSENSITIVE,
+            WHOLE_PHRASE,
+            false,
+            1,
+            "Tên cảnh giới trong tu luyện");
+    GlossaryMatcher.Term after =
+        new GlossaryMatcher.Term(
+            termId,
+            proposedId,
+            "zh-Hans",
+            "金丹",
+            "Kim Đan",
+            List.of("Golden Core"),
+            WORK,
+            0,
+            INSENSITIVE,
+            WHOLE_PHRASE,
+            false,
+            2,
+            "Tên một cảnh giới tiên đạo");
+
+    GlossaryRevisionPreviewService.Preview preview =
+        service.preview(
+            revision(glossaryId, baseId, null, before),
+            revision(glossaryId, proposedId, baseId, after),
+            "",
+            3);
+
+    assertEquals(1, preview.changes().size());
+    assertEquals(UPDATED, preview.changes().getFirst().kind());
+    assertEquals(1, preview.changes().getFirst().before().ordinal());
+    assertEquals(
+        "Tên cảnh giới trong tu luyện", preview.changes().getFirst().before().contextNote());
+    assertEquals(2, preview.changes().getFirst().after().ordinal());
+    assertEquals("Tên một cảnh giới tiên đạo", preview.changes().getFirst().after().contextNote());
+  }
+
+  @Test
   void lintAndPreviewExposeEqualPrecedenceConflictsButAllowExplicitScopeOverride() {
     UUID revisionId = id("conflict-revision");
     GlossaryMatcher.Term global =

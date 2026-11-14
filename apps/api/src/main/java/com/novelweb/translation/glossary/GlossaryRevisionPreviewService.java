@@ -191,7 +191,9 @@ public final class GlossaryRevisionPreviewService {
         && before.priority() == after.priority()
         && before.casePolicy() == after.casePolicy()
         && before.matchMode() == after.matchMode()
-        && before.doNotTranslate() == after.doNotTranslate();
+        && before.doNotTranslate() == after.doNotTranslate()
+        && before.ordinal() == after.ordinal()
+        && Objects.equals(before.contextNote(), after.contextNote());
   }
 
   private static LintReport lint(List<GlossaryMatcher.Term> terms, int shortTermWarningCodePoints) {

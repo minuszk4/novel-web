@@ -74,7 +74,37 @@ public final class GlossaryMatcher {
       int priority,
       CasePolicy casePolicy,
       MatchMode matchMode,
-      boolean doNotTranslate) {
+      boolean doNotTranslate,
+      int ordinal,
+      String contextNote) {
+
+    public Term(
+        UUID id,
+        UUID revisionId,
+        String sourceLanguage,
+        String sourceTerm,
+        String targetTerm,
+        List<String> aliases,
+        Scope scope,
+        int priority,
+        CasePolicy casePolicy,
+        MatchMode matchMode,
+        boolean doNotTranslate) {
+      this(
+          id,
+          revisionId,
+          sourceLanguage,
+          sourceTerm,
+          targetTerm,
+          aliases,
+          scope,
+          priority,
+          casePolicy,
+          matchMode,
+          doNotTranslate,
+          1,
+          null);
+    }
 
     public Term {
       Objects.requireNonNull(id, "id");
@@ -86,6 +116,10 @@ public final class GlossaryMatcher {
       Objects.requireNonNull(casePolicy, "casePolicy");
       Objects.requireNonNull(matchMode, "matchMode");
       if (!doNotTranslate) requireText(targetTerm, "targetTerm");
+      if (ordinal < 1) throw new IllegalArgumentException("ordinal must be positive");
+      if (contextNote != null && contextNote.codePointCount(0, contextNote.length()) > 2000) {
+        throw new IllegalArgumentException("contextNote exceeds 2,000 characters");
+      }
       aliases = List.copyOf(aliases);
       aliases.forEach(alias -> requireText(alias, "alias"));
     }
