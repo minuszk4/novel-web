@@ -694,6 +694,80 @@ public class LibraryRepository {
     }
   }
 
+  public ChapterOutlinePage listPrivateAuthoredChapters(
+      UUID ownerUserId, UUID workId, int afterOrdinal, int limit) {
+    Objects.requireNonNull(ownerUserId, "owner user id is required");
+    Objects.requireNonNull(workId, "work id is required");
+    if (afterOrdinal < 0) throw new IllegalArgumentException("after ordinal cannot be negative");
+    if (limit < 1 || limit > 100) throw new IllegalArgumentException("limit must be 1 to 100");
+    try (Connection connection = dataSource.getConnection()) {
+      connection.setAutoCommit(false);
+      try {
+        try (PreparedStatement actor =
+            connection.prepareStatement(
+                "SELECT id FROM users WHERE id = ? AND status = 'active' FOR SHARE")) {
+          actor.setObject(1, ownerUserId);
+          try (ResultSet row = actor.executeQuery()) {
+            if (!row.next()) throw new WorkNotFoundException();
+          }
+        }
+
+        try (PreparedStatement manuscript =
+            connection.prepareStatement(
+                """
+                    SELECT w.id
+                    FROM works w
+                    JOIN libraries l ON l.id = w.library_id
+                    WHERE w.id = ? AND w.owner_user_id = ?
+                      AND w.source_kind = 'authored' AND w.visibility = 'private'
+                      AND w.status = 'active' AND w.deleted_at IS NULL
+                      AND l.owner_user_id = w.owner_user_id AND l.workspace_id IS NULL
+                      AND l.visibility = 'private' AND l.deleted_at IS NULL
+                    FOR SHARE OF w, l
+                    """)) {
+          manuscript.setObject(1, workId);
+          manuscript.setObject(2, ownerUserId);
+          try (ResultSet row = manuscript.executeQuery()) {
+            if (!row.next()) throw new WorkNotFoundException();
+          }
+        }
+
+        List<ChapterRecord> chapters = new ArrayList<>(limit + 1);
+        try (PreparedStatement select =
+            connection.prepareStatement(
+                """
+                    SELECT id, work_id, volume_id, ordinal, title, source_language,
+                           source_revision_id, status, created_at
+                    FROM chapters
+                    WHERE work_id = ? AND ordinal > ? AND deleted_at IS NULL
+                    ORDER BY ordinal ASC
+                    LIMIT ?
+                    """)) {
+          select.setObject(1, workId);
+          select.setInt(2, afterOrdinal);
+          select.setInt(3, limit + 1);
+          try (ResultSet rows = select.executeQuery()) {
+            while (rows.next()) chapters.add(chapter(rows));
+          }
+        }
+
+        boolean hasMore = chapters.size() > limit;
+        List<ChapterRecord> items =
+            hasMore ? List.copyOf(chapters.subList(0, limit)) : List.copyOf(chapters);
+        Integer lastOrdinal = items.isEmpty() ? null : items.get(items.size() - 1).ordinal();
+        connection.commit();
+        return new ChapterOutlinePage(items, hasMore, lastOrdinal);
+      } catch (SQLException | RuntimeException exception) {
+        connection.rollback();
+        throw exception;
+      }
+    } catch (WorkNotFoundException exception) {
+      throw exception;
+    } catch (SQLException exception) {
+      throw new IllegalStateException("Unable to list private authored chapters", exception);
+    }
+  }
+
   public Optional<WorkRecord> findWork(UUID ownerUserId, UUID workId) {
     Objects.requireNonNull(ownerUserId, "owner user id is required");
     Objects.requireNonNull(workId, "work id is required");
@@ -1246,6 +1320,13 @@ public class LibraryRepository {
       UUID sourceRevisionId,
       String status,
       Instant createdAt) {}
+
+  public record ChapterOutlinePage(
+      List<ChapterRecord> items, boolean hasMore, Integer lastOrdinal) {
+    public ChapterOutlinePage {
+      items = List.copyOf(items);
+    }
+  }
 
   public record SegmentInput(
       int ordinal, String type, String sourceText, String stableAnchor, byte[] checksum) {

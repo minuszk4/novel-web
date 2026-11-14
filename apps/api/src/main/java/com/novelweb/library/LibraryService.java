@@ -129,6 +129,13 @@ public class LibraryService {
         ownerUserId, workId, title, idempotencyKey, authoredChapterRequestHash(title));
   }
 
+  public LibraryRepository.ChapterOutlinePage listPrivateAuthoredChapters(
+      UUID ownerUserId, UUID workId, int afterOrdinal, int limit) {
+    Objects.requireNonNull(ownerUserId, "owner user id is required");
+    Objects.requireNonNull(workId, "work id is required");
+    return repository.listPrivateAuthoredChapters(ownerUserId, workId, afterOrdinal, limit);
+  }
+
   private static byte[] authoredWorkRequestHash(String title, String author, String language) {
     try {
       MessageDigest digest = MessageDigest.getInstance("SHA-256");

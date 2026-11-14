@@ -7431,6 +7431,162 @@ class PostgresSchemaIntegrationTests {
   }
 
   @Test
+  void authoringChapterOutlineListIsPrivatePagedAndCursorBound() throws Exception {
+    UUID ownerId = createSessionTestUser("Authoring Outline Owner");
+    UUID otherOwnerId = createSessionTestUser("Other Authoring Outline Owner");
+    UUID workId = null;
+    UUID foreignWorkId = null;
+    UUID workspaceId = null;
+    UUID workspaceWorkId = null;
+    try {
+      LibraryRepository.WorkRecord work =
+          libraryService.createPrivateAuthoredWork(
+              ownerId, "Outline Parent", "Pen Name", "vi", "outline-parent-owner-0001");
+      workId = work.id();
+      LibraryRepository.WorkRecord foreignWork =
+          libraryService.createPrivateAuthoredWork(
+              otherOwnerId,
+              "Foreign Outline Parent",
+              "Other Pen Name",
+              "vi",
+              "outline-parent-foreign-0001");
+      foreignWorkId = foreignWork.id();
+      libraryService.createPrivateAuthoredChapter(
+          ownerId, workId, "Chapter One", "outline-chapter-owner-0001");
+      libraryService.createPrivateAuthoredChapter(
+          ownerId, workId, "Chapter Two", "outline-chapter-owner-0002");
+
+      SessionService.IssuedSession ownerSession = sessionService.create(ownerId).orElseThrow();
+      SessionService.IssuedSession otherSession = sessionService.create(otherOwnerId).orElseThrow();
+      jakarta.servlet.http.Cookie ownerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", ownerSession.cookieValue());
+      jakarta.servlet.http.Cookie otherCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", otherSession.cookieValue());
+      String route = "/api/v1/authoring/manuscripts/{workId}/chapters";
+
+      MvcResult policyBlocked =
+          mockMvc.perform(get(route, workId).cookie(ownerCookie).param("limit", "1")).andReturn();
+      assertEquals(403, policyBlocked.getResponse().getStatus());
+      assertTrue(
+          policyBlocked.getResponse().getContentAsString().contains("POLICY_ACCEPTANCE_REQUIRED"));
+      addCurrentPolicyAcceptances(ownerId);
+      addCurrentPolicyAcceptances(otherOwnerId);
+
+      MvcResult firstPage =
+          mockMvc.perform(get(route, workId).cookie(ownerCookie).param("limit", "1")).andReturn();
+      assertEquals(200, firstPage.getResponse().getStatus());
+      assertTrue(firstPage.getResponse().getHeader("Cache-Control").contains("no-store"));
+      JsonNode firstBody = objectMapper.readTree(firstPage.getResponse().getContentAsString());
+      assertEquals(1, firstBody.path("items").size());
+      assertEquals(1, firstBody.path("items").get(0).path("ordinal").asInt());
+      assertEquals("Chapter One", firstBody.path("items").get(0).path("title").asText());
+      assertEquals("draft", firstBody.path("items").get(0).path("status").asText());
+      assertFalse(firstBody.path("items").get(0).path("contentAvailable").asBoolean());
+      String nextCursor = firstBody.path("nextCursor").asText();
+      assertFalse(nextCursor.isBlank());
+      assertFalse(firstPage.getResponse().getContentAsString().contains("sourceRevisionId"));
+      assertFalse(firstPage.getResponse().getContentAsString().contains("ownerUserId"));
+
+      MvcResult secondPage =
+          mockMvc
+              .perform(
+                  get(route, workId)
+                      .cookie(ownerCookie)
+                      .param("limit", "1")
+                      .param("cursor", nextCursor))
+              .andReturn();
+      assertEquals(200, secondPage.getResponse().getStatus());
+      JsonNode secondBody = objectMapper.readTree(secondPage.getResponse().getContentAsString());
+      assertEquals(1, secondBody.path("items").size());
+      assertEquals(2, secondBody.path("items").get(0).path("ordinal").asInt());
+      assertTrue(secondBody.path("nextCursor").isNull());
+
+      MvcResult foreignCursor =
+          mockMvc
+              .perform(get(route, workId).cookie(otherCookie).param("cursor", nextCursor))
+              .andReturn();
+      assertEquals(400, foreignCursor.getResponse().getStatus());
+      assertTrue(
+          foreignCursor.getResponse().getContentAsString().contains("INVALID_AUTHORING_CURSOR"));
+
+      MvcResult wrongWorkCursor =
+          mockMvc
+              .perform(get(route, foreignWorkId).cookie(ownerCookie).param("cursor", nextCursor))
+              .andReturn();
+      assertEquals(400, wrongWorkCursor.getResponse().getStatus());
+
+      MvcResult foreignWorkNotFound =
+          mockMvc.perform(get(route, foreignWorkId).cookie(ownerCookie)).andReturn();
+      assertEquals(404, foreignWorkNotFound.getResponse().getStatus());
+
+      MvcResult tamperedCursor =
+          mockMvc
+              .perform(get(route, workId).cookie(ownerCookie).param("cursor", nextCursor + "="))
+              .andReturn();
+      assertEquals(400, tamperedCursor.getResponse().getStatus());
+
+      MvcResult invalidLimit =
+          mockMvc.perform(get(route, workId).cookie(ownerCookie).param("limit", "101")).andReturn();
+      assertEquals(400, invalidLimit.getResponse().getStatus());
+      assertTrue(
+          invalidLimit.getResponse().getContentAsString().contains("INVALID_AUTHORING_QUERY"));
+
+      setWorkSourceKind(workId, "imported");
+      assertEquals(
+          404,
+          mockMvc
+              .perform(get(route, workId).cookie(ownerCookie))
+              .andReturn()
+              .getResponse()
+              .getStatus());
+      setWorkSourceKind(workId, "authored");
+      setWorkVisibility(workId, "public");
+      assertEquals(
+          404,
+          mockMvc
+              .perform(get(route, workId).cookie(ownerCookie))
+              .andReturn()
+              .getResponse()
+              .getStatus());
+      setWorkVisibility(workId, "private");
+
+      var workspace = workspaceService.createWorkspace(ownerId, "Authoring Outline Workspace");
+      workspaceId = workspace.id();
+      LibraryRepository.LibraryRecord workspaceLibrary =
+          libraryService.createWorkspaceLibrary(ownerId, workspaceId, "Shared Drafts");
+      LibraryRepository.WorkRecord workspaceWork =
+          libraryService.createPrivateImportedWork(
+              ownerId,
+              workspaceLibrary.id(),
+              "Workspace Work",
+              "Pen Name",
+              "vi",
+              sha256("workspace-authored-work"));
+      workspaceWorkId = workspaceWork.id();
+      setWorkSourceKind(workspaceWorkId, "authored");
+      MvcResult workspaceBackedWork =
+          mockMvc.perform(get(route, workspaceWorkId).cookie(ownerCookie)).andReturn();
+      assertEquals(404, workspaceBackedWork.getResponse().getStatus());
+    } finally {
+      if (workspaceWorkId != null) {
+        try (Connection connection = dataSource.getConnection();
+            PreparedStatement deleteWork =
+                connection.prepareStatement(
+                    "DELETE FROM works WHERE id = ? AND owner_user_id = ?")) {
+          deleteWork.setObject(1, workspaceWorkId);
+          deleteWork.setObject(2, ownerId);
+          deleteWork.executeUpdate();
+        }
+      }
+      if (workId != null) deleteLibraryUserData(ownerId, workId);
+      if (workspaceId != null) deleteWorkspaceTestData(workspaceId);
+      if (foreignWorkId != null) deleteLibraryUserData(otherOwnerId, foreignWorkId);
+      deleteSessionTestUser(ownerId);
+      deleteSessionTestUser(otherOwnerId);
+    }
+  }
+
+  @Test
   void privateLibraryCoreScopesOwnersDefaultsPrivateAndRejectsDuplicateHashesAndOrder()
       throws Exception {
     UUID ownerId = createSessionTestUser("Library Owner");

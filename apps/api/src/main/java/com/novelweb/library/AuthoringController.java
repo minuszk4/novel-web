@@ -6,6 +6,7 @@ import com.novelweb.identity.session.SessionService;
 import com.novelweb.platform.web.CorrelationIdFilter;
 import jakarta.servlet.http.HttpServletRequest;
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.context.annotation.Profile;
@@ -16,11 +17,13 @@ import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
@@ -33,10 +36,15 @@ public class AuthoringController {
 
   private final LibraryService libraryService;
   private final PolicyService policyService;
+  private final AuthoringCursorCodec cursorCodec;
 
-  public AuthoringController(LibraryService libraryService, PolicyService policyService) {
+  public AuthoringController(
+      LibraryService libraryService,
+      PolicyService policyService,
+      AuthoringCursorCodec cursorCodec) {
     this.libraryService = libraryService;
     this.policyService = policyService;
+    this.cursorCodec = cursorCodec;
   }
 
   @PostMapping
@@ -133,6 +141,66 @@ public class AuthoringController {
                 chapter.createdAt()));
   }
 
+  @GetMapping("/{workId}/chapters")
+  public ResponseEntity<?> listChapters(
+      Authentication authentication,
+      @PathVariable UUID workId,
+      @RequestParam(required = false) String cursor,
+      @RequestParam(defaultValue = "25") String limit,
+      HttpServletRequest request) {
+    Optional<UUID> actor = actorUserId(authentication);
+    if (actor.isEmpty())
+      return problem(
+          HttpStatus.UNAUTHORIZED,
+          "UNAUTHENTICATED",
+          "Sign in to view the chapter outline.",
+          request);
+    ResponseEntity<?> policyGate = policyGate(actor.orElseThrow(), request);
+    if (policyGate != null) return policyGate;
+
+    int pageSize;
+    try {
+      pageSize = Integer.parseInt(limit);
+    } catch (NumberFormatException exception) {
+      return problem(
+          HttpStatus.BAD_REQUEST,
+          "INVALID_AUTHORING_QUERY",
+          "limit must be an integer between 1 and 100.",
+          request);
+    }
+    if (pageSize < 1 || pageSize > 100)
+      return problem(
+          HttpStatus.BAD_REQUEST,
+          "INVALID_AUTHORING_QUERY",
+          "limit must be between 1 and 100.",
+          request);
+
+    UUID actorUserId = actor.orElseThrow();
+    cursorCodec.requireConfigured();
+    int afterOrdinal = cursor == null ? 0 : cursorCodec.decode(cursor, actorUserId, workId);
+    LibraryRepository.ChapterOutlinePage page =
+        libraryService.listPrivateAuthoredChapters(actorUserId, workId, afterOrdinal, pageSize);
+    String nextCursor =
+        page.hasMore() ? cursorCodec.encode(actorUserId, workId, page.lastOrdinal()) : null;
+    List<ChapterOutlineItem> items =
+        page.items().stream()
+            .map(
+                chapter ->
+                    new ChapterOutlineItem(
+                        chapter.id(),
+                        chapter.ordinal(),
+                        chapter.title(),
+                        chapter.language(),
+                        chapter.status(),
+                        "ready".equals(chapter.status()) && chapter.sourceRevisionId() != null,
+                        chapter.createdAt()))
+            .toList();
+    return ResponseEntity.ok()
+        .cacheControl(CacheControl.noStore())
+        .header(HttpHeaders.PRAGMA, "no-cache")
+        .body(new ChapterOutlineResponse(items, nextCursor));
+  }
+
   @ExceptionHandler(IllegalArgumentException.class)
   public ResponseEntity<ProblemDetail> invalidRequest(
       IllegalArgumentException exception, HttpServletRequest request) {
@@ -154,6 +222,24 @@ public class AuthoringController {
         HttpStatus.NOT_FOUND,
         "MANUSCRIPT_NOT_FOUND",
         "The private authored manuscript is not available.",
+        request);
+  }
+
+  @ExceptionHandler(AuthoringCursorCodec.InvalidCursorException.class)
+  public ResponseEntity<ProblemDetail> invalidAuthoringCursor(HttpServletRequest request) {
+    return problem(
+        HttpStatus.BAD_REQUEST,
+        "INVALID_AUTHORING_CURSOR",
+        "The cursor is malformed or belongs to another account, manuscript or endpoint.",
+        request);
+  }
+
+  @ExceptionHandler(AuthoringCursorCodec.SigningUnavailableException.class)
+  public ResponseEntity<ProblemDetail> authoringCursorUnavailable(HttpServletRequest request) {
+    return problem(
+        HttpStatus.SERVICE_UNAVAILABLE,
+        "AUTHORING_CURSOR_UNAVAILABLE",
+        "Chapter outline pagination is temporarily unavailable.",
         request);
   }
 
@@ -292,4 +378,19 @@ public class AuthoringController {
       String language,
       String status,
       Instant createdAt) {}
+
+  public record ChapterOutlineItem(
+      UUID id,
+      int ordinal,
+      String title,
+      String language,
+      String status,
+      boolean contentAvailable,
+      Instant createdAt) {}
+
+  public record ChapterOutlineResponse(List<ChapterOutlineItem> items, String nextCursor) {
+    public ChapterOutlineResponse {
+      items = List.copyOf(items);
+    }
+  }
 }

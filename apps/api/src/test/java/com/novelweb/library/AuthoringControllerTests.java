@@ -5,11 +5,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 
 import com.novelweb.identity.auth.PolicyService;
 import com.novelweb.identity.session.SessionService;
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -28,6 +30,8 @@ class AuthoringControllerTests {
 
   @Mock private PolicyService policyService;
 
+  @Mock private AuthoringCursorCodec cursorCodec;
+
   private MockMvc mockMvc;
   private UUID actorId;
 
@@ -35,7 +39,8 @@ class AuthoringControllerTests {
   void setUp() {
     actorId = UUID.randomUUID();
     mockMvc =
-        MockMvcBuilders.standaloneSetup(new AuthoringController(libraryService, policyService))
+        MockMvcBuilders.standaloneSetup(
+                new AuthoringController(libraryService, policyService, cursorCodec))
             .build();
   }
 
@@ -252,6 +257,91 @@ class AuthoringControllerTests {
 
     assertEquals(400, response.getStatus());
     assertTrue(response.getContentAsString().contains("INVALID_CHAPTER"));
+    verifyNoInteractions(libraryService);
+  }
+
+  @Test
+  void chapterOutlineListReturnsBoundedSafeMetadataAndSignedNextCursor() throws Exception {
+    when(policyService.requiredAcceptance(actorId))
+        .thenReturn(PolicyService.RequiredAcceptance.COMPLETE);
+    UUID workId = UUID.randomUUID();
+    UUID chapterId = UUID.randomUUID();
+    when(cursorCodec.decode("current-cursor", actorId, workId)).thenReturn(1);
+    when(libraryService.listPrivateAuthoredChapters(actorId, workId, 1, 1))
+        .thenReturn(
+            new LibraryRepository.ChapterOutlinePage(
+                List.of(
+                    new LibraryRepository.ChapterRecord(
+                        chapterId,
+                        workId,
+                        null,
+                        2,
+                        "Second Chapter",
+                        "vi",
+                        null,
+                        "draft",
+                        Instant.EPOCH)),
+                true,
+                2));
+    when(cursorCodec.encode(actorId, workId, 2)).thenReturn("next-cursor");
+
+    var response =
+        mockMvc
+            .perform(
+                get("/api/v1/authoring/manuscripts/{workId}/chapters", workId)
+                    .principal(authentication())
+                    .param("cursor", "current-cursor")
+                    .param("limit", "1"))
+            .andReturn()
+            .getResponse();
+
+    assertEquals(200, response.getStatus());
+    assertTrue(response.getHeader("Cache-Control").contains("no-store"));
+    String body = response.getContentAsString();
+    assertTrue(body.contains(chapterId.toString()));
+    assertTrue(body.contains("\"ordinal\":2"));
+    assertTrue(body.contains("\"status\":\"draft\""));
+    assertTrue(body.contains("\"contentAvailable\":false"));
+    assertTrue(body.contains("\"nextCursor\":\"next-cursor\""));
+    assertTrue(!body.contains("sourceRevisionId"));
+    assertTrue(!body.contains("ownerUserId"));
+    verify(libraryService).listPrivateAuthoredChapters(actorId, workId, 1, 1);
+  }
+
+  @Test
+  void chapterOutlineListRequiresAnAuthenticatedSession() throws Exception {
+    UUID workId = UUID.randomUUID();
+
+    var response =
+        mockMvc
+            .perform(get("/api/v1/authoring/manuscripts/{workId}/chapters", workId))
+            .andReturn()
+            .getResponse();
+
+    assertEquals(401, response.getStatus());
+    assertTrue(response.getContentAsString().contains("UNAUTHENTICATED"));
+    verifyNoInteractions(libraryService, policyService, cursorCodec);
+  }
+
+  @Test
+  void chapterOutlineRejectsCursorForAnotherScope() throws Exception {
+    when(policyService.requiredAcceptance(actorId))
+        .thenReturn(PolicyService.RequiredAcceptance.COMPLETE);
+    UUID workId = UUID.randomUUID();
+    when(cursorCodec.decode("foreign-cursor", actorId, workId))
+        .thenThrow(new AuthoringCursorCodec.InvalidCursorException());
+
+    var response =
+        mockMvc
+            .perform(
+                get("/api/v1/authoring/manuscripts/{workId}/chapters", workId)
+                    .principal(authentication())
+                    .param("cursor", "foreign-cursor"))
+            .andReturn()
+            .getResponse();
+
+    assertEquals(400, response.getStatus());
+    assertTrue(response.getContentAsString().contains("INVALID_AUTHORING_CURSOR"));
     verifyNoInteractions(libraryService);
   }
 

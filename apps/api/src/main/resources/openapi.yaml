@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 6.25.0
+  version: 6.26.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -1447,6 +1447,66 @@ paths:
         '503':
           $ref: '#/components/responses/Problem'
   /api/v1/authoring/manuscripts/{workId}/chapters:
+    get:
+      operationId: listPrivateAuthoredChapterOutline
+      tags: [Authoring]
+      x-implementation-status: implemented-postgres-profile
+      summary: List the owner's private chapter outline
+      description: >-
+        Returns bounded metadata pages for an active private authored manuscript in the actor's personal private
+        library. Current Terms and Privacy acceptance is required. The HMAC cursor is bound to the actor, manuscript
+        and authoring-outline operation. Pages use ascending chapter ordinal, omit soft-deleted chapters and never
+        return revision identifiers or source text. Foreign, imported, public, archived, deleted or workspace-backed
+        manuscripts are hidden as 404. This read-only operation does not make draft chapters readable in Reader.
+      security:
+        - appSession: []
+      parameters:
+        - name: workId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: cursor
+          in: query
+          description: Opaque HMAC-signed cursor bound to the current actor, manuscript and endpoint.
+          schema:
+            type: string
+            maxLength: 2048
+        - name: limit
+          in: query
+          description: Number of outline entries to return.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 25
+      responses:
+        '200':
+          description: One bounded page of private chapter-outline metadata.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthoringChapterOutlinePage'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
     post:
       operationId: createPrivateDraftChapter
       tags: [Authoring]
@@ -3678,6 +3738,48 @@ components:
         status:
           type: string
           const: draft
+        createdAt:
+          type: string
+          format: date-time
+    AuthoringChapterOutlinePage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/AuthoringChapterOutlineItem'
+        nextCursor:
+          type: [string, 'null']
+          maxLength: 2048
+          description: Signed actor/manuscript/endpoint cursor, or null when there is no next page.
+    AuthoringChapterOutlineItem:
+      type: object
+      additionalProperties: false
+      required: [id, ordinal, title, language, status, contentAvailable, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        ordinal:
+          type: integer
+          minimum: 1
+        title:
+          type: string
+          minLength: 1
+          maxLength: 300
+        language:
+          type: string
+          minLength: 2
+          maxLength: 35
+        status:
+          type: string
+          enum: [draft, ready, unavailable]
+        contentAvailable:
+          type: boolean
+          description: True only when a ready chapter has a current source revision.
         createdAt:
           type: string
           format: date-time
