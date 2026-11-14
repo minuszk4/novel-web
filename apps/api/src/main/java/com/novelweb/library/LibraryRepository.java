@@ -8,6 +8,7 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
@@ -765,6 +766,81 @@ public class LibraryRepository {
       throw exception;
     } catch (SQLException exception) {
       throw new IllegalStateException("Unable to list private authored chapters", exception);
+    }
+  }
+
+  public AuthoredWorkPage listPrivateAuthoredWorks(
+      UUID ownerUserId, Instant beforeCreatedAt, UUID beforeWorkId, int limit) {
+    Objects.requireNonNull(ownerUserId, "owner user id is required");
+    if ((beforeCreatedAt == null) != (beforeWorkId == null)) {
+      throw new IllegalArgumentException("both work cursor values are required together");
+    }
+    if (limit < 1 || limit > 100) throw new IllegalArgumentException("limit must be 1 to 100");
+    try (Connection connection = dataSource.getConnection()) {
+      connection.setAutoCommit(false);
+      try {
+        try (PreparedStatement actor =
+            connection.prepareStatement(
+                "SELECT id FROM users WHERE id = ? AND status = 'active' FOR SHARE")) {
+          actor.setObject(1, ownerUserId);
+          try (ResultSet row = actor.executeQuery()) {
+            if (!row.next()) throw new WorkNotFoundException();
+          }
+        }
+
+        List<WorkRecord> works = new ArrayList<>(limit + 1);
+        String cursorPredicate =
+            beforeCreatedAt == null
+                ? ""
+                : "AND (w.created_at < ? OR (w.created_at = ? AND w.id < ?))";
+        String query =
+            """
+                SELECT w.id, w.library_id, w.owner_user_id, w.title, w.author, w.source_language,
+                       w.visibility, w.status, w.source_hash, w.created_at,
+                       count(c.id) FILTER (WHERE c.deleted_at IS NULL) AS chapter_count
+                FROM works w
+                JOIN libraries l ON l.id = w.library_id
+                LEFT JOIN chapters c ON c.work_id = w.id
+                WHERE w.owner_user_id = ? AND w.source_kind = 'authored'
+                  AND w.visibility = 'private' AND w.status = 'active'
+                  AND w.deleted_at IS NULL AND l.owner_user_id = w.owner_user_id
+                  AND l.workspace_id IS NULL AND l.visibility = 'private' AND l.deleted_at IS NULL
+                """
+                + cursorPredicate
+                + " GROUP BY w.id ORDER BY w.created_at DESC, w.id DESC LIMIT ?";
+        try (PreparedStatement select = connection.prepareStatement(query)) {
+          int parameter = 1;
+          select.setObject(parameter++, ownerUserId);
+          if (beforeCreatedAt != null) {
+            Timestamp timestamp = Timestamp.from(beforeCreatedAt);
+            select.setTimestamp(parameter++, timestamp);
+            select.setTimestamp(parameter++, timestamp);
+            select.setObject(parameter++, beforeWorkId);
+          }
+          select.setInt(parameter, limit + 1);
+          try (ResultSet rows = select.executeQuery()) {
+            while (rows.next()) works.add(work(rows));
+          }
+        }
+
+        boolean hasMore = works.size() > limit;
+        List<WorkRecord> items =
+            hasMore ? List.copyOf(works.subList(0, limit)) : List.copyOf(works);
+        WorkRecord last = items.isEmpty() ? null : items.get(items.size() - 1);
+        connection.commit();
+        return new AuthoredWorkPage(
+            items,
+            hasMore,
+            last == null ? null : last.createdAt(),
+            last == null ? null : last.id());
+      } catch (SQLException | RuntimeException exception) {
+        connection.rollback();
+        throw exception;
+      }
+    } catch (WorkNotFoundException exception) {
+      throw exception;
+    } catch (SQLException exception) {
+      throw new IllegalStateException("Unable to list private authored works", exception);
     }
   }
 
@@ -1595,6 +1671,17 @@ public class LibraryRepository {
       List<ChapterRecord> items, boolean hasMore, Integer lastOrdinal) {
     public ChapterOutlinePage {
       items = List.copyOf(items);
+    }
+  }
+
+  public record AuthoredWorkPage(
+      List<WorkRecord> items, boolean hasMore, Instant lastCreatedAt, UUID lastWorkId) {
+    public AuthoredWorkPage {
+      items = List.copyOf(items);
+      if ((lastCreatedAt == null) != (lastWorkId == null)) {
+        throw new IllegalArgumentException(
+            "last work cursor values must be both present or absent");
+      }
     }
   }
 

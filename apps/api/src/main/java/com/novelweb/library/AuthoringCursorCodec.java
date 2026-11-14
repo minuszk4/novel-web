@@ -5,9 +5,11 @@ import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.security.MessageDigest;
+import java.time.Instant;
 import java.util.Base64;
 import java.util.Objects;
 import java.util.UUID;
@@ -28,6 +30,8 @@ public class AuthoringCursorCodec {
   private static final int SIGNATURE_LENGTH = 32;
   private static final int MAX_TOKEN_LENGTH = 2048;
   private static final String SIGNING_DOMAIN = "novel-authoring-outline-cursor-v1";
+  private static final int WORK_LIST_PAYLOAD_LENGTH = 29;
+  private static final String WORK_LIST_SIGNING_DOMAIN = "novel-authoring-work-list-cursor-v1";
   private static final Pattern CANONICAL_BASE64URL =
       Pattern.compile("[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+");
 
@@ -92,6 +96,80 @@ public class AuthoringCursorCodec {
     }
   }
 
+  public String encodeWorkList(UUID actorUserId, Instant createdAt, UUID workId) {
+    Objects.requireNonNull(actorUserId, "cursor actor is required");
+    Objects.requireNonNull(createdAt, "cursor timestamp is required");
+    Objects.requireNonNull(workId, "cursor work is required");
+    requireConfigured();
+    byte[] payload = workListPayload(createdAt, workId);
+    return Base64.getUrlEncoder().withoutPadding().encodeToString(payload)
+        + "."
+        + Base64.getUrlEncoder()
+            .withoutPadding()
+            .encodeToString(sign(payload, WORK_LIST_SIGNING_DOMAIN, actorUserId));
+  }
+
+  public WorkListPosition decodeWorkList(String token, UUID expectedActorUserId) {
+    Objects.requireNonNull(expectedActorUserId, "expected cursor actor is required");
+    requireConfigured();
+    if (token == null || token.isBlank() || token.length() > MAX_TOKEN_LENGTH) {
+      throw new InvalidCursorException();
+    }
+    if (!CANONICAL_BASE64URL.matcher(token).matches()) throw new InvalidCursorException();
+    String[] parts = token.split("\\.", -1);
+    if (parts.length != 2) throw new InvalidCursorException();
+
+    byte[] decodedPayload = decodeCanonical(parts[0]);
+    byte[] signature = decodeCanonical(parts[1]);
+    if (decodedPayload.length != WORK_LIST_PAYLOAD_LENGTH
+        || signature.length != SIGNATURE_LENGTH
+        || !MessageDigest.isEqual(
+            sign(decodedPayload, WORK_LIST_SIGNING_DOMAIN, expectedActorUserId), signature)) {
+      throw new InvalidCursorException();
+    }
+
+    try (DataInputStream input = new DataInputStream(new ByteArrayInputStream(decodedPayload))) {
+      int version = input.readUnsignedByte();
+      long epochSecond = input.readLong();
+      int nano = input.readInt();
+      Instant createdAt = Instant.ofEpochSecond(epochSecond, nano);
+      UUID workId = readUuid(input);
+      if (version != VERSION
+          || input.available() != 0
+          || epochSecond < 0
+          || nano < 0
+          || nano > 999_999_999
+          || createdAt.isBefore(Instant.EPOCH)) {
+        throw new InvalidCursorException();
+      }
+      return new WorkListPosition(createdAt, workId);
+    } catch (IOException | RuntimeException exception) {
+      if (exception instanceof InvalidCursorException invalidCursorException) {
+        throw invalidCursorException;
+      }
+      throw new InvalidCursorException();
+    }
+  }
+
+  private static byte[] workListPayload(Instant createdAt, UUID workId) {
+    try {
+      ByteArrayOutputStream bytes = new ByteArrayOutputStream(WORK_LIST_PAYLOAD_LENGTH);
+      try (DataOutputStream output = new DataOutputStream(bytes)) {
+        output.writeByte(VERSION);
+        output.writeLong(createdAt.getEpochSecond());
+        output.writeInt(createdAt.getNano());
+        writeUuid(output, workId);
+      }
+      byte[] payload = bytes.toByteArray();
+      if (payload.length != WORK_LIST_PAYLOAD_LENGTH) {
+        throw new IllegalStateException("Invalid authoring work cursor payload size");
+      }
+      return payload;
+    } catch (IOException exception) {
+      throw new IllegalStateException("Unable to encode an authoring work cursor", exception);
+    }
+  }
+
   private static byte[] payload(UUID actorUserId, UUID workId, int afterOrdinal) {
     try {
       ByteArrayOutputStream bytes = new ByteArrayOutputStream(PAYLOAD_LENGTH);
@@ -112,10 +190,25 @@ public class AuthoringCursorCodec {
   }
 
   private byte[] sign(byte[] payload) {
+    return sign(payload, SIGNING_DOMAIN);
+  }
+
+  private byte[] sign(byte[] payload, String domain) {
+    return sign(payload, domain, null);
+  }
+
+  private byte[] sign(byte[] payload, String domain, UUID actorContext) {
     try {
       Mac mac = Mac.getInstance("HmacSHA256");
       mac.init(new SecretKeySpec(hmacKey, "HmacSHA256"));
-      mac.update(SIGNING_DOMAIN.getBytes(StandardCharsets.UTF_8));
+      mac.update(domain.getBytes(StandardCharsets.UTF_8));
+      if (actorContext != null) {
+        mac.update(
+            ByteBuffer.allocate(2 * Long.BYTES)
+                .putLong(actorContext.getMostSignificantBits())
+                .putLong(actorContext.getLeastSignificantBits())
+                .array());
+      }
       return mac.doFinal(payload);
     } catch (GeneralSecurityException exception) {
       throw new IllegalStateException("Unable to sign an authoring cursor", exception);
@@ -162,4 +255,6 @@ public class AuthoringCursorCodec {
   public static class InvalidCursorException extends RuntimeException {}
 
   public static class SigningUnavailableException extends RuntimeException {}
+
+  public record WorkListPosition(Instant createdAt, UUID workId) {}
 }

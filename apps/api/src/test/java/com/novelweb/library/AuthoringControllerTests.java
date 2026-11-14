@@ -122,6 +122,80 @@ class AuthoringControllerTests {
   }
 
   @Test
+  void manuscriptListReturnsSafeOwnerMetadataAndSignedNextCursor() throws Exception {
+    when(policyService.requiredAcceptance(actorId))
+        .thenReturn(PolicyService.RequiredAcceptance.COMPLETE);
+    UUID libraryId = UUID.randomUUID();
+    UUID workId = UUID.randomUUID();
+    Instant createdAt = Instant.parse("2026-11-15T12:34:56Z");
+    when(cursorCodec.decodeWorkList("current-cursor", actorId))
+        .thenReturn(new AuthoringCursorCodec.WorkListPosition(createdAt, workId));
+    when(libraryService.listPrivateAuthoredWorks(actorId, createdAt, workId, 1))
+        .thenReturn(
+            new LibraryRepository.AuthoredWorkPage(
+                List.of(
+                    new LibraryRepository.WorkRecord(
+                        workId,
+                        libraryId,
+                        actorId,
+                        "My Novel",
+                        "Pen Name",
+                        "vi",
+                        "private",
+                        "active",
+                        new byte[32],
+                        3,
+                        createdAt)),
+                true,
+                createdAt,
+                workId));
+    when(cursorCodec.encodeWorkList(actorId, createdAt, workId)).thenReturn("next-cursor");
+
+    var response =
+        mockMvc
+            .perform(
+                get("/api/v1/authoring/manuscripts")
+                    .principal(authentication())
+                    .param("cursor", "current-cursor")
+                    .param("limit", "1"))
+            .andReturn()
+            .getResponse();
+
+    assertEquals(200, response.getStatus());
+    assertTrue(response.getHeader("Cache-Control").contains("no-store"));
+    String body = response.getContentAsString();
+    assertTrue(body.contains(workId.toString()));
+    assertTrue(body.contains("\"publicationState\":\"draft\""));
+    assertTrue(body.contains("\"chapterCount\":3"));
+    assertTrue(body.contains("\"nextCursor\":\"next-cursor\""));
+    assertTrue(!body.contains(actorId.toString()));
+    assertTrue(!body.contains("sourceHash"));
+    assertTrue(!body.contains("normalizedContent"));
+    verify(libraryService).listPrivateAuthoredWorks(actorId, createdAt, workId, 1);
+  }
+
+  @Test
+  void manuscriptListRequiresSessionAndBoundsPageSize() throws Exception {
+    var anonymous = mockMvc.perform(get("/api/v1/authoring/manuscripts")).andReturn().getResponse();
+    assertEquals(401, anonymous.getStatus());
+    verifyNoInteractions(libraryService, policyService, cursorCodec);
+
+    when(policyService.requiredAcceptance(actorId))
+        .thenReturn(PolicyService.RequiredAcceptance.COMPLETE);
+    var oversized =
+        mockMvc
+            .perform(
+                get("/api/v1/authoring/manuscripts")
+                    .principal(authentication())
+                    .param("limit", "101"))
+            .andReturn()
+            .getResponse();
+    assertEquals(400, oversized.getStatus());
+    assertTrue(oversized.getContentAsString().contains("INVALID_AUTHORING_QUERY"));
+    verifyNoInteractions(libraryService);
+  }
+
+  @Test
   void missingIdempotencyKeyIsRejectedByTheServiceContract() throws Exception {
     when(policyService.requiredAcceptance(actorId))
         .thenReturn(PolicyService.RequiredAcceptance.COMPLETE);

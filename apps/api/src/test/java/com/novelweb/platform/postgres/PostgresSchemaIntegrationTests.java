@@ -7852,6 +7852,134 @@ class PostgresSchemaIntegrationTests {
   }
 
   @Test
+  void authoringManuscriptListIsOwnerScopedPrivatePagedAndMetadataOnly() throws Exception {
+    UUID ownerId = createSessionTestUser("Authoring List Owner");
+    UUID otherOwnerId = createSessionTestUser("Other Authoring List Owner");
+    List<UUID> createdWorkIds = new ArrayList<>();
+    UUID foreignWorkId = null;
+    try {
+      LibraryRepository.WorkRecord first =
+          libraryService.createPrivateAuthoredWork(
+              ownerId, "List Novel One", "Pen Name", "vi", "author-list-owner-0001");
+      LibraryRepository.WorkRecord second =
+          libraryService.createPrivateAuthoredWork(
+              ownerId, "List Novel Two", "Pen Name", "vi", "author-list-owner-0002");
+      LibraryRepository.WorkRecord third =
+          libraryService.createPrivateAuthoredWork(
+              ownerId, "List Novel Three", "Pen Name", "vi", "author-list-owner-0003");
+      LibraryRepository.WorkRecord imported =
+          libraryService.createPrivateAuthoredWork(
+              ownerId, "Imported Must Be Hidden", "Pen Name", "vi", "author-list-owner-0004");
+      LibraryRepository.WorkRecord publicWork =
+          libraryService.createPrivateAuthoredWork(
+              ownerId, "Public Must Be Hidden", "Pen Name", "vi", "author-list-owner-0005");
+      LibraryRepository.WorkRecord foreign =
+          libraryService.createPrivateAuthoredWork(
+              otherOwnerId,
+              "Foreign Must Be Hidden",
+              "Other Pen Name",
+              "vi",
+              "author-list-foreign-0001");
+      foreignWorkId = foreign.id();
+      createdWorkIds.addAll(
+          List.of(first.id(), second.id(), third.id(), imported.id(), publicWork.id()));
+      libraryService.createPrivateAuthoredChapter(
+          ownerId, third.id(), "A private chapter", "author-list-chapter-owner-01");
+      setWorkSourceKind(imported.id(), "imported");
+      setWorkVisibility(publicWork.id(), "public");
+
+      SessionService.IssuedSession ownerSession = sessionService.create(ownerId).orElseThrow();
+      SessionService.IssuedSession otherSession = sessionService.create(otherOwnerId).orElseThrow();
+      jakarta.servlet.http.Cookie ownerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", ownerSession.cookieValue());
+      jakarta.servlet.http.Cookie otherCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", otherSession.cookieValue());
+      String route = "/api/v1/authoring/manuscripts";
+
+      MvcResult policyBlocked =
+          mockMvc.perform(get(route).cookie(ownerCookie).param("limit", "2")).andReturn();
+      assertEquals(403, policyBlocked.getResponse().getStatus());
+      assertTrue(
+          policyBlocked.getResponse().getContentAsString().contains("POLICY_ACCEPTANCE_REQUIRED"));
+      addCurrentPolicyAcceptances(ownerId);
+      addCurrentPolicyAcceptances(otherOwnerId);
+
+      MvcResult firstPage =
+          mockMvc.perform(get(route).cookie(ownerCookie).param("limit", "2")).andReturn();
+      assertEquals(200, firstPage.getResponse().getStatus());
+      assertTrue(firstPage.getResponse().getHeader("Cache-Control").contains("no-store"));
+      JsonNode firstBody = objectMapper.readTree(firstPage.getResponse().getContentAsString());
+      assertEquals(2, firstBody.path("items").size());
+      assertEquals("private", firstBody.path("items").get(0).path("visibility").asText());
+      assertEquals("draft", firstBody.path("items").get(0).path("publicationState").asText());
+      assertFalse(firstPage.getResponse().getContentAsString().contains("ownerUserId"));
+      assertFalse(firstPage.getResponse().getContentAsString().contains("sourceHash"));
+      assertFalse(firstPage.getResponse().getContentAsString().contains("normalizedContent"));
+      String nextCursor = firstBody.path("nextCursor").asText();
+      assertFalse(nextCursor.isBlank());
+
+      MvcResult secondPage =
+          mockMvc
+              .perform(
+                  get(route).cookie(ownerCookie).param("limit", "2").param("cursor", nextCursor))
+              .andReturn();
+      assertEquals(200, secondPage.getResponse().getStatus());
+      JsonNode secondBody = objectMapper.readTree(secondPage.getResponse().getContentAsString());
+      assertEquals(1, secondBody.path("items").size());
+      assertTrue(secondBody.path("nextCursor").isNull());
+
+      List<String> listedIds = new ArrayList<>();
+      firstBody.path("items").forEach(item -> listedIds.add(item.path("id").asText()));
+      secondBody.path("items").forEach(item -> listedIds.add(item.path("id").asText()));
+      assertEquals(3, listedIds.stream().distinct().count());
+      assertTrue(
+          listedIds.containsAll(
+              List.of(first.id().toString(), second.id().toString(), third.id().toString())));
+      assertFalse(listedIds.contains(imported.id().toString()));
+      assertFalse(listedIds.contains(publicWork.id().toString()));
+      assertFalse(listedIds.contains(foreign.id().toString()));
+      JsonNode chapterCountItem =
+          java.util.stream.Stream.concat(
+                  java.util.stream.StreamSupport.stream(
+                      firstBody.path("items").spliterator(), false),
+                  java.util.stream.StreamSupport.stream(
+                      secondBody.path("items").spliterator(), false))
+              .filter(item -> third.id().toString().equals(item.path("id").asText()))
+              .findFirst()
+              .orElseThrow();
+      assertEquals(1, chapterCountItem.path("chapterCount").asInt());
+
+      assertEquals(
+          400,
+          mockMvc
+              .perform(get(route).cookie(otherCookie).param("cursor", nextCursor))
+              .andReturn()
+              .getResponse()
+              .getStatus());
+      assertEquals(
+          400,
+          mockMvc
+              .perform(get(route).cookie(ownerCookie).param("cursor", nextCursor + "="))
+              .andReturn()
+              .getResponse()
+              .getStatus());
+      assertEquals(
+          400,
+          mockMvc
+              .perform(get(route).cookie(ownerCookie).param("limit", "101"))
+              .andReturn()
+              .getResponse()
+              .getStatus());
+    } finally {
+      for (UUID workId : createdWorkIds) deleteBareAuthoredWorkData(ownerId, workId);
+      deleteOwnerLibraries(ownerId);
+      deleteSessionTestUser(ownerId);
+      if (foreignWorkId != null) deleteLibraryUserData(otherOwnerId, foreignWorkId);
+      deleteSessionTestUser(otherOwnerId);
+    }
+  }
+
+  @Test
   void privateLibraryCoreScopesOwnersDefaultsPrivateAndRejectsDuplicateHashesAndOrder()
       throws Exception {
     UUID ownerId = createSessionTestUser("Library Owner");
@@ -13544,6 +13672,41 @@ class PostgresSchemaIntegrationTests {
   }
 
   private record ReaderHistoryFixture(UUID workId, UUID chapterId) {}
+
+  private void deleteBareAuthoredWorkData(UUID ownerId, UUID workId) throws SQLException {
+    try (Connection connection = dataSource.getConnection()) {
+      for (String table :
+          List.of("authoring_chapter_creations", "authoring_manuscript_creations")) {
+        try (PreparedStatement delete =
+            connection.prepareStatement("DELETE FROM " + table + " WHERE work_id = ?")) {
+          delete.setObject(1, workId);
+          delete.executeUpdate();
+        }
+      }
+      for (String table : List.of("chapters", "volumes")) {
+        try (PreparedStatement delete =
+            connection.prepareStatement("DELETE FROM " + table + " WHERE work_id = ?")) {
+          delete.setObject(1, workId);
+          delete.executeUpdate();
+        }
+      }
+      try (PreparedStatement deleteWork =
+          connection.prepareStatement("DELETE FROM works WHERE id = ? AND owner_user_id = ?")) {
+        deleteWork.setObject(1, workId);
+        deleteWork.setObject(2, ownerId);
+        deleteWork.executeUpdate();
+      }
+    }
+  }
+
+  private void deleteOwnerLibraries(UUID ownerId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement delete =
+            connection.prepareStatement("DELETE FROM libraries WHERE owner_user_id = ?")) {
+      delete.setObject(1, ownerId);
+      delete.executeUpdate();
+    }
+  }
 
   private void deleteLibraryUserData(UUID userId, UUID workId) throws SQLException {
     try (Connection connection = dataSource.getConnection()) {

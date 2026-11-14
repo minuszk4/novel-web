@@ -5,6 +5,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.text.Normalizer;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -134,6 +135,12 @@ public class LibraryService {
     Objects.requireNonNull(ownerUserId, "owner user id is required");
     Objects.requireNonNull(workId, "work id is required");
     return repository.listPrivateAuthoredChapters(ownerUserId, workId, afterOrdinal, limit);
+  }
+
+  public LibraryRepository.AuthoredWorkPage listPrivateAuthoredWorks(
+      UUID ownerUserId, Instant beforeCreatedAt, UUID beforeWorkId, int limit) {
+    Objects.requireNonNull(ownerUserId, "owner user id is required");
+    return repository.listPrivateAuthoredWorks(ownerUserId, beforeCreatedAt, beforeWorkId, limit);
   }
 
   private static byte[] authoredWorkRequestHash(String title, String author, String language) {

@@ -46,6 +46,70 @@ public class AuthoringController {
     this.cursorCodec = cursorCodec;
   }
 
+  @GetMapping
+  public ResponseEntity<?> listManuscripts(
+      Authentication authentication,
+      @RequestParam(required = false) String cursor,
+      @RequestParam(defaultValue = "25") String limit,
+      HttpServletRequest request) {
+    Optional<UUID> actor = actorUserId(authentication);
+    if (actor.isEmpty())
+      return problem(
+          HttpStatus.UNAUTHORIZED, "UNAUTHENTICATED", "Sign in to view your manuscripts.", request);
+    ResponseEntity<?> policyGate = policyGate(actor.orElseThrow(), request);
+    if (policyGate != null) return policyGate;
+
+    int pageSize;
+    try {
+      pageSize = Integer.parseInt(limit);
+    } catch (NumberFormatException exception) {
+      return problem(
+          HttpStatus.BAD_REQUEST,
+          "INVALID_AUTHORING_QUERY",
+          "limit must be an integer between 1 and 100.",
+          request);
+    }
+    if (pageSize < 1 || pageSize > 100)
+      return problem(
+          HttpStatus.BAD_REQUEST,
+          "INVALID_AUTHORING_QUERY",
+          "limit must be between 1 and 100.",
+          request);
+
+    UUID actorUserId = actor.orElseThrow();
+    cursorCodec.requireConfigured();
+    AuthoringCursorCodec.WorkListPosition position =
+        cursor == null ? null : cursorCodec.decodeWorkList(cursor, actorUserId);
+    LibraryRepository.AuthoredWorkPage page =
+        libraryService.listPrivateAuthoredWorks(
+            actorUserId,
+            position == null ? null : position.createdAt(),
+            position == null ? null : position.workId(),
+            pageSize);
+    String nextCursor =
+        page.hasMore()
+            ? cursorCodec.encodeWorkList(actorUserId, page.lastCreatedAt(), page.lastWorkId())
+            : null;
+    List<ManuscriptListItem> items =
+        page.items().stream()
+            .map(
+                work ->
+                    new ManuscriptListItem(
+                        work.id(),
+                        work.title(),
+                        work.author(),
+                        work.language(),
+                        work.visibility(),
+                        "draft",
+                        work.chapterCount(),
+                        work.createdAt()))
+            .toList();
+    return ResponseEntity.ok()
+        .cacheControl(CacheControl.noStore())
+        .header(HttpHeaders.PRAGMA, "no-cache")
+        .body(new ManuscriptListResponse(items, nextCursor));
+  }
+
   @PostMapping
   public ResponseEntity<?> createManuscript(
       Authentication authentication,
@@ -634,6 +698,22 @@ public class AuthoringController {
       String publicationState,
       String visibility,
       Instant createdAt) {}
+
+  public record ManuscriptListItem(
+      UUID id,
+      String title,
+      String author,
+      String language,
+      String visibility,
+      String publicationState,
+      int chapterCount,
+      Instant createdAt) {}
+
+  public record ManuscriptListResponse(List<ManuscriptListItem> items, String nextCursor) {
+    public ManuscriptListResponse {
+      items = List.copyOf(items);
+    }
+  }
 
   public record CreatedDraftChapterResponse(
       UUID id,
