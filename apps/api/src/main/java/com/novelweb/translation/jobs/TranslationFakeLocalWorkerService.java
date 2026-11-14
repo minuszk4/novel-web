@@ -21,19 +21,23 @@ public class TranslationFakeLocalWorkerService {
   private final TranslationAttemptService attemptService;
   private final TranslationProviderExecutionGate executionGate;
   private final TranslationAttemptCompletionService completionService;
+  private final TranslationAttemptFailureService failureService;
 
   public TranslationFakeLocalWorkerService(
       TranslationUnitLeaseService leaseService,
       TranslationAttemptWorkRepository workRepository,
       TranslationAttemptService attemptService,
       TranslationProviderExecutionGate executionGate,
-      TranslationAttemptCompletionService completionService) {
+      TranslationAttemptCompletionService completionService,
+      TranslationAttemptFailureService failureService) {
     this.leaseService = Objects.requireNonNull(leaseService, "lease service is required");
     this.workRepository = Objects.requireNonNull(workRepository, "work repository is required");
     this.attemptService = Objects.requireNonNull(attemptService, "attempt service is required");
     this.executionGate = Objects.requireNonNull(executionGate, "execution gate is required");
     this.completionService =
         Objects.requireNonNull(completionService, "completion service is required");
+    this.failureService =
+        Objects.requireNonNull(failureService, "attempt failure service is required");
   }
 
   public Optional<WorkResult> processNext(String workerId, Duration leaseDuration)
@@ -53,8 +57,13 @@ public class TranslationFakeLocalWorkerService {
       return new WorkResult(
           attempt.jobId(), attempt.unitId(), attempt.attemptId(), null, false, true);
     }
-    TranslationProviderExecutionGate.TranslationExecutionResult execution =
-        executionGate.execute(snapshot.toRequest(attempt.attemptId()));
+    TranslationProviderExecutionGate.TranslationExecutionResult execution;
+    try {
+      execution = executionGate.execute(snapshot.toRequest(attempt.attemptId()));
+    } catch (TranslationProviderException failure) {
+      failureService.record(lease, attempt.attemptId(), failure);
+      throw failure;
+    }
     TranslationAttemptCompletionRepository.CompletionResult completion =
         completionService.completeExecution(lease, execution);
     return new WorkResult(

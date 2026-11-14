@@ -8,6 +8,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.novelweb.translation.jobs.TranslationAttemptCompletionRepository;
 import com.novelweb.translation.jobs.TranslationAttemptCompletionService;
+import com.novelweb.translation.jobs.TranslationAttemptFailureRepository;
+import com.novelweb.translation.jobs.TranslationAttemptFailureService;
 import com.novelweb.translation.jobs.TranslationAttemptRepository;
 import com.novelweb.translation.jobs.TranslationAttemptService;
 import com.novelweb.translation.jobs.TranslationFakeLocalWorkerService;
@@ -15,6 +17,8 @@ import com.novelweb.translation.jobs.TranslationJobService;
 import com.novelweb.translation.jobs.TranslationUnitLeaseRepository;
 import com.novelweb.translation.jobs.TranslationUnitLeaseService;
 import com.novelweb.translation.provider.TranslationBillingUnit;
+import com.novelweb.translation.provider.TranslationProviderException;
+import com.novelweb.translation.provider.TranslationProviderFailure;
 import com.novelweb.translation.provider.TranslationResponse;
 import com.novelweb.translation.provider.TranslationResponse.SegmentResult;
 import java.math.BigDecimal;
@@ -25,6 +29,7 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -60,6 +65,8 @@ class PostgresTranslationUnitLeaseTests {
   @Autowired private TranslationAttemptService attemptService;
 
   @Autowired private TranslationAttemptCompletionService completionService;
+
+  @Autowired private TranslationAttemptFailureService failureService;
 
   @Autowired private TranslationFakeLocalWorkerService fakeLocalWorkerService;
 
@@ -460,6 +467,111 @@ class PostgresTranslationUnitLeaseTests {
     assertEquals("review_required", readJobStatus(fixture.jobId()));
   }
 
+  @Test
+  void safeFakeLocalFailureSchedulesBoundedRetryThenPermanentFailureIsTerminal() throws Exception {
+    Fixture fixture = createQueuedJob(1);
+    TranslationUnitLeaseRepository.Lease firstLease =
+        leaseService
+            .claimNext("translation-fake-failure-worker", Duration.ofSeconds(60))
+            .orElseThrow();
+    TranslationAttemptRepository.StartResult firstAttempt = attemptService.begin(firstLease);
+
+    TranslationAttemptFailureRepository.FailureResult retry =
+        failureService.record(
+            firstLease,
+            firstAttempt.attemptId(),
+            new TranslationProviderException(TranslationProviderFailure.TIMEOUT, null));
+
+    assertTrue(retry.retryScheduled());
+    assertTrue(retry.retryAt().isAfter(Instant.now()));
+    assertEquals("retry_wait", retry.jobStatus());
+    assertEquals("retry_wait", readUnitStatus(firstLease.unitId()));
+    assertEquals("timeout", readAttemptOutcome(firstAttempt.attemptId()));
+    assertEquals("TIMEOUT", readAttemptFailureCode(firstAttempt.attemptId()));
+    assertEquals(1, countOutboxEvents(fixture.jobId(), "translation.unit.retry_scheduled"));
+    assertEquals(0, countOutboxEvents(fixture.jobId(), "translation.unit.failed"));
+
+    makeUnitAvailableNow(firstLease.unitId());
+    TranslationUnitLeaseRepository.Lease secondLease =
+        leaseService
+            .claimNext("translation-fake-failure-worker-retry", Duration.ofSeconds(60))
+            .orElseThrow();
+    TranslationAttemptRepository.StartResult secondAttempt = attemptService.begin(secondLease);
+    TranslationAttemptFailureRepository.FailureResult terminal =
+        failureService.record(
+            secondLease,
+            secondAttempt.attemptId(),
+            new TranslationProviderException(TranslationProviderFailure.INVALID_RESPONSE, null));
+
+    assertFalse(terminal.retryScheduled());
+    assertEquals("invalid_response", terminal.outcome());
+    assertEquals("failed", terminal.jobStatus());
+    assertEquals("failed", readUnitStatus(firstLease.unitId()));
+    assertEquals("INVALID_RESPONSE", readUnitFailureCode(firstLease.unitId()));
+    assertEquals("failed", readJobStatus(fixture.jobId()));
+    assertJobProgress(fixture.jobId(), "failed", 0, 1, true);
+    assertEquals(2, readAttemptCount(firstLease.unitId()));
+    assertEquals("invalid_response", readAttemptOutcome(secondAttempt.attemptId()));
+    assertEquals(1, countOutboxEvents(fixture.jobId(), "translation.unit.retry_scheduled"));
+    assertEquals(1, countOutboxEvents(fixture.jobId(), "translation.unit.failed"));
+    assertEquals(1, countOutboxEvents(fixture.jobId(), "translation.job.failed"));
+    assertTrue(outboxPayloadsContainIdentifiersOnly(fixture.jobId()));
+  }
+
+  @Test
+  void expiredLeaseCannotCommitAnAttemptFailure() throws Exception {
+    Fixture fixture = createQueuedJob(1);
+    TranslationUnitLeaseRepository.Lease lease =
+        leaseService
+            .claimNext("translation-fake-stale-failure", Duration.ofSeconds(60))
+            .orElseThrow();
+    TranslationAttemptRepository.StartResult attempt = attemptService.begin(lease);
+    expireLease(lease.unitId());
+
+    assertThrows(
+        TranslationAttemptFailureRepository.StaleLeaseException.class,
+        () ->
+            failureService.record(
+                lease,
+                attempt.attemptId(),
+                new TranslationProviderException(TranslationProviderFailure.TIMEOUT, null)));
+
+    assertEquals("running", readAttemptOutcome(attempt.attemptId()));
+    assertEquals("running", readUnitStatus(lease.unitId()));
+    assertEquals(0, countOutboxEvents(fixture.jobId(), "translation.unit.retry_scheduled"));
+    assertEquals(0, countOutboxEvents(fixture.jobId(), "translation.unit.failed"));
+  }
+
+  @Test
+  void jobFailsWhenItsLastPendingUnitSucceedsAfterAnotherUnitFailed() throws Exception {
+    Fixture fixture = createQueuedJob(101);
+    TranslationUnitLeaseRepository.Lease failedLease =
+        leaseService
+            .claimNext("translation-fake-partial-failure", Duration.ofSeconds(60))
+            .orElseThrow();
+    TranslationAttemptRepository.StartResult failedAttempt = attemptService.begin(failedLease);
+    failureService.record(
+        failedLease,
+        failedAttempt.attemptId(),
+        new TranslationProviderException(TranslationProviderFailure.INVALID_RESPONSE, null));
+
+    TranslationUnitLeaseRepository.Lease successLease =
+        leaseService
+            .claimNext("translation-fake-partial-success", Duration.ofSeconds(60))
+            .orElseThrow();
+    TranslationAttemptRepository.StartResult successAttempt = attemptService.begin(successLease);
+    TranslationAttemptCompletionRepository.CompletionResult completion =
+        completionService.complete(
+            successLease, response(successAttempt.attemptId(), successLease.unitId()));
+
+    assertEquals("failed", completion.jobStatus());
+    assertEquals("partial", completion.candidateStatus());
+    assertEquals("failed", readJobStatus(fixture.jobId()));
+    assertEquals("INVALID_RESPONSE", readJobFailureCode(fixture.jobId()));
+    assertJobProgress(fixture.jobId(), "failed", 1, 1, true);
+    assertEquals(1, countOutboxEvents(fixture.jobId(), "translation.job.failed"));
+  }
+
   private Optional<TranslationUnitLeaseRepository.Lease> claimAfterBarrier(
       String workerId, CountDownLatch ready, CountDownLatch start) throws InterruptedException {
     ready.countDown();
@@ -631,6 +743,18 @@ class PostgresTranslationUnitLeaseTests {
     }
   }
 
+  private String readJobFailureCode(UUID jobId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement("SELECT failure_code FROM translation_jobs WHERE id = ?")) {
+      select.setObject(1, jobId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getString(1);
+      }
+    }
+  }
+
   private int readAttemptCount(UUID unitId) throws SQLException {
     try (Connection connection = dataSource.getConnection();
         PreparedStatement select =
@@ -759,6 +883,77 @@ class PostgresTranslationUnitLeaseTests {
         assertTrue(row.next());
         return row.getString(1);
       }
+    }
+  }
+
+  private String readAttemptFailureCode(UUID attemptId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT failure_code FROM translation_attempts WHERE id = ?")) {
+      select.setObject(1, attemptId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getString(1);
+      }
+    }
+  }
+
+  private String readUnitFailureCode(UUID unitId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT last_failure_code FROM translation_units WHERE id = ?")) {
+      select.setObject(1, unitId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getString(1);
+      }
+    }
+  }
+
+  private long countOutboxEvents(UUID jobId, String eventType) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT count(*) FROM translation_outbox_events WHERE aggregate_id = ? "
+                    + "AND event_type = ?")) {
+      select.setObject(1, jobId);
+      select.setString(2, eventType);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getLong(1);
+      }
+    }
+  }
+
+  private boolean outboxPayloadsContainIdentifiersOnly(UUID jobId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                """
+                    SELECT bool_and((payload - 'jobId' - 'unitId' - 'attemptId' - 'attemptNo')
+                                    = '{}'::jsonb)
+                    FROM translation_outbox_events
+                    WHERE aggregate_id = ?
+                      AND event_type IN ('translation.unit.retry_scheduled',
+                                         'translation.unit.failed', 'translation.job.failed')
+                    """)) {
+      select.setObject(1, jobId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getBoolean(1);
+      }
+    }
+  }
+
+  private void makeUnitAvailableNow(UUID unitId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement update =
+            connection.prepareStatement(
+                "UPDATE translation_units SET available_at = clock_timestamp() WHERE id = ?")) {
+      update.setObject(1, unitId);
+      assertEquals(1, update.executeUpdate());
     }
   }
 

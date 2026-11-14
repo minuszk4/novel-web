@@ -90,12 +90,14 @@ public class TranslationAttemptCompletionRepository {
         markUnitSucceeded(connection, lease, attemptNo);
         JobProgress progress = refreshJobProgress(connection, unit.jobId());
         String candidateStatus =
-            progress.completedUnits() == progress.totalUnits() ? "ready_for_review" : "partial";
+            "review_required".equals(progress.jobStatus()) ? "ready_for_review" : "partial";
         updateCandidateStatus(connection, candidate.id(), candidateStatus);
         updateJobStatus(connection, unit.jobId(), progress);
         insertUnitCompletedEvent(connection, unit.jobId(), lease.unitId(), attempt.id(), attemptNo);
         if ("ready_for_review".equals(candidateStatus)) {
           insertCandidateReadyEvent(connection, unit.jobId(), candidate.id());
+        } else if ("failed".equals(progress.jobStatus())) {
+          insertJobFailedEvent(connection, unit.jobId(), lease.unitId(), attempt.id(), attemptNo);
         }
         connection.commit();
         return new CompletionResult(
@@ -105,7 +107,7 @@ public class TranslationAttemptCompletionRepository {
             candidate.id(),
             translations.size(),
             candidateStatus,
-            progress.completedUnits() == progress.totalUnits() ? "review_required" : "translating",
+            progress.jobStatus(),
             false);
       } catch (SQLException | RuntimeException exception) {
         rollback(connection, exception);
@@ -429,8 +431,14 @@ public class TranslationAttemptCompletionRepository {
       select.setObject(1, jobId);
       try (ResultSet row = select.executeQuery()) {
         if (!row.next() || row.getInt("total_units") < 1) throw new CompletionConflictException();
-        return new JobProgress(
-            row.getInt("total_units"), row.getInt("completed_units"), row.getInt("failed_units"));
+        int totalUnits = row.getInt("total_units");
+        int completedUnits = row.getInt("completed_units");
+        int failedUnits = row.getInt("failed_units");
+        String jobStatus =
+            completedUnits == totalUnits
+                ? "review_required"
+                : completedUnits + failedUnits == totalUnits ? "failed" : "translating";
+        return new JobProgress(totalUnits, completedUnits, failedUnits, jobStatus);
       }
     }
   }
@@ -451,23 +459,55 @@ public class TranslationAttemptCompletionRepository {
 
   private static void updateJobStatus(Connection connection, UUID jobId, JobProgress progress)
       throws SQLException {
-    boolean ready = progress.completedUnits() == progress.totalUnits();
     try (PreparedStatement update =
         connection.prepareStatement(
             """
                 UPDATE translation_jobs
                 SET completed_units = ?, failed_units = ?,
-                    status = CASE WHEN ? THEN 'review_required' ELSE 'translating' END,
-                    completed_at = CASE WHEN ? THEN clock_timestamp() ELSE NULL END,
+                    status = ?,
+                    failure_code = CASE WHEN ? = 'failed' THEN
+                        (SELECT last_failure_code FROM translation_units
+                         WHERE job_id = ? AND status = 'failed'
+                         ORDER BY updated_at DESC, unit_no DESC LIMIT 1)
+                        ELSE NULL END,
+                    completed_at = CASE WHEN ? IN ('review_required', 'failed')
+                        THEN clock_timestamp() ELSE NULL END,
                     updated_at = clock_timestamp()
                 WHERE id = ? AND status = 'translating'
                 """)) {
       update.setInt(1, progress.completedUnits());
       update.setInt(2, progress.failedUnits());
-      update.setBoolean(3, ready);
-      update.setBoolean(4, ready);
+      update.setString(3, progress.jobStatus());
+      update.setString(4, progress.jobStatus());
       update.setObject(5, jobId);
+      update.setString(6, progress.jobStatus());
+      update.setObject(7, jobId);
       if (update.executeUpdate() != 1) throw new CompletionNotAllowedException();
+    }
+  }
+
+  private static void insertJobFailedEvent(
+      Connection connection, UUID jobId, UUID unitId, UUID attemptId, int attemptNo)
+      throws SQLException {
+    try (PreparedStatement insert =
+        connection.prepareStatement(
+            """
+                INSERT INTO translation_outbox_events
+                    (event_id, aggregate_id, event_type, schema_version, deduplication_key,
+                     correlation_id, payload)
+                VALUES (?, ?, 'translation.job.failed', 1, ?, ?,
+                        jsonb_build_object('jobId', ?::text, 'unitId', ?::text,
+                                           'attemptId', ?::text, 'attemptNo', ?))
+                """)) {
+      insert.setObject(1, UUID.randomUUID());
+      insert.setObject(2, jobId);
+      insert.setString(3, "job-failed-" + jobId);
+      insert.setObject(4, attemptId);
+      insert.setObject(5, jobId);
+      insert.setObject(6, unitId);
+      insert.setObject(7, attemptId);
+      insert.setInt(8, attemptNo);
+      insert.executeUpdate();
     }
   }
 
@@ -668,7 +708,8 @@ public class TranslationAttemptCompletionRepository {
 
   private record Candidate(UUID id, String status, String jobStatus) {}
 
-  private record JobProgress(int totalUnits, int completedUnits, int failedUnits) {}
+  private record JobProgress(
+      int totalUnits, int completedUnits, int failedUnits, String jobStatus) {}
 
   public record CompletionResult(
       UUID attemptId,
