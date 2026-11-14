@@ -1,5 +1,6 @@
 package com.novelweb.translation.jobs;
 
+import com.fasterxml.jackson.annotation.JsonAnySetter;
 import com.novelweb.identity.auth.PolicyService;
 import com.novelweb.identity.session.SessionService;
 import com.novelweb.platform.web.CorrelationIdFilter;
@@ -19,6 +20,7 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -40,6 +42,7 @@ public class TranslationJobController {
   private final TranslationJobRetryService retryService;
   private final TranslationJobCancelService cancelService;
   private final TranslationCandidatePreviewService candidatePreviewService;
+  private final TranslationCandidateEditService candidateEditService;
   private final PolicyService policyService;
 
   public TranslationJobController(
@@ -48,12 +51,14 @@ public class TranslationJobController {
       TranslationJobRetryService retryService,
       TranslationJobCancelService cancelService,
       TranslationCandidatePreviewService candidatePreviewService,
+      TranslationCandidateEditService candidateEditService,
       PolicyService policyService) {
     this.jobService = jobService;
     this.statusService = statusService;
     this.retryService = retryService;
     this.cancelService = cancelService;
     this.candidatePreviewService = candidatePreviewService;
+    this.candidateEditService = candidateEditService;
     this.policyService = policyService;
   }
 
@@ -179,6 +184,76 @@ public class TranslationJobController {
     return noStore(HttpStatus.OK).body(preview.orElseThrow());
   }
 
+  @PutMapping("/{jobId}/candidate/segments/{sourceSegmentId}/edit")
+  public ResponseEntity<?> editCandidateSegment(
+      Authentication authentication,
+      @PathVariable String jobId,
+      @PathVariable String sourceSegmentId,
+      @RequestBody(required = false) CandidateSegmentEditRequest body,
+      @RequestHeader(value = HttpHeaders.IF_MATCH, required = false) String ifMatch,
+      @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+      HttpServletRequest request) {
+    UUID actorUserId = actorUserId(authentication);
+    if (actorUserId == null) {
+      return problem(
+          HttpStatus.UNAUTHORIZED,
+          "UNAUTHENTICATED",
+          "Sign in before editing this translation candidate.",
+          request);
+    }
+    ResponseEntity<?> policyFailure = policyGate(actorUserId, request);
+    if (policyFailure != null) return policyFailure;
+    if (body == null || body.hasUnknownFields() || body.translatedText() == null) {
+      return problem(
+          HttpStatus.BAD_REQUEST,
+          "INVALID_TRANSLATION_EDIT",
+          "Provide only a translatedText value for the segment edit.",
+          request);
+    }
+    if (ifMatch == null) {
+      return problem(
+          HttpStatus.PRECONDITION_REQUIRED,
+          "TRANSLATION_EDIT_PRECONDITION_REQUIRED",
+          "Read the candidate and provide the segment edit ETag in If-Match before saving.",
+          request);
+    }
+    Integer expectedEditRevision = parseCandidateEditEtag(ifMatch);
+    if (expectedEditRevision == null) {
+      return problem(
+          HttpStatus.BAD_REQUEST,
+          "INVALID_TRANSLATION_EDIT_ETAG",
+          "If-Match must be the strong edit ETag returned for this candidate segment.",
+          request);
+    }
+    if (idempotencyKey == null || !idempotencyKey.matches("[A-Za-z0-9._~-]{16,128}")) {
+      return problem(
+          HttpStatus.BAD_REQUEST,
+          "INVALID_IDEMPOTENCY_KEY",
+          "Provide a 16 to 128 character Idempotency-Key for this edit attempt.",
+          request);
+    }
+    TranslationCandidateEditRepository.EditResult saved =
+        candidateEditService.save(
+            actorUserId,
+            parseRequiredUuid(jobId, "jobId"),
+            parseRequiredUuid(sourceSegmentId, "sourceSegmentId"),
+            expectedEditRevision,
+            idempotencyKey,
+            body.translatedText());
+    HttpStatus status = saved.replayed() ? HttpStatus.OK : HttpStatus.CREATED;
+    return noStore(status)
+        .header(HttpHeaders.ETAG, candidateEditEtag(saved.editRevision()))
+        .body(
+            new CandidateSegmentEditResponse(
+                saved.jobId(),
+                saved.candidateId(),
+                saved.sourceSegmentId(),
+                saved.editRevision(),
+                saved.translatedText(),
+                saved.createdAt(),
+                saved.replayed()));
+  }
+
   @PostMapping("/{jobId}/retry")
   public ResponseEntity<?> retry(
       Authentication authentication,
@@ -280,6 +355,76 @@ public class TranslationJobController {
         "TRANSLATION_CANDIDATE_NOT_READY",
         "This candidate is not ready for preview.",
         request);
+  }
+
+  @ExceptionHandler(TranslationCandidateEditRepository.CandidateNotFoundException.class)
+  public ResponseEntity<ProblemDetail> candidateSegmentNotFound(HttpServletRequest request) {
+    return problem(
+        HttpStatus.NOT_FOUND,
+        "TRANSLATION_CANDIDATE_NOT_FOUND",
+        "This translation candidate segment is unavailable.",
+        request);
+  }
+
+  @ExceptionHandler(TranslationCandidateEditRepository.SourceRevisionStaleException.class)
+  public ResponseEntity<ProblemDetail> staleCandidateEditSource(HttpServletRequest request) {
+    return problem(
+        HttpStatus.CONFLICT,
+        "TRANSLATION_SOURCE_STALE",
+        "The chapter changed after this candidate was created. Refresh the current source before editing it.",
+        request);
+  }
+
+  @ExceptionHandler(TranslationCandidateEditRepository.CandidateNotReadyException.class)
+  public ResponseEntity<ProblemDetail> candidateNotReadyForEdit(HttpServletRequest request) {
+    return problem(
+        HttpStatus.CONFLICT,
+        "TRANSLATION_CANDIDATE_NOT_READY",
+        "This candidate is not ready for editing.",
+        request);
+  }
+
+  @ExceptionHandler(TranslationCandidateEditRepository.IdempotencyKeyReusedException.class)
+  public ResponseEntity<ProblemDetail> candidateEditKeyReused(HttpServletRequest request) {
+    return problem(
+        HttpStatus.CONFLICT,
+        "IDEMPOTENCY_KEY_REUSED",
+        "This Idempotency-Key was already used for a different candidate edit.",
+        request);
+  }
+
+  @ExceptionHandler(TranslationCandidateEditRepository.EditStorageConflictException.class)
+  public ResponseEntity<ProblemDetail> candidateEditStorageConflict(HttpServletRequest request) {
+    return problem(
+        HttpStatus.CONFLICT,
+        "TRANSLATION_EDIT_CONFLICT",
+        "The candidate segment changed while saving. Reload it and try again.",
+        request);
+  }
+
+  @ExceptionHandler(TranslationCandidateEditService.EditTextTooLargeException.class)
+  public ResponseEntity<ProblemDetail> candidateEditTextTooLarge(HttpServletRequest request) {
+    return problem(
+        HttpStatus.CONTENT_TOO_LARGE,
+        "TRANSLATION_EDIT_TOO_LARGE",
+        "The candidate edit exceeds the 1 MiB UTF-8 limit.",
+        request);
+  }
+
+  @ExceptionHandler(TranslationCandidateEditRepository.EditRevisionConflictException.class)
+  public ResponseEntity<ProblemDetail> staleCandidateEdit(
+      TranslationCandidateEditRepository.EditRevisionConflictException exception,
+      HttpServletRequest request) {
+    ProblemDetail body =
+        ProblemDetail.forStatusAndDetail(
+            HttpStatus.PRECONDITION_FAILED,
+            "The candidate segment changed after it was read. Resolve the latest edit before saving again.");
+    body.setTitle(HttpStatus.PRECONDITION_FAILED.getReasonPhrase());
+    body.setProperty("code", "TRANSLATION_EDIT_STALE");
+    body.setProperty("currentEtag", candidateEditEtag(exception.currentEditRevision()));
+    Object correlationId = request.getAttribute(CorrelationIdFilter.REQUEST_ATTRIBUTE);
+    body.setProperty("correlationId", correlationId instanceof String id ? id : "unavailable");
+    return noStore(HttpStatus.PRECONDITION_FAILED).body(body);
   }
 
   @ExceptionHandler({
@@ -427,6 +572,19 @@ public class TranslationJobController {
     }
   }
 
+  private static String candidateEditEtag(int editRevision) {
+    return "\"edit-" + editRevision + "\"";
+  }
+
+  private static Integer parseCandidateEditEtag(String value) {
+    if (value == null || !value.matches("\\\"edit-(0|[1-9][0-9]*)\\\"")) return null;
+    try {
+      return Integer.parseInt(value.substring(6, value.length() - 1));
+    } catch (NumberFormatException exception) {
+      return null;
+    }
+  }
+
   private static boolean terminal(String status) {
     return "review_required".equals(status)
         || "completed".equals(status)
@@ -468,6 +626,37 @@ public class TranslationJobController {
 
     public JobListResponse {
       items = java.util.List.copyOf(items);
+    }
+  }
+
+  public record CandidateSegmentEditResponse(
+      UUID jobId,
+      UUID candidateId,
+      UUID sourceSegmentId,
+      int editRevision,
+      String translatedText,
+      java.time.Instant createdAt,
+      boolean replayed) {}
+
+  public static final class CandidateSegmentEditRequest {
+    private String translatedText;
+    private boolean unknownFields;
+
+    public String translatedText() {
+      return translatedText;
+    }
+
+    boolean hasUnknownFields() {
+      return unknownFields;
+    }
+
+    public void setTranslatedText(String translatedText) {
+      this.translatedText = translatedText;
+    }
+
+    @JsonAnySetter
+    public void captureUnknownField(String name, Object ignoredValue) {
+      unknownFields = true;
     }
   }
 }

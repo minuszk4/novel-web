@@ -51,5 +51,8 @@ public class TranslationCandidatePreviewService {
       int ordinal,
       String sourceType,
       String sourceText,
-      String fakeResultText) {}
+      String fakeResultText,
+      String editedText,
+      int editRevision,
+      String editEtag) {}
 }

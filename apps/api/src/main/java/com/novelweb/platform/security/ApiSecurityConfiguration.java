@@ -198,6 +198,10 @@ public class ApiSecurityConfiguration {
                         "/api/v1/translation/jobs/*/retry",
                         "/api/v1/translation/jobs/*/cancel")
                     .permitAll();
+                authorize
+                    .requestMatchers(
+                        HttpMethod.PUT, "/api/v1/translation/jobs/*/candidate/segments/*/edit")
+                    .permitAll();
               }
               authorize.anyRequest().denyAll();
             })

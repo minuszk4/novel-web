@@ -14,6 +14,8 @@ import com.novelweb.translation.jobs.TranslationAttemptFailureRepository;
 import com.novelweb.translation.jobs.TranslationAttemptFailureService;
 import com.novelweb.translation.jobs.TranslationAttemptRepository;
 import com.novelweb.translation.jobs.TranslationAttemptService;
+import com.novelweb.translation.jobs.TranslationCandidateEditRepository;
+import com.novelweb.translation.jobs.TranslationCandidateEditService;
 import com.novelweb.translation.jobs.TranslationCandidatePreviewRepository;
 import com.novelweb.translation.jobs.TranslationCandidatePreviewService;
 import com.novelweb.translation.jobs.TranslationFakeLocalWorkerService;
@@ -86,6 +88,8 @@ class PostgresTranslationUnitLeaseTests {
   @Autowired private TranslationJobStatusService jobStatusService;
 
   @Autowired private TranslationCandidatePreviewService candidatePreviewService;
+
+  @Autowired private TranslationCandidateEditService candidateEditService;
 
   @Autowired private TranslationUnitLeaseService leaseService;
 
@@ -1058,6 +1062,145 @@ class PostgresTranslationUnitLeaseTests {
   }
 
   @Test
+  void candidateEditsReplayExactlyFenceStaleWritersAndAppearAsAnOverlay() throws Exception {
+    Fixture fixture = createQueuedJob(1);
+    fakeLocalWorkerService.processNext("translation-edit-api-worker", Duration.ofSeconds(60));
+    TranslationCandidatePreviewService.PreviewSegment original =
+        candidatePreviewService
+            .findCurrentReadyForReview(fixture.userId(), fixture.jobId(), 0, 1)
+            .orElseThrow()
+            .segments()
+            .getFirst();
+    String originalFakeText = original.fakeResultText();
+    String firstText = "First writer correction.";
+    String firstKey = "translation-edit-api-key-0001";
+
+    TranslationCandidateEditRepository.EditResult first =
+        candidateEditService.save(
+            fixture.userId(), fixture.jobId(), original.sourceSegmentId(), 0, firstKey, firstText);
+    TranslationCandidateEditRepository.EditResult replay =
+        candidateEditService.save(
+            fixture.userId(), fixture.jobId(), original.sourceSegmentId(), 0, firstKey, firstText);
+
+    assertEquals(1, first.editRevision());
+    assertFalse(first.replayed());
+    assertTrue(replay.replayed());
+    assertEquals(first.editRevision(), replay.editRevision());
+    assertEquals(first.createdAt(), replay.createdAt());
+    assertThrows(
+        TranslationCandidateEditRepository.IdempotencyKeyReusedException.class,
+        () ->
+            candidateEditService.save(
+                fixture.userId(),
+                fixture.jobId(),
+                original.sourceSegmentId(),
+                0,
+                firstKey,
+                "Different correction."));
+
+    TranslationCandidateEditRepository.EditRevisionConflictException stale =
+        assertThrows(
+            TranslationCandidateEditRepository.EditRevisionConflictException.class,
+            () ->
+                candidateEditService.save(
+                    fixture.userId(),
+                    fixture.jobId(),
+                    original.sourceSegmentId(),
+                    0,
+                    "translation-edit-api-key-0002",
+                    "Stale writer correction."));
+    assertEquals(1, stale.currentEditRevision());
+
+    TranslationCandidateEditRepository.EditResult second =
+        candidateEditService.save(
+            fixture.userId(),
+            fixture.jobId(),
+            original.sourceSegmentId(),
+            1,
+            "translation-edit-api-key-0003",
+            "Second writer correction.");
+    TranslationCandidatePreviewService.PreviewSegment latest =
+        candidatePreviewService
+            .findCurrentReadyForReview(fixture.userId(), fixture.jobId(), 0, 1)
+            .orElseThrow()
+            .segments()
+            .getFirst();
+
+    assertEquals(2, second.editRevision());
+    assertEquals(originalFakeText, latest.fakeResultText());
+    assertEquals("Second writer correction.", latest.editedText());
+    assertEquals(2, latest.editRevision());
+    assertEquals("\"edit-2\"", latest.editEtag());
+  }
+
+  @Test
+  void concurrentCandidateSegmentWritersProduceOneWinnerAndOneStaleConflict() throws Exception {
+    Fixture fixture = createQueuedJob(1);
+    fakeLocalWorkerService.processNext(
+        "translation-edit-concurrent-worker", Duration.ofSeconds(60));
+    UUID segmentId =
+        candidatePreviewService
+            .findCurrentReadyForReview(fixture.userId(), fixture.jobId(), 0, 1)
+            .orElseThrow()
+            .segments()
+            .getFirst()
+            .sourceSegmentId();
+    CountDownLatch writersReady = new CountDownLatch(2);
+    CountDownLatch startWriters = new CountDownLatch(1);
+
+    try (ExecutorService executor = Executors.newFixedThreadPool(2)) {
+      Future<TranslationCandidateEditRepository.EditResult> first =
+          executor.submit(
+              () ->
+                  saveConcurrentEdit(
+                      fixture,
+                      segmentId,
+                      "translation-edit-race-key-0001",
+                      "Writer one.",
+                      writersReady,
+                      startWriters));
+      Future<TranslationCandidateEditRepository.EditResult> second =
+          executor.submit(
+              () ->
+                  saveConcurrentEdit(
+                      fixture,
+                      segmentId,
+                      "translation-edit-race-key-0002",
+                      "Writer two.",
+                      writersReady,
+                      startWriters));
+      boolean bothWritersReady = writersReady.await(10, TimeUnit.SECONDS);
+      startWriters.countDown();
+      assertTrue(bothWritersReady);
+
+      int saved = 0;
+      int stale = 0;
+      for (Future<TranslationCandidateEditRepository.EditResult> writer : List.of(first, second)) {
+        try {
+          writer.get(10, TimeUnit.SECONDS);
+          saved++;
+        } catch (java.util.concurrent.ExecutionException exception) {
+          assertTrue(
+              exception.getCause()
+                  instanceof TranslationCandidateEditRepository.EditRevisionConflictException);
+          stale++;
+        }
+      }
+      assertEquals(1, saved);
+      assertEquals(1, stale);
+    }
+
+    TranslationCandidatePreviewService.PreviewSegment latest =
+        candidatePreviewService
+            .findCurrentReadyForReview(fixture.userId(), fixture.jobId(), 0, 1)
+            .orElseThrow()
+            .segments()
+            .getFirst();
+    assertEquals(1, latest.editRevision());
+    assertTrue(List.of("Writer one.", "Writer two.").contains(latest.editedText()));
+  }
+
+  @Test
   void translationDeskPagesOnlyCurrentWorkspaceWritersAndBindsCursorToActor() throws Exception {
     Fixture fixture = createQueuedJob(1);
     UUID secondJobId =
@@ -1102,7 +1245,7 @@ class PostgresTranslationUnitLeaseTests {
   }
 
   @Test
-  void candidatePreviewConcealsReadOnlyWorkspaceMembersAndRejectsStaleSource() throws Exception {
+  void candidatePreviewAndEditsConcealReadOnlyWritersAndRejectStaleSources() throws Exception {
     Fixture readOnlyFixture = createQueuedJob(1);
     UUID workspaceId = createWorkspace(readOnlyFixture);
     UUID readerId = addWorkspaceMember(workspaceId, "reader");
@@ -1116,9 +1259,33 @@ class PostgresTranslationUnitLeaseTests {
             .findCurrentReadyForReview(readerId, readOnlyFixture.jobId(), 0, 20)
             .isEmpty(),
         "candidate text is withheld from read-only workspace members");
+    UUID segmentId =
+        candidatePreviewService
+            .findCurrentReadyForReview(readOnlyFixture.userId(), readOnlyFixture.jobId(), 0, 1)
+            .orElseThrow()
+            .segments()
+            .getFirst()
+            .sourceSegmentId();
+    assertThrows(
+        TranslationCandidateEditRepository.CandidateNotFoundException.class,
+        () ->
+            candidateEditService.save(
+                readerId,
+                readOnlyFixture.jobId(),
+                segmentId,
+                0,
+                "translation-edit-reader-key-01",
+                "Unauthorized correction."));
 
     Fixture staleFixture = createQueuedJob(1);
     fakeLocalWorkerService.processNext("translation-preview-stale-worker", Duration.ofSeconds(60));
+    UUID staleSegmentId =
+        candidatePreviewService
+            .findCurrentReadyForReview(staleFixture.userId(), staleFixture.jobId(), 0, 1)
+            .orElseThrow()
+            .segments()
+            .getFirst()
+            .sourceSegmentId();
     advanceCurrentSourceRevision(staleFixture);
 
     assertThrows(
@@ -1126,6 +1293,16 @@ class PostgresTranslationUnitLeaseTests {
         () ->
             candidatePreviewService.findCurrentReadyForReview(
                 staleFixture.userId(), staleFixture.jobId(), 0, 20));
+    assertThrows(
+        TranslationCandidateEditRepository.SourceRevisionStaleException.class,
+        () ->
+            candidateEditService.save(
+                staleFixture.userId(),
+                staleFixture.jobId(),
+                staleSegmentId,
+                0,
+                "translation-edit-stale-key-01",
+                "Stale source correction."));
   }
 
   @Test
@@ -1139,6 +1316,20 @@ class PostgresTranslationUnitLeaseTests {
         () ->
             candidatePreviewService.findCurrentReadyForReview(
                 fixture.userId(), fixture.jobId(), 0, 20));
+  }
+
+  private TranslationCandidateEditRepository.EditResult saveConcurrentEdit(
+      Fixture fixture,
+      UUID segmentId,
+      String idempotencyKey,
+      String translatedText,
+      CountDownLatch writersReady,
+      CountDownLatch startWriters)
+      throws Exception {
+    writersReady.countDown();
+    assertTrue(startWriters.await(10, TimeUnit.SECONDS));
+    return candidateEditService.save(
+        fixture.userId(), fixture.jobId(), segmentId, 0, idempotencyKey, translatedText);
   }
 
   private Optional<TranslationUnitLeaseRepository.Lease> claimAfterBarrier(

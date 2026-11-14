@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 6.28.0
+  version: 6.29.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -3823,6 +3823,103 @@ paths:
           $ref: '#/components/responses/Problem'
         '503':
           $ref: '#/components/responses/Problem'
+  /api/v1/translation/jobs/{jobId}/candidate/segments/{sourceSegmentId}/edit:
+    put:
+      operationId: saveFakeLocalCandidateSegmentEdit
+      tags: [Translation]
+      x-implementation-status: local-preview
+      summary: Append a private writer correction to one fake candidate segment
+      description: >-
+        Appends a private immutable edit revision for one segment of the current complete fake-local candidate.
+        Requires current session policy, CSRF, writable-library access, exact current source snapshot, If-Match
+        using the current edit ETag, and an Idempotency-Key. The generated result remains unchanged; the correction
+        does not approve or publish the candidate, grant Reader access or call an external translation provider.
+        Text is plain text, bounded to 1 MiB UTF-8 and responses are no-store.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: sourceSegmentId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: If-Match
+          in: header
+          required: true
+          schema:
+            type: string
+            pattern: '^"edit-(0|[1-9][0-9]*)"$'
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            minLength: 16
+            maxLength: 128
+            pattern: '^[A-Za-z0-9._~-]{16,128}$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [translatedText]
+              properties:
+                translatedText:
+                  type: string
+                  minLength: 1
+                  maxLength: 1048576
+                  description: Plain text; server enforces a maximum of 1 MiB after UTF-8 encoding.
+      responses:
+        '201':
+          description: A new immutable candidate segment edit revision was saved.
+          headers:
+            ETag:
+              schema:
+                type: string
+                pattern: '^"edit-(0|[1-9][0-9]*)"$'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TranslationCandidateEditResponse'
+        '200':
+          description: The original result for an exact idempotent replay.
+          headers:
+            ETag:
+              schema:
+                type: string
+                pattern: '^"edit-(0|[1-9][0-9]*)"$'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TranslationCandidateEditResponse'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '412':
+          $ref: '#/components/responses/Problem'
+        '413':
+          $ref: '#/components/responses/Problem'
+        '428':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
   /api/v1/translation/jobs/{jobId}/retry:
     post:
       operationId: retryFailedTranslationJob
@@ -4367,7 +4464,7 @@ components:
           items:
             type: object
             additionalProperties: false
-            required: [sourceSegmentId, ordinal, sourceType, sourceText, fakeResultText]
+            required: [sourceSegmentId, ordinal, sourceType, sourceText, fakeResultText, editedText, editRevision, editEtag]
             properties:
               sourceSegmentId:
                 type: string
@@ -4386,6 +4483,43 @@ components:
                 type: string
                 maxLength: 4016
                 description: Identity-style source echo prefixed with an explicit fake-local marker; never a usable translation.
+              editedText:
+                type: [string, 'null']
+                maxLength: 1048576
+                description: Latest private writer correction, if one exists; never changes fakeResultText.
+              editRevision:
+                type: integer
+                minimum: 0
+                description: Zero means no writer correction has been saved.
+              editEtag:
+                type: string
+                pattern: '^"edit-(0|[1-9][0-9]*)"$'
+    TranslationCandidateEditResponse:
+      type: object
+      additionalProperties: false
+      required: [jobId, candidateId, sourceSegmentId, editRevision, translatedText, createdAt, replayed]
+      properties:
+        jobId:
+          type: string
+          format: uuid
+        candidateId:
+          type: string
+          format: uuid
+        sourceSegmentId:
+          type: string
+          format: uuid
+        editRevision:
+          type: integer
+          minimum: 1
+        translatedText:
+          type: string
+          maxLength: 1048576
+          description: Plain text bounded by UTF-8 bytes at runtime.
+        createdAt:
+          type: string
+          format: date-time
+        replayed:
+          type: boolean
     TranslationRetryResponse:
       type: object
       additionalProperties: false

@@ -30,6 +30,7 @@ class TranslationJobControllerTests {
   private TranslationJobRetryService retryService;
   private TranslationJobCancelService cancelService;
   private TranslationCandidatePreviewService candidatePreviewService;
+  private TranslationCandidateEditService candidateEditService;
   private PolicyService policyService;
   private TranslationJobController controller;
   private UUID actorId;
@@ -42,6 +43,7 @@ class TranslationJobControllerTests {
     retryService = mock(TranslationJobRetryService.class);
     cancelService = mock(TranslationJobCancelService.class);
     candidatePreviewService = mock(TranslationCandidatePreviewService.class);
+    candidateEditService = mock(TranslationCandidateEditService.class);
     policyService = mock(PolicyService.class);
     controller =
         new TranslationJobController(
@@ -50,6 +52,7 @@ class TranslationJobControllerTests {
             retryService,
             cancelService,
             candidatePreviewService,
+            candidateEditService,
             policyService);
     actorId = UUID.randomUUID();
     jobId = UUID.randomUUID();
@@ -106,7 +109,12 @@ class TranslationJobControllerTests {
             request());
     assertEquals(HttpStatus.FORBIDDEN, policyRequired.getStatusCode());
     verifyNoInteractions(
-        jobService, statusService, retryService, cancelService, candidatePreviewService);
+        jobService,
+        statusService,
+        retryService,
+        cancelService,
+        candidatePreviewService,
+        candidateEditService);
   }
 
   @Test
@@ -158,7 +166,10 @@ class TranslationJobControllerTests {
                     1,
                     "paragraph",
                     "Source sentence.",
-                    "[fake vi->en] Source sentence.")));
+                    "[fake vi->en] Source sentence.",
+                    null,
+                    0,
+                    "\"edit-0\"")));
     when(candidatePreviewService.findCurrentReadyForReview(actorId, jobId, 0, 20))
         .thenReturn(Optional.of(preview));
 
@@ -171,6 +182,119 @@ class TranslationJobControllerTests {
     assertEquals("no-store", response.getHeaders().getCacheControl());
     assertEquals(preview, response.getBody());
     verify(candidatePreviewService).findCurrentReadyForReview(actorId, jobId, 0, 20);
+  }
+
+  @Test
+  void candidateSegmentEditRequiresSessionAndPolicyBeforeCallingTheWriterService() {
+    var body = new TranslationJobController.CandidateSegmentEditRequest();
+    body.setTranslatedText("Manually corrected sentence.");
+    ResponseEntity<?> guest =
+        controller.editCandidateSegment(
+            null,
+            jobId.toString(),
+            UUID.randomUUID().toString(),
+            body,
+            "\"edit-0\"",
+            "candidate-edit-key-0001",
+            request());
+
+    when(policyService.requiredAcceptance(actorId))
+        .thenReturn(PolicyService.RequiredAcceptance.REQUIRED);
+    ResponseEntity<?> policyRequired =
+        controller.editCandidateSegment(
+            authentication(),
+            jobId.toString(),
+            UUID.randomUUID().toString(),
+            body,
+            "\"edit-0\"",
+            "candidate-edit-key-0001",
+            request());
+
+    assertEquals(HttpStatus.UNAUTHORIZED, guest.getStatusCode());
+    assertEquals(HttpStatus.FORBIDDEN, policyRequired.getStatusCode());
+    verifyNoInteractions(candidateEditService);
+  }
+
+  @Test
+  void candidateSegmentEditUsesEtagIdempotencyAndNoStoreResponse() {
+    UUID segmentId = UUID.randomUUID();
+    UUID candidateId = UUID.randomUUID();
+    var body = new TranslationJobController.CandidateSegmentEditRequest();
+    body.setTranslatedText("Manually corrected sentence.");
+    var saved =
+        new TranslationCandidateEditRepository.EditResult(
+            jobId, candidateId, segmentId, 1, body.translatedText(), Instant.now(), false);
+    when(candidateEditService.save(
+            actorId, jobId, segmentId, 0, "candidate-edit-key-0001", body.translatedText()))
+        .thenReturn(saved);
+
+    ResponseEntity<?> response =
+        controller.editCandidateSegment(
+            authentication(),
+            jobId.toString(),
+            segmentId.toString(),
+            body,
+            "\"edit-0\"",
+            "candidate-edit-key-0001",
+            request());
+
+    assertEquals(HttpStatus.CREATED, response.getStatusCode());
+    assertEquals("\"edit-1\"", response.getHeaders().getETag());
+    assertEquals("no-store", response.getHeaders().getCacheControl());
+    verify(candidateEditService)
+        .save(actorId, jobId, segmentId, 0, "candidate-edit-key-0001", body.translatedText());
+  }
+
+  @Test
+  void candidateSegmentEditRejectsMissingOrInvalidWritePreconditionsBeforeServiceCall() {
+    UUID segmentId = UUID.randomUUID();
+    var body = new TranslationJobController.CandidateSegmentEditRequest();
+    body.setTranslatedText("Manually corrected sentence.");
+
+    ResponseEntity<?> missingEtag =
+        controller.editCandidateSegment(
+            authentication(),
+            jobId.toString(),
+            segmentId.toString(),
+            body,
+            null,
+            "candidate-edit-key-0001",
+            request());
+    ResponseEntity<?> invalidEtag =
+        controller.editCandidateSegment(
+            authentication(),
+            jobId.toString(),
+            segmentId.toString(),
+            body,
+            "W/\"edit-0\"",
+            "candidate-edit-key-0001",
+            request());
+    ResponseEntity<?> invalidKey =
+        controller.editCandidateSegment(
+            authentication(),
+            jobId.toString(),
+            segmentId.toString(),
+            body,
+            "\"edit-0\"",
+            "short",
+            request());
+
+    assertEquals(HttpStatus.PRECONDITION_REQUIRED, missingEtag.getStatusCode());
+    assertEquals(HttpStatus.BAD_REQUEST, invalidEtag.getStatusCode());
+    assertEquals(HttpStatus.BAD_REQUEST, invalidKey.getStatusCode());
+    verifyNoInteractions(candidateEditService);
+  }
+
+  @Test
+  void staleCandidateEditReturnsCurrentStrongEtag() {
+    ResponseEntity<?> response =
+        controller.staleCandidateEdit(
+            new TranslationCandidateEditRepository.EditRevisionConflictException(3), request());
+
+    assertEquals(HttpStatus.PRECONDITION_FAILED, response.getStatusCode());
+    var problem = (org.springframework.http.ProblemDetail) response.getBody();
+    assertEquals("\"edit-3\"", problem.getProperties().get("currentEtag"));
+    assertEquals("TRANSLATION_EDIT_STALE", problem.getProperties().get("code"));
   }
 
   @Test

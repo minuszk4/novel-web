@@ -131,13 +131,22 @@ public class TranslationCandidatePreviewRepository {
         connection.prepareStatement(
             """
                 SELECT source_segment.id, source_segment.ordinal, source_segment.segment_type,
-                       source_segment.source_text, candidate_segment.translated_text
+                       source_segment.source_text, candidate_segment.translated_text,
+                       latest_edit.translated_text AS edited_text,
+                       COALESCE(latest_edit.edit_revision, 0) AS edit_revision
                 FROM translation_candidate_segments candidate_segment
                 JOIN translation_candidates candidate
                   ON candidate.id = candidate_segment.candidate_id
                 JOIN segments source_segment
                   ON source_segment.chapter_revision_id = candidate.source_revision_id
                  AND source_segment.id = candidate_segment.source_segment_id
+                LEFT JOIN LATERAL (
+                    SELECT edit.translated_text, edit.edit_revision
+                    FROM translation_candidate_segment_edits edit
+                    WHERE edit.candidate_id = candidate_segment.candidate_id
+                      AND edit.source_segment_id = candidate_segment.source_segment_id
+                    ORDER BY edit.edit_revision DESC LIMIT 1
+                ) latest_edit ON TRUE
                 WHERE candidate.id = ?
                 ORDER BY source_segment.ordinal, source_segment.id
                 OFFSET ? LIMIT ?
@@ -147,13 +156,17 @@ public class TranslationCandidatePreviewRepository {
       select.setInt(3, limit);
       try (ResultSet rows = select.executeQuery()) {
         while (rows.next()) {
+          int editRevision = rows.getInt("edit_revision");
           segments.add(
               new TranslationCandidatePreviewService.PreviewSegment(
                   rows.getObject("id", UUID.class),
                   rows.getInt("ordinal"),
                   rows.getString("segment_type"),
                   rows.getString("source_text"),
-                  rows.getString("translated_text")));
+                  rows.getString("translated_text"),
+                  rows.getString("edited_text"),
+                  editRevision,
+                  "\"edit-" + editRevision + "\""));
         }
       }
     }
