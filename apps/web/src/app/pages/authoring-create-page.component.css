@@ -1,0 +1,211 @@
+:host {
+  display: block;
+}
+.authoring-page {
+  max-width: 980px;
+}
+.authoring-heading {
+  margin-bottom: 23px;
+}
+.authoring-heading .eyebrow {
+  margin-bottom: 8px;
+}
+.authoring-layout {
+  display: grid;
+  grid-template-columns: minmax(190px, 0.72fr) minmax(0, 1.5fr);
+  align-items: start;
+  gap: 16px;
+}
+.authoring-panel,
+.authoring-private-note {
+  min-width: 0;
+  padding: 22px;
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow-soft);
+}
+.authoring-private-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  border-color: #d9dceb;
+  background: #f8f8fc;
+  box-shadow: none;
+}
+.authoring-private-note h2,
+.authoring-panel h2,
+.authoring-sign-in h2,
+.authoring-success h2 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 21px;
+  font-weight: 600;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+.authoring-private-note p,
+.authoring-panel-heading > p:last-child,
+.authoring-sign-in p:not(.eyebrow),
+.authoring-success p:not(.eyebrow) {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.authoring-mark,
+.authoring-private-icon,
+.authoring-success-mark {
+  display: grid;
+  flex: 0 0 40px;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  border: 1px solid #dfe2f0;
+  border-radius: 11px;
+  color: var(--primary);
+  background: #fff;
+  font-size: 20px;
+}
+.authoring-panel-heading {
+  margin-bottom: 20px;
+}
+.authoring-panel-heading .eyebrow,
+.authoring-sign-in .eyebrow,
+.authoring-success .eyebrow {
+  margin-bottom: 6px;
+}
+.authoring-create-form,
+.authoring-create-form label {
+  display: grid;
+  min-width: 0;
+  gap: 7px;
+}
+.authoring-create-form {
+  gap: 17px;
+}
+.authoring-create-form label {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 650;
+}
+.authoring-create-form input {
+  width: 100%;
+  min-height: 48px;
+  padding: 11px 12px;
+  border: 1px solid #cfd3db;
+  border-radius: 8px;
+  color: var(--text);
+  background: #fff;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 450;
+}
+.authoring-create-form input:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.authoring-create-form input:disabled {
+  color: var(--muted);
+  background: #f1f2f4;
+}
+.authoring-create-form input[aria-invalid='true'] {
+  border-color: var(--error);
+}
+.authoring-field-help,
+.authoring-optional {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 450;
+  line-height: 1.5;
+}
+.authoring-field-error {
+  color: var(--error);
+  font-size: 12px;
+  font-weight: 600;
+}
+.authoring-error,
+.authoring-sign-in,
+.authoring-success {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.authoring-error {
+  padding: 12px;
+  border: 1px solid #edc9ca;
+  border-radius: 8px;
+  color: var(--error);
+  background: #fff7f7;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.authoring-error > span {
+  flex: 0 0 20px;
+  font-weight: 800;
+}
+.authoring-error p,
+.authoring-retry-note {
+  margin: 0;
+}
+.authoring-retry-note {
+  color: var(--warning);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.authoring-form-actions,
+.authoring-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+.authoring-form-actions .button,
+.authoring-actions .button {
+  min-height: 46px;
+}
+.authoring-sign-in,
+.authoring-success {
+  max-width: 760px;
+  padding: 22px;
+}
+.authoring-sign-in .button,
+.authoring-actions {
+  margin-top: 16px;
+}
+.authoring-success {
+  border-color: #cfe5d6;
+  background: #fbfefb;
+}
+.authoring-success-mark {
+  border-color: #cfe5d6;
+  color: var(--success);
+  background: var(--success-soft);
+  font-weight: 800;
+}
+.authoring-actions {
+  justify-content: flex-start;
+}
+@media (max-width: 760px) {
+  .authoring-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .authoring-private-note,
+  .authoring-panel,
+  .authoring-sign-in,
+  .authoring-success {
+    padding: 16px;
+  }
+}
+@media (max-width: 520px) {
+  .authoring-form-actions,
+  .authoring-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .authoring-form-actions .button,
+  .authoring-actions .button,
+  .authoring-sign-in .button {
+    width: 100%;
+  }
+}

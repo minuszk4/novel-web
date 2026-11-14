@@ -1,0 +1,154 @@
+<section class="page-wrap authoring-page">
+  <div class="page-heading authoring-heading">
+    <p class="eyebrow">AUTHOR STUDIO · BẢN THỬ</p>
+    <h1>Tạo bản thảo</h1>
+    <p>Bắt đầu bằng thông tin tác phẩm. Bản nháp mới chỉ bạn xem được.</p>
+  </div>
+
+  @if (policy.status() !== 'accepted') {
+    <section class="authoring-panel authoring-sign-in" aria-labelledby="authoring-sign-in-title">
+      <span class="authoring-mark" aria-hidden="true">✎</span>
+      <div>
+        <p class="eyebrow">LƯU VÀO TÀI KHOẢN CỦA BẠN</p>
+        <h2 id="authoring-sign-in-title">Đăng nhập để bắt đầu viết</h2>
+        <p>Bản thảo được lưu riêng tư trong thư viện tài khoản, không nằm trong dữ liệu demo.</p>
+        <a
+          class="button button-primary"
+          [routerLink]="['/sign-in']"
+          [queryParams]="{ returnTo: '/app/authoring/new' }"
+          >Đăng nhập bằng Google</a
+        >
+      </div>
+    </section>
+  } @else if (created(); as draft) {
+    <section class="authoring-panel authoring-success" aria-labelledby="authoring-success-title">
+      <span class="authoring-success-mark" aria-hidden="true">✓</span>
+      <div>
+        <p class="eyebrow">ĐÃ LƯU RIÊNG TƯ</p>
+        <h2 id="authoring-success-title">{{ draft.title }}</h2>
+        <p>
+          Bản thảo đã được tạo trong thư viện cá nhân. Hiện Novel chưa có màn hình soạn chương; nội
+          dung tác phẩm chưa được xuất bản hay chia sẻ.
+        </p>
+        <div class="authoring-actions">
+          <a class="button button-primary" routerLink="/app/library">Về thư viện</a>
+          <button class="button button-outline" type="button" (click)="createAnother()">
+            Tạo bản thảo khác
+          </button>
+        </div>
+      </div>
+    </section>
+  } @else {
+    <div class="authoring-layout">
+      <aside class="authoring-private-note" aria-label="Thông tin về quyền riêng tư">
+        <span class="authoring-private-icon" aria-hidden="true">▣</span>
+        <div>
+          <h2>Riêng tư mặc định</h2>
+          <p>Chỉ tài khoản của bạn có thể thấy bản thảo này trong thư viện cá nhân.</p>
+        </div>
+      </aside>
+
+      <section class="authoring-panel" aria-labelledby="authoring-form-title">
+        <div class="authoring-panel-heading">
+          <p class="eyebrow">THÔNG TIN CƠ BẢN</p>
+          <h2 id="authoring-form-title">Tác phẩm mới</h2>
+          <p>Chỉ tạo phần thông tin ban đầu; bạn chưa thể thêm chương ở bước này.</p>
+        </div>
+
+        <form class="authoring-create-form" novalidate (submit)="createDraft($event)">
+          <label for="manuscript-title">
+            <span>Tên tác phẩm <span aria-hidden="true">*</span></span>
+            <input
+              id="manuscript-title"
+              type="text"
+              autocomplete="off"
+              maxlength="300"
+              required
+              [value]="title()"
+              [disabled]="isLocked()"
+              [attr.aria-invalid]="titleError() ? 'true' : null"
+              aria-describedby="manuscript-title-help"
+              [attr.aria-errormessage]="titleError() ? 'manuscript-title-error' : null"
+              (input)="updateTitle($event)"
+              placeholder="Ví dụ: Trăng trên đỉnh Vân Sơn"
+            />
+            <span id="manuscript-title-help" class="authoring-field-help">
+              {{ titleLength() }} / 300 ký tự · Tên có thể đổi sau khi công cụ biên tập được bổ
+              sung.
+            </span>
+            @if (titleError(); as error) {
+              <span id="manuscript-title-error" class="authoring-field-error">{{ error }}</span>
+            }
+          </label>
+
+          <label for="manuscript-author">
+            <span>Bút danh <span class="authoring-optional">· không bắt buộc</span></span>
+            <input
+              id="manuscript-author"
+              type="text"
+              autocomplete="nickname"
+              maxlength="200"
+              [value]="author()"
+              [disabled]="isLocked()"
+              [attr.aria-invalid]="authorError() ? 'true' : null"
+              aria-describedby="manuscript-author-help"
+              [attr.aria-errormessage]="authorError() ? 'manuscript-author-error' : null"
+              (input)="updateAuthor($event)"
+              placeholder="Tên hiển thị trên tác phẩm"
+            />
+            <span id="manuscript-author-help" class="authoring-field-help">
+              Để trống nếu bạn chưa muốn đặt bút danh.
+            </span>
+            @if (authorError(); as error) {
+              <span id="manuscript-author-error" class="authoring-field-error">{{ error }}</span>
+            }
+          </label>
+
+          <label for="manuscript-language">
+            <span>Ngôn ngữ sáng tác <span aria-hidden="true">*</span></span>
+            <input
+              id="manuscript-language"
+              type="text"
+              autocomplete="off"
+              maxlength="35"
+              required
+              [value]="language()"
+              [disabled]="isLocked()"
+              [attr.aria-invalid]="languageError() ? 'true' : null"
+              aria-describedby="manuscript-language-help"
+              [attr.aria-errormessage]="languageError() ? 'manuscript-language-error' : null"
+              (input)="updateLanguage($event)"
+              placeholder="vi"
+            />
+            <span id="manuscript-language-help" class="authoring-field-help">
+              Dùng mã ngôn ngữ như vi, en, zh-Hans hoặc zh-Hant.
+            </span>
+            @if (languageError(); as error) {
+              <span id="manuscript-language-error" class="authoring-field-error">{{ error }}</span>
+            }
+          </label>
+
+          @if (createError(); as error) {
+            <div class="authoring-error" role="alert" aria-live="assertive">
+              <span aria-hidden="true">!</span>
+              <p>{{ error }}</p>
+            </div>
+          }
+
+          @if (isUncertain()) {
+            <p class="authoring-retry-note" role="status" aria-live="polite">
+              Yêu cầu đang được kiểm tra bằng cùng một mã an toàn để tránh tạo trùng bản thảo.
+            </p>
+          }
+
+          <div class="authoring-form-actions">
+            <a class="button button-outline" routerLink="/app/library">Hủy</a>
+            <button class="button button-primary" type="submit" [disabled]="isSaving()">
+              {{ submitLabel() }}
+            </button>
+          </div>
+        </form>
+      </section>
+    </div>
+  }
+</section>

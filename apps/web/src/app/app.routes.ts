@@ -38,6 +38,14 @@ export const routes: Routes = [
           ),
         title: 'Xem lại truyện — Novel',
       },
+      {
+        path: 'authoring/new',
+        loadComponent: () =>
+          import('./pages/authoring-create-page.component').then(
+            (page) => page.AuthoringCreatePageComponent,
+          ),
+        title: 'Tạo bản thảo — Novel',
+      },
       { path: 'home', component: HomePageComponent, title: 'Trang chủ — Novel' },
       { path: 'library', component: LibraryPageComponent, title: 'Thư viện — Novel' },
       {
