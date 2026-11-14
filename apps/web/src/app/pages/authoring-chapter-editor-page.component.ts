@@ -33,6 +33,7 @@ interface SaveAttempt {
 
 const autosaveDelayMs = 900;
 const maxDraftBytes = 10_485_760;
+const maxDraftSegmentBytes = 1_048_576;
 
 @Component({
   selector: 'app-authoring-chapter-editor-page',
@@ -54,6 +55,7 @@ export class AuthoringChapterEditorPageComponent {
   protected readonly isSaving = signal(false);
   protected readonly isLoadingRemote = signal(false);
   protected readonly byteLength = signal(0);
+  protected readonly hasOversizedSegment = signal(false);
 
   private readonly route = inject(ActivatedRoute);
   private readonly api = inject(AuthoringApiService);
@@ -132,6 +134,9 @@ export class AuthoringChapterEditorPageComponent {
   protected get contentLimitError(): string | null {
     if (!this.content().trim()) return 'Nhập nội dung trước khi lưu phiên bản đầu tiên.';
     if (this.byteLength() > maxDraftBytes) return 'Nội dung vượt giới hạn 10 MiB.';
+    if (this.hasOversizedSegment()) {
+      return 'Một đoạn văn vượt giới hạn 1 MiB. Hãy chia nội dung thành các đoạn ngắn hơn.';
+    }
     return null;
   }
 
@@ -255,6 +260,7 @@ export class AuthoringChapterEditorPageComponent {
     this.content.set(remote.normalizedContent);
     this.savedContent = remote.normalizedContent;
     this.byteLength.set(utf8Bytes(remote.normalizedContent));
+    this.hasOversizedSegment.set(hasOversizedParagraph(remote.normalizedContent));
     this.remoteDraft.set(null);
     this.conflictError.set(null);
     this.saveError.set(null);
@@ -281,6 +287,7 @@ export class AuthoringChapterEditorPageComponent {
     const textarea = event.target as HTMLTextAreaElement;
     this.content.set(textarea.value);
     this.byteLength.set(utf8Bytes(textarea.value));
+    this.hasOversizedSegment.set(hasOversizedParagraph(textarea.value));
     this.saveError.set(null);
     if (this.saveState() !== 'conflict') {
       this.saveState.set(textarea.value === this.savedContent ? 'saved' : 'dirty');
@@ -347,6 +354,7 @@ export class AuthoringChapterEditorPageComponent {
       this.savedContent = draft.normalizedContent;
       this.content.set(draft.normalizedContent);
       this.byteLength.set(utf8Bytes(draft.normalizedContent));
+      this.hasOversizedSegment.set(hasOversizedParagraph(draft.normalizedContent));
       this.saveState.set('saved');
       this.pageState.set('ready');
     } catch (error) {
@@ -406,6 +414,10 @@ function makeRevisionInput(
 
 function utf8Bytes(value: string): number {
   return new TextEncoder().encode(value).byteLength;
+}
+
+function hasOversizedParagraph(value: string): boolean {
+  return value.split(/\n{2,}/).some((paragraph) => utf8Bytes(paragraph) > maxDraftSegmentBytes);
 }
 
 function toAuthoringError(error: unknown): AuthoringApiError {

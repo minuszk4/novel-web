@@ -197,6 +197,19 @@ describe('AuthoringChapterEditorPageComponent', () => {
     expect(fixture.nativeElement.textContent).toContain('Nội dung vượt giới hạn 10 MiB.');
   });
 
+  it('asks the author to split a paragraph that exceeds the 1 MiB segment limit', async () => {
+    const fixture = await createEditor();
+    fixture.componentInstance.updateContent(inputEvent('x'.repeat(1_048_577)));
+    fixture.detectChanges();
+
+    await fixture.componentInstance.saveNow();
+
+    expect(api.savePrivateChapterDraftRevision).not.toHaveBeenCalled();
+    expect(fixture.nativeElement.textContent).toContain(
+      'Một đoạn văn vượt giới hạn 1 MiB. Hãy chia nội dung thành các đoạn ngắn hơn.',
+    );
+  });
+
   it('retries an uncertain save with the exact same payload, ETag and idempotency key', async () => {
     api.savePrivateChapterDraftRevision
       .mockRejectedValueOnce(new AuthoringApiError(0, 'AUTHORING_UNAVAILABLE'))
