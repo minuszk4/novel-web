@@ -5,11 +5,11 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.Deque;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.SynchronousQueue;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -68,7 +68,7 @@ public final class TranslationProviderExecutionGate implements AutoCloseable {
             policy.maxConcurrentCalls(),
             0,
             TimeUnit.MILLISECONDS,
-            new SynchronousQueue<>(),
+            new ArrayBlockingQueue<>(policy.maxConcurrentCalls()),
             threadFactory,
             new ThreadPoolExecutor.AbortPolicy());
   }

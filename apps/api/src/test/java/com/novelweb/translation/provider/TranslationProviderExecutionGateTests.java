@@ -38,6 +38,40 @@ class TranslationProviderExecutionGateTests {
   }
 
   @Test
+  void doesNotRejectSequentialProviderCallsDuringWorkerThreadHandoff() throws Exception {
+    AtomicInteger translateCalls = new AtomicInteger();
+    TranslationProvider provider =
+        provider(
+            BigDecimal.ZERO,
+            request -> {
+              translateCalls.incrementAndGet();
+              return response(request, "translated", request.sourceCodePoints());
+            });
+    TranslationProviderExecutionPolicy base = policy("0.01", 0, 100);
+    TranslationProviderExecutionPolicy oneConcurrentCall =
+        new TranslationProviderExecutionPolicy(
+            base.maxSegmentsPerAttempt(),
+            base.maxCodePointsPerAttempt(),
+            base.maxEstimatedCost(),
+            base.currency(),
+            base.maxRequestsPerMinute(),
+            1,
+            base.requestTimeout(),
+            base.maxRateLimitRetries(),
+            base.retryBaseDelay(),
+            base.maxRetryDelay());
+
+    try (TranslationProviderExecutionGate gate =
+        new TranslationProviderExecutionGate(provider, oneConcurrentCall)) {
+      for (int index = 0; index < 100; index++) {
+        gate.execute(request("source " + index));
+      }
+
+      assertEquals(100, translateCalls.get());
+    }
+  }
+
+  @Test
   void rejectsInputBeyondApplicationHardCapBeforeCallingProvider() {
     AtomicInteger translateCalls = new AtomicInteger();
     TranslationProvider provider =
