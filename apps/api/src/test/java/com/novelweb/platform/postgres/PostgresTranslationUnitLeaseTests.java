@@ -1,5 +1,6 @@
 package com.novelweb.platform.postgres;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -969,6 +970,91 @@ class PostgresTranslationUnitLeaseTests {
     assertEquals(
         "[fake vi->en] Synthetic source sentence 2.",
         preview.segments().getFirst().fakeResultText());
+  }
+
+  @Test
+  void candidateSegmentEditsAreAppendOnlyAndBoundToTheirSourceCandidate() throws Exception {
+    Fixture fixture = createQueuedJob(1);
+    fakeLocalWorkerService.processNext("translation-edit-storage-worker", Duration.ofSeconds(60));
+
+    TranslationCandidatePreviewService.CandidatePreview preview =
+        candidatePreviewService
+            .findCurrentReadyForReview(fixture.userId(), fixture.jobId(), 0, 1)
+            .orElseThrow();
+    UUID candidateId = preview.candidateId();
+    UUID sourceSegmentId = preview.segments().getFirst().sourceSegmentId();
+    String editedText = "Bản dịch do người viết chỉnh sửa.";
+    byte[] editedTextHash = sha256(editedText);
+    byte[] idempotencyKeyHash = sha256("translation-edit-key-" + UUID.randomUUID());
+    byte[] requestHash = sha256("request-body-" + UUID.randomUUID());
+
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement insert =
+            connection.prepareStatement(
+                "INSERT INTO translation_candidate_segment_edits "
+                    + "(candidate_id, source_segment_id, edit_revision, editor_user_id, "
+                    + "translated_text, translated_sha256, idempotency_key_sha256, request_sha256) "
+                    + "VALUES (?, ?, 1, ?, ?, ?, ?, ?)")) {
+      insert.setObject(1, candidateId);
+      insert.setObject(2, sourceSegmentId);
+      insert.setObject(3, fixture.userId());
+      insert.setString(4, editedText);
+      insert.setBytes(5, editedTextHash);
+      insert.setBytes(6, idempotencyKeyHash);
+      insert.setBytes(7, requestHash);
+      assertEquals(1, insert.executeUpdate());
+    }
+
+    SQLException updateFailure =
+        assertThrows(
+            SQLException.class,
+            () -> {
+              try (Connection connection = dataSource.getConnection();
+                  PreparedStatement update =
+                      connection.prepareStatement(
+                          "UPDATE translation_candidate_segment_edits "
+                              + "SET translated_text = 'overwritten' "
+                              + "WHERE candidate_id = ? AND source_segment_id = ?")) {
+                update.setObject(1, candidateId);
+                update.setObject(2, sourceSegmentId);
+                update.executeUpdate();
+              }
+            });
+    assertEquals("55000", updateFailure.getSQLState());
+
+    SQLException deleteFailure =
+        assertThrows(
+            SQLException.class,
+            () -> {
+              try (Connection connection = dataSource.getConnection();
+                  PreparedStatement delete =
+                      connection.prepareStatement(
+                          "DELETE FROM translation_candidate_segment_edits "
+                              + "WHERE candidate_id = ? AND source_segment_id = ?")) {
+                delete.setObject(1, candidateId);
+                delete.setObject(2, sourceSegmentId);
+                delete.executeUpdate();
+              }
+            });
+    assertEquals("55000", deleteFailure.getSQLState());
+
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT edit_revision, editor_user_id, translated_text, translated_sha256 "
+                    + "FROM translation_candidate_segment_edits "
+                    + "WHERE candidate_id = ? AND source_segment_id = ?")) {
+      select.setObject(1, candidateId);
+      select.setObject(2, sourceSegmentId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        assertEquals(1, row.getInt("edit_revision"));
+        assertEquals(fixture.userId(), row.getObject("editor_user_id", UUID.class));
+        assertEquals(editedText, row.getString("translated_text"));
+        assertArrayEquals(editedTextHash, row.getBytes("translated_sha256"));
+        assertFalse(row.next());
+      }
+    }
   }
 
   @Test
