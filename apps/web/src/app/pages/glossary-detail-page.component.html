@@ -55,12 +55,20 @@
         }
       </div>
       @if (item.canWrite) {
-        <a
-          class="button button-primary glossary-import-entry"
-          [routerLink]="['/app/glossaries', item.id, 'import']"
-        >
-          Nhập thuật ngữ
-        </a>
+        <div class="glossary-detail-actions">
+          <a
+            class="button button-primary glossary-import-entry"
+            [routerLink]="['/app/glossaries', item.id, 'edit']"
+          >
+            Biên tập thuật ngữ
+          </a>
+          <a
+            class="button button-outline glossary-import-entry"
+            [routerLink]="['/app/glossaries', item.id, 'import']"
+          >
+            Nhập từ tệp
+          </a>
+        </div>
       }
     </header>
 

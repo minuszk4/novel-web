@@ -137,3 +137,94 @@ test('glossary import saves one real PostgreSQL draft without publishing it', as
   ).toBe(true);
   await page.screenshot({ path: screenshotPath!, fullPage: true });
 });
+
+test('glossary editor saves a full latest snapshot as the next PostgreSQL draft', async ({
+  page,
+}) => {
+  const sessionToken = process.env['LIBRARY_LIVE_TEST_SESSION_TOKEN'];
+  const glossaryId = process.env['GLOSSARY_LIVE_TEST_GLOSSARY_ID'];
+  const screenshotPath = process.env['GLOSSARY_EDITOR_LIVE_TEST_SCREENSHOT'];
+
+  test.skip(
+    !sessionToken || !glossaryId || !screenshotPath,
+    'run tools/e2e/run-library-postgres.ps1 to seed a disposable glossary and owner session',
+  );
+  expect(sessionToken, 'expected the disposable PostgreSQL session fixture').toMatch(
+    /^[A-Za-z0-9_-]{43}$/,
+  );
+  expect(glossaryId, 'expected a disposable PostgreSQL glossary fixture').toMatch(
+    /^[0-9a-f-]{36}$/i,
+  );
+
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.context().addCookies([
+    {
+      name: '__Host-novel_session',
+      value: sessionToken!,
+      domain: 'localhost',
+      path: '/',
+      httpOnly: true,
+      secure: true,
+      sameSite: 'Lax',
+    },
+  ]);
+
+  const apiRequests: string[] = [];
+  page.on('request', (request) => {
+    const url = new URL(request.url());
+    if (url.pathname.startsWith('/api/v1/glossaries/')) {
+      apiRequests.push(`${request.method()} ${url.pathname}`);
+    }
+  });
+  await page.goto(`${baseUrl}/app/glossaries/${glossaryId}/edit`);
+  await expect(page.getByRole('heading', { name: 'E2E Glossary Import' })).toBeVisible();
+  await expect(page.getByText('Nguồn sửa đổi: 3')).toBeVisible();
+  await expect(page.getByText('Bản đang áp dụng: 1')).toBeVisible();
+
+  const target = page.locator('.glossary-editor-term').nth(1).locator('input').nth(1);
+  await target.fill('Đan điền khí hải');
+  const saveResponsePromise = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' &&
+      new URL(response.url()).pathname === `/api/v1/glossaries/${glossaryId}/revisions`,
+  );
+  await page.getByRole('button', { name: 'Lưu bản nháp' }).click();
+  const saveResponse = await saveResponsePromise;
+  const saveBody = await saveResponse.text();
+  expect(saveResponse.status(), saveBody).toBe(201);
+  expect(saveResponse.headers()['etag']).toBe('"v6"');
+  expect(JSON.parse(saveBody)).toMatchObject({
+    glossaryId,
+    revisionNumber: 4,
+    parentRevisionId: expect.any(String),
+    glossaryVersion: 6,
+  });
+  await expect(page.getByRole('heading', { name: 'Đã tạo bản nháp 4' })).toBeVisible();
+  await expect(page.getByText('Bản đang áp dụng vẫn là 1')).toBeVisible();
+
+  const latest = await page.evaluate(async (id) => {
+    const response = await fetch(`/api/v1/glossaries/${id}/latest-revision`, { cache: 'no-store' });
+    return {
+      status: response.status,
+      etag: response.headers.get('ETag'),
+      body: (await response.json()) as {
+        revisionNumber: number;
+        terms: Array<{ id: string; sourceTerm: string; targetTerm: string | null }>;
+      },
+    };
+  }, glossaryId!);
+  expect(latest).toMatchObject({
+    status: 200,
+    etag: '"v6"',
+    body: {
+      revisionNumber: 4,
+      terms: expect.arrayContaining([
+        expect.objectContaining({ sourceTerm: '丹田', targetTerm: 'Đan điền khí hải' }),
+        expect.objectContaining({ sourceTerm: '金丹', targetTerm: 'Kim Đan' }),
+      ]),
+    },
+  });
+  expect(apiRequests).toContain(`GET /api/v1/glossaries/${glossaryId}/latest-revision`);
+  expect(apiRequests).toContain(`POST /api/v1/glossaries/${glossaryId}/revisions`);
+  await page.screenshot({ path: screenshotPath!, fullPage: true });
+});

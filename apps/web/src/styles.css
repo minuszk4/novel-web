@@ -2856,6 +2856,11 @@ label:has(input:focus-visible) {
   min-height: 42px;
   margin-top: 4px;
 }
+.glossary-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
 .glossary-import-heading,
 .glossary-import-file,
 .glossary-import-row,
@@ -6224,6 +6229,14 @@ button.reader-chapter-nav {
 }
 
 @media (max-width: 650px) {
+  .glossary-detail-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .glossary-detail-actions .button {
+    width: 100%;
+    min-height: 44px;
+  }
   .library-heading-actions {
     width: 100%;
   }

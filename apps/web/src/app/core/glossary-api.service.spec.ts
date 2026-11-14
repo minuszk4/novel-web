@@ -309,6 +309,98 @@ describe('GlossaryApiService', () => {
     });
   });
 
+  it('loads the latest writable revision and validates its current glossary version', async () => {
+    const pending = service.getLatestWritableRevision(glossaryId);
+    http
+      .expectOne({
+        method: 'GET',
+        url: `/api/v1/glossaries/${glossaryId}/latest-revision`,
+      })
+      .flush(
+        {
+          glossaryId,
+          name: 'Tu luyện',
+          scope: 'LIBRARY',
+          sourceLanguage: 'zh-Hans',
+          targetLanguage: 'vi',
+          version: 4,
+          activeRevisionId,
+          revisionId: baseRevisionId,
+          revisionNumber: 2,
+          parentRevisionId: null,
+          revisionCreatedAt: timestamp,
+          terms: [currentTerm],
+        },
+        { headers: new HttpHeaders({ ETag: '"v4"' }) },
+      );
+
+    await expect(pending).resolves.toMatchObject({
+      revisionId: baseRevisionId,
+      revisionNumber: 2,
+      etag: '"v4"',
+      terms: [{ id: termId, ordinal: 1 }],
+    });
+  });
+
+  it('creates an immutable draft with CSRF and the exact metadata ETag', async () => {
+    const term = {
+      id: termId,
+      sourceTerm: '金丹',
+      targetTerm: 'Kim Đan',
+      priority: 7,
+      casePolicy: 'INSENSITIVE' as const,
+      matchMode: 'WHOLE_PHRASE' as const,
+      doNotTranslate: false,
+      contextNote: null,
+      aliases: ['Golden Core'],
+    };
+    const pending = service.createDraftRevision(glossaryId, '"v4"', [term]);
+    http.expectOne({ method: 'GET', url: '/api/v1/auth/csrf' }).flush({ token: csrfToken });
+    await Promise.resolve();
+    await Promise.resolve();
+    const request = http.expectOne({
+      method: 'POST',
+      url: `/api/v1/glossaries/${glossaryId}/revisions`,
+    });
+    expect(request.request.headers.get('If-Match')).toBe('"v4"');
+    expect(request.request.headers.get('X-CSRF-Token')).toBe(csrfToken);
+    expect(request.request.body).toEqual({ terms: [term] });
+    request.flush(
+      {
+        glossaryId,
+        revisionId: baseRevisionId,
+        revisionNumber: 3,
+        parentRevisionId: activeRevisionId,
+        glossaryVersion: 5,
+      },
+      { status: 201, statusText: 'Created', headers: new HttpHeaders({ ETag: '"v5"' }) },
+    );
+    await expect(pending).resolves.toMatchObject({
+      revisionNumber: 3,
+      glossaryVersion: 5,
+      etag: '"v5"',
+    });
+  });
+
+  it('rejects malformed complete snapshots before opening a network request', async () => {
+    await expect(
+      service.createDraftRevision(glossaryId, '"v4"', [
+        {
+          id: termId,
+          sourceTerm: '金丹',
+          targetTerm: '',
+          priority: 0,
+          casePolicy: 'INSENSITIVE',
+          matchMode: 'WHOLE_PHRASE',
+          doNotTranslate: false,
+          contextNote: null,
+          aliases: [],
+        },
+      ]),
+    ).rejects.toMatchObject({ status: 400, code: 'INVALID_GLOSSARY_REQUEST' });
+    http.expectNone(() => true);
+  });
+
   it('previews the selected raw file using the current ETag without persisting it', async () => {
     const file = new File(['{"version":1,"terms":[]}'], 'terms.json', { type: 'application/json' });
     const pending = service.previewImport(glossaryId, '"v4"', file);

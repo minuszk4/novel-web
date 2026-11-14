@@ -10,6 +10,7 @@ import { SetupPageComponent } from './pages/setup-page.component';
 import { SignInPageComponent } from './pages/sign-in-page.component';
 import { WorkDetailPageComponent } from './pages/work-detail-page.component';
 import { policyConsentGuard } from './core/policy-consent.guard';
+import { glossaryEditorUnsavedGuard } from './pages/glossary-editor-unsaved.guard';
 
 export const routes: Routes = [
   { path: '', component: LandingPageComponent, title: 'Novel — Đọc theo cách của bạn' },
@@ -87,6 +88,15 @@ export const routes: Routes = [
             (page) => page.GlossaryImportPageComponent,
           ),
         title: 'Nhập thuật ngữ — Novel',
+      },
+      {
+        path: 'glossaries/:glossaryId/edit',
+        loadComponent: () =>
+          import('./pages/glossary-editor-page.component').then(
+            (page) => page.GlossaryEditorPageComponent,
+          ),
+        canDeactivate: [glossaryEditorUnsavedGuard],
+        title: 'Biên tập thuật ngữ — Novel',
       },
       {
         path: 'glossaries/:glossaryId',

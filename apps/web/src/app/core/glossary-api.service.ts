@@ -66,6 +66,43 @@ export interface GlossaryActiveRevision {
   etag: string;
 }
 
+export interface GlossaryWritableRevision {
+  glossaryId: string;
+  name: string;
+  scope: GlossaryScope;
+  sourceLanguage: string;
+  targetLanguage: string;
+  version: number;
+  activeRevisionId: string | null;
+  revisionId: string;
+  revisionNumber: number;
+  parentRevisionId: string | null;
+  revisionCreatedAt: string;
+  terms: GlossaryCurrentTerm[];
+  etag: string;
+}
+
+export interface GlossaryDraftTermInput {
+  id: string;
+  sourceTerm: string;
+  targetTerm: string | null;
+  priority: number;
+  casePolicy: GlossaryCasePolicy;
+  matchMode: 'WHOLE_PHRASE';
+  doNotTranslate: boolean;
+  contextNote: string | null;
+  aliases: string[];
+}
+
+export interface GlossaryDraftCreated {
+  glossaryId: string;
+  revisionId: string;
+  revisionNumber: number;
+  parentRevisionId: string | null;
+  glossaryVersion: number;
+  etag: string;
+}
+
 export interface GlossaryImportedTerm {
   rowNumber: number;
   sourceTerm: string;
@@ -328,6 +365,49 @@ export class GlossaryApiService {
     }
   }
 
+  async getLatestWritableRevision(glossaryId: string): Promise<GlossaryWritableRevision> {
+    if (!isUuid(glossaryId)) throw invalidQuery();
+    try {
+      const response = await firstValueFrom(
+        this.http
+          .get<unknown>(`${glossariesUrl}/${glossaryId}/latest-revision`, {
+            observe: 'response',
+          })
+          .pipe(timeout(requestTimeoutMs)),
+      );
+      return parseWritableRevision(response, glossaryId);
+    } catch (error) {
+      throw toGlossaryApiError(error);
+    }
+  }
+
+  async createDraftRevision(
+    glossaryId: string,
+    etag: string,
+    terms: GlossaryDraftTermInput[],
+  ): Promise<GlossaryDraftCreated> {
+    if (!isUuid(glossaryId) || !isEtag(etag) || !isValidDraftTermList(terms)) {
+      throw invalidQuery();
+    }
+    try {
+      const headers = (await this.csrfHeaders())
+        .set('Content-Type', 'application/json')
+        .set('If-Match', etag);
+      const response = await firstValueFrom(
+        this.http
+          .post<unknown>(
+            `${glossariesUrl}/${glossaryId}/revisions`,
+            { terms },
+            { headers, observe: 'response' },
+          )
+          .pipe(timeout(requestTimeoutMs)),
+      );
+      return parseDraftCreated(response, glossaryId);
+    } catch (error) {
+      throw toGlossaryApiError(error);
+    }
+  }
+
   async previewImport(
     glossaryId: string,
     etag: string,
@@ -540,6 +620,84 @@ function parseActiveRevision(
     parentRevisionId: value['parentRevisionId'],
     revisionCreatedAt: value['revisionCreatedAt'],
     terms,
+    etag,
+  };
+}
+
+function parseWritableRevision(
+  response: HttpResponse<unknown>,
+  expectedId: string,
+): GlossaryWritableRevision {
+  const value = response.body;
+  const etag = response.headers.get('ETag');
+  if (
+    !isRecord(value) ||
+    !isEtag(etag) ||
+    value['glossaryId'] !== expectedId ||
+    !isBoundedString(value['name'], 1, 300) ||
+    !isScope(value['scope']) ||
+    !isBoundedString(value['sourceLanguage'], 2, 64) ||
+    !isBoundedString(value['targetLanguage'], 2, 64) ||
+    !isPositiveInteger(value['version']) ||
+    etag !== `"v${value['version']}"` ||
+    !isNullableUuid(value['activeRevisionId']) ||
+    !isUuid(value['revisionId']) ||
+    !isPositiveInteger(value['revisionNumber']) ||
+    !isNullableUuid(value['parentRevisionId']) ||
+    !isTimestamp(value['revisionCreatedAt']) ||
+    !Array.isArray(value['terms']) ||
+    value['terms'].length > 1000
+  ) {
+    throw invalidResponse();
+  }
+  const terms = value['terms'].map(parseCurrentTerm);
+  if (
+    new Set(terms.map((term) => term.id)).size !== terms.length ||
+    terms.some((term, index) => term.ordinal !== index + 1)
+  ) {
+    throw invalidResponse();
+  }
+  return {
+    glossaryId: value['glossaryId'],
+    name: value['name'],
+    scope: value['scope'],
+    sourceLanguage: value['sourceLanguage'],
+    targetLanguage: value['targetLanguage'],
+    version: value['version'],
+    activeRevisionId: value['activeRevisionId'],
+    revisionId: value['revisionId'],
+    revisionNumber: value['revisionNumber'],
+    parentRevisionId: value['parentRevisionId'],
+    revisionCreatedAt: value['revisionCreatedAt'],
+    terms,
+    etag,
+  };
+}
+
+function parseDraftCreated(
+  response: HttpResponse<unknown>,
+  expectedId: string,
+): GlossaryDraftCreated {
+  const value = response.body;
+  const etag = response.headers.get('ETag');
+  if (
+    !isRecord(value) ||
+    !isEtag(etag) ||
+    value['glossaryId'] !== expectedId ||
+    !isUuid(value['revisionId']) ||
+    !isPositiveInteger(value['revisionNumber']) ||
+    !isNullableUuid(value['parentRevisionId']) ||
+    !isPositiveInteger(value['glossaryVersion']) ||
+    etag !== `"v${value['glossaryVersion']}"`
+  ) {
+    throw invalidResponse();
+  }
+  return {
+    glossaryId: value['glossaryId'],
+    revisionId: value['revisionId'],
+    revisionNumber: value['revisionNumber'],
+    parentRevisionId: value['parentRevisionId'],
+    glossaryVersion: value['glossaryVersion'],
     etag,
   };
 }
@@ -901,6 +1059,43 @@ function isValidResolutionList(value: unknown[]): value is GlossaryImportResolut
     }
     const needsTarget = candidate['action'] === 'REPLACE' || candidate['action'] === 'MERGE';
     if (needsTarget !== isUuid(candidate['targetTermId'])) return false;
+  }
+  return true;
+}
+
+function isValidDraftTermList(value: unknown[]): value is GlossaryDraftTermInput[] {
+  if (value.length > 1000) return false;
+  const ids = new Set<string>();
+  let aliasCount = 0;
+  for (const term of value) {
+    if (
+      !isRecord(term) ||
+      !isUuid(term['id']) ||
+      ids.has(term['id']) ||
+      !isBoundedString(term['sourceTerm'], 1, 512) ||
+      !isNullableBoundedString(term['targetTerm'], 4096) ||
+      !isIntegerInRange(term['priority'], -1_000_000, 1_000_000) ||
+      !isCasePolicy(term['casePolicy']) ||
+      term['matchMode'] !== 'WHOLE_PHRASE' ||
+      typeof term['doNotTranslate'] !== 'boolean' ||
+      !isNullableBoundedString(term['contextNote'], 2000) ||
+      !isStringArray(term['aliases'], 25, 512) ||
+      (!term['doNotTranslate'] && !isBoundedString(term['targetTerm'], 1, 4096))
+    ) {
+      return false;
+    }
+    if (
+      term['sourceTerm'].trim().length === 0 ||
+      (typeof term['targetTerm'] === 'string' &&
+        !term['doNotTranslate'] &&
+        term['targetTerm'].trim().length === 0) ||
+      term['aliases'].some((alias) => alias.trim().length === 0)
+    ) {
+      return false;
+    }
+    ids.add(term['id']);
+    aliasCount += term['aliases'].length;
+    if (aliasCount > 5000) return false;
   }
   return true;
 }

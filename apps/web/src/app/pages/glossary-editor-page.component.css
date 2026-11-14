@@ -1,0 +1,220 @@
+.glossary-editor-page {
+  padding-bottom: 42px;
+}
+.glossary-editor-heading,
+.glossary-editor-term,
+.glossary-editor-saved,
+.glossary-editor-alert {
+  min-width: 0;
+  border: 1px solid var(--border-soft);
+  border-radius: 11px;
+  background: var(--surface);
+}
+.glossary-editor-heading h1,
+.glossary-editor-saved h1,
+.glossary-editor-alert h1 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: clamp(26px, 4vw, 36px);
+  font-weight: 600;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+.glossary-editor-list-heading,
+.glossary-editor-term-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.glossary-editor-list-heading {
+  margin: 26px 0 13px;
+}
+.glossary-editor-list-heading h2,
+.glossary-editor-term-heading h3,
+.glossary-editor-validation h2 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: 600;
+}
+.glossary-editor-list-heading .button,
+.glossary-editor-empty .button,
+.glossary-editor-actions .button,
+.glossary-editor-save-bar .button,
+.glossary-editor-alert .button {
+  min-height: 44px;
+}
+.glossary-editor-terms {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.glossary-editor-term {
+  padding: 16px;
+}
+.glossary-editor-term-heading {
+  margin-bottom: 14px;
+}
+.glossary-editor-remove {
+  min-width: 44px;
+  min-height: 44px;
+  color: var(--error);
+}
+.glossary-editor-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 13px;
+}
+.glossary-editor-field {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 650;
+}
+.glossary-editor-field input,
+.glossary-editor-field select,
+.glossary-editor-field textarea {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding: 10px 11px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--text);
+  background: #fff;
+  font: inherit;
+  font-weight: 400;
+}
+.glossary-editor-field textarea {
+  min-height: 76px;
+  resize: vertical;
+}
+.glossary-editor-field input:focus-visible,
+.glossary-editor-field select:focus-visible,
+.glossary-editor-field textarea:focus-visible,
+.glossary-editor-checkbox input:focus-visible,
+.glossary-editor-term button:focus-visible,
+.glossary-editor-save-bar button:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.glossary-editor-field-wide {
+  grid-column: 1 / -1;
+}
+.glossary-editor-checkbox {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 11px;
+  border: 1px solid var(--border-soft);
+  border-radius: 7px;
+  background: #fafbfe;
+}
+.glossary-editor-checkbox input {
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  accent-color: var(--primary);
+}
+.glossary-editor-checkbox span {
+  display: grid;
+  gap: 3px;
+}
+.glossary-editor-checkbox small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.5;
+}
+.glossary-editor-term-error,
+.glossary-editor-inline-error {
+  margin: 0 0 12px;
+  color: var(--error);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.glossary-editor-alert {
+  display: grid;
+  justify-items: start;
+  gap: 10px;
+  margin: 14px 0;
+  padding: 14px 16px;
+}
+.glossary-editor-alert {
+  border-color: #edd0cb;
+  color: #6c2c26;
+  background: #fff4f2;
+}
+.glossary-editor-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+.glossary-editor-saved {
+  display: grid;
+  justify-items: start;
+  gap: 12px;
+  margin: 20px 0;
+  padding: 22px;
+}
+.glossary-editor-save-bar {
+  position: sticky;
+  z-index: 2;
+  bottom: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 18px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: rgb(255 255 255 / 96%);
+  box-shadow: 0 8px 30px rgb(18 23 40 / 12%);
+}
+@media (max-width: 650px) {
+  .glossary-editor-heading,
+  .glossary-editor-saved {
+    padding: 16px;
+  }
+  .glossary-editor-list-heading {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+  }
+  .glossary-editor-list-heading .button {
+    width: 100%;
+    padding-inline: 10px;
+    font-size: 11px;
+  }
+  .glossary-editor-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .glossary-editor-field-wide {
+    grid-column: auto;
+  }
+  .glossary-editor-save-bar {
+    position: static;
+    align-items: stretch;
+    flex-direction: column;
+    gap: 9px;
+    padding: 11px;
+  }
+  .glossary-editor-save-bar .button,
+  .glossary-editor-actions .button {
+    width: 100%;
+  }
+  .glossary-editor-actions {
+    width: 100%;
+  }
+  .glossary-editor-field select {
+    padding-inline: 6px;
+    font-size: 11px;
+  }
+}

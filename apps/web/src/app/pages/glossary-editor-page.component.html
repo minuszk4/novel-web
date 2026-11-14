@@ -1,0 +1,310 @@
+<section class="page-wrap glossary-page glossary-editor-page">
+  <a class="back-link glossary-back-link" [routerLink]="['/app/glossaries', glossaryId()]">
+    ← Chi tiết glossary
+  </a>
+
+  @if (state() === 'loading') {
+    <p class="library-status-message library-sync-message" role="status" aria-live="polite">
+      Đang tải bản glossary mới nhất…
+    </p>
+  } @else if (state() === 'guest') {
+    <div class="empty-state-panel glossary-empty">
+      <h1>Đăng nhập để biên tập glossary</h1>
+      <p>Bản biên tập chỉ dành cho phiên tài khoản đã chấp nhận điều khoản hiện hành.</p>
+      <a
+        class="button button-primary"
+        [routerLink]="['/sign-in']"
+        [queryParams]="{ returnTo: signInReturnTo() }"
+        >Đăng nhập</a
+      >
+    </div>
+  } @else if (state() === 'not-found') {
+    <div class="empty-state-panel glossary-empty" role="alert">
+      <h1>Không tìm thấy glossary</h1>
+      <p>Glossary có thể đã bị xóa hoặc bạn không còn quyền truy cập.</p>
+      <a class="button button-outline" routerLink="/app/glossaries">Về danh sách</a>
+    </div>
+  } @else if (state() === 'read-only') {
+    <div class="empty-state-panel glossary-empty">
+      <span class="glossary-empty-mark" aria-hidden="true">文</span>
+      <h1>Glossary này chỉ cho phép xem</h1>
+      <p>Bạn không thể tạo bản nháp trong phạm vi này.</p>
+      <a class="button button-primary" [routerLink]="['/app/glossaries', glossaryId()]"
+        >Xem glossary</a
+      >
+    </div>
+  } @else if (state() === 'error' || state() === 'stale' || state() === 'uncertain') {
+    <section
+      class="glossary-editor-alert"
+      role="alert"
+      aria-labelledby="glossary-editor-alert-heading"
+    >
+      <h1 id="glossary-editor-alert-heading">
+        @if (state() === 'stale') {
+          Glossary đã thay đổi
+        } @else if (state() === 'uncertain') {
+          Cần kiểm tra lần lưu
+        } @else {
+          Không tải được glossary
+        }
+      </h1>
+      <p>{{ errorMessage() }}</p>
+      @if (requiresSignIn()) {
+        <a
+          class="button button-primary"
+          [routerLink]="['/sign-in']"
+          [queryParams]="{ returnTo: signInReturnTo() }"
+          >Đăng nhập lại</a
+        >
+      } @else {
+        <button class="button button-outline" type="button" (click)="discardAndReload()">
+          @if (state() === 'error') {
+            Thử tải lại
+          } @else {
+            Tải bản mới nhất và bỏ nội dung đang sửa
+          }
+        </button>
+      }
+    </section>
+  } @else if (state() === 'saved' && result(); as saved) {
+    <section class="glossary-editor-saved" aria-labelledby="glossary-editor-saved-heading">
+      <span class="glossary-import-success-mark" aria-hidden="true">✓</span>
+      <p class="eyebrow">BẢN NHÁP ĐÃ LƯU</p>
+      <h1 id="glossary-editor-saved-heading" #savedHeading tabindex="-1">
+        Đã tạo bản nháp {{ saved.revisionNumber }}
+      </h1>
+      <p>
+        Bản nháp chứa {{ terms().length }} thuật ngữ. Bản đang áp dụng vẫn là
+        {{ snapshot()?.glossary?.activeRevisionNumber ?? 'chưa xuất bản' }}; nội dung mới chưa được
+        xuất bản.
+      </p>
+      <div class="glossary-editor-actions">
+        <a class="button button-primary" [routerLink]="['/app/glossaries', glossaryId()]"
+          >Về chi tiết glossary</a
+        >
+        <button class="button button-outline" type="button" (click)="editAnotherDraft()">
+          Tiếp tục biên tập
+        </button>
+      </div>
+    </section>
+  } @else if (snapshot(); as current) {
+    <header class="glossary-editor-heading glossary-detail-heading">
+      <p class="eyebrow">BIÊN TẬP THUẬT NGỮ · {{ current.glossary.scope }}</p>
+      <h1>{{ current.glossary.name }}</h1>
+      <p class="glossary-editor-language">
+        {{ languageLabel(current.glossary.sourceLanguage) }} <span aria-hidden="true">→</span>
+        {{ languageLabel(current.glossary.targetLanguage) }}
+      </p>
+      <div class="glossary-import-version" aria-label="Phiên bản glossary">
+        <span
+          >Bản đang áp dụng: {{ current.glossary.activeRevisionNumber ?? 'chưa xuất bản' }}</span
+        >
+        <span>Nguồn sửa đổi: {{ sourceRevisionNumber() ?? 'glossary mới' }}</span>
+        <span>Phiên bản: {{ current.glossary.version }}</span>
+      </div>
+      <p class="glossary-draft-warning" role="note">
+        Lưu sẽ tạo một bản nháp bất biến. Thao tác này không xuất bản và không thay đổi bản đang
+        được áp dụng. Kiểm tra xung đột thuật ngữ sẽ được thực hiện ở bước kiểm tra trước khi xuất
+        bản.
+      </p>
+    </header>
+
+    @if (errorMessage()) {
+      <p class="glossary-editor-inline-error" role="alert">{{ errorMessage() }}</p>
+    }
+
+    @if (validationErrors().length) {
+      <section
+        class="glossary-editor-alert glossary-editor-validation"
+        role="status"
+        aria-live="polite"
+        aria-labelledby="glossary-editor-validation-heading"
+      >
+        <h2 id="glossary-editor-validation-heading">
+          Cần sửa {{ validationErrors().length }} mục trước khi lưu
+        </h2>
+        <ul>
+          @for (error of validationErrors(); track error) {
+            <li>{{ error }}</li>
+          }
+        </ul>
+      </section>
+    }
+
+    <div class="glossary-editor-list-heading">
+      <div>
+        <p class="eyebrow">SNAPSHOT ĐẦY ĐỦ</p>
+        <h2 id="glossary-editor-terms-heading">
+          Thuật ngữ <span>({{ terms().length }}/{{ 1000 }})</span>
+        </h2>
+      </div>
+      <button
+        class="button button-outline"
+        type="button"
+        [disabled]="terms().length >= 1000 || pending()"
+        (click)="addTerm()"
+      >
+        Thêm thuật ngữ
+      </button>
+    </div>
+
+    @if (terms().length === 0) {
+      <div class="empty-state-panel glossary-empty glossary-editor-empty">
+        <h3>Chưa có thuật ngữ</h3>
+        <p>Thêm mục đầu tiên để bắt đầu tạo bản nháp.</p>
+        <button class="button button-primary" type="button" (click)="addTerm()">
+          Thêm thuật ngữ đầu tiên
+        </button>
+      </div>
+    } @else {
+      <ol class="glossary-editor-terms" aria-labelledby="glossary-editor-terms-heading">
+        @for (term of terms(); track term.id; let index = $index) {
+          <li class="glossary-editor-term">
+            <div class="glossary-editor-term-heading">
+              <h3>Thuật ngữ {{ index + 1 }}</h3>
+              <button
+                class="text-button glossary-editor-remove"
+                type="button"
+                [disabled]="pending()"
+                [attr.aria-label]="'Xóa mục — Thuật ngữ ' + (index + 1)"
+                (click)="removeTerm(term.id)"
+              >
+                Xóa mục
+              </button>
+            </div>
+            @if (termError(term.id); as termMessage) {
+              <p
+                class="glossary-editor-term-error"
+                [id]="'glossary-term-error-' + term.id"
+                role="alert"
+              >
+                {{ termMessage }}
+              </p>
+            }
+            <div class="glossary-editor-fields">
+              <label class="glossary-editor-field">
+                <span>Thuật ngữ gốc <span aria-hidden="true">*</span></span>
+                <input
+                  [ngModel]="term.sourceTerm"
+                  (ngModelChange)="updateTerm(term.id, { sourceTerm: $event })"
+                  [disabled]="pending()"
+                  [attr.aria-describedby]="
+                    termError(term.id) ? 'glossary-term-error-' + term.id : null
+                  "
+                  maxlength="512"
+                  autocomplete="off"
+                />
+              </label>
+              <label class="glossary-editor-field">
+                <span
+                  >Cách dịch <span aria-hidden="true" [hidden]="term.doNotTranslate">*</span></span
+                >
+                <input
+                  [ngModel]="term.targetTerm"
+                  (ngModelChange)="updateTerm(term.id, { targetTerm: $event })"
+                  [disabled]="term.doNotTranslate || pending()"
+                  [attr.aria-describedby]="
+                    termError(term.id) ? 'glossary-term-error-' + term.id : null
+                  "
+                  maxlength="4096"
+                  autocomplete="off"
+                />
+              </label>
+              <label class="glossary-editor-field glossary-editor-field-wide">
+                <span
+                  >Bí danh
+                  <span class="glossary-editor-hint"
+                    >mỗi dòng một bí danh, tối đa 25 cho mỗi mục</span
+                  ></span
+                >
+                <textarea
+                  rows="3"
+                  [ngModel]="term.aliasesText"
+                  (ngModelChange)="updateTerm(term.id, { aliasesText: $event })"
+                  [disabled]="pending()"
+                  [attr.aria-describedby]="'glossary-aliases-help-' + term.id"
+                  maxlength="13199"
+                ></textarea>
+                <small [id]="'glossary-aliases-help-' + term.id"
+                  >{{ aliasesFor(term).length }} bí danh · {{ aliasesCount() }}/{{ 5000 }} trong
+                  glossary. Dòng trống sẽ được bỏ qua.</small
+                >
+              </label>
+              <label class="glossary-editor-field">
+                <span>Độ ưu tiên</span>
+                <input
+                  type="number"
+                  step="1"
+                  min="-1000000"
+                  max="1000000"
+                  [ngModel]="term.priorityText"
+                  (ngModelChange)="updateTerm(term.id, { priorityText: $event })"
+                  [disabled]="pending()"
+                  [attr.aria-describedby]="
+                    termError(term.id) ? 'glossary-term-error-' + term.id : null
+                  "
+                />
+              </label>
+              <label class="glossary-editor-field">
+                <span>Phân biệt chữ hoa/thường</span>
+                <select
+                  [ngModel]="term.casePolicy"
+                  (ngModelChange)="updateTerm(term.id, { casePolicy: $event })"
+                  [disabled]="pending()"
+                >
+                  <option value="INSENSITIVE">Không phân biệt</option>
+                  <option value="SENSITIVE">Có phân biệt</option>
+                </select>
+              </label>
+              <label class="glossary-editor-field glossary-editor-field-wide">
+                <span>Ghi chú ngữ cảnh</span>
+                <textarea
+                  rows="2"
+                  [ngModel]="term.contextNote"
+                  (ngModelChange)="updateTerm(term.id, { contextNote: $event })"
+                  [disabled]="pending()"
+                  maxlength="2000"
+                  placeholder="Ví dụ: cảnh giới tu luyện, tên riêng…"
+                ></textarea>
+              </label>
+              <label class="glossary-editor-checkbox glossary-editor-field-wide">
+                <input
+                  type="checkbox"
+                  [ngModel]="term.doNotTranslate"
+                  (ngModelChange)="updateTerm(term.id, { doNotTranslate: $event })"
+                  [disabled]="pending()"
+                />
+                <span
+                  ><strong>Giữ nguyên</strong
+                  ><small
+                    >Không thay bằng cách dịch; thuật ngữ gốc được giữ trong bản dịch.</small
+                  ></span
+                >
+              </label>
+            </div>
+          </li>
+        }
+      </ol>
+    }
+
+    <div class="glossary-editor-save-bar">
+      <p role="status" aria-live="polite">
+        @if (pending()) {
+          Đang lưu bản nháp…
+        } @else if (!isDirty()) {
+          Chưa có thay đổi để lưu.
+        } @else {
+          {{ terms().length }} thuật ngữ · {{ aliasesCount() }} bí danh · bản đang áp dụng không đổi
+        }
+      </p>
+      <button
+        class="button button-primary"
+        type="button"
+        [disabled]="!canSave()"
+        (click)="saveDraft()"
+      >
+        Lưu bản nháp
+      </button>
+    </div>
+  }
+</section>
