@@ -13,6 +13,8 @@ import com.novelweb.translation.jobs.TranslationAttemptFailureService;
 import com.novelweb.translation.jobs.TranslationAttemptRepository;
 import com.novelweb.translation.jobs.TranslationAttemptService;
 import com.novelweb.translation.jobs.TranslationFakeLocalWorkerService;
+import com.novelweb.translation.jobs.TranslationJobRetryRepository;
+import com.novelweb.translation.jobs.TranslationJobRetryService;
 import com.novelweb.translation.jobs.TranslationJobService;
 import com.novelweb.translation.jobs.TranslationUnitLeaseRepository;
 import com.novelweb.translation.jobs.TranslationUnitLeaseService;
@@ -31,7 +33,9 @@ import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
@@ -55,10 +59,14 @@ import org.springframework.test.context.ActiveProfiles;
 class PostgresTranslationUnitLeaseTests {
 
   private final List<Fixture> fixtures = new ArrayList<>();
+  private final Map<UUID, UUID> workspaceByLibrary = new HashMap<>();
+  private final List<UUID> extraUserFixtures = new ArrayList<>();
 
   @Autowired private DataSource dataSource;
 
   @Autowired private TranslationJobService jobService;
+
+  @Autowired private TranslationJobRetryService jobRetryService;
 
   @Autowired private TranslationUnitLeaseService leaseService;
 
@@ -74,6 +82,12 @@ class PostgresTranslationUnitLeaseTests {
   void cleanFixtures() throws Exception {
     for (Fixture fixture : fixtures) deleteFixture(fixture);
     fixtures.clear();
+    try (Connection connection = dataSource.getConnection()) {
+      for (UUID userId : extraUserFixtures) {
+        execute(connection, "DELETE FROM users WHERE id = ?", userId);
+      }
+    }
+    extraUserFixtures.clear();
   }
 
   @Test
@@ -572,6 +586,96 @@ class PostgresTranslationUnitLeaseTests {
     assertEquals(1, countOutboxEvents(fixture.jobId(), "translation.job.failed"));
   }
 
+  @Test
+  void workspaceOwnerAndEditorCanRetryWithIdempotentReceipt() throws Exception {
+    Fixture ownerFixture = createFailedSingleUnitJob();
+    createWorkspace(ownerFixture);
+    TranslationJobRetryRepository.RetryResult ownerRetry =
+        jobRetryService.retryFailedUnits(
+            ownerFixture.userId(), ownerFixture.jobId(), "workspace-owner-retry-0001");
+
+    assertFalse(ownerRetry.replayed());
+    assertEquals(1, ownerRetry.retriedUnits());
+    assertEquals("queued", ownerRetry.jobStatus());
+    assertEquals("queued", readUnitStatus(unitIds(ownerFixture.jobId()).getFirst()));
+    assertRetryEventContainsOnlyIds(
+        ownerFixture.jobId(),
+        ownerRetry.outboxEventId(),
+        unitIds(ownerFixture.jobId()).getFirst(),
+        "workspace-owner-retry-0001");
+
+    TranslationJobRetryRepository.RetryResult ownerReplay =
+        jobRetryService.retryFailedUnits(
+            ownerFixture.userId(), ownerFixture.jobId(), "workspace-owner-retry-0001");
+    assertTrue(ownerReplay.replayed());
+    assertEquals(ownerRetry.outboxEventId(), ownerReplay.outboxEventId());
+    assertEquals(1, countOutboxEvents(ownerFixture.jobId(), "translation.job.retry_requested"));
+    assertEquals(
+        "review_required",
+        fakeLocalWorkerService
+            .processNext("translation-fake-retry-worker", Duration.ofSeconds(60))
+            .orElseThrow()
+            .completion()
+            .jobStatus());
+
+    Fixture editorFixture = createFailedSingleUnitJob();
+    UUID editorWorkspace = createWorkspace(editorFixture);
+    UUID editorId = addWorkspaceMember(editorWorkspace, "editor");
+    TranslationJobRetryRepository.RetryResult editorRetry =
+        jobRetryService.retryFailedUnits(
+            editorId, editorFixture.jobId(), "workspace-editor-retry-0001");
+    assertEquals(1, editorRetry.retriedUnits());
+    assertEquals("queued", readJobStatus(editorFixture.jobId()));
+  }
+
+  @Test
+  void workspaceReaderAndOutsideActorCannotRetryAnotherMembersJob() throws Exception {
+    Fixture readerFixture = createFailedSingleUnitJob();
+    UUID readerWorkspace = createWorkspace(readerFixture);
+    UUID readerId = addWorkspaceMember(readerWorkspace, "reader");
+    assertThrows(
+        TranslationJobRetryRepository.JobNotFoundException.class,
+        () ->
+            jobRetryService.retryFailedUnits(
+                readerId, readerFixture.jobId(), "workspace-reader-retry-0001"));
+    assertEquals(0, countOutboxEvents(readerFixture.jobId(), "translation.job.retry_requested"));
+    assertEquals("failed", readJobStatus(readerFixture.jobId()));
+
+    Fixture outsiderFixture = createFailedSingleUnitJob();
+    createWorkspace(outsiderFixture);
+    UUID outsiderId = createUser("outside translation retry fixture");
+    assertThrows(
+        TranslationJobRetryRepository.JobNotFoundException.class,
+        () ->
+            jobRetryService.retryFailedUnits(
+                outsiderId, outsiderFixture.jobId(), "workspace-outsider-retry-0001"));
+    assertEquals(0, countOutboxEvents(outsiderFixture.jobId(), "translation.job.retry_requested"));
+    assertEquals("failed", readJobStatus(outsiderFixture.jobId()));
+  }
+
+  @Test
+  void retryRejectsStaleSourceAndUnitsAtTheirAttemptCeiling() throws Exception {
+    Fixture staleFixture = createFailedSingleUnitJob();
+    advanceCurrentSourceRevision(staleFixture);
+    assertThrows(
+        TranslationJobRetryRepository.SourceRevisionStaleException.class,
+        () ->
+            jobRetryService.retryFailedUnits(
+                staleFixture.userId(), staleFixture.jobId(), "stale-source-retry-0001"));
+    assertEquals("failed", readJobStatus(staleFixture.jobId()));
+    assertEquals(0, countOutboxEvents(staleFixture.jobId(), "translation.job.retry_requested"));
+
+    Fixture exhaustedFixture = createFailedSingleUnitJob();
+    setUnitMaxAttempts(unitIds(exhaustedFixture.jobId()).getFirst(), 1);
+    assertThrows(
+        TranslationJobRetryRepository.NoRetryableUnitsException.class,
+        () ->
+            jobRetryService.retryFailedUnits(
+                exhaustedFixture.userId(), exhaustedFixture.jobId(), "attempt-ceiling-retry-001"));
+    assertEquals("failed", readJobStatus(exhaustedFixture.jobId()));
+    assertEquals(0, countOutboxEvents(exhaustedFixture.jobId(), "translation.job.retry_requested"));
+  }
+
   private Optional<TranslationUnitLeaseRepository.Lease> claimAfterBarrier(
       String workerId, CountDownLatch ready, CountDownLatch start) throws InterruptedException {
     ready.countDown();
@@ -662,6 +766,114 @@ class PostgresTranslationUnitLeaseTests {
     return fixture;
   }
 
+  private Fixture createFailedSingleUnitJob() throws Exception {
+    Fixture fixture = createQueuedJob(1);
+    TranslationUnitLeaseRepository.Lease lease =
+        leaseService
+            .claimNext("translation-retry-fixture-worker", Duration.ofSeconds(60))
+            .orElseThrow();
+    TranslationAttemptRepository.StartResult attempt = attemptService.begin(lease);
+    failureService.record(
+        lease,
+        attempt.attemptId(),
+        new TranslationProviderException(TranslationProviderFailure.INVALID_RESPONSE, null));
+    assertEquals("failed", readJobStatus(fixture.jobId()));
+    return fixture;
+  }
+
+  private UUID createWorkspace(Fixture fixture) throws SQLException {
+    UUID workspaceId = UUID.randomUUID();
+    try (Connection connection = dataSource.getConnection()) {
+      connection.setAutoCommit(false);
+      try {
+        execute(
+            connection,
+            "INSERT INTO workspaces (id, name, created_by_user_id) VALUES (?, ?, ?)",
+            workspaceId,
+            "Translation retry workspace",
+            fixture.userId());
+        execute(
+            connection,
+            "INSERT INTO workspace_members (workspace_id, user_id, role) VALUES (?, ?, 'owner')",
+            workspaceId,
+            fixture.userId());
+        execute(
+            connection,
+            "UPDATE libraries SET workspace_id = ?, is_default = FALSE WHERE id = ?",
+            workspaceId,
+            fixture.libraryId());
+        connection.commit();
+      } catch (SQLException | RuntimeException exception) {
+        connection.rollback();
+        throw exception;
+      }
+    }
+    workspaceByLibrary.put(fixture.libraryId(), workspaceId);
+    return workspaceId;
+  }
+
+  private UUID addWorkspaceMember(UUID workspaceId, String role) throws SQLException {
+    UUID userId = createUser("Translation retry " + role + " fixture");
+    try (Connection connection = dataSource.getConnection()) {
+      execute(
+          connection,
+          "INSERT INTO workspace_members (workspace_id, user_id, role) VALUES (?, ?, ?)",
+          workspaceId,
+          userId,
+          role);
+    }
+    return userId;
+  }
+
+  private UUID createUser(String displayName) throws SQLException {
+    UUID userId = UUID.randomUUID();
+    try (Connection connection = dataSource.getConnection()) {
+      execute(
+          connection, "INSERT INTO users (id, display_name) VALUES (?, ?)", userId, displayName);
+    }
+    extraUserFixtures.add(userId);
+    return userId;
+  }
+
+  private void advanceCurrentSourceRevision(Fixture fixture) throws Exception {
+    UUID nextRevisionId = UUID.randomUUID();
+    try (Connection connection = dataSource.getConnection()) {
+      connection.setAutoCommit(false);
+      try {
+        execute(
+            connection,
+            "INSERT INTO chapter_revisions (id, chapter_id, revision_no, source_format, "
+                + "normalized_content, content_hash, created_by_user_id) "
+                + "VALUES (?, ?, 2, 'plain_text', ?, ?, ?)",
+            nextRevisionId,
+            fixture.chapterId(),
+            "New source revision",
+            sha256("New source revision"),
+            fixture.userId());
+        execute(
+            connection,
+            "UPDATE chapters SET source_revision_id = ? WHERE id = ?",
+            nextRevisionId,
+            fixture.chapterId());
+        connection.commit();
+      } catch (SQLException | RuntimeException exception) {
+        connection.rollback();
+        throw exception;
+      }
+    }
+  }
+
+  private void setUnitMaxAttempts(UUID unitId, int maxAttempts) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement update =
+            connection.prepareStatement(
+                "UPDATE translation_units SET max_attempts = ? WHERE id = ?")) {
+      update.setInt(1, maxAttempts);
+      update.setObject(2, unitId);
+      assertEquals(1, update.executeUpdate());
+    }
+  }
+
   private void deleteFixture(Fixture fixture) throws SQLException {
     try (Connection connection = dataSource.getConnection()) {
       connection.setAutoCommit(false);
@@ -673,11 +885,19 @@ class PostgresTranslationUnitLeaseTests {
         execute(connection, "DELETE FROM translation_candidates WHERE job_id = ?", fixture.jobId());
         execute(connection, "DELETE FROM translation_jobs WHERE id = ?", fixture.jobId());
         execute(
-            connection, "DELETE FROM segments WHERE chapter_revision_id = ?", fixture.revisionId());
-        execute(connection, "DELETE FROM chapter_revisions WHERE id = ?", fixture.revisionId());
+            connection,
+            "DELETE FROM segments WHERE chapter_revision_id IN "
+                + "(SELECT id FROM chapter_revisions WHERE chapter_id = ?)",
+            fixture.chapterId());
+        execute(
+            connection, "DELETE FROM chapter_revisions WHERE chapter_id = ?", fixture.chapterId());
         execute(connection, "DELETE FROM chapters WHERE id = ?", fixture.chapterId());
         execute(connection, "DELETE FROM works WHERE id = ?", fixture.workId());
         execute(connection, "DELETE FROM libraries WHERE id = ?", fixture.libraryId());
+        UUID workspaceId = workspaceByLibrary.remove(fixture.libraryId());
+        if (workspaceId != null) {
+          execute(connection, "DELETE FROM workspaces WHERE id = ?", workspaceId);
+        }
         execute(connection, "DELETE FROM users WHERE id = ?", fixture.userId());
         connection.commit();
       } catch (SQLException | RuntimeException exception) {
@@ -802,6 +1022,20 @@ class PostgresTranslationUnitLeaseTests {
                 "SELECT source_segment_id FROM translation_unit_segments "
                     + "WHERE unit_id = ? ORDER BY segment_ordinal")) {
       select.setObject(1, unitId);
+      try (ResultSet rows = select.executeQuery()) {
+        List<UUID> ids = new ArrayList<>();
+        while (rows.next()) ids.add(rows.getObject(1, UUID.class));
+        return List.copyOf(ids);
+      }
+    }
+  }
+
+  private List<UUID> unitIds(UUID jobId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT id FROM translation_units WHERE job_id = ? ORDER BY unit_no")) {
+      select.setObject(1, jobId);
       try (ResultSet rows = select.executeQuery()) {
         List<UUID> ids = new ArrayList<>();
         while (rows.next()) ids.add(rows.getObject(1, UUID.class));
@@ -943,6 +1177,37 @@ class PostgresTranslationUnitLeaseTests {
       try (ResultSet row = select.executeQuery()) {
         assertTrue(row.next());
         return row.getBoolean(1);
+      }
+    }
+  }
+
+  private void assertRetryEventContainsOnlyIds(
+      UUID jobId, UUID eventId, UUID unitId, String rawIdempotencyKey) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                """
+                    SELECT event_type,
+                           (payload - 'jobId' - 'sourceRevisionId' - 'unitIds') = '{}'::jsonb
+                               AS only_ids,
+                           payload->>'jobId' AS payload_job_id,
+                           jsonb_array_length(payload->'unitIds') AS unit_count,
+                           payload->'unitIds' @> jsonb_build_array(?::text) AS has_unit_id,
+                           deduplication_key
+                    FROM translation_outbox_events
+                    WHERE event_id = ? AND aggregate_id = ?
+                    """)) {
+      select.setString(1, unitId.toString());
+      select.setObject(2, eventId);
+      select.setObject(3, jobId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        assertEquals("translation.job.retry_requested", row.getString("event_type"));
+        assertTrue(row.getBoolean("only_ids"));
+        assertEquals(jobId.toString(), row.getString("payload_job_id"));
+        assertEquals(1, row.getInt("unit_count"));
+        assertTrue(row.getBoolean("has_unit_id"));
+        assertFalse(row.getString("deduplication_key").contains(rawIdempotencyKey));
       }
     }
   }
