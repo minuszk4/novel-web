@@ -10,6 +10,7 @@ import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 
 class TranslationProviderContractTests {
 
@@ -159,6 +160,31 @@ class TranslationProviderContractTests {
         () ->
             new TranslationCostEstimate(
                 new BigDecimal("-0.01"), "USD", 1, TranslationBillingUnit.CODE_POINT, "v1"));
+  }
+
+  @Test
+  void fakeProviderRequiresBothExplicitProfileAndPropertyOptIns() {
+    ApplicationContextRunner providerContext =
+        new ApplicationContextRunner().withUserConfiguration(FakeTranslationProvider.class);
+
+    providerContext.run(
+        context -> assertEquals(0, context.getBeanNamesForType(TranslationProvider.class).length));
+    providerContext
+        .withPropertyValues("novel.translation.fake.enabled=true")
+        .run(
+            context ->
+                assertEquals(0, context.getBeanNamesForType(TranslationProvider.class).length));
+    providerContext
+        .withInitializer(context -> context.getEnvironment().setActiveProfiles("translation-fake"))
+        .run(
+            context ->
+                assertEquals(0, context.getBeanNamesForType(TranslationProvider.class).length));
+    providerContext
+        .withInitializer(context -> context.getEnvironment().setActiveProfiles("translation-fake"))
+        .withPropertyValues("novel.translation.fake.enabled=true")
+        .run(
+            context ->
+                assertEquals(1, context.getBeanNamesForType(TranslationProvider.class).length));
   }
 
   private static TranslationRequest request(

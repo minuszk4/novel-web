@@ -4,9 +4,15 @@ import java.math.BigDecimal;
 import java.time.Duration;
 import java.util.List;
 import java.util.Set;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.context.annotation.Profile;
+import org.springframework.stereotype.Component;
 
-/** Deterministic, offline test provider; its output is explicitly not a real translation. */
-final class FakeTranslationProvider implements TranslationProvider {
+/** Offline development provider; its output is visibly marked and is not a real translation. */
+@Component
+@Profile("translation-fake")
+@ConditionalOnProperty(prefix = "novel.translation.fake", name = "enabled", havingValue = "true")
+public final class FakeTranslationProvider implements TranslationProvider {
 
   private static final TranslationLanguagePair VI_EN = new TranslationLanguagePair("vi", "en");
   private static final TranslationLanguagePair EN_VI = new TranslationLanguagePair("en", "vi");
@@ -53,11 +59,10 @@ final class FakeTranslationProvider implements TranslationProvider {
                     new TranslationResponse.SegmentResult(
                         segment.id(), prefix + segment.sourceText()))
             .toList();
-    String requestId = "fake-" + request.attemptId();
     TranslationResponse response =
         new TranslationResponse(
             request.attemptId(),
-            requestId,
+            "fake-" + request.attemptId(),
             id(),
             results,
             estimate.billableUnits(),
