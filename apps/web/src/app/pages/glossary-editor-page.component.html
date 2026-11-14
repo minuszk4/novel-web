@@ -287,6 +287,235 @@
       </ol>
     }
 
+    <section class="glossary-editor-preview" aria-labelledby="glossary-editor-preview-heading">
+      <div class="glossary-editor-preview-heading">
+        <div>
+          <p class="eyebrow">KIỂM TRA BẢN NHÁP</p>
+          <h2 id="glossary-editor-preview-heading">Xem trước thay đổi</h2>
+          <p>
+            So sánh thuật ngữ, kiểm tra lỗi lint và thử cách glossary nhận diện văn bản. Xem trước
+            không lưu hoặc xuất bản.
+          </p>
+        </div>
+        @if (sourceRevisionNumber(); as revisionNumber) {
+          <span class="glossary-editor-preview-badge">Bản nháp {{ revisionNumber }}</span>
+        }
+      </div>
+
+      @if (!sourceRevisionId()) {
+        <p class="glossary-editor-preview-note" role="status">
+          Lưu bản nháp đầu tiên để có thể xem trước.
+        </p>
+      } @else {
+        <label class="glossary-editor-field glossary-editor-preview-sample">
+          <span
+            >Văn bản mẫu
+            <span class="glossary-editor-hint">không gửi đi nếu chưa bấm xem trước</span></span
+          >
+          <textarea
+            rows="5"
+            [ngModel]="previewSampleSource()"
+            (ngModelChange)="updatePreviewSample($event)"
+            [disabled]="previewPending() || pending()"
+            [attr.aria-describedby]="'glossary-preview-sample-help'"
+            maxlength="8000"
+            placeholder="Dán một đoạn nguồn ngắn để thử cách các thuật ngữ khớp. Có thể để trống nếu chỉ cần xem thay đổi và lint."
+          ></textarea>
+          <small id="glossary-preview-sample-help">
+            {{ previewSampleLength() }}/4000 ký tự Unicode · mẫu chỉ gửi trong yêu cầu xem trước,
+            không lưu vào glossary.
+          </small>
+        </label>
+        @if (previewSampleLength() > 4000) {
+          <p class="glossary-editor-inline-error" role="alert">
+            Đoạn mẫu vượt giới hạn 4.000 ký tự Unicode. Hãy rút ngắn trước khi xem trước.
+          </p>
+        }
+        @if (isDirty()) {
+          <p class="glossary-editor-preview-note" role="status">
+            Có chỉnh sửa chưa lưu. Hãy lưu bản nháp rồi chọn “Tiếp tục biên tập” để tải bản đã lưu
+            trước khi xem trước.
+          </p>
+        }
+        <div class="glossary-editor-preview-actions">
+          <button
+            class="button button-outline"
+            type="button"
+            [disabled]="!canPreview()"
+            (click)="previewRevision()"
+          >
+            @if (previewPending()) {
+              Đang kiểm tra…
+            } @else {
+              Xem trước bản đã lưu
+            }
+          </button>
+          <span class="glossary-editor-preview-hint">
+            Chỉ dùng bản nháp đã lưu mới nhất; máy chủ kiểm tra lại quyền và phiên bản.
+          </span>
+        </div>
+
+        @if (previewError()) {
+          <div class="glossary-editor-preview-error" role="alert">
+            <p>{{ previewError() }}</p>
+            @if (previewNeedsReload()) {
+              <button
+                class="button button-outline"
+                type="button"
+                (click)="reloadAfterPreviewConflict()"
+              >
+                @if (isDirty()) {
+                  Tải bản mới nhất và bỏ chỉnh sửa
+                } @else {
+                  Tải bản mới nhất
+                }
+              </button>
+            } @else if (requiresSignIn()) {
+              <a
+                class="button button-outline"
+                [routerLink]="['/sign-in']"
+                [queryParams]="{ returnTo: signInReturnTo() }"
+                >Đăng nhập lại</a
+              >
+            }
+          </div>
+        }
+
+        @if (previewResult(); as preview) {
+          <div class="glossary-editor-preview-result">
+            <div class="glossary-editor-preview-summary">
+              <div>
+                <h3>Kết quả bản nháp {{ sourceRevisionNumber() }}</h3>
+                <p role="status" aria-live="polite">
+                  {{ preview.changeCount }} thay đổi · {{ preview.errorCount }} lỗi ·
+                  {{ preview.warningCount }} cảnh báo lint
+                </p>
+              </div>
+              <span class="glossary-editor-preview-status" [class.is-blocked]="!preview.canPublish">
+                {{
+                  preview.canPublish
+                    ? 'Không có lỗi lint chặn xuất bản'
+                    : 'Có lỗi lint chặn xuất bản'
+                }}
+              </span>
+            </div>
+
+            <section aria-labelledby="glossary-preview-changes-heading">
+              <h4 id="glossary-preview-changes-heading">Thay đổi thuật ngữ</h4>
+              @if (preview.changeCount === 0) {
+                <p class="glossary-editor-preview-note">
+                  Không thay đổi thuật ngữ so với bản làm nền.
+                </p>
+              } @else {
+                <ul class="glossary-editor-preview-list">
+                  @for (change of preview.changes; track change.termId) {
+                    <li>
+                      <strong>{{ changeLabel(change) }}</strong>
+                      @if (change.before; as before) {
+                        <span>{{ previewTermSummary(before) }}</span>
+                      }
+                      @if (change.after; as after) {
+                        <span>{{ previewTermSummary(after) }}</span>
+                      }
+                    </li>
+                  }
+                </ul>
+                @if (preview.changesTruncated) {
+                  <p class="glossary-editor-preview-note">
+                    Chỉ hiển thị {{ preview.changes.length }} trên {{ preview.changeCount }} thay
+                    đổi.
+                  </p>
+                }
+              }
+            </section>
+
+            <section aria-labelledby="glossary-preview-lint-heading">
+              <h4 id="glossary-preview-lint-heading">Kiểm tra trước khi xuất bản</h4>
+              @if (preview.errorCount === 0 && preview.warningCount === 0) {
+                <p class="glossary-editor-preview-note">Không phát hiện lỗi hoặc cảnh báo lint.</p>
+              } @else {
+                <ul class="glossary-editor-preview-list">
+                  @for (issue of preview.lintIssues; track $index) {
+                    <li [class.is-error]="issue.severity === 'ERROR'">
+                      <strong>{{ issue.severity === 'ERROR' ? 'Lỗi' : 'Cảnh báo' }}:</strong>
+                      {{ lintLabel(issue) }}
+                      @if (issue.affectedValue) {
+                        <span>“{{ issue.affectedValue }}”</span>
+                      }
+                      @for (id of issue.termIds; track id) {
+                        <small>{{ termLabel(id) }}</small>
+                      }
+                    </li>
+                  }
+                </ul>
+                @if (preview.lintIssuesTruncated) {
+                  <p class="glossary-editor-preview-note">
+                    Chỉ hiển thị {{ preview.lintIssues.length }} mục lint; tổng số vẫn được tính đầy
+                    đủ.
+                  </p>
+                }
+              }
+            </section>
+
+            <section aria-labelledby="glossary-preview-matches-heading">
+              <h4 id="glossary-preview-matches-heading">Kết quả trên văn bản mẫu</h4>
+              <p class="glossary-editor-preview-note">
+                {{ preview.matchCount }} kết quả khớp · {{ preview.conflictCount }} xung đột mẫu.
+                Xung đột trong mẫu không tự chặn xuất bản; trạng thái ở trên chỉ dựa trên lint.
+              </p>
+              @if (preview.matches.length) {
+                <ul class="glossary-editor-preview-list">
+                  @for (match of preview.matches; track $index) {
+                    <li>
+                      <strong>{{ match.matchedText }} → {{ match.targetTerm }}</strong>
+                      <span
+                        >{{ termLabel(match.termId) }} ·
+                        {{ previewSpan(match.startUtf16, match.endUtf16) }}</span
+                      >
+                    </li>
+                  }
+                </ul>
+                @if (preview.matchesTruncated) {
+                  <p class="glossary-editor-preview-note">
+                    Chỉ hiển thị {{ preview.matches.length }} trên {{ preview.matchCount }} kết quả
+                    khớp.
+                  </p>
+                }
+              } @else if (preview.matchCount === 0) {
+                <p class="glossary-editor-preview-note">
+                  Không có thuật ngữ nào khớp với đoạn mẫu.
+                </p>
+              }
+              @if (preview.conflicts.length) {
+                <ul class="glossary-editor-preview-list glossary-editor-preview-conflicts">
+                  @for (conflict of preview.conflicts; track $index) {
+                    <li>
+                      <strong>{{ conflict.matchedText }} · xung đột {{ conflict.code }}</strong>
+                      <span class="glossary-editor-preview-conflict-terms">
+                        @for (id of conflict.competingTermIds; track id; let last = $last) {
+                          {{ termLabel(id) }}
+                          @if (!last) {
+                            ·
+                          }
+                        }
+                        · {{ previewSpan(conflict.startUtf16, conflict.endUtf16) }}
+                      </span>
+                    </li>
+                  }
+                </ul>
+              }
+              @if (preview.conflictsTruncated) {
+                <p class="glossary-editor-preview-note">
+                  Chỉ hiển thị {{ preview.conflicts.length }} trên {{ preview.conflictCount }} xung
+                  đột mẫu.
+                </p>
+              }
+            </section>
+          </div>
+        }
+      }
+    </section>
+
     <div class="glossary-editor-save-bar">
       <p role="status" aria-live="polite">
         @if (pending()) {

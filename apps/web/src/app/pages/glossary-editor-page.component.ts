@@ -19,6 +19,10 @@ import {
   GlossaryDraftCreated,
   GlossaryDraftTermInput,
   GlossaryMetadataSnapshot,
+  GlossaryRevisionChange,
+  GlossaryRevisionLintIssue,
+  GlossaryRevisionPreview,
+  GlossaryPreviewTerm,
 } from '../core/glossary-api.service';
 import { PolicyOnboardingService } from '../core/policy-onboarding.service';
 
@@ -71,6 +75,12 @@ export class GlossaryEditorPageComponent {
   protected readonly sourceRevisionId = signal<string | null>(null);
   protected readonly result = signal<GlossaryDraftCreated | null>(null);
   protected readonly pending = signal(false);
+  protected readonly previewPending = signal(false);
+  protected readonly previewSampleSource = signal('');
+  protected readonly previewResult = signal<GlossaryRevisionPreview | null>(null);
+  protected readonly previewError = signal<string | null>(null);
+  protected readonly previewNeedsReload = signal(false);
+  protected readonly previewSampleLength = computed(() => codePoints(this.previewSampleSource()));
 
   protected readonly aliasesCount = computed(() =>
     this.terms().reduce((count, term) => count + this.aliasesFor(term).length, 0),
@@ -115,11 +125,25 @@ export class GlossaryEditorPageComponent {
       !!this.snapshot()?.glossary.canWrite &&
       this.isDirty() &&
       this.validationErrors().length === 0 &&
-      !this.pending(),
+      !this.pending() &&
+      !this.previewPending() &&
+      !this.previewNeedsReload(),
+  );
+  protected readonly canPreview = computed(
+    () =>
+      this.state() === 'ready' &&
+      !!this.snapshot() &&
+      !!this.sourceRevisionId() &&
+      !this.isDirty() &&
+      !this.pending() &&
+      !this.previewPending() &&
+      !this.previewNeedsReload() &&
+      this.previewSampleLength() <= 4000,
   );
 
   private initialTerms = '[]';
   private loadToken = 0;
+  private previewToken = 0;
 
   @ViewChild('savedHeading')
   set savedHeading(heading: ElementRef<HTMLElement> | undefined) {
@@ -150,19 +174,91 @@ export class GlossaryEditorPageComponent {
 
   addTerm(): void {
     if (this.state() !== 'ready' || this.terms().length >= maxTerms) return;
+    this.clearPreview();
     this.terms.update((terms) => [...terms, emptyTerm(crypto.randomUUID())]);
   }
 
   removeTerm(id: string): void {
     if (this.state() !== 'ready') return;
+    this.clearPreview();
     this.terms.update((terms) => terms.filter((term) => term.id !== id));
   }
 
   updateTerm(id: string, changes: Partial<EditableTerm>): void {
     if (this.state() !== 'ready') return;
+    this.clearPreview();
     this.terms.update((terms) =>
       terms.map((term) => (term.id === id ? { ...term, ...changes } : term)),
     );
+  }
+
+  updatePreviewSample(sampleSource: string): void {
+    this.clearPreview();
+    this.previewSampleSource.set(sampleSource);
+  }
+
+  async previewRevision(): Promise<void> {
+    const snapshot = this.snapshot();
+    const glossaryId = this.glossaryId();
+    const revisionId = this.sourceRevisionId();
+    const sampleSource = this.previewSampleSource();
+    if (!snapshot || !glossaryId || !revisionId || !this.canPreview()) return;
+
+    const token = ++this.previewToken;
+    this.previewPending.set(true);
+    this.previewError.set(null);
+    try {
+      const preview = await this.api.previewGlossaryRevision(
+        glossaryId,
+        revisionId,
+        snapshot.etag,
+        sampleSource,
+      );
+      if (token !== this.previewToken) return;
+      if (
+        preview.glossaryId !== glossaryId ||
+        preview.proposedRevisionId !== revisionId ||
+        preview.glossaryVersion !== snapshot.glossary.version ||
+        preview.etag !== snapshot.etag
+      ) {
+        throw new GlossaryApiError('INVALID_RESPONSE', -1, 'INVALID_RESPONSE');
+      }
+      this.previewResult.set(preview);
+    } catch (error) {
+      if (token !== this.previewToken) return;
+      if (
+        error instanceof GlossaryApiError &&
+        error.status === 409 &&
+        (error.code === 'GLOSSARY_VERSION_STALE' ||
+          error.code === 'GLOSSARY_REVISION_NOT_LATEST' ||
+          error.code === 'GLOSSARY_REVISION_ALREADY_ACTIVE')
+      ) {
+        this.previewNeedsReload.set(true);
+        this.previewError.set(
+          'Glossary đã thay đổi sau khi tải. Tải lại bản mới nhất để xem trước chính xác; bản nháp không bị sửa.',
+        );
+      } else if (error instanceof GlossaryApiError && error.status === 401) {
+        this.requiresSignIn.set(true);
+        this.previewError.set('Phiên đăng nhập đã hết hạn. Đăng nhập lại để xem trước bản nháp.');
+      } else if (error instanceof GlossaryApiError && error.status === 403) {
+        this.previewError.set(
+          'Phiên hiện tại không còn đủ điều kiện xem trước. Hãy kiểm tra lại trạng thái tài khoản rồi tải glossary mới nhất.',
+        );
+      } else if (error instanceof GlossaryApiError && error.status === 404) {
+        this.previewNeedsReload.set(true);
+        this.previewError.set(
+          'Không còn truy cập được bản nháp này. Tải lại trạng thái mới nhất trước khi tiếp tục.',
+        );
+      } else if (error instanceof GlossaryApiError && error.code === 'INVALID_RESPONSE') {
+        this.previewError.set('Phản hồi xem trước không hợp lệ. Glossary chưa bị thay đổi.');
+      } else {
+        this.previewError.set(
+          'Chưa xem trước được do lỗi kết nối hoặc dịch vụ. Lần gọi này chỉ đọc và không lưu hay xuất bản bản nháp.',
+        );
+      }
+    } finally {
+      this.previewPending.set(false);
+    }
   }
 
   async saveDraft(): Promise<void> {
@@ -170,6 +266,7 @@ export class GlossaryEditorPageComponent {
     const id = this.glossaryId();
     if (!snapshot || !id || !this.canSave()) return;
     this.pending.set(true);
+    this.clearPreview();
     this.errorMessage.set(null);
     try {
       const created = await this.api.createDraftRevision(
@@ -224,6 +321,16 @@ export class GlossaryEditorPageComponent {
     await this.load(this.glossaryId(), ++this.loadToken);
   }
 
+  protected async reloadAfterPreviewConflict(): Promise<void> {
+    if (
+      this.isDirty() &&
+      !window.confirm('Tải bản mới nhất sẽ bỏ các chỉnh sửa chưa lưu. Bạn có muốn tiếp tục không?')
+    ) {
+      return;
+    }
+    await this.load(this.glossaryId(), ++this.loadToken);
+  }
+
   protected editAnotherDraft(): void {
     this.result.set(null);
     void this.load(this.glossaryId(), ++this.loadToken);
@@ -264,12 +371,59 @@ export class GlossaryEditorPageComponent {
     );
   }
 
+  protected termLabel(id: string): string {
+    const index = this.terms().findIndex((term) => term.id === id);
+    return index < 0 ? 'thuật ngữ đã bị gỡ' : `Thuật ngữ ${index + 1}`;
+  }
+
+  protected changeLabel(change: GlossaryRevisionChange): string {
+    return ({ ADDED: 'Đã thêm', REMOVED: 'Đã xóa', UPDATED: 'Đã sửa' } as const)[change.kind];
+  }
+
+  protected previewTermSummary(term: GlossaryPreviewTerm): string {
+    const target = term.doNotTranslate ? 'Giữ nguyên' : term.targetTerm;
+    const aliases = term.aliases.length ? ` · Bí danh: ${term.aliases.join(', ')}` : '';
+    const caseLabel =
+      term.casePolicy === 'SENSITIVE' ? 'Có phân biệt hoa/thường' : 'Không phân biệt';
+    const contextNote = term.contextNote ? ` · Ghi chú: ${term.contextNote}` : '';
+    return `Vị trí ${term.ordinal} · ${term.sourceTerm} → ${target}${aliases} · Ưu tiên ${term.priority} · ${caseLabel}${contextNote}`;
+  }
+
+  protected lintLabel(issue: GlossaryRevisionLintIssue): string {
+    return (
+      (
+        {
+          SOURCE_TERM_SHORT: 'Thuật ngữ quá ngắn, có thể khớp nhầm.',
+          SOURCE_EQUALS_TARGET: 'Thuật ngữ gốc trùng cách dịch; cần thay đổi trước khi xuất bản.',
+          TARGET_WHITESPACE_UNUSUAL: 'Cách dịch có khoảng trắng bất thường.',
+          DUPLICATE_ALIAS_PATTERN: 'Bí danh bị lặp sau khi chuẩn hóa.',
+          EQUAL_PRECEDENCE_DIFFERENT_OUTCOMES:
+            'Các thuật ngữ cùng độ ưu tiên có kết quả dịch khác nhau.',
+        } as Record<string, string>
+      )[issue.code] ?? `Cảnh báo kiểm tra: ${issue.code}`
+    );
+  }
+
+  protected previewSpan(startUtf16: number, endUtf16: number): string {
+    return `vị trí ${startUtf16}–${endUtf16} (UTF-16, kết thúc không gồm ký tự cuối)`;
+  }
+
+  private clearPreview(): void {
+    this.previewToken += 1;
+    this.previewResult.set(null);
+    if (!this.previewNeedsReload()) this.previewError.set(null);
+  }
+
   private async load(id: string | null, token: number): Promise<void> {
     this.snapshot.set(null);
     this.terms.set([]);
     this.result.set(null);
+    this.clearPreview();
+    this.previewSampleSource.set('');
     this.errorMessage.set(null);
     this.requiresSignIn.set(false);
+    this.previewNeedsReload.set(false);
+    this.previewError.set(null);
     this.sourceRevisionId.set(null);
     this.sourceRevisionNumber.set(null);
     if (this.policy.status() !== 'accepted') {

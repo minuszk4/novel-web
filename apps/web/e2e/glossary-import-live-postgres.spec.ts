@@ -202,6 +202,37 @@ test('glossary editor saves a full latest snapshot as the next PostgreSQL draft'
   await expect(page.getByRole('heading', { name: 'Đã tạo bản nháp 4' })).toBeVisible();
   await expect(page.getByText('Bản đang áp dụng vẫn là 1')).toBeVisible();
 
+  await page.getByRole('button', { name: 'Tiếp tục biên tập' }).click();
+  await expect(page.getByText('Nguồn sửa đổi: 4')).toBeVisible();
+  await page.getByLabel(/Văn bản mẫu/).fill('丹田与金丹');
+  const previewResponsePromise = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' &&
+      new URL(response.url()).pathname ===
+        `/api/v1/glossaries/${glossaryId}/revisions/${JSON.parse(saveBody).revisionId}/preview`,
+  );
+  await page.getByRole('button', { name: 'Xem trước bản đã lưu' }).click();
+  const previewResponse = await previewResponsePromise;
+  const previewBody = await previewResponse.json();
+  expect(previewResponse.status()).toBe(200);
+  expect(previewResponse.headers()['etag']).toBe('"v6"');
+  expect(previewBody).toMatchObject({
+    glossaryId,
+    proposedRevisionId: JSON.parse(saveBody).revisionId,
+    glossaryVersion: 6,
+    canPublish: true,
+    matchCount: 2,
+    matches: expect.arrayContaining([
+      expect.objectContaining({ matchedText: '丹田', targetTerm: 'Đan điền khí hải' }),
+      expect.objectContaining({ matchedText: '金丹', targetTerm: 'Kim Đan' }),
+    ]),
+  });
+  await expect(page.getByText('2 kết quả khớp')).toBeVisible();
+  await expect(page.getByText('Không có lỗi lint chặn xuất bản')).toBeVisible();
+  expect(apiRequests).toContain(
+    `POST /api/v1/glossaries/${glossaryId}/revisions/${JSON.parse(saveBody).revisionId}/preview`,
+  );
+
   const latest = await page.evaluate(async (id) => {
     const response = await fetch(`/api/v1/glossaries/${id}/latest-revision`, { cache: 'no-store' });
     return {
@@ -226,5 +257,10 @@ test('glossary editor saves a full latest snapshot as the next PostgreSQL draft'
   });
   expect(apiRequests).toContain(`GET /api/v1/glossaries/${glossaryId}/latest-revision`);
   expect(apiRequests).toContain(`POST /api/v1/glossaries/${glossaryId}/revisions`);
+  expect(
+    latest.body.revisionNumber,
+    'preview must leave the latest immutable revision unchanged',
+  ).toBe(4);
+  expect(latest.body.terms).toHaveLength(2);
   await page.screenshot({ path: screenshotPath!, fullPage: true });
 });

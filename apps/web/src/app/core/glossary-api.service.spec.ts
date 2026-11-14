@@ -382,6 +382,201 @@ describe('GlossaryApiService', () => {
     });
   });
 
+  it('previews a saved revision with CSRF and the exact ETag, validating bounded diagnostics', async () => {
+    const pending = service.previewGlossaryRevision(
+      glossaryId,
+      baseRevisionId,
+      '"v4"',
+      'Golden Core appears.',
+    );
+    http.expectOne({ method: 'GET', url: '/api/v1/auth/csrf' }).flush({ token: csrfToken });
+    await Promise.resolve();
+    await Promise.resolve();
+    const request = http.expectOne({
+      method: 'POST',
+      url: `/api/v1/glossaries/${glossaryId}/revisions/${baseRevisionId}/preview`,
+    });
+    expect(request.request.headers.get('Content-Type')).toBe('application/json');
+    expect(request.request.headers.get('If-Match')).toBe('"v4"');
+    expect(request.request.headers.get('X-CSRF-Token')).toBe(csrfToken);
+    expect(request.request.body).toEqual({ sampleSource: 'Golden Core appears.' });
+    request.flush(
+      {
+        glossaryId,
+        baseRevisionId: activeRevisionId,
+        proposedRevisionId: baseRevisionId,
+        glossaryVersion: 4,
+        canPublish: true,
+        changeCount: 1,
+        changes: [
+          {
+            kind: 'UPDATED',
+            termId,
+            before: {
+              id: termId,
+              revisionId: activeRevisionId,
+              sourceLanguage: 'zh-Hans',
+              sourceTerm: '金丹',
+              targetTerm: 'Kim Đan',
+              aliases: ['Golden Core'],
+              scope: 'LIBRARY',
+              priority: 0,
+              casePolicy: 'INSENSITIVE',
+              matchMode: 'WHOLE_PHRASE',
+              doNotTranslate: false,
+              ordinal: 1,
+              contextNote: 'Tên cảnh giới',
+            },
+            after: {
+              id: termId,
+              revisionId: baseRevisionId,
+              sourceLanguage: 'zh-Hans',
+              sourceTerm: '金丹',
+              targetTerm: 'Kim Đan',
+              aliases: ['Golden Core'],
+              scope: 'LIBRARY',
+              priority: 0,
+              casePolicy: 'INSENSITIVE',
+              matchMode: 'WHOLE_PHRASE',
+              doNotTranslate: false,
+              ordinal: 1,
+              contextNote: 'Tên cảnh giới',
+            },
+          },
+        ],
+        changesTruncated: false,
+        errorCount: 0,
+        warningCount: 1,
+        lintIssues: [
+          {
+            code: 'SOURCE_TERM_SHORT',
+            severity: 'WARNING',
+            termIds: [termId],
+            affectedValue: '金丹',
+          },
+        ],
+        lintIssuesTruncated: false,
+        matchCount: 1,
+        matches: [
+          {
+            termId,
+            revisionId: baseRevisionId,
+            matchedText: 'Golden Core',
+            targetTerm: 'Kim Đan',
+            startUtf16: 0,
+            endUtf16: 11,
+            alias: true,
+            doNotTranslate: false,
+            scope: 'LIBRARY',
+            priority: 0,
+          },
+        ],
+        matchesTruncated: false,
+        conflictCount: 0,
+        conflicts: [],
+        conflictsTruncated: false,
+      },
+      { headers: new HttpHeaders({ ETag: '"v4"' }) },
+    );
+    await expect(pending).resolves.toMatchObject({
+      glossaryId,
+      proposedRevisionId: baseRevisionId,
+      canPublish: true,
+      changes: [{ kind: 'UPDATED', termId }],
+      lintIssues: [{ severity: 'WARNING', code: 'SOURCE_TERM_SHORT' }],
+      matches: [{ matchedText: 'Golden Core', startUtf16: 0, endUtf16: 11 }],
+      etag: '"v4"',
+    });
+  });
+
+  it('rejects oversized Unicode samples locally without requesting CSRF', async () => {
+    await expect(
+      service.previewGlossaryRevision(glossaryId, baseRevisionId, '"v4"', '😀'.repeat(4001)),
+    ).rejects.toMatchObject({ status: 413, code: 'GLOSSARY_PREVIEW_SAMPLE_TOO_LARGE' });
+    http.expectNone(() => true);
+  });
+
+  it('preserves full counts and explicit truncation flags for bounded preview sections', async () => {
+    const pending = service.previewGlossaryRevision(glossaryId, baseRevisionId, '"v4"', '');
+    http.expectOne({ method: 'GET', url: '/api/v1/auth/csrf' }).flush({ token: csrfToken });
+    await Promise.resolve();
+    await Promise.resolve();
+    http
+      .expectOne({
+        method: 'POST',
+        url: `/api/v1/glossaries/${glossaryId}/revisions/${baseRevisionId}/preview`,
+      })
+      .flush(
+        {
+          glossaryId,
+          baseRevisionId: activeRevisionId,
+          proposedRevisionId: baseRevisionId,
+          glossaryVersion: 4,
+          canPublish: true,
+          changeCount: 101,
+          changes: [],
+          changesTruncated: true,
+          errorCount: 0,
+          warningCount: 51,
+          lintIssues: [],
+          lintIssuesTruncated: true,
+          matchCount: 101,
+          matches: [],
+          matchesTruncated: true,
+          conflictCount: 51,
+          conflicts: [],
+          conflictsTruncated: true,
+        },
+        { headers: new HttpHeaders({ ETag: '"v4"' }) },
+      );
+    await expect(pending).resolves.toMatchObject({
+      changeCount: 101,
+      changesTruncated: true,
+      warningCount: 51,
+      lintIssuesTruncated: true,
+      matchCount: 101,
+      matchesTruncated: true,
+      conflictCount: 51,
+      conflictsTruncated: true,
+    });
+  });
+
+  it('rejects internally inconsistent preview counts and truncation flags', async () => {
+    const pending = service.previewGlossaryRevision(glossaryId, baseRevisionId, '"v4"', '');
+    http.expectOne({ method: 'GET', url: '/api/v1/auth/csrf' }).flush({ token: csrfToken });
+    await Promise.resolve();
+    await Promise.resolve();
+    http
+      .expectOne({
+        method: 'POST',
+        url: `/api/v1/glossaries/${glossaryId}/revisions/${baseRevisionId}/preview`,
+      })
+      .flush(
+        {
+          glossaryId,
+          baseRevisionId: activeRevisionId,
+          proposedRevisionId: baseRevisionId,
+          glossaryVersion: 4,
+          canPublish: true,
+          changeCount: 1,
+          changes: [],
+          changesTruncated: false,
+          errorCount: 0,
+          warningCount: 0,
+          lintIssues: [],
+          lintIssuesTruncated: false,
+          matchCount: 0,
+          matches: [],
+          matchesTruncated: false,
+          conflictCount: 0,
+          conflicts: [],
+          conflictsTruncated: false,
+        },
+        { headers: new HttpHeaders({ ETag: '"v4"' }) },
+      );
+    await expect(pending).rejects.toMatchObject({ status: -1, code: 'INVALID_RESPONSE' });
+  });
+
   it('rejects malformed complete snapshots before opening a network request', async () => {
     await expect(
       service.createDraftRevision(glossaryId, '"v4"', [

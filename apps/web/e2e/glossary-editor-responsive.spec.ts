@@ -19,6 +19,11 @@ test('glossary editor reflows and keeps save controls clear of mobile navigation
     await page.goto(`/app/glossaries/${glossaryId}/edit`);
     await expect(page.getByRole('heading', { name: 'Tu luyện' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Lưu bản nháp' })).toBeDisabled();
+    await page.getByLabel(/Văn bản mẫu/).fill('Golden Core appears.');
+    await page.getByRole('button', { name: 'Xem trước bản đã lưu' }).click();
+    await expect(page.getByText('Kết quả bản nháp 2')).toBeVisible();
+    await expect(page.getByText('Golden Core → Kim Đan mới')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Lưu bản nháp' })).toBeDisabled();
     await expectNoAxeViolations(page);
 
     const measurements: Array<Record<string, number | string>> = [];
@@ -117,6 +122,9 @@ async function installRoutes(page: import('@playwright/test').Page): Promise<voi
       },
     }),
   );
+  await page.route('**/api/v1/auth/csrf', (route) =>
+    route.fulfill({ json: { token: 'A'.repeat(43) } }),
+  );
   await page.route('**/api/v1/auth/policies/current', (route) =>
     route.fulfill({
       json: {
@@ -142,6 +150,82 @@ async function installRoutes(page: import('@playwright/test').Page): Promise<voi
   await page.route('**/api/v1/glossaries/**', (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
+    if (
+      path === `/api/v1/glossaries/${glossaryId}/revisions/${revisionId}/preview` &&
+      request.method() === 'POST'
+    ) {
+      return route.fulfill({
+        headers: { ETag: '"v4"', 'Cache-Control': 'no-store' },
+        json: {
+          glossaryId,
+          baseRevisionId: activeRevisionId,
+          proposedRevisionId: revisionId,
+          glossaryVersion: 4,
+          canPublish: true,
+          changeCount: 1,
+          changes: [
+            {
+              kind: 'UPDATED',
+              termId,
+              before: {
+                id: termId,
+                revisionId: activeRevisionId,
+                sourceLanguage: 'zh-Hans',
+                sourceTerm: '金丹',
+                targetTerm: 'Kim Đan',
+                aliases: ['Golden Core'],
+                scope: 'USER_GLOBAL',
+                priority: 2,
+                casePolicy: 'INSENSITIVE',
+                matchMode: 'WHOLE_PHRASE',
+                doNotTranslate: false,
+                ordinal: 1,
+                contextNote: 'Tên cảnh giới',
+              },
+              after: {
+                id: termId,
+                revisionId,
+                sourceLanguage: 'zh-Hans',
+                sourceTerm: '金丹',
+                targetTerm: 'Kim Đan mới',
+                aliases: ['Golden Core'],
+                scope: 'USER_GLOBAL',
+                priority: 2,
+                casePolicy: 'INSENSITIVE',
+                matchMode: 'WHOLE_PHRASE',
+                doNotTranslate: false,
+                ordinal: 1,
+                contextNote: 'Tên cảnh giới đã sửa',
+              },
+            },
+          ],
+          changesTruncated: false,
+          errorCount: 0,
+          warningCount: 0,
+          lintIssues: [],
+          lintIssuesTruncated: false,
+          matchCount: 1,
+          matches: [
+            {
+              termId,
+              revisionId,
+              matchedText: 'Golden Core',
+              targetTerm: 'Kim Đan mới',
+              startUtf16: 0,
+              endUtf16: 11,
+              alias: true,
+              doNotTranslate: false,
+              scope: 'USER_GLOBAL',
+              priority: 2,
+            },
+          ],
+          matchesTruncated: false,
+          conflictCount: 0,
+          conflicts: [],
+          conflictsTruncated: false,
+        },
+      });
+    }
     if (path === `/api/v1/glossaries/${glossaryId}` && request.method() === 'GET') {
       return route.fulfill({
         headers: { ETag: '"v4"', 'Cache-Control': 'no-store' },

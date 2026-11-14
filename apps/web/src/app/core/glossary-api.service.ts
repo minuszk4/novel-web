@@ -103,6 +103,82 @@ export interface GlossaryDraftCreated {
   etag: string;
 }
 
+export type GlossaryRevisionChangeKind = 'ADDED' | 'REMOVED' | 'UPDATED';
+export type GlossaryLintSeverity = 'WARNING' | 'ERROR';
+
+export interface GlossaryPreviewTerm {
+  id: string;
+  revisionId: string;
+  sourceLanguage: string;
+  sourceTerm: string;
+  targetTerm: string | null;
+  aliases: string[];
+  scope: GlossaryScope;
+  priority: number;
+  casePolicy: GlossaryCasePolicy;
+  matchMode: 'WHOLE_PHRASE';
+  doNotTranslate: boolean;
+  ordinal: number;
+  contextNote: string | null;
+}
+
+export interface GlossaryRevisionChange {
+  kind: GlossaryRevisionChangeKind;
+  termId: string;
+  before: GlossaryPreviewTerm | null;
+  after: GlossaryPreviewTerm | null;
+}
+
+export interface GlossaryRevisionLintIssue {
+  code: string;
+  severity: GlossaryLintSeverity;
+  termIds: string[];
+  affectedValue: string;
+}
+
+export interface GlossaryRevisionMatch {
+  termId: string;
+  revisionId: string;
+  matchedText: string;
+  targetTerm: string;
+  startUtf16: number;
+  endUtf16: number;
+  alias: boolean;
+  doNotTranslate: boolean;
+  scope: GlossaryScope;
+  priority: number;
+}
+
+export interface GlossaryRevisionConflict {
+  matchedText: string;
+  startUtf16: number;
+  endUtf16: number;
+  competingTermIds: string[];
+  code: string;
+}
+
+export interface GlossaryRevisionPreview {
+  glossaryId: string;
+  baseRevisionId: string | null;
+  proposedRevisionId: string;
+  glossaryVersion: number;
+  canPublish: boolean;
+  changeCount: number;
+  changes: GlossaryRevisionChange[];
+  changesTruncated: boolean;
+  errorCount: number;
+  warningCount: number;
+  lintIssues: GlossaryRevisionLintIssue[];
+  lintIssuesTruncated: boolean;
+  matchCount: number;
+  matches: GlossaryRevisionMatch[];
+  matchesTruncated: boolean;
+  conflictCount: number;
+  conflicts: GlossaryRevisionConflict[];
+  conflictsTruncated: boolean;
+  etag: string;
+}
+
 export interface GlossaryImportedTerm {
   rowNumber: number;
   sourceTerm: string;
@@ -408,6 +484,46 @@ export class GlossaryApiService {
     }
   }
 
+  async previewGlossaryRevision(
+    glossaryId: string,
+    revisionId: string,
+    etag: string,
+    sampleSource: string,
+  ): Promise<GlossaryRevisionPreview> {
+    if (
+      !isUuid(glossaryId) ||
+      !isUuid(revisionId) ||
+      !isEtag(etag) ||
+      typeof sampleSource !== 'string'
+    ) {
+      throw invalidQuery();
+    }
+    if (codePoints(sampleSource) > 4000) {
+      throw new GlossaryApiError(
+        'GLOSSARY_PREVIEW_SAMPLE_TOO_LARGE',
+        413,
+        'GLOSSARY_PREVIEW_SAMPLE_TOO_LARGE',
+      );
+    }
+    try {
+      const headers = (await this.csrfHeaders())
+        .set('Content-Type', 'application/json')
+        .set('If-Match', etag);
+      const response = await firstValueFrom(
+        this.http
+          .post<unknown>(
+            `${glossariesUrl}/${glossaryId}/revisions/${revisionId}/preview`,
+            { sampleSource },
+            { headers, observe: 'response' },
+          )
+          .pipe(timeout(requestTimeoutMs)),
+      );
+      return parseRevisionPreview(response, glossaryId, revisionId, etag, sampleSource);
+    } catch (error) {
+      throw toGlossaryApiError(error);
+    }
+  }
+
   async previewImport(
     glossaryId: string,
     etag: string,
@@ -699,6 +815,236 @@ function parseDraftCreated(
     parentRevisionId: value['parentRevisionId'],
     glossaryVersion: value['glossaryVersion'],
     etag,
+  };
+}
+
+function parseRevisionPreview(
+  response: HttpResponse<unknown>,
+  expectedGlossaryId: string,
+  expectedRevisionId: string,
+  expectedEtag: string,
+  sampleSource: string,
+): GlossaryRevisionPreview {
+  const value = response.body;
+  const etag = response.headers.get('ETag');
+  if (
+    !isRecord(value) ||
+    !isEtag(etag) ||
+    etag !== expectedEtag ||
+    value['glossaryId'] !== expectedGlossaryId ||
+    value['proposedRevisionId'] !== expectedRevisionId ||
+    !isNullableUuid(value['baseRevisionId']) ||
+    !isPositiveInteger(value['glossaryVersion']) ||
+    etag !== `"v${value['glossaryVersion']}"` ||
+    typeof value['canPublish'] !== 'boolean' ||
+    !isNonNegativeInteger(value['changeCount']) ||
+    !Array.isArray(value['changes']) ||
+    value['changes'].length > 100 ||
+    typeof value['changesTruncated'] !== 'boolean' ||
+    !isNonNegativeInteger(value['errorCount']) ||
+    !isNonNegativeInteger(value['warningCount']) ||
+    !Array.isArray(value['lintIssues']) ||
+    value['lintIssues'].length > 50 ||
+    typeof value['lintIssuesTruncated'] !== 'boolean' ||
+    !isNonNegativeInteger(value['matchCount']) ||
+    !Array.isArray(value['matches']) ||
+    value['matches'].length > 100 ||
+    typeof value['matchesTruncated'] !== 'boolean' ||
+    !isNonNegativeInteger(value['conflictCount']) ||
+    !Array.isArray(value['conflicts']) ||
+    value['conflicts'].length > 50 ||
+    typeof value['conflictsTruncated'] !== 'boolean'
+  ) {
+    throw invalidResponse();
+  }
+
+  const changes = value['changes'].map(parseRevisionChange);
+  const lintIssues = value['lintIssues'].map(parseRevisionLintIssue);
+  const matches = value['matches'].map((match) => parseRevisionMatch(match, sampleSource));
+  const conflicts = value['conflicts'].map((conflict) =>
+    parseRevisionConflict(conflict, sampleSource),
+  );
+  if (
+    value['changeCount'] < changes.length ||
+    value['errorCount'] < lintIssues.filter((issue) => issue.severity === 'ERROR').length ||
+    value['warningCount'] < lintIssues.filter((issue) => issue.severity === 'WARNING').length ||
+    value['canPublish'] !== (value['errorCount'] === 0) ||
+    value['matchCount'] < matches.length ||
+    value['conflictCount'] < conflicts.length ||
+    value['changesTruncated'] !== value['changeCount'] > changes.length ||
+    value['lintIssuesTruncated'] !==
+      value['errorCount'] + value['warningCount'] > lintIssues.length ||
+    value['matchesTruncated'] !== value['matchCount'] > matches.length ||
+    value['conflictsTruncated'] !== value['conflictCount'] > conflicts.length ||
+    changes.some(
+      (change) =>
+        (change.before !== null && change.before.revisionId !== value['baseRevisionId']) ||
+        (change.after !== null && change.after.revisionId !== expectedRevisionId),
+    ) ||
+    matches.some((match) => match.revisionId !== expectedRevisionId) ||
+    (value['baseRevisionId'] === null && changes.some((change) => change.before !== null))
+  ) {
+    throw invalidResponse();
+  }
+
+  return {
+    glossaryId: value['glossaryId'],
+    baseRevisionId: value['baseRevisionId'],
+    proposedRevisionId: value['proposedRevisionId'],
+    glossaryVersion: value['glossaryVersion'],
+    canPublish: value['canPublish'],
+    changeCount: value['changeCount'],
+    changes,
+    changesTruncated: value['changesTruncated'],
+    errorCount: value['errorCount'],
+    warningCount: value['warningCount'],
+    lintIssues,
+    lintIssuesTruncated: value['lintIssuesTruncated'],
+    matchCount: value['matchCount'],
+    matches,
+    matchesTruncated: value['matchesTruncated'],
+    conflictCount: value['conflictCount'],
+    conflicts,
+    conflictsTruncated: value['conflictsTruncated'],
+    etag,
+  };
+}
+
+function parseRevisionChange(value: unknown): GlossaryRevisionChange {
+  if (
+    !isRecord(value) ||
+    (value['kind'] !== 'ADDED' && value['kind'] !== 'REMOVED' && value['kind'] !== 'UPDATED') ||
+    !isUuid(value['termId'])
+  ) {
+    throw invalidResponse();
+  }
+  const before = value['before'] === null ? null : parsePreviewTerm(value['before']);
+  const after = value['after'] === null ? null : parsePreviewTerm(value['after']);
+  if (
+    (value['kind'] === 'ADDED' && (before !== null || after === null)) ||
+    (value['kind'] === 'REMOVED' && (before === null || after !== null)) ||
+    (value['kind'] === 'UPDATED' && (before === null || after === null)) ||
+    (before && before.id !== value['termId']) ||
+    (after && after.id !== value['termId'])
+  ) {
+    throw invalidResponse();
+  }
+  return { kind: value['kind'], termId: value['termId'], before, after };
+}
+
+function parsePreviewTerm(value: unknown): GlossaryPreviewTerm {
+  if (
+    !isRecord(value) ||
+    !isUuid(value['id']) ||
+    !isUuid(value['revisionId']) ||
+    !isBoundedString(value['sourceLanguage'], 2, 64) ||
+    !isBoundedString(value['sourceTerm'], 1, 512) ||
+    !isNullableBoundedString(value['targetTerm'], 4096) ||
+    !isStringArray(value['aliases'], 25, 512) ||
+    !isScope(value['scope']) ||
+    !isIntegerInRange(value['priority'], -1_000_000, 1_000_000) ||
+    !isCasePolicy(value['casePolicy']) ||
+    value['matchMode'] !== 'WHOLE_PHRASE' ||
+    typeof value['doNotTranslate'] !== 'boolean' ||
+    !isPositiveInteger(value['ordinal']) ||
+    !isNullableBoundedString(value['contextNote'], 2000) ||
+    (value['doNotTranslate'] ? value['targetTerm'] !== null : !value['targetTerm'])
+  ) {
+    throw invalidResponse();
+  }
+  return {
+    id: value['id'],
+    revisionId: value['revisionId'],
+    sourceLanguage: value['sourceLanguage'],
+    sourceTerm: value['sourceTerm'],
+    targetTerm: value['targetTerm'],
+    aliases: value['aliases'],
+    scope: value['scope'],
+    priority: value['priority'],
+    casePolicy: value['casePolicy'],
+    matchMode: 'WHOLE_PHRASE',
+    doNotTranslate: value['doNotTranslate'],
+    ordinal: value['ordinal'],
+    contextNote: value['contextNote'],
+  };
+}
+
+function parseRevisionLintIssue(value: unknown): GlossaryRevisionLintIssue {
+  if (
+    !isRecord(value) ||
+    !isBoundedString(value['code'], 1, 64) ||
+    (value['severity'] !== 'WARNING' && value['severity'] !== 'ERROR') ||
+    !Array.isArray(value['termIds']) ||
+    value['termIds'].length > 1000 ||
+    !value['termIds'].every(isUuid) ||
+    !isBoundedString(value['affectedValue'], 0, 4096)
+  ) {
+    throw invalidResponse();
+  }
+  return {
+    code: value['code'],
+    severity: value['severity'],
+    termIds: value['termIds'],
+    affectedValue: value['affectedValue'],
+  };
+}
+
+function parseRevisionMatch(value: unknown, sampleSource: string): GlossaryRevisionMatch {
+  if (
+    !isRecord(value) ||
+    !isUuid(value['termId']) ||
+    !isUuid(value['revisionId']) ||
+    !isBoundedString(value['matchedText'], 1, 4000) ||
+    !isBoundedString(value['targetTerm'], 0, 4096) ||
+    !isNonNegativeInteger(value['startUtf16']) ||
+    !isPositiveInteger(value['endUtf16']) ||
+    value['endUtf16'] <= value['startUtf16'] ||
+    value['endUtf16'] > sampleSource.length ||
+    sampleSource.slice(value['startUtf16'], value['endUtf16']) !== value['matchedText'] ||
+    typeof value['alias'] !== 'boolean' ||
+    typeof value['doNotTranslate'] !== 'boolean' ||
+    !isScope(value['scope']) ||
+    !isIntegerInRange(value['priority'], -1_000_000, 1_000_000)
+  ) {
+    throw invalidResponse();
+  }
+  return {
+    termId: value['termId'],
+    revisionId: value['revisionId'],
+    matchedText: value['matchedText'],
+    targetTerm: value['targetTerm'],
+    startUtf16: value['startUtf16'],
+    endUtf16: value['endUtf16'],
+    alias: value['alias'],
+    doNotTranslate: value['doNotTranslate'],
+    scope: value['scope'],
+    priority: value['priority'],
+  };
+}
+
+function parseRevisionConflict(value: unknown, sampleSource: string): GlossaryRevisionConflict {
+  if (
+    !isRecord(value) ||
+    !isBoundedString(value['matchedText'], 1, 4000) ||
+    !isNonNegativeInteger(value['startUtf16']) ||
+    !isPositiveInteger(value['endUtf16']) ||
+    value['endUtf16'] <= value['startUtf16'] ||
+    value['endUtf16'] > sampleSource.length ||
+    sampleSource.slice(value['startUtf16'], value['endUtf16']) !== value['matchedText'] ||
+    !Array.isArray(value['competingTermIds']) ||
+    value['competingTermIds'].length < 2 ||
+    value['competingTermIds'].length > 1000 ||
+    !value['competingTermIds'].every(isUuid) ||
+    !isBoundedString(value['code'], 1, 64)
+  ) {
+    throw invalidResponse();
+  }
+  return {
+    matchedText: value['matchedText'],
+    startUtf16: value['startUtf16'],
+    endUtf16: value['endUtf16'],
+    competingTermIds: value['competingTermIds'],
+    code: value['code'],
   };
 }
 
@@ -1158,6 +1504,10 @@ function isTimestamp(value: unknown): value is string {
 
 function isBoundedString(value: unknown, min: number, max: number): value is string {
   return typeof value === 'string' && [...value].length >= min && [...value].length <= max;
+}
+
+function codePoints(value: string): number {
+  return [...value].length;
 }
 
 function isNullableBoundedString(value: unknown, max: number): value is string | null {

@@ -68,6 +68,7 @@ describe('GlossaryEditorPageComponent', () => {
     getGlossarySnapshot: ReturnType<typeof vi.fn>;
     getLatestWritableRevision: ReturnType<typeof vi.fn>;
     createDraftRevision: ReturnType<typeof vi.fn>;
+    previewGlossaryRevision: ReturnType<typeof vi.fn>;
   };
   let canWrite: boolean;
 
@@ -86,6 +87,82 @@ describe('GlossaryEditorPageComponent', () => {
         parentRevisionId: latestRevisionId,
         glossaryVersion: 5,
         etag: '"v5"',
+      }),
+      previewGlossaryRevision: vi.fn().mockResolvedValue({
+        glossaryId,
+        baseRevisionId: activeRevisionId,
+        proposedRevisionId: latestRevisionId,
+        glossaryVersion: 4,
+        canPublish: true,
+        changeCount: 1,
+        changes: [
+          {
+            kind: 'UPDATED',
+            termId,
+            before: {
+              id: termId,
+              revisionId: activeRevisionId,
+              sourceLanguage: 'zh-Hans',
+              sourceTerm: '金丹',
+              targetTerm: 'Kim Đan cũ',
+              aliases: ['Golden Core'],
+              scope: 'USER_GLOBAL',
+              priority: 0,
+              casePolicy: 'INSENSITIVE',
+              matchMode: 'WHOLE_PHRASE',
+              doNotTranslate: false,
+              ordinal: 1,
+              contextNote: 'Cảnh giới tu luyện',
+            },
+            after: {
+              id: termId,
+              revisionId: latestRevisionId,
+              sourceLanguage: 'zh-Hans',
+              sourceTerm: '金丹',
+              targetTerm: 'Kim Đan',
+              aliases: ['Golden Core'],
+              scope: 'USER_GLOBAL',
+              priority: 0,
+              casePolicy: 'INSENSITIVE',
+              matchMode: 'WHOLE_PHRASE',
+              doNotTranslate: false,
+              ordinal: 1,
+              contextNote: 'Bậc Kim Đan trong hệ tu luyện',
+            },
+          },
+        ],
+        changesTruncated: false,
+        errorCount: 0,
+        warningCount: 1,
+        lintIssues: [
+          {
+            code: 'SOURCE_TERM_SHORT',
+            severity: 'WARNING',
+            termIds: [termId],
+            affectedValue: '金丹',
+          },
+        ],
+        lintIssuesTruncated: false,
+        matchCount: 1,
+        matches: [
+          {
+            termId,
+            revisionId: latestRevisionId,
+            matchedText: 'Golden Core',
+            targetTerm: 'Kim Đan',
+            startUtf16: 0,
+            endUtf16: 11,
+            alias: true,
+            doNotTranslate: false,
+            scope: 'USER_GLOBAL',
+            priority: 0,
+          },
+        ],
+        matchesTruncated: false,
+        conflictCount: 0,
+        conflicts: [],
+        conflictsTruncated: false,
+        etag: '"v4"',
       }),
     };
     TestBed.configureTestingModule({
@@ -122,6 +199,10 @@ describe('GlossaryEditorPageComponent', () => {
     fixture.detectChanges();
     await fixture.whenStable();
     fixture.detectChanges();
+    expect(
+      fixture.nativeElement.querySelector('.glossary-editor-preview-actions button').disabled,
+    ).toBe(true);
+    expect(fixture.nativeElement.textContent).toContain('Có chỉnh sửa chưa lưu');
 
     const confirm = vi.fn().mockReturnValue(false);
     vi.stubGlobal('confirm', confirm);
@@ -160,6 +241,79 @@ describe('GlossaryEditorPageComponent', () => {
     expect(api.getLatestWritableRevision).not.toHaveBeenCalled();
     expect(fixture.nativeElement.textContent).not.toContain('Kim Đan');
     expect(fixture.nativeElement.textContent).not.toContain('Lưu bản nháp');
+    expect(fixture.nativeElement.textContent).not.toContain('Xem trước thay đổi');
+    expect(api.previewGlossaryRevision).not.toHaveBeenCalled();
+  });
+
+  it('previews only the saved latest snapshot and keeps lint separate from sample diagnostics', async () => {
+    const fixture = TestBed.createComponent(GlossaryEditorPageComponent);
+    fixture.detectChanges();
+    await vi.waitFor(() => {
+      fixture.detectChanges();
+      expect(fixture.nativeElement.textContent).toContain('Xem trước thay đổi');
+    });
+    const sample = fixture.nativeElement.querySelector(
+      '.glossary-editor-preview-sample textarea',
+    ) as HTMLTextAreaElement;
+    sample.value = 'Golden Core appears.';
+    sample.dispatchEvent(new Event('input', { bubbles: true }));
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    const previewButton = fixture.nativeElement.querySelector(
+      '.glossary-editor-preview-actions button',
+    ) as HTMLButtonElement;
+    expect(previewButton.disabled).toBe(false);
+    previewButton.click();
+
+    await vi.waitFor(() => {
+      fixture.detectChanges();
+      expect(fixture.nativeElement.textContent).toContain('Không có lỗi lint chặn xuất bản');
+      expect(fixture.nativeElement.textContent).toContain('xung đột mẫu');
+      expect(fixture.nativeElement.textContent).toContain('Golden Core → Kim Đan');
+      expect(fixture.nativeElement.textContent).toContain('Vị trí 1');
+      expect(fixture.nativeElement.textContent).toContain('Ghi chú: Bậc Kim Đan trong hệ tu luyện');
+      expect(fixture.nativeElement.textContent).toContain('Thuật ngữ quá ngắn');
+    });
+    expect(api.previewGlossaryRevision).toHaveBeenCalledWith(
+      glossaryId,
+      latestRevisionId,
+      '"v4"',
+      'Golden Core appears.',
+    );
+    expect(api.createDraftRevision).not.toHaveBeenCalled();
+    expect(fixture.nativeElement.querySelector('#glossary-editor-terms-heading')).not.toBeNull();
+    expect(fixture.nativeElement.textContent).toContain('Bản đang áp dụng: 1');
+  });
+
+  it('blocks another preview after a stale response until the writer reloads', async () => {
+    api.previewGlossaryRevision.mockRejectedValue(
+      new GlossaryApiError('GLOSSARY_VERSION_STALE', 409, 'GLOSSARY_VERSION_STALE'),
+    );
+    const fixture = TestBed.createComponent(GlossaryEditorPageComponent);
+    fixture.detectChanges();
+    await vi.waitFor(() => {
+      fixture.detectChanges();
+      expect(fixture.nativeElement.textContent).toContain('Xem trước thay đổi');
+    });
+    const button = fixture.nativeElement.querySelector(
+      '.glossary-editor-preview-actions button',
+    ) as HTMLButtonElement;
+    button.click();
+    await vi.waitFor(() => {
+      fixture.detectChanges();
+      expect(fixture.nativeElement.textContent).toContain('Glossary đã thay đổi sau khi tải');
+    });
+    expect(
+      (
+        fixture.nativeElement.querySelector(
+          '.glossary-editor-preview-actions button',
+        ) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
+    expect(api.createDraftRevision).not.toHaveBeenCalled();
+    fixture.nativeElement.querySelector('.glossary-editor-preview-error button').click();
+    await vi.waitFor(() => expect(api.getGlossarySnapshot).toHaveBeenCalledTimes(2));
   });
 
   it('stops on a stale version and requires an explicit reload before continuing', async () => {
