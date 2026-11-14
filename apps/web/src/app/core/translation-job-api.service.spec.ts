@@ -211,6 +211,9 @@ describe('TranslationJobApiService', () => {
           sourceType: 'paragraph',
           sourceText: 'Nội dung nguyên tác.',
           fakeResultText: '[fake vi->en] Nội dung nguyên tác.',
+          editedText: null,
+          editRevision: 0,
+          editEtag: '"edit-0"',
         },
       ],
     };
@@ -250,6 +253,9 @@ describe('TranslationJobApiService', () => {
               sourceType: 'paragraph',
               sourceText: 'Nội dung nguyên tác.',
               fakeResultText: '[fake vi->en] Nội dung nguyên tác.',
+              editedText: null,
+              editRevision: 0,
+              editEtag: '"edit-0"',
             },
           ],
         },
@@ -284,6 +290,9 @@ describe('TranslationJobApiService', () => {
               sourceType: 'paragraph',
               sourceText: 'Nội dung nguyên tác.',
               fakeResultText: '[fake vi->en] Nội dung nguyên tác.',
+              editedText: null,
+              editRevision: 0,
+              editEtag: '"edit-0"',
             },
           ],
         },
@@ -317,6 +326,9 @@ describe('TranslationJobApiService', () => {
               sourceType: 'paragraph',
               sourceText: 'Nội dung nguyên tác.',
               fakeResultText: 'Nội dung nguyên tác.',
+              editedText: null,
+              editRevision: 0,
+              editEtag: '"edit-0"',
             },
           ],
         },
@@ -349,12 +361,133 @@ describe('TranslationJobApiService', () => {
             sourceType: 'paragraph',
             sourceText: 'Nội dung nguyên tác.',
             fakeResultText: '[fake vi->en] Nội dung nguyên tác.',
+            editedText: null,
+            editRevision: 0,
+            editEtag: '"edit-0"',
           },
         ],
       });
     await expect(cacheable).rejects.toMatchObject({
       status: 502,
       code: 'INVALID_TRANSLATION_RESPONSE',
+    });
+  });
+
+  it('saves a private candidate edit with fresh CSRF, ETag and idempotency headers', async () => {
+    const translatedText = 'Bản biên tập của tác giả.';
+    const result = api.saveCandidateSegmentEdit(
+      jobId,
+      sourceSegmentId,
+      translatedText,
+      '"edit-0"',
+      idempotencyKey,
+    );
+    await flushCsrf(http);
+    const request = http.expectOne(
+      `/api/v1/translation/jobs/${jobId}/candidate/segments/${sourceSegmentId}/edit`,
+    );
+    expect(request.request.method).toBe('PUT');
+    expect(request.request.body).toEqual({ translatedText });
+    expect(request.request.headers.get('X-CSRF-Token')).toBe(csrfToken);
+    expect(request.request.headers.get('If-Match')).toBe('"edit-0"');
+    expect(request.request.headers.get('Idempotency-Key')).toBe(idempotencyKey);
+    request.flush(
+      {
+        jobId,
+        candidateId,
+        sourceSegmentId,
+        editRevision: 1,
+        translatedText,
+        createdAt: '2026-11-15T10:00:00Z',
+        replayed: false,
+      },
+      {
+        status: 201,
+        statusText: 'Created',
+        headers: new HttpHeaders({ 'Cache-Control': 'no-store', ETag: '"edit-1"' }),
+      },
+    );
+
+    await expect(result).resolves.toEqual({
+      jobId,
+      candidateId,
+      sourceSegmentId,
+      editRevision: 1,
+      translatedText,
+      createdAt: '2026-11-15T10:00:00Z',
+      replayed: false,
+      editEtag: '"edit-1"',
+    });
+
+    const replay = api.saveCandidateSegmentEdit(
+      jobId,
+      sourceSegmentId,
+      translatedText,
+      '"edit-0"',
+      idempotencyKey,
+    );
+    await flushCsrf(http);
+    const replayRequest = http.expectOne(
+      `/api/v1/translation/jobs/${jobId}/candidate/segments/${sourceSegmentId}/edit`,
+    );
+    replayRequest.flush(
+      {
+        jobId,
+        candidateId,
+        sourceSegmentId,
+        editRevision: 1,
+        translatedText,
+        createdAt: '2026-11-15T10:00:00Z',
+        replayed: true,
+      },
+      {
+        status: 200,
+        statusText: 'OK',
+        headers: new HttpHeaders({ 'Cache-Control': 'no-store', ETag: '"edit-1"' }),
+      },
+    );
+    await expect(replay).resolves.toMatchObject({ replayed: true, editEtag: '"edit-1"' });
+  });
+
+  it('rejects invalid edit input locally and exposes the server ETag for stale resolution', async () => {
+    await expect(
+      api.saveCandidateSegmentEdit(jobId, sourceSegmentId, ' \n ', '"edit-0"', idempotencyKey),
+    ).rejects.toMatchObject({ code: 'INVALID_TRANSLATION_EDIT' });
+    await expect(
+      api.saveCandidateSegmentEdit(jobId, sourceSegmentId, 'text', 'W/"edit-0"', idempotencyKey),
+    ).rejects.toMatchObject({ code: 'INVALID_TRANSLATION_EDIT' });
+    await expect(
+      api.saveCandidateSegmentEdit(
+        jobId,
+        sourceSegmentId,
+        '😀'.repeat(262_145),
+        '"edit-0"',
+        idempotencyKey,
+      ),
+    ).rejects.toMatchObject({ code: 'INVALID_TRANSLATION_EDIT' });
+    http.expectNone((request) => request.url.includes('/edit'));
+
+    const result = api.saveCandidateSegmentEdit(
+      jobId,
+      sourceSegmentId,
+      'Bản sửa',
+      '"edit-0"',
+      idempotencyKey,
+    );
+    await flushCsrf(http);
+    http
+      .expectOne((request) => request.url.includes('/edit'))
+      .flush(
+        {
+          code: 'TRANSLATION_EDIT_STALE',
+          currentEtag: '"edit-2"',
+        },
+        { status: 412, statusText: 'Precondition Failed' },
+      );
+    await expect(result).rejects.toMatchObject({
+      status: 412,
+      code: 'TRANSLATION_EDIT_STALE',
+      currentEtag: '"edit-2"',
     });
   });
 

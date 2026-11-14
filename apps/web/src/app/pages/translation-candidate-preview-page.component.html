@@ -10,6 +10,28 @@
       <p>{{ pageError() }}</p>
       <div class="translation-candidate-actions">
         <button class="button button-primary" type="button" (click)="refresh()">Thử tải lại</button>
+        @if (requiresSignIn()) {
+          <a
+            class="button button-outline"
+            [routerLink]="['/sign-in']"
+            [queryParams]="{
+              returnTo: '/app/translation/jobs/' + requestedJobId() + '/candidate',
+            }"
+          >
+            Đăng nhập lại
+          </a>
+        }
+        @if (requiresPolicyAcceptance()) {
+          <a
+            class="button button-outline"
+            [routerLink]="['/app/setup']"
+            [queryParams]="{
+              returnUrl: '/app/translation/jobs/' + requestedJobId() + '/candidate',
+            }"
+          >
+            Cập nhật chấp nhận chính sách
+          </a>
+        }
         <a class="button button-outline" [routerLink]="['/app/translation/jobs', requestedJobId()]">
           Về trạng thái job
         </a>
@@ -74,6 +96,168 @@
               <p>{{ segment.fakeResultText }}</p>
             </section>
           </div>
+          <section
+            class="translation-candidate-edit"
+            [class.translation-candidate-editing]="isEditing(segment.sourceSegmentId)"
+            [attr.aria-labelledby]="'edit-heading-' + segment.sourceSegmentId"
+          >
+            <div class="translation-candidate-edit-heading">
+              <div>
+                <h3 [id]="'edit-heading-' + segment.sourceSegmentId">Bản chỉnh sửa riêng tư</h3>
+                @if (segment.editedText !== null) {
+                  <p class="translation-candidate-edit-meta">
+                    Bản {{ segment.editRevision }} đã lưu · chưa xuất bản
+                  </p>
+                } @else {
+                  <p class="translation-candidate-edit-meta">Chưa có chỉnh sửa riêng được lưu</p>
+                }
+              </div>
+              @if (!isEditing(segment.sourceSegmentId)) {
+                <button
+                  #editButton
+                  class="button button-outline"
+                  type="button"
+                  [attr.data-segment-id]="segment.sourceSegmentId"
+                  [disabled]="activeSegmentId() !== null"
+                  (click)="openEditor(segment)"
+                >
+                  Sửa đoạn này
+                </button>
+              }
+            </div>
+
+            @if (isEditing(segment.sourceSegmentId)) {
+              @let draft = draftFor(segment.sourceSegmentId);
+              @if (segment.editedText !== null) {
+                <p class="translation-candidate-saved-edit">{{ segment.editedText }}</p>
+              } @else {
+                <p class="translation-candidate-edit-placeholder">
+                  Khi lưu, nội dung dưới đây sẽ trở thành bản chỉnh sửa riêng đầu tiên.
+                </p>
+              }
+              <label [for]="'edit-text-' + segment.sourceSegmentId">
+                Bản nháp chỉnh sửa cho phần {{ segment.ordinal }}
+              </label>
+              <textarea
+                #segmentEditor
+                [attr.data-segment-id]="segment.sourceSegmentId"
+                [id]="'edit-text-' + segment.sourceSegmentId"
+                [value]="draft?.text ?? ''"
+                [attr.aria-describedby]="editorDescribedBy(segment.sourceSegmentId)"
+                [attr.aria-invalid]="
+                  draft && (draft.text.trim().length === 0 || byteCount(draft.text) > 1048576)
+                    ? 'true'
+                    : null
+                "
+                [disabled]="draft?.state === 'saving' || draft?.state === 'uncertain'"
+                rows="7"
+                (input)="updateDraft(segment.sourceSegmentId, $event)"
+              ></textarea>
+              <div
+                class="translation-candidate-edit-help"
+                [id]="'edit-help-' + segment.sourceSegmentId"
+              >
+                <span>{{ byteCount(draft?.text ?? '') | number }} / 1,048,576 byte UTF-8</span>
+                <span>Nội dung chỉ lưu khi bạn chọn “Lưu chỉnh sửa”.</span>
+              </div>
+              @if (draft?.text?.trim()?.length === 0) {
+                <p
+                  class="translation-candidate-edit-validation"
+                  [id]="'edit-validation-' + segment.sourceSegmentId"
+                  role="alert"
+                >
+                  Hãy nhập nội dung trước khi lưu.
+                </p>
+              } @else if (draft && byteCount(draft.text) > 1048576) {
+                <p
+                  class="translation-candidate-edit-validation"
+                  [id]="'edit-validation-' + segment.sourceSegmentId"
+                  role="alert"
+                >
+                  Bản chỉnh sửa vượt quá giới hạn 1 MiB UTF-8.
+                </p>
+              }
+              @if (draft?.message; as message) {
+                <p
+                  class="translation-candidate-edit-message"
+                  [class.translation-candidate-edit-message-error]="draft?.state !== 'editing'"
+                  [id]="'edit-message-' + segment.sourceSegmentId"
+                  [attr.role]="
+                    draft?.state === 'uncertain' ||
+                    draft?.state === 'conflict' ||
+                    draft?.state === 'source-stale'
+                      ? 'alert'
+                      : null
+                  "
+                >
+                  {{ message }}
+                </p>
+              }
+              @if (draft?.state === 'conflict') {
+                <div class="translation-candidate-conflict-actions">
+                  <button
+                    class="button button-outline"
+                    type="button"
+                    (click)="refreshEditVersion(segment.sourceSegmentId)"
+                    [disabled]="pageBusy()"
+                  >
+                    Tải bản mới nhất
+                  </button>
+                  @if (draft?.currentEtag && segment.editEtag === draft?.currentEtag) {
+                    <button
+                      class="button button-outline"
+                      type="button"
+                      (click)="useLatestEdit(segment.sourceSegmentId)"
+                    >
+                      Dùng bản đã lưu mới
+                    </button>
+                    <button
+                      class="button button-primary"
+                      type="button"
+                      (click)="keepDraftOnLatest(segment.sourceSegmentId)"
+                    >
+                      Giữ bản nháp của tôi
+                    </button>
+                  }
+                </div>
+              } @else if (draft?.state === 'refresh') {
+                <button
+                  class="button button-outline"
+                  type="button"
+                  (click)="refreshEditVersion(segment.sourceSegmentId)"
+                  [disabled]="pageBusy()"
+                >
+                  Tải bản mới nhất trước khi lưu tiếp
+                </button>
+              }
+              <div class="translation-candidate-edit-actions">
+                <button
+                  class="button button-primary"
+                  type="button"
+                  [disabled]="!canSave(segment.sourceSegmentId)"
+                  (click)="saveEdit(segment.sourceSegmentId)"
+                >
+                  @if (draft?.state === 'saving') {
+                    Đang lưu…
+                  } @else if (draft?.state === 'uncertain') {
+                    Gửi lại đúng lần lưu
+                  } @else {
+                    Lưu chỉnh sửa
+                  }
+                </button>
+                <button
+                  class="button button-outline"
+                  type="button"
+                  [disabled]="draft?.state === 'saving'"
+                  (click)="cancelEdit(segment.sourceSegmentId)"
+                >
+                  Hủy
+                </button>
+              </div>
+            } @else if (segment.editedText !== null) {
+              <p class="translation-candidate-saved-edit">{{ segment.editedText }}</p>
+            }
+          </section>
         </article>
       }
     </section>

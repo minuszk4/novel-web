@@ -174,13 +174,21 @@ test('fake-local Reader preview reaches a private candidate through real API and
   const candidateText = await candidateResponse.text();
   const candidateBody = JSON.parse(candidateText) as {
     jobId: string;
+    candidateId: string;
     providerId: string;
     candidateStatus: string;
     sourceRevisionCurrent: boolean;
     pageOffset: number;
     pageLimit: number;
     totalSegments: number;
-    segments: { sourceText: string; fakeResultText: string }[];
+    segments: {
+      sourceSegmentId: string;
+      sourceText: string;
+      fakeResultText: string;
+      editedText: string | null;
+      editRevision: number;
+      editEtag: string;
+    }[];
   };
   expect(candidateBody).toMatchObject({
     jobId: enqueueBody.jobId,
@@ -198,6 +206,9 @@ test('fake-local Reader preview reaches a private candidate through real API and
       sourceType: 'paragraph',
       sourceText,
       fakeResultText: `[fake en->vi] ${sourceText}`,
+      editedText: null,
+      editRevision: 0,
+      editEtag: '"edit-0"',
     },
   ]);
   expect(candidateText).not.toMatch(/"(?:ownerId|sourcePath|translatedHtml|html)"\s*:/i);
@@ -207,6 +218,56 @@ test('fake-local Reader preview reaches a private candidate through real API and
   await expect(page.getByText(`[fake en->vi] ${sourceText}`, { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Phần trước' })).toBeDisabled();
   await expect(page.getByRole('button', { name: 'Phần tiếp' })).toBeDisabled();
+  await expectNoAxeViolations(page);
+
+  const editText = 'Writer correction persisted through the private edit API.';
+  const editResponsePromise = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'PUT' &&
+      new URL(response.url()).pathname ===
+        `${statusPath}/candidate/segments/${candidateBody.segments[0].sourceSegmentId}/edit`,
+  );
+  const refreshedCandidatePromise = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'GET' &&
+      new URL(response.url()).pathname === `${statusPath}/candidate`,
+  );
+  await page.getByRole('button', { name: 'Sửa đoạn này' }).click();
+  const candidateEditor = page.getByRole('textbox', { name: 'Bản nháp chỉnh sửa cho phần 1' });
+  await expect(candidateEditor).toBeFocused();
+  await candidateEditor.fill(editText);
+  await page.getByRole('button', { name: 'Lưu chỉnh sửa' }).click();
+  const editResponse = await editResponsePromise;
+  expect(editResponse.status()).toBe(201);
+  expect(editResponse.headers()['cache-control']).toContain('no-store');
+  expect(editResponse.headers().etag).toBe('"edit-1"');
+  expect(editResponse.request().headers()['x-csrf-token']).toBe(csrfToken);
+  expect(editResponse.request().headers()['if-match']).toBe('"edit-0"');
+  expect(editResponse.request().headers()['idempotency-key']).toMatch(/^[A-Za-z0-9._~-]{16,128}$/);
+  expect(editResponse.request().postDataJSON()).toEqual({ translatedText: editText });
+  expect(await editResponse.json()).toMatchObject({
+    jobId: enqueueBody.jobId,
+    candidateId: candidateBody.candidateId,
+    sourceSegmentId: candidateBody.segments[0].sourceSegmentId,
+    editRevision: 1,
+    translatedText: editText,
+    replayed: false,
+  });
+  const refreshedCandidate = await refreshedCandidatePromise;
+  expect(refreshedCandidate.status()).toBe(200);
+  expect(refreshedCandidate.headers()['cache-control']).toContain('no-store');
+  const refreshedBody = (await refreshedCandidate.json()) as typeof candidateBody;
+  expect(refreshedBody.segments[0]).toMatchObject({
+    sourceText,
+    fakeResultText: `[fake en->vi] ${sourceText}`,
+    editedText: editText,
+    editRevision: 1,
+    editEtag: '"edit-1"',
+  });
+  await expect(page.getByText(editText, { exact: true })).toBeVisible();
+  await expect(page.getByText('Bản 1 đã lưu · chưa xuất bản')).toBeVisible();
+  await expect(page.getByText(sourceText, { exact: true })).toBeVisible();
+  await expect(page.getByText(`[fake en->vi] ${sourceText}`, { exact: true })).toBeVisible();
   await expectNoAxeViolations(page);
 
   const deskListPromise = page.waitForResponse(

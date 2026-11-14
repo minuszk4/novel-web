@@ -92,6 +92,20 @@ export interface TranslationCandidatePreviewSegment {
   sourceType: 'paragraph' | 'heading' | 'quote';
   sourceText: string;
   fakeResultText: string;
+  editedText: string | null;
+  editRevision: number;
+  editEtag: string;
+}
+
+export interface TranslationCandidateEditReceipt {
+  jobId: string;
+  candidateId: string;
+  sourceSegmentId: string;
+  editRevision: number;
+  translatedText: string;
+  createdAt: string;
+  replayed: boolean;
+  editEtag: string;
 }
 
 export interface TranslationActionReceipt {
@@ -109,6 +123,7 @@ const csrfUrl = '/api/v1/auth/csrf';
 const requestTimeoutMs = 10_000;
 const csrfTokenPattern = /^[A-Za-z0-9_-]{43}$/;
 const idempotencyKeyPattern = /^[A-Za-z0-9._~-]{16,128}$/;
+const editEtagPattern = /^"edit-(0|[1-9]\d{0,9})"$/;
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const jobStates = new Set<TranslationJobState>([
   'queued',
@@ -246,6 +261,53 @@ export class TranslationJobApiService {
     }
   }
 
+  async saveCandidateSegmentEdit(
+    jobId: string,
+    sourceSegmentId: string,
+    translatedText: string,
+    ifMatch: string,
+    idempotencyKey: string,
+  ): Promise<TranslationCandidateEditReceipt> {
+    if (
+      !isUuid(jobId) ||
+      !isUuid(sourceSegmentId) ||
+      typeof translatedText !== 'string' ||
+      translatedText.trim().length === 0 ||
+      new TextEncoder().encode(translatedText).byteLength > 1_048_576 ||
+      !isValidEditEtag(ifMatch) ||
+      !isValidIdempotencyKey(idempotencyKey)
+    ) {
+      throw new TranslationJobApiError(400, 'INVALID_TRANSLATION_EDIT');
+    }
+    try {
+      const response = await firstValueFrom(
+        this.http
+          .put<unknown>(
+            `${jobsUrl}/${jobId}/candidate/segments/${sourceSegmentId}/edit`,
+            { translatedText },
+            {
+              headers: (await this.csrfHeaders())
+                .set('If-Match', ifMatch)
+                .set('Idempotency-Key', idempotencyKey),
+              observe: 'response',
+            },
+          )
+          .pipe(timeout(requestTimeoutMs)),
+      );
+      if (!response.headers.get('Cache-Control')?.toLowerCase().includes('no-store')) {
+        throw new TranslationJobApiError(502, 'INVALID_TRANSLATION_RESPONSE');
+      }
+      const receipt = parseCandidateEdit(response.body, jobId, sourceSegmentId, translatedText);
+      const expectedStatus = receipt.replayed ? 200 : 201;
+      if (response.status !== expectedStatus || response.headers.get('ETag') !== receipt.editEtag) {
+        throw new TranslationJobApiError(502, 'INVALID_TRANSLATION_RESPONSE');
+      }
+      return receipt;
+    } catch (error) {
+      throw toApiError(error);
+    }
+  }
+
   async retry(jobId: string, idempotencyKey: string): Promise<TranslationActionReceipt> {
     return this.postAction(`${jobsUrl}/${validatedJobId(jobId)}/retry`, idempotencyKey, 'retry');
   }
@@ -298,6 +360,7 @@ export class TranslationJobApiError extends Error {
   constructor(
     readonly status: number,
     readonly code: string | null,
+    readonly currentEtag: string | null = null,
   ) {
     super(code ?? 'TRANSLATION_UNAVAILABLE');
     this.name = 'TranslationJobApiError';
@@ -494,6 +557,9 @@ function parseCandidatePreview(
         'sourceType',
         'sourceText',
         'fakeResultText',
+        'editedText',
+        'editRevision',
+        'editEtag',
       ])
     ) {
       throw new TranslationJobApiError(502, 'INVALID_TRANSLATION_RESPONSE');
@@ -501,6 +567,9 @@ function parseCandidatePreview(
     const sourceType = segment['sourceType'];
     const sourceText = segment['sourceText'];
     const fakeResultText = segment['fakeResultText'];
+    const editedText = segment['editedText'];
+    const editRevision = segment['editRevision'];
+    const editEtag = segment['editEtag'];
     if (
       !isUuid(segment['sourceSegmentId']) ||
       segmentIds.has(segment['sourceSegmentId']) ||
@@ -512,7 +581,17 @@ function parseCandidatePreview(
       countCodePoints(sourceText) > 4000 ||
       typeof fakeResultText !== 'string' ||
       countCodePoints(fakeResultText) > 4016 ||
-      !fakeResultText.startsWith(`[fake ${value['sourceLanguage']}->${value['targetLanguage']}] `)
+      !fakeResultText.startsWith(
+        `[fake ${value['sourceLanguage']}->${value['targetLanguage']}] `,
+      ) ||
+      !(editedText === null || typeof editedText === 'string') ||
+      (typeof editedText === 'string' &&
+        (editedText.trim().length === 0 ||
+          new TextEncoder().encode(editedText).byteLength > 1_048_576)) ||
+      !isNonNegativeInteger(editRevision) ||
+      !isValidEditEtag(editEtag) ||
+      editEtag !== `"edit-${editRevision}"` ||
+      (editRevision === 0) !== (editedText === null)
     ) {
       throw new TranslationJobApiError(502, 'INVALID_TRANSLATION_RESPONSE');
     }
@@ -524,9 +603,45 @@ function parseCandidatePreview(
       sourceType: sourceType as TranslationCandidatePreviewSegment['sourceType'],
       sourceText,
       fakeResultText,
+      editedText,
+      editRevision,
+      editEtag,
     });
   }
   return { ...(value as unknown as Omit<TranslationCandidatePreview, 'segments'>), segments };
+}
+
+function parseCandidateEdit(
+  value: unknown,
+  expectedJobId: string,
+  expectedSegmentId: string,
+  expectedText: string,
+): TranslationCandidateEditReceipt {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, [
+      'jobId',
+      'candidateId',
+      'sourceSegmentId',
+      'editRevision',
+      'translatedText',
+      'createdAt',
+      'replayed',
+    ]) ||
+    value['jobId'] !== expectedJobId ||
+    !isUuid(value['candidateId']) ||
+    value['sourceSegmentId'] !== expectedSegmentId ||
+    !isPositiveInteger(value['editRevision']) ||
+    value['translatedText'] !== expectedText ||
+    !isInstant(value['createdAt']) ||
+    typeof value['replayed'] !== 'boolean'
+  ) {
+    throw new TranslationJobApiError(502, 'INVALID_TRANSLATION_RESPONSE');
+  }
+  return {
+    ...(value as unknown as Omit<TranslationCandidateEditReceipt, 'editEtag'>),
+    editEtag: `"edit-${value['editRevision']}"`,
+  };
 }
 
 function parseReceipt(value: unknown, action: 'retry' | 'cancel'): TranslationActionReceipt {
@@ -564,7 +679,11 @@ function toApiError(error: unknown): TranslationJobApiError {
     return new TranslationJobApiError(0, 'TRANSLATION_UNAVAILABLE');
   }
   const code = isRecord(error.error) && isString(error.error['code']) ? error.error['code'] : null;
-  return new TranslationJobApiError(error.status, code);
+  const currentEtag =
+    isRecord(error.error) && isValidEditEtag(error.error['currentEtag'])
+      ? error.error['currentEtag']
+      : null;
+  return new TranslationJobApiError(error.status, code, currentEtag);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -622,4 +741,8 @@ function isNullableInstant(value: unknown): value is string | null {
 
 function isValidIdempotencyKey(value: string): boolean {
   return typeof value === 'string' && idempotencyKeyPattern.test(value);
+}
+
+function isValidEditEtag(value: unknown): value is string {
+  return typeof value === 'string' && editEtagPattern.test(value);
 }

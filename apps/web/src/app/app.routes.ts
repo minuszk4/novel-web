@@ -12,6 +12,7 @@ import { WorkDetailPageComponent } from './pages/work-detail-page.component';
 import { policyConsentGuard } from './core/policy-consent.guard';
 import { glossaryEditorUnsavedGuard } from './pages/glossary-editor-unsaved.guard';
 import { authoringChapterEditorUnsavedGuard } from './pages/authoring-chapter-editor-unsaved.guard';
+import { translationCandidateEditUnsavedGuard } from './pages/translation-candidate-edit-unsaved.guard';
 
 export const routes: Routes = [
   { path: '', component: LandingPageComponent, title: 'Novel — Đọc theo cách của bạn' },
@@ -112,6 +113,7 @@ export const routes: Routes = [
           import('./pages/translation-candidate-preview-page.component').then(
             (page) => page.TranslationCandidatePreviewPageComponent,
           ),
+        canDeactivate: [translationCandidateEditUnsavedGuard],
         title: 'Đối chiếu candidate giả — Novel',
       },
       {
