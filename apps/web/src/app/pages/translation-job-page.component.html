@@ -36,6 +36,16 @@
       </p>
     </aside>
 
+    @if (sourceIsStale) {
+      <div class="translation-job-info" role="status">
+        <strong>Chương đã thay đổi kể từ khi bản thử bắt đầu.</strong>
+        <p>
+          Job này gắn với phiên bản cũ nên không thể thử lại. Bạn vẫn có thể mở chương để đọc phiên
+          bản hiện tại.
+        </p>
+      </div>
+    }
+
     <section class="translation-job-card" aria-labelledby="translation-job-status-heading">
       <div class="translation-job-status-row">
         <div>

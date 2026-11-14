@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 6.22.0
+  version: 6.23.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -3326,7 +3326,8 @@ paths:
       x-implementation-status: local-preview
       summary: Read translation job progress metadata
       description: >-
-        Returns only identifiers, authorized work/chapter titles and ordinal, a writer-action capability flag,
+        Returns only identifiers, whether the job source is still the current ready chapter revision, authorized
+        work/chapter titles and ordinal, a writer-action capability flag,
         language pair, stable state/failure code, unit counters and candidate status; source and translated text
         are never returned. Requires readable access to the containing library and current Terms/Privacy
         acceptance. Responses are no-store. Active jobs include Retry-After: 2 for polling.
@@ -3543,7 +3544,7 @@ components:
         job:
           type: object
           additionalProperties: false
-          required: [id, workId, chapterId, sourceRevisionId, workTitle, chapterTitle, chapterOrdinal, canManage, sourceLanguage, targetLanguage, providerId, status, totalUnits, completedUnits, failedUnits, queuedUnits, runningUnits, retryWaitUnits, cancelledUnits, failureCode, candidateId, candidateStatus, createdAt, updatedAt, startedAt, completedAt, cancelRequestedAt]
+          required: [id, workId, chapterId, sourceRevisionId, sourceRevisionCurrent, workTitle, chapterTitle, chapterOrdinal, canManage, sourceLanguage, targetLanguage, providerId, status, totalUnits, completedUnits, failedUnits, queuedUnits, runningUnits, retryWaitUnits, cancelledUnits, failureCode, candidateId, candidateStatus, createdAt, updatedAt, startedAt, completedAt, cancelRequestedAt]
           properties:
             id:
               type: string
@@ -3557,6 +3558,9 @@ components:
             sourceRevisionId:
               type: string
               format: uuid
+            sourceRevisionCurrent:
+              type: boolean
+              description: True only when the job's source revision is the chapter's current ready revision. A stale revision must not be retried.
             workTitle:
               type: string
             chapterTitle:

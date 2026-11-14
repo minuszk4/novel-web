@@ -1400,6 +1400,7 @@ test('account Reader starts and tracks a clearly fake local translation preview'
         workId,
         chapterId: chapterIds[0],
         sourceRevisionId: revisionId,
+        sourceRevisionCurrent: true,
         workTitle: work.title,
         chapterTitle: chapters[0].title,
         chapterOrdinal: 1,
@@ -1485,6 +1486,7 @@ test('translation job confirms writer cancellation and returns a terminal status
           workId,
           chapterId: chapterIds[0],
           sourceRevisionId: revisionId,
+          sourceRevisionCurrent: true,
           workTitle: work.title,
           chapterTitle: chapters[0].title,
           chapterOrdinal: 1,
@@ -1552,6 +1554,60 @@ test('translation job confirms writer cancellation and returns a terminal status
 
   await expect(page.getByRole('heading', { name: 'Đã dừng bản thử' })).toBeVisible();
   await expect(page.getByText('100%')).toBeVisible();
+  await expectNoAxeViolations(page);
+});
+
+test('a failed stale preview keeps the current source chapter readable', async ({ page }) => {
+  await page.setViewportSize({ width: 360, height: 800 });
+  await installReaderRoutes(page, 200, false);
+  const jobId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+
+  await page.route(`**/api/v1/translation/jobs/${jobId}`, (route) =>
+    json(route, {
+      job: {
+        id: jobId,
+        workId,
+        chapterId: chapterIds[0],
+        sourceRevisionId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        sourceRevisionCurrent: false,
+        workTitle: work.title,
+        chapterTitle: chapters[0].title,
+        chapterOrdinal: 1,
+        canManage: true,
+        sourceLanguage: 'vi',
+        targetLanguage: 'en',
+        providerId: 'fake-local',
+        status: 'failed',
+        totalUnits: 1,
+        completedUnits: 0,
+        failedUnits: 1,
+        queuedUnits: 0,
+        runningUnits: 0,
+        retryWaitUnits: 0,
+        cancelledUnits: 0,
+        failureCode: 'TRANSLATION_SOURCE_STALE',
+        candidateId: null,
+        candidateStatus: null,
+        createdAt: '2026-11-14T10:00:00Z',
+        updatedAt: '2026-11-14T10:00:01Z',
+        startedAt: '2026-11-14T10:00:00Z',
+        completedAt: '2026-11-14T10:00:01Z',
+        cancelRequestedAt: null,
+      },
+      terminalUnits: 1,
+      progressPercent: 100,
+    }),
+  );
+
+  await page.goto(`/app/translation/jobs/${jobId}`);
+  await expect(page.getByRole('heading', { name: 'Bản thử gặp lỗi' })).toBeVisible();
+  await expect(page.getByText('Chương đã thay đổi kể từ khi bản thử bắt đầu.')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Thử lại phần lỗi' })).toHaveCount(0);
+  await expectNoAxeViolations(page);
+
+  await page.getByRole('link', { name: 'Quay lại chương' }).click();
+  await expect(page).toHaveURL(`/app/reader/${workId}/${chapterIds[0]}`);
+  await expect(page.getByText('Một đoạn văn bản riêng tư.')).toBeVisible();
   await expectNoAxeViolations(page);
 });
 

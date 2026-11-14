@@ -18,6 +18,7 @@ const status = {
     workId,
     chapterId,
     sourceRevisionId: revisionId,
+    sourceRevisionCurrent: true,
     workTitle: 'Tác phẩm riêng tư',
     chapterTitle: 'Chương một',
     chapterOrdinal: 1,

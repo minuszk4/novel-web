@@ -20,6 +20,7 @@ export interface TranslationJobStatus {
     workId: string;
     chapterId: string;
     sourceRevisionId: string;
+    sourceRevisionCurrent: boolean;
     workTitle: string;
     chapterTitle: string;
     chapterOrdinal: number;
@@ -232,6 +233,7 @@ function parseStatus(value: unknown): TranslationJobStatus {
     isUuid(job['workId']) &&
     isUuid(job['chapterId']) &&
     isUuid(job['sourceRevisionId']) &&
+    typeof job['sourceRevisionCurrent'] === 'boolean' &&
     isString(job['workTitle']) &&
     isString(job['chapterTitle']) &&
     isPositiveInteger(job['chapterOrdinal']) &&

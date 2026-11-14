@@ -20,6 +20,7 @@ const makeStatus = (statusName: string, canManage = false): TranslationJobStatus
     workId,
     chapterId,
     sourceRevisionId: revisionId,
+    sourceRevisionCurrent: true,
     workTitle: 'Tác phẩm riêng tư',
     chapterTitle: 'Cánh cửa mở',
     chapterOrdinal: 1,
@@ -116,6 +117,26 @@ describe('TranslationJobPageComponent', () => {
     fixture.detectChanges();
 
     expect(fixture.nativeElement.textContent).toContain('Thử lại phần lỗi');
+  });
+
+  it('keeps the current-source link and hides retry when the job revision is stale', async () => {
+    const status = makeStatus('failed', true);
+    status.job.sourceRevisionCurrent = false;
+    status.job.failureCode = 'TRANSLATION_SOURCE_STALE';
+    getStatus.mockResolvedValue({ status, retryAfterSeconds: null });
+    const fixture = TestBed.createComponent(TranslationJobPageComponent);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    expect(fixture.nativeElement.textContent).toContain(
+      'Chương đã thay đổi kể từ khi bản thử bắt đầu',
+    );
+    expect(fixture.nativeElement.textContent).toContain('đọc phiên bản hiện tại');
+    expect(fixture.nativeElement.textContent).not.toContain('Thử lại phần lỗi');
+    const link: HTMLAnchorElement | null =
+      fixture.nativeElement.querySelector('.translation-job-back');
+    expect(link?.getAttribute('href')).toContain(`/app/reader/${workId}/${chapterId}`);
   });
 
   it('shows a clear private-unavailable state for a concealed 404', async () => {

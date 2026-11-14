@@ -29,6 +29,9 @@ public class TranslationJobStatusRepository {
             connection.prepareStatement(
                 """
                     SELECT job.id, job.work_id, job.chapter_id, job.source_revision_id,
+                           (chapter.status = 'ready' AND
+                            job.source_revision_id IS NOT DISTINCT FROM chapter.source_revision_id)
+                             AS source_revision_current,
                            work.title AS work_title, chapter.title AS chapter_title,
                            chapter.ordinal AS chapter_ordinal,
                            can_access_library(library.id, actor.id, TRUE) AS can_manage,
@@ -54,7 +57,8 @@ public class TranslationJobStatusRepository {
                     WHERE job.id = ? AND work.deleted_at IS NULL AND library.deleted_at IS NULL
                       AND can_access_library(library.id, actor.id, FALSE)
                     GROUP BY job.id, candidate.id, candidate.status, work.title, chapter.title,
-                             chapter.ordinal, library.id, actor.id
+                             chapter.ordinal, chapter.status, chapter.source_revision_id,
+                             library.id, actor.id
                     """)) {
       select.setObject(1, actorUserId);
       select.setObject(2, jobId);
@@ -66,6 +70,7 @@ public class TranslationJobStatusRepository {
                 row.getObject("work_id", UUID.class),
                 row.getObject("chapter_id", UUID.class),
                 row.getObject("source_revision_id", UUID.class),
+                row.getBoolean("source_revision_current"),
                 row.getString("work_title"),
                 row.getString("chapter_title"),
                 row.getInt("chapter_ordinal"),
@@ -105,6 +110,7 @@ public class TranslationJobStatusRepository {
       UUID workId,
       UUID chapterId,
       UUID sourceRevisionId,
+      boolean sourceRevisionCurrent,
       String workTitle,
       String chapterTitle,
       int chapterOrdinal,

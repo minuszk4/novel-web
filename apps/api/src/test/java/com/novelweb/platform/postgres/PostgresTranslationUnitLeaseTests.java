@@ -892,6 +892,7 @@ class PostgresTranslationUnitLeaseTests {
     TranslationJobStatusService.StatusResult queued =
         jobStatusService.findVisible(fixture.userId(), fixture.jobId()).orElseThrow();
     assertEquals("queued", queued.job().status());
+    assertTrue(queued.job().sourceRevisionCurrent());
     assertEquals("Synthetic translation source", queued.job().workTitle());
     assertEquals("Chapter 1", queued.job().chapterTitle());
     assertEquals(1, queued.job().chapterOrdinal());
@@ -920,6 +921,19 @@ class PostgresTranslationUnitLeaseTests {
     assertEquals("ready_for_review", review.job().candidateStatus());
     assertEquals(100, review.progressPercent());
     assertEquals(0, review.job().runningUnits());
+  }
+
+  @Test
+  void visibleJobStatusMarksAnOldSourceRevisionAsStale() throws Exception {
+    Fixture fixture = createQueuedJob(1);
+    UUID currentRevisionId = advanceCurrentSourceRevision(fixture);
+
+    TranslationJobStatusService.StatusResult stale =
+        jobStatusService.findVisible(fixture.userId(), fixture.jobId()).orElseThrow();
+
+    assertFalse(stale.job().sourceRevisionCurrent());
+    assertTrue(stale.job().canManage());
+    assertNotEquals(stale.job().sourceRevisionId(), currentRevisionId);
   }
 
   private Optional<TranslationUnitLeaseRepository.Lease> claimAfterBarrier(
@@ -1081,7 +1095,7 @@ class PostgresTranslationUnitLeaseTests {
     return userId;
   }
 
-  private void advanceCurrentSourceRevision(Fixture fixture) throws Exception {
+  private UUID advanceCurrentSourceRevision(Fixture fixture) throws Exception {
     UUID nextRevisionId = UUID.randomUUID();
     try (Connection connection = dataSource.getConnection()) {
       connection.setAutoCommit(false);
@@ -1107,6 +1121,7 @@ class PostgresTranslationUnitLeaseTests {
         throw exception;
       }
     }
+    return nextRevisionId;
   }
 
   private void setUnitMaxAttempts(UUID unitId, int maxAttempts) throws SQLException {

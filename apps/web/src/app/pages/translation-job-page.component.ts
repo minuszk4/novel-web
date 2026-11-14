@@ -69,7 +69,18 @@ export class TranslationJobPageComponent {
 
   protected get canRetry(): boolean {
     const job = this.job();
-    return !!job && job.canManage && job.status === 'failed' && job.failedUnits > 0;
+    return (
+      !!job &&
+      job.sourceRevisionCurrent &&
+      job.canManage &&
+      job.status === 'failed' &&
+      job.failedUnits > 0
+    );
+  }
+
+  protected get sourceIsStale(): boolean {
+    const job = this.job();
+    return !!job && !job.sourceRevisionCurrent;
   }
 
   protected get canCancel(): boolean {
@@ -122,7 +133,9 @@ export class TranslationJobPageComponent {
   }
 
   protected failureMessage(): string | null {
-    const code = this.job()?.failureCode;
+    const job = this.job();
+    if (!job || !job.sourceRevisionCurrent) return null;
+    const code = job.failureCode;
     if (!code) return null;
     switch (code.toUpperCase()) {
       case 'INPUT_LIMIT_EXCEEDED':
@@ -131,10 +144,12 @@ export class TranslationJobPageComponent {
       case 'UNSUPPORTED_LANGUAGE':
       case 'UNSUPPORTED_LANGUAGE_PAIR':
         return 'Cặp ngôn ngữ này chưa được hỗ trợ trong bản xem thử.';
+      case 'TRANSLATION_SOURCE_STALE':
+        return 'Nguyên tác đã thay đổi kể từ khi bản xem thử bắt đầu.';
       case 'CANCELLED':
         return 'Bản xem thử đã được dừng.';
       default:
-        return 'Một unit của bản xem thử không xử lý được. Có thể thử lại nếu thao tác còn khả dụng.';
+        return 'Một phần của bản xem thử không xử lý được. Xem trạng thái và thao tác khả dụng bên dưới.';
     }
   }
 
