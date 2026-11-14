@@ -869,6 +869,14 @@ class PostgresSchemaIntegrationTests {
       assertEquals(glossaryId.toString(), createdBody.path("glossaryId").asText());
       assertEquals(1, createdBody.path("revisionNumber").asInt());
       assertTrue(createdBody.path("parentRevisionId").isNull());
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement activate =
+              connection.prepareStatement(
+                  "UPDATE glossaries SET active_revision_id = ? WHERE id = ?")) {
+        activate.setObject(1, UUID.fromString(createdBody.path("revisionId").asText()));
+        activate.setObject(2, glossaryId);
+        assertEquals(1, activate.executeUpdate());
+      }
 
       MvcResult stale =
           mockMvc
@@ -884,19 +892,161 @@ class PostgresSchemaIntegrationTests {
       assertEquals("\"v2\"", stale.getResponse().getHeader(HttpHeaders.ETAG));
       assertTrue(stale.getResponse().getContentAsString().contains("GLOSSARY_VERSION_STALE"));
 
+      UUID addedTermId = UUID.randomUUID();
+      GlossaryRevisionController.DraftRequest updatedAndAddedBody =
+          new GlossaryRevisionController.DraftRequest(
+              List.of(
+                  new GlossaryRevisionController.TermRequest(
+                      termId,
+                      "金丹",
+                      "Kim Đan cảnh giới",
+                      6,
+                      GlossaryMatcher.CasePolicy.INSENSITIVE,
+                      GlossaryMatcher.MatchMode.WHOLE_PHRASE,
+                      false,
+                      "updated rank name",
+                      List.of("Golden Core", "Jindan")),
+                  new GlossaryRevisionController.TermRequest(
+                      addedTermId,
+                      "筑基",
+                      "Trúc Cơ",
+                      3,
+                      GlossaryMatcher.CasePolicy.SENSITIVE,
+                      GlossaryMatcher.MatchMode.WHOLE_PHRASE,
+                      false,
+                      null,
+                      List.of())));
+      MvcResult updatedAndAdded =
+          mockMvc
+              .perform(
+                  post(route, glossaryId)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(HttpHeaders.IF_MATCH, "\"v2\"")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(objectMapper.writeValueAsString(updatedAndAddedBody)))
+              .andReturn();
+      assertEquals(201, updatedAndAdded.getResponse().getStatus());
+      assertEquals("\"v3\"", updatedAndAdded.getResponse().getHeader(HttpHeaders.ETAG));
+      JsonNode updatedAndAddedResult =
+          objectMapper.readTree(updatedAndAdded.getResponse().getContentAsString());
+      assertEquals(2, updatedAndAddedResult.path("revisionNumber").asInt());
+      assertEquals(
+          createdBody.path("revisionId").asText(),
+          updatedAndAddedResult.path("parentRevisionId").asText());
+
+      MvcResult latestAfterUpdateAndAdd =
+          mockMvc
+              .perform(
+                  get("/api/v1/glossaries/{glossaryId}/latest-revision", glossaryId)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(200, latestAfterUpdateAndAdd.getResponse().getStatus());
+      JsonNode updatedSnapshot =
+          objectMapper.readTree(latestAfterUpdateAndAdd.getResponse().getContentAsString());
+      assertEquals(2, updatedSnapshot.path("terms").size());
+      assertEquals(termId.toString(), updatedSnapshot.path("terms").get(0).path("id").asText());
+      assertEquals(
+          "Kim Đan cảnh giới", updatedSnapshot.path("terms").get(0).path("targetTerm").asText());
+      assertEquals(2, updatedSnapshot.path("terms").get(0).path("aliases").size());
+      assertEquals(
+          addedTermId.toString(), updatedSnapshot.path("terms").get(1).path("id").asText());
+
+      GlossaryRevisionController.DraftRequest deletedTermBody =
+          new GlossaryRevisionController.DraftRequest(
+              List.of(
+                  new GlossaryRevisionController.TermRequest(
+                      addedTermId,
+                      "筑基",
+                      "Trúc Cơ",
+                      3,
+                      GlossaryMatcher.CasePolicy.SENSITIVE,
+                      GlossaryMatcher.MatchMode.WHOLE_PHRASE,
+                      false,
+                      null,
+                      List.of())));
+      MvcResult deletedTerm =
+          mockMvc
+              .perform(
+                  post(route, glossaryId)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(HttpHeaders.IF_MATCH, "\"v3\"")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(objectMapper.writeValueAsString(deletedTermBody)))
+              .andReturn();
+      assertEquals(201, deletedTerm.getResponse().getStatus());
+      assertEquals("\"v4\"", deletedTerm.getResponse().getHeader(HttpHeaders.ETAG));
+      JsonNode deletedTermResult =
+          objectMapper.readTree(deletedTerm.getResponse().getContentAsString());
+      assertEquals(3, deletedTermResult.path("revisionNumber").asInt());
+      assertEquals(
+          updatedAndAddedResult.path("revisionId").asText(),
+          deletedTermResult.path("parentRevisionId").asText());
+
+      MvcResult latestAfterDelete =
+          mockMvc
+              .perform(
+                  get("/api/v1/glossaries/{glossaryId}/latest-revision", glossaryId)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(200, latestAfterDelete.getResponse().getStatus());
+      JsonNode deletedSnapshot =
+          objectMapper.readTree(latestAfterDelete.getResponse().getContentAsString());
+      assertEquals(1, deletedSnapshot.path("terms").size());
+      assertEquals(
+          addedTermId.toString(), deletedSnapshot.path("terms").get(0).path("id").asText());
+      assertTrue(
+          java.util.stream.StreamSupport.stream(deletedSnapshot.path("terms").spliterator(), false)
+              .noneMatch(term -> term.path("id").asText().equals(termId.toString())));
+
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement select =
+              connection.prepareStatement(
+                  """
+                      SELECT revision.revision_no, COUNT(term.id) AS term_count,
+                             MAX(CASE WHEN term.id = ? THEN term.target_term END) AS retained_target
+                      FROM glossary_revisions revision
+                      LEFT JOIN glossary_terms term ON term.revision_id = revision.id
+                      WHERE revision.glossary_id = ?
+                      GROUP BY revision.revision_no
+                      ORDER BY revision.revision_no
+                      """)) {
+        select.setObject(1, termId);
+        select.setObject(2, glossaryId);
+        try (ResultSet revisions = select.executeQuery()) {
+          assertTrue(revisions.next());
+          assertEquals(1, revisions.getInt("revision_no"));
+          assertEquals(1, revisions.getInt("term_count"));
+          assertEquals("Kim Đan", revisions.getString("retained_target"));
+          assertTrue(revisions.next());
+          assertEquals(2, revisions.getInt("revision_no"));
+          assertEquals(2, revisions.getInt("term_count"));
+          assertEquals("Kim Đan cảnh giới", revisions.getString("retained_target"));
+          assertTrue(revisions.next());
+          assertEquals(3, revisions.getInt("revision_no"));
+          assertEquals(1, revisions.getInt("term_count"));
+          assertNull(revisions.getString("retained_target"));
+          assertFalse(revisions.next());
+        }
+      }
+      GlossaryRepository.GlossarySnapshot activeSnapshot =
+          glossaryRepository.loadActiveRevision(ownerId, glossaryId).orElseThrow();
+      assertEquals(1, activeSnapshot.revisionNumber());
+      assertEquals("Kim Đan", activeSnapshot.terms().get(0).targetTerm());
+
       MvcResult outsider =
           mockMvc
               .perform(
                   post(route, glossaryId)
                       .cookie(outsiderCookie)
                       .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, outsiderCsrf)
-                      .header(HttpHeaders.IF_MATCH, "\"v2\"")
+                      .header(HttpHeaders.IF_MATCH, "\"v4\"")
                       .contentType(MediaType.APPLICATION_JSON)
                       .content(validJson))
               .andReturn();
       assertEquals(404, outsider.getResponse().getStatus());
       assertTrue(outsider.getResponse().getContentAsString().contains("NOT_FOUND"));
-      assertTrue(glossaryRepository.loadActiveRevision(ownerId, glossaryId).isEmpty());
     } finally {
       try (Connection connection = dataSource.getConnection();
           PreparedStatement delete =
