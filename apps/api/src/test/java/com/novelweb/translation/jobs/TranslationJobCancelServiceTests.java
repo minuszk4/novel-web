@@ -32,7 +32,7 @@ class TranslationJobCancelServiceTests {
   void cancelPassesOnlyAnActorAndJobScopedDigestToTheRepository() {
     UUID actorId = UUID.randomUUID();
     UUID jobId = UUID.randomUUID();
-    String idempotencyKey = "translation-cancel-key-0001";
+    String idempotencyKey = "00000000-0000-4000-8000-000000000005";
     TranslationJobCancelRepository.CancelResult result =
         new TranslationJobCancelRepository.CancelResult(
             jobId, "cancelled", 1, 0, false, UUID.randomUUID());

@@ -754,7 +754,10 @@ describe('GlossaryApiService', () => {
   });
 
   it('returns typed stale and key-reuse conflicts with the current glossary ETag', async () => {
-    const attempt = { requestBody: '{"format":"JSON"}', idempotencyKey: 'glossary-apply-key-0001' };
+    const attempt = {
+      requestBody: '{"format":"JSON"}',
+      idempotencyKey: '00000000-0000-4000-8000-000000000004',
+    };
     const pending = service.applyImport(glossaryId, '"v4"', attempt);
     http.expectOne({ method: 'GET', url: '/api/v1/auth/csrf' }).flush({ token: csrfToken });
     await Promise.resolve();
@@ -816,7 +819,7 @@ describe('GlossaryApiService', () => {
   it('surfaces idempotency-key misuse without hiding the current version', async () => {
     const attempt = {
       requestBody: '{"format":"JSON","fileContentBase64":"eA==","resolutions":[]}',
-      idempotencyKey: 'glossary-apply-key-0001',
+      idempotencyKey: '00000000-0000-4000-8000-000000000004',
     };
     const pending = service.applyImport(glossaryId, '"v4"', attempt);
     http.expectOne({ method: 'GET', url: '/api/v1/auth/csrf' }).flush({ token: csrfToken });

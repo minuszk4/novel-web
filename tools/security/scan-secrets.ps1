@@ -132,7 +132,8 @@ keywords = ["NOVEL_WEB_SECRET_CANARY_"]
     $snapshotResult = Invoke-GitleaksContainer @(
         'run', '--rm', '--network', 'none', '--read-only', '--cap-drop', 'ALL',
         '--security-opt', 'no-new-privileges', '--mount', $snapshotMount,
-        $image, 'dir', '--redact', '--no-banner', '/scan'
+        $image, 'dir', '--gitleaks-ignore-path', '/scan/.gitleaksignore',
+        '--redact', '--no-banner', '/scan'
     )
     if ($snapshotResult.ExitCode -ne 0) {
         Write-Output $snapshotResult.Output
@@ -148,7 +149,8 @@ keywords = ["NOVEL_WEB_SECRET_CANARY_"]
         $historyResult = Invoke-GitleaksContainer @(
             'run', '--rm', '--network', 'none', '--read-only', '--cap-drop', 'ALL',
             '--security-opt', 'no-new-privileges', '--mount', $historyMount,
-            $image, 'git', '--redact', '--no-banner', '--log-opts=--all', '/repo'
+            $image, 'git', '--gitleaks-ignore-path', '/repo/.gitleaksignore',
+            '--redact', '--no-banner', '--log-opts=--all', '/repo'
         )
         if ($historyResult.ExitCode -ne 0) {
             Write-Output $historyResult.Output

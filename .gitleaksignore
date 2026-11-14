@@ -1,0 +1,9 @@
+eedbc2fd7023ef154a755df454c58543d855ed96:apps/api/src/test/java/com/novelweb/platform/postgres/PostgresTranslationUnitLeaseTests.java:generic-api-key:67
+89e4b17aae77f746312673ae297260c3adeeff09:apps/api/src/test/java/com/novelweb/platform/postgres/PostgresTranslationUnitLeaseTests.java:generic-api-key:687
+89e4b17aae77f746312673ae297260c3adeeff09:apps/api/src/test/java/com/novelweb/translation/jobs/TranslationJobCancelServiceTests.java:generic-api-key:35
+98adcd76e1727f7df0afbf322f72fbc287e4a830:apps/web/src/app/pages/glossary-import-page.component.spec.ts:generic-api-key:178
+98adcd76e1727f7df0afbf322f72fbc287e4a830:apps/web/src/app/pages/glossary-import-page.component.spec.ts:generic-api-key:347
+5b22a23ded92262d1e9facf6013408f270810de5:apps/web/src/app/core/glossary-api.service.spec.ts:generic-api-key:262
+5b22a23ded92262d1e9facf6013408f270810de5:apps/web/src/app/core/glossary-api.service.spec.ts:generic-api-key:319
+530ca069562407d062f403514ab99b7cd8903965:apps/api/src/test/java/com/novelweb/platform/postgres/PostgresSchemaIntegrationTests.java:generic-api-key:1690
+530ca069562407d062f403514ab99b7cd8903965:apps/api/src/test/java/com/novelweb/platform/postgres/PostgresSchemaIntegrationTests.java:generic-api-key:1871

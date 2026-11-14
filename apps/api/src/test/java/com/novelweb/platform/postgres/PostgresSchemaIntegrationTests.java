@@ -2455,7 +2455,7 @@ class PostgresSchemaIntegrationTests {
                   post(applyRoute, glossaryId)
                       .cookie(editorCookie)
                       .header(HttpHeaders.IF_MATCH, "\"v4\"")
-                      .header("Idempotency-Key", "glossary-apply-missing-csrf-001")
+                      .header("Idempotency-Key", "00000000-0000-4000-8000-000000000001")
                       .contentType(MediaType.APPLICATION_JSON)
                       .content("{}"))
               .andReturn();
@@ -2636,7 +2636,7 @@ class PostgresSchemaIntegrationTests {
                       .cookie(editorCookie)
                       .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, editorCsrf)
                       .header(HttpHeaders.IF_MATCH, "\"v4\"")
-                      .header("Idempotency-Key", "glossary-apply-stale-key-001")
+                      .header("Idempotency-Key", "00000000-0000-4000-8000-000000000002")
                       .contentType(MediaType.APPLICATION_JSON)
                       .content(resolvedApplyBody))
               .andReturn();

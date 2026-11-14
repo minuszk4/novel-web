@@ -67,7 +67,7 @@ import org.springframework.test.context.ActiveProfiles;
 @org.springframework.test.context.TestPropertySource(
     properties = {
       "novel.translation.fake.enabled=true",
-      "novel.library.cursor.hmac-key=MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE"
+      "novel.library.cursor.hmac-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
     })
 @EnabledIfSystemProperty(named = "postgres.integration", matches = "true")
 class PostgresTranslationUnitLeaseTests {
@@ -738,7 +738,7 @@ class PostgresTranslationUnitLeaseTests {
   void queuedJobCanBeCancelledWithAnIdempotentIdentifierOnlyReceipt() throws Exception {
     Fixture fixture = createQueuedJob(1);
     UUID unitId = unitIds(fixture.jobId()).getFirst();
-    String idempotencyKey = "translation-cancel-key-0001";
+    String idempotencyKey = "00000000-0000-4000-8000-000000000006";
 
     TranslationJobCancelRepository.CancelResult cancelled =
         jobCancelService.cancel(fixture.userId(), fixture.jobId(), idempotencyKey);

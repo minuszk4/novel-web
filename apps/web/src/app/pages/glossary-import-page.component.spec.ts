@@ -175,7 +175,7 @@ describe('GlossaryImportPageComponent', () => {
       previewImport: vi.fn().mockResolvedValue(makePreview()),
       createApplyAttempt: vi.fn().mockResolvedValue({
         requestBody: '{"file":"same"}',
-        idempotencyKey: '123e4567-e89b-42d3-a456-426614174000',
+        idempotencyKey: '00000000-0000-4000-8000-000000000003',
       }),
       applyImport: vi.fn().mockResolvedValue(applyResult()),
     };
@@ -344,7 +344,7 @@ describe('GlossaryImportPageComponent', () => {
       .mockResolvedValueOnce(applyResult(true));
     const attempt = {
       requestBody: '{"file":"same"}',
-      idempotencyKey: '123e4567-e89b-42d3-a456-426614174000',
+      idempotencyKey: '00000000-0000-4000-8000-000000000003',
     };
     api.createApplyAttempt.mockResolvedValue(attempt);
     const fixture = await renderPage();

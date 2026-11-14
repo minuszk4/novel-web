@@ -10,6 +10,8 @@ pwsh -File .\tools\security\scan-secrets.ps1
 
 The script first creates a temporary synthetic canary and verifies that Gitleaks detects it while redacting it from output. It then scans Git-visible working-tree files and, after the repository has an initial commit, all reachable Git history. `git ls-files --exclude-standard` honors `.gitignore`, so local `.env`, `node_modules`, build output, and the ignored `.ai/` planning folder are not copied into the working-tree scan. A file that is force-added to Git is scanned.
 
+Both scans use the checked-in `.gitleaksignore`. It contains nine fingerprints for fixed test-only HMAC/idempotency fixtures found in older commits; it stores no matched or secret values. The corresponding current test fixtures use deterministic low-entropy values, so the working-tree scan stays clean. The ignore list suppresses only those exact historical fingerprints; newly introduced findings remain scan failures. Review additions as security-sensitive changes and do not use it for live credentials.
+
 Scanner output uses Gitleaks `--redact`. Treat any finding as a credential incident: revoke or rotate the credential, remove it from source and history as appropriate, then rerun the scan. Do not paste an unredacted secret into an issue, commit, or chat.
 
 The container tag and digest are intentionally explicit. Review the upstream release and platform digest before updating them.
