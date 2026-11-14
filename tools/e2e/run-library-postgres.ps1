@@ -46,6 +46,7 @@ $environmentNames = @(
     'NOVEL_WEB_CORS_ALLOWED_ORIGINS', 'NOVEL_FEATURE_CULTIVATION_ENABLED',
     'LIBRARY_LIVE_TEST_SESSION_TOKEN', 'LIBRARY_LIVE_TEST_LIBRARY_ID',
     'NOVEL_IMPORT_STAGING_ROOT', 'LIBRARY_LIVE_TEST_WORK_IDS', 'LIBRARY_LIVE_TEST_SCREENSHOT', 'READER_LIVE_TEST_WORK_ID',
+    'AUTHORING_LIVE_TEST_TITLE', 'AUTHORING_LIVE_TEST_SCREENSHOT',
     'READER_LIVE_TEST_CHAPTER_ID', 'READER_LIVE_TEST_SCREENSHOT',
     'WORK_DETAIL_LIVE_TEST_SCREENSHOT', 'PRIVATE_IMPORT_LIVE_TEST_SCREENSHOT',
     'GLOSSARY_LIVE_TEST_GLOSSARY_ID', 'GLOSSARY_LIVE_TEST_SCREENSHOT', 'GLOSSARY_EDITOR_LIVE_TEST_SCREENSHOT'
@@ -84,6 +85,7 @@ $glossaryId = [guid]::NewGuid()
 $glossaryActiveRevisionId = [guid]::NewGuid()
 $glossaryDraftRevisionId = [guid]::NewGuid()
 $glossaryTermId = [guid]::NewGuid()
+$authoringTitle = "Live E2E Authored Draft $userId"
 $readerSourceText = 'Live E2E source text is served from PostgreSQL.'
 $readerSourceHash = [Convert]::ToHexString(
     [System.Security.Cryptography.SHA256]::HashData([System.Text.Encoding]::UTF8.GetBytes($readerSourceText))
@@ -94,6 +96,7 @@ $workDetailScreenshotPath = Join-Path $evidenceDirectory 'account-work-detail-li
 $privateImportScreenshotPath = Join-Path $evidenceDirectory 'private-import-commit-live.png'
 $glossaryImportScreenshotPath = Join-Path $evidenceDirectory 'glossary-import-live.png'
 $glossaryEditorScreenshotPath = Join-Path $evidenceDirectory 'glossary-editor-live.png'
+$authoringScreenshotPath = Join-Path $evidenceDirectory 'authoring-create-live.png'
 $buildLog = Join-Path $evidenceDirectory 'api-build.log'
 $apiStdout = Join-Path $evidenceDirectory 'api-stdout.log'
 $apiStderr = Join-Path $evidenceDirectory 'api-stderr.log'
@@ -236,12 +239,21 @@ COMMIT;
     $env:GLOSSARY_LIVE_TEST_GLOSSARY_ID = [string]$glossaryId
     $env:GLOSSARY_LIVE_TEST_SCREENSHOT = $glossaryImportScreenshotPath
     $env:GLOSSARY_EDITOR_LIVE_TEST_SCREENSHOT = $glossaryEditorScreenshotPath
+    $env:AUTHORING_LIVE_TEST_TITLE = $authoringTitle
+    $env:AUTHORING_LIVE_TEST_SCREENSHOT = $authoringScreenshotPath
     Push-Location $webDirectory
     try {
-        & npm.cmd run test:e2e:postgres -- e2e/library-live-postgres.spec.ts e2e/reader-live-postgres.spec.ts e2e/work-detail-live-postgres.spec.ts e2e/private-import-live-postgres.spec.ts e2e/private-import-formats-live-postgres.spec.ts e2e/glossary-import-live-postgres.spec.ts e2e/cultivation-live-postgres.spec.ts *>&1 | Tee-Object -FilePath $e2eLog
+        & npm.cmd run test:e2e:postgres -- e2e/authoring-create-live-postgres.spec.ts e2e/library-live-postgres.spec.ts e2e/reader-live-postgres.spec.ts e2e/work-detail-live-postgres.spec.ts e2e/private-import-live-postgres.spec.ts e2e/private-import-formats-live-postgres.spec.ts e2e/glossary-import-live-postgres.spec.ts e2e/cultivation-live-postgres.spec.ts *>&1 | Tee-Object -FilePath $e2eLog
         $e2eExit = $LASTEXITCODE
     } finally { Pop-Location }
     if ($e2eExit -ne 0) { throw "Live FE/API/PostgreSQL Playwright journey failed (exit $e2eExit)." }
+
+    $authoringSummary = & $docker @composeArguments exec -T postgres psql -v ON_ERROR_STOP=1 -tA -U novelweb -d novelweb -c "SELECT COUNT(*)::text || '|' || COALESCE(bool_and(w.source_kind = 'authored' AND w.visibility = 'private' AND w.status = 'active' AND w.author = 'E2E Pen Name' AND w.source_language = 'vi' AND l.owner_user_id = w.owner_user_id AND l.visibility = 'private' AND l.workspace_id IS NULL), FALSE)::text || '|' || COALESCE(SUM((SELECT COUNT(*) FROM authoring_manuscript_creations c WHERE c.actor_user_id = '$userId' AND c.work_id = w.id)), 0)::text || '|' || COALESCE(SUM((SELECT COUNT(*) FROM chapters ch WHERE ch.work_id = w.id)), 0)::text || '|' || COALESCE(SUM((SELECT COUNT(*) FROM volumes v WHERE v.work_id = w.id)), 0)::text FROM works w JOIN libraries l ON l.id = w.library_id WHERE w.owner_user_id = '$userId' AND w.title = '$authoringTitle';"
+    if ($LASTEXITCODE -ne 0) { throw 'Could not verify the authored private draft in disposable PostgreSQL.' }
+    $authoringParts = ([string]$authoringSummary).Trim() -split '\|'
+    if ($authoringParts.Count -ne 5 -or $authoringParts[0] -ne '1' -or $authoringParts[1] -notin @('t', 'true') -or $authoringParts[2] -ne '1' -or $authoringParts[3] -ne '0' -or $authoringParts[4] -ne '0') {
+        throw "PostgreSQL authoring invariants failed after browser journey: $authoringSummary"
+    }
 
     $ledgerSummary = & $docker @composeArguments exec -T postgres psql -v ON_ERROR_STOP=1 -tA -U novelweb -d novelweb -c "SELECT COALESCE(SUM(xp_delta), 0)::text || '|' || COUNT(*)::text FROM cultivation_xp_ledger WHERE user_id = '$userId';"
     if ($LASTEXITCODE -ne 0) { throw 'Could not verify the cultivation XP ledger in disposable PostgreSQL.' }
@@ -305,6 +317,7 @@ COMMIT;
         '- API: built from the current workspace and started with the PostgreSQL profile'
         "- Schema: $appliedChangesets/$expectedChangesets Liquibase changesets applied before fixture setup"
         '- Browser: Playwright Chromium, Angular dev-server proxy to the real API'
+        '- Authoring: real authenticated metadata create, same-key replay, changed-payload 409, private authored work persisted, one idempotency receipt, zero volumes/chapters'
         '- Journey: session cookie/policy → rights receipt → upload/parse/preview/private commit → refreshed Library → Work Detail → Reader source/bookmark, then opt-in → server-timed Reader session → XP award → private profile/activity → glossary import/draft edit/revision preview'
         '- Cultivation feature flag: enabled only in this random disposable API process; prior process value restored during cleanup'
         "- PostgreSQL cultivation ledger: $cultivationLedgerXp XP across $cultivationLedgerEntries entries for the synthetic user"
@@ -313,7 +326,7 @@ COMMIT;
         "- Elapsed: $duration seconds"
         "- Cleanup: $cleanup"
         "- Staging cleanup: $stagingCleanup"
-        "- Screenshots: $([System.IO.Path]::GetFileName($screenshotPath)), $([System.IO.Path]::GetFileName($workDetailScreenshotPath)), $([System.IO.Path]::GetFileName($readerScreenshotPath)), $([System.IO.Path]::GetFileName($glossaryImportScreenshotPath)), $([System.IO.Path]::GetFileName($glossaryEditorScreenshotPath)), private-import-commit-live.png, private-import-detail-live.png, private-import-reader-live.png, private-import-html-commit-live.png, private-import-html-detail-live.png, private-import-html-reader-live.png, private-import-markdown-commit-live.png, private-import-markdown-detail-live.png, private-import-markdown-reader-live.png, private-import-epub-commit-live.png, private-import-epub-detail-live.png, private-import-epub-reader-live.png"
+        "- Screenshots: $([System.IO.Path]::GetFileName($screenshotPath)), $([System.IO.Path]::GetFileName($workDetailScreenshotPath)), $([System.IO.Path]::GetFileName($readerScreenshotPath)), $([System.IO.Path]::GetFileName($glossaryImportScreenshotPath)), $([System.IO.Path]::GetFileName($glossaryEditorScreenshotPath)), $([System.IO.Path]::GetFileName($authoringScreenshotPath)), private-import-commit-live.png, private-import-detail-live.png, private-import-reader-live.png, private-import-html-commit-live.png, private-import-html-detail-live.png, private-import-html-reader-live.png, private-import-markdown-commit-live.png, private-import-markdown-detail-live.png, private-import-markdown-reader-live.png, private-import-epub-commit-live.png, private-import-epub-detail-live.png, private-import-epub-reader-live.png"
         '- Logs: api-build.log, api-stdout.log, api-stderr.log, playwright.log'
         $(if ($failure) { "- Failure: $failure" } else { '- Failure: none' })
         ''

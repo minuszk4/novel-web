@@ -7,6 +7,7 @@ test('account library renders data from the real API and PostgreSQL session', as
   const libraryId = process.env['LIBRARY_LIVE_TEST_LIBRARY_ID'];
   const workIds = (process.env['LIBRARY_LIVE_TEST_WORK_IDS'] ?? '').split(',').filter(Boolean);
   const screenshotPath = process.env['LIBRARY_LIVE_TEST_SCREENSHOT'];
+  const authoredDraftTitle = process.env['AUTHORING_LIVE_TEST_TITLE'];
 
   test.skip(!sessionToken || !libraryId || workIds.length !== 2 || !screenshotPath,
     'run tools/e2e/run-library-postgres.ps1 to supply an isolated real API/database fixture');
@@ -39,7 +40,10 @@ test('account library renders data from the real API and PostgreSQL session', as
   await expect(page.getByText('Thư viện tài khoản được tải qua API')).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Live E2E Novel One' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Live E2E Novel Two' })).toBeVisible();
-  await expect(page.getByText('RIÊNG TƯ · TÀI KHOẢN')).toHaveCount(2);
+  await expect(page.getByText('RIÊNG TƯ · TÀI KHOẢN')).toHaveCount(authoredDraftTitle ? 3 : 2);
+  if (authoredDraftTitle) {
+    await expect(page.getByRole('heading', { name: authoredDraftTitle })).toBeVisible();
+  }
   await expect(page.getByLabel('Trạng thái đọc: Live E2E Novel One')).toHaveValue('want-to-read');
   await expect(page.getByLabel('Trạng thái đọc: Live E2E Novel Two')).toHaveValue('want-to-read');
 

@@ -3,7 +3,7 @@ import { defineConfig, devices } from '@playwright/test';
 export default defineConfig({
   testDir: './e2e',
   testMatch:
-    /(?:library|reader|work-detail|private-import(?:-formats)?|cultivation|glossary-import)-live-postgres\.spec\.ts/,
+    /(?:authoring-create|library|reader|work-detail|private-import(?:-formats)?|cultivation|glossary-import)-live-postgres\.spec\.ts/,
   fullyParallel: false,
   forbidOnly: true,
   retries: 0,
