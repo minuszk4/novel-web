@@ -93,7 +93,7 @@ try {
 
     Push-Location $apiDirectory
     try {
-        & .\mvnw.cmd -B -ntp -Ppostgres '-Dpostgres.integration=true' '-Dspring.profiles.active=postgres' '-Dtest=PostgresSchemaIntegrationTests,PostgresLegacyImportMigrationTests,PostgresTranslationJobSchemaTests' clean verify 2>&1 |
+        & .\mvnw.cmd -B -ntp -Ppostgres '-Dpostgres.integration=true' '-Dspring.profiles.active=postgres' '-Dtest=PostgresSchemaIntegrationTests,PostgresLegacyImportMigrationTests,PostgresTranslationJobSchemaTests,PostgresTranslationJobEnqueueTests' clean verify 2>&1 |
             Tee-Object -FilePath (Join-Path $evidenceDirectory 'postgres-maven-verify.log') | Out-Null
         $mavenExitCode = $LASTEXITCODE
     }
@@ -102,7 +102,8 @@ try {
     $testReportPaths = @(
         (Join-Path $apiDirectory 'target\surefire-reports\com.novelweb.platform.postgres.PostgresLegacyImportMigrationTests.txt'),
         (Join-Path $apiDirectory 'target\surefire-reports\com.novelweb.platform.postgres.PostgresSchemaIntegrationTests.txt'),
-        (Join-Path $apiDirectory 'target\surefire-reports\com.novelweb.platform.postgres.PostgresTranslationJobSchemaTests.txt')
+        (Join-Path $apiDirectory 'target\surefire-reports\com.novelweb.platform.postgres.PostgresTranslationJobSchemaTests.txt'),
+        (Join-Path $apiDirectory 'target\surefire-reports\com.novelweb.platform.postgres.PostgresTranslationJobEnqueueTests.txt')
     )
     $testSummaries = @()
     foreach ($testReportPath in $testReportPaths) {
