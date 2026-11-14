@@ -16,6 +16,7 @@ public final class MomoTestConfigurationValidator {
   private static final String SECRET_KEY = "MOMO_TEST_SECRET_KEY";
   private static final String BASE_URL_KEY = "MOMO_TEST_BASE_URL";
   private static final String IPN_URL_KEY = "MOMO_TEST_IPN_URL";
+  private static final String REDIRECT_URL_KEY = "MOMO_TEST_REDIRECT_URL";
   private static final String TEST_QUERY_PATH = "/v2/gateway/api/query";
 
   private MomoTestConfigurationValidator() {}
@@ -31,13 +32,21 @@ public final class MomoTestConfigurationValidator {
     if (environment == null || !environment.toLowerCase(Locale.ROOT).equals("test")) {
       problems.add(Problem.TEST_ENVIRONMENT_REQUIRED);
     }
-    if (isBlank(config.get(PARTNER_CODE_KEY))) problems.add(Problem.PARTNER_CODE_REQUIRED);
+    String partnerCode = config.get(PARTNER_CODE_KEY);
+    if (isBlank(partnerCode)) {
+      problems.add(Problem.PARTNER_CODE_REQUIRED);
+    } else if (partnerCode.length() > 50) {
+      problems.add(Problem.PARTNER_CODE_TOO_LONG);
+    }
     if (isBlank(config.get(ACCESS_KEY))) problems.add(Problem.ACCESS_KEY_REQUIRED);
     if (isBlank(config.get(SECRET_KEY))) problems.add(Problem.SECRET_KEY_REQUIRED);
     if (!hasAllowedTestBaseUrl(config.get(BASE_URL_KEY))) {
       problems.add(Problem.TEST_BASE_URL_NOT_ALLOWED);
     }
-    if (!isHttpsIpnUrl(config.get(IPN_URL_KEY))) problems.add(Problem.HTTPS_IPN_URL_REQUIRED);
+    if (!isHttpsCallbackUrl(config.get(IPN_URL_KEY))) problems.add(Problem.HTTPS_IPN_URL_REQUIRED);
+    if (!isHttpsCallbackUrl(config.get(REDIRECT_URL_KEY))) {
+      problems.add(Problem.HTTPS_REDIRECT_URL_REQUIRED);
+    }
 
     return new ValidationResult(problems);
   }
@@ -49,10 +58,10 @@ public final class MomoTestConfigurationValidator {
     return MomoTestQueryUrlPolicy.allows(normalizedBase + TEST_QUERY_PATH);
   }
 
-  private static boolean isHttpsIpnUrl(String ipnUrl) {
-    if (isBlank(ipnUrl) || ipnUrl.length() > 2_048) return false;
+  private static boolean isHttpsCallbackUrl(String callbackUrl) {
+    if (isBlank(callbackUrl) || callbackUrl.length() > 2_048) return false;
     try {
-      URI uri = new URI(ipnUrl);
+      URI uri = new URI(callbackUrl);
       String scheme = uri.getScheme();
       int port = uri.getPort();
       return uri.isAbsolute()
@@ -74,10 +83,12 @@ public final class MomoTestConfigurationValidator {
   public enum Problem {
     TEST_ENVIRONMENT_REQUIRED,
     PARTNER_CODE_REQUIRED,
+    PARTNER_CODE_TOO_LONG,
     ACCESS_KEY_REQUIRED,
     SECRET_KEY_REQUIRED,
     TEST_BASE_URL_NOT_ALLOWED,
-    HTTPS_IPN_URL_REQUIRED
+    HTTPS_IPN_URL_REQUIRED,
+    HTTPS_REDIRECT_URL_REQUIRED
   }
 
   public record ValidationResult(List<Problem> problems) {

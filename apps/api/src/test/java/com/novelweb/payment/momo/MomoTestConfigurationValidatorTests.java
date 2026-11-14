@@ -32,7 +32,8 @@ class MomoTestConfigurationValidatorTests {
             MomoTestConfigurationValidator.Problem.ACCESS_KEY_REQUIRED,
             MomoTestConfigurationValidator.Problem.SECRET_KEY_REQUIRED,
             MomoTestConfigurationValidator.Problem.TEST_BASE_URL_NOT_ALLOWED,
-            MomoTestConfigurationValidator.Problem.HTTPS_IPN_URL_REQUIRED);
+            MomoTestConfigurationValidator.Problem.HTTPS_IPN_URL_REQUIRED,
+            MomoTestConfigurationValidator.Problem.HTTPS_REDIRECT_URL_REQUIRED);
     Map<String, String> invalid = validSettings();
     invalid.put("MOMO_ENV", "production");
     MomoTestConfigurationValidator.ValidationResult invalidResult =
@@ -67,6 +68,14 @@ class MomoTestConfigurationValidatorTests {
   }
 
   @Test
+  void rejectsPartnerCodeLongerThanTheDocumentedLimit() {
+    Map<String, String> settings = validSettings();
+    settings.put("MOMO_TEST_PARTNER_CODE", "p".repeat(51));
+    assertThat(MomoTestConfigurationValidator.validate(settings).problems())
+        .contains(MomoTestConfigurationValidator.Problem.PARTNER_CODE_TOO_LONG);
+  }
+
+  @Test
   void rejectsInsecureOrMalformedIpnCallbacks() {
     Map<String, String> settings = validSettings();
     for (String url :
@@ -81,6 +90,19 @@ class MomoTestConfigurationValidatorTests {
           .as("IPN URL %s", url)
           .contains(MomoTestConfigurationValidator.Problem.HTTPS_IPN_URL_REQUIRED);
     }
+
+    for (String url :
+        new String[] {
+          "http://novel.example/app/payment/result",
+          "https://user@novel.example/app/payment/result",
+          "https://novel.example/app/payment/result#fragment",
+          "not-a-url"
+        }) {
+      settings.put("MOMO_TEST_REDIRECT_URL", url);
+      assertThat(MomoTestConfigurationValidator.validate(settings).problems())
+          .as("Redirect URL %s", url)
+          .contains(MomoTestConfigurationValidator.Problem.HTTPS_REDIRECT_URL_REQUIRED);
+    }
   }
 
   private static Map<String, String> validSettings() {
@@ -91,6 +113,7 @@ class MomoTestConfigurationValidatorTests {
     settings.put("MOMO_TEST_SECRET_KEY", "synthetic-secret");
     settings.put("MOMO_TEST_BASE_URL", TEST_BASE_URL);
     settings.put("MOMO_TEST_IPN_URL", HTTPS_IPN_URL);
+    settings.put("MOMO_TEST_REDIRECT_URL", "https://novel.example/app/payment/result");
     return settings;
   }
 }
