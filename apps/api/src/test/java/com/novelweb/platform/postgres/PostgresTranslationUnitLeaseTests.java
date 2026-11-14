@@ -40,9 +40,11 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -60,12 +62,16 @@ import org.springframework.test.context.ActiveProfiles;
 @SpringBootTest
 @ActiveProfiles({"postgres", "translation-fake"})
 @org.springframework.test.context.TestPropertySource(
-    properties = "novel.translation.fake.enabled=true")
+    properties = {
+      "novel.translation.fake.enabled=true",
+      "novel.library.cursor.hmac-key=MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE"
+    })
 @EnabledIfSystemProperty(named = "postgres.integration", matches = "true")
 class PostgresTranslationUnitLeaseTests {
 
   private final List<Fixture> fixtures = new ArrayList<>();
   private final Map<UUID, UUID> workspaceByLibrary = new HashMap<>();
+  private final Map<UUID, List<UUID>> additionalJobsByFixture = new HashMap<>();
   private final List<UUID> extraUserFixtures = new ArrayList<>();
 
   @Autowired private DataSource dataSource;
@@ -966,6 +972,50 @@ class PostgresTranslationUnitLeaseTests {
   }
 
   @Test
+  void translationDeskPagesOnlyCurrentWorkspaceWritersAndBindsCursorToActor() throws Exception {
+    Fixture fixture = createQueuedJob(1);
+    UUID secondJobId =
+        jobService
+            .enqueue(
+                fixture.userId(),
+                fixture.chapterId(),
+                fixture.revisionId(),
+                "en",
+                "desk-job-key-" + UUID.randomUUID().toString().replace("-", ""))
+            .job()
+            .id();
+    additionalJobsByFixture
+        .computeIfAbsent(fixture.jobId(), ignored -> new ArrayList<>())
+        .add(secondJobId);
+    UUID workspaceId = createWorkspace(fixture);
+    UUID editorId = addWorkspaceMember(workspaceId, "editor");
+    UUID readerId = addWorkspaceMember(workspaceId, "reader");
+    UUID outsiderId = createUser("Translation desk outsider fixture");
+
+    TranslationJobStatusService.JobPage firstPage =
+        jobStatusService.listManageable(editorId, null, 1);
+    assertEquals(1, firstPage.items().size());
+    assertTrue(firstPage.nextCursor() != null);
+    TranslationJobStatusService.JobPage secondPage =
+        jobStatusService.listManageable(editorId, firstPage.nextCursor(), 1);
+
+    assertEquals(1, secondPage.items().size());
+    assertNull(secondPage.nextCursor());
+    Set<UUID> listedJobIds = new HashSet<>();
+    listedJobIds.add(firstPage.items().getFirst().job().id());
+    listedJobIds.add(secondPage.items().getFirst().job().id());
+    assertEquals(Set.of(fixture.jobId(), secondJobId), listedJobIds);
+    assertTrue(
+        jobStatusService.listManageable(fixture.userId(), null, 10).items().stream()
+            .allMatch(item -> item.job().canManage()));
+    assertTrue(jobStatusService.listManageable(readerId, null, 10).items().isEmpty());
+    assertTrue(jobStatusService.listManageable(outsiderId, null, 10).items().isEmpty());
+    assertThrows(
+        com.novelweb.translation.jobs.TranslationJobCursorCodec.InvalidCursorException.class,
+        () -> jobStatusService.listManageable(fixture.userId(), firstPage.nextCursor(), 1));
+  }
+
+  @Test
   void candidatePreviewConcealsReadOnlyWorkspaceMembersAndRejectsStaleSource() throws Exception {
     Fixture readOnlyFixture = createQueuedJob(1);
     UUID workspaceId = createWorkspace(readOnlyFixture);
@@ -1208,12 +1258,14 @@ class PostgresTranslationUnitLeaseTests {
     try (Connection connection = dataSource.getConnection()) {
       connection.setAutoCommit(false);
       try {
-        execute(
-            connection,
-            "DELETE FROM translation_candidate_segments WHERE job_id = ?",
-            fixture.jobId());
-        execute(connection, "DELETE FROM translation_candidates WHERE job_id = ?", fixture.jobId());
-        execute(connection, "DELETE FROM translation_jobs WHERE id = ?", fixture.jobId());
+        List<UUID> jobIds = new ArrayList<>();
+        jobIds.add(fixture.jobId());
+        jobIds.addAll(additionalJobsByFixture.getOrDefault(fixture.jobId(), List.of()));
+        for (UUID jobId : jobIds) {
+          execute(connection, "DELETE FROM translation_candidate_segments WHERE job_id = ?", jobId);
+          execute(connection, "DELETE FROM translation_candidates WHERE job_id = ?", jobId);
+          execute(connection, "DELETE FROM translation_jobs WHERE id = ?", jobId);
+        }
         execute(
             connection,
             "DELETE FROM segments WHERE chapter_revision_id IN "
@@ -1225,6 +1277,7 @@ class PostgresTranslationUnitLeaseTests {
         execute(connection, "DELETE FROM works WHERE id = ?", fixture.workId());
         execute(connection, "DELETE FROM libraries WHERE id = ?", fixture.libraryId());
         UUID workspaceId = workspaceByLibrary.remove(fixture.libraryId());
+        additionalJobsByFixture.remove(fixture.jobId());
         if (workspaceId != null) {
           execute(connection, "DELETE FROM workspaces WHERE id = ?", workspaceId);
         }

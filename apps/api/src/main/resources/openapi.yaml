@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 6.27.0
+  version: 6.28.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -3611,6 +3611,53 @@ paths:
         '403':
           $ref: '#/components/responses/Problem'
   /api/v1/translation/jobs:
+    get:
+      operationId: listManageableTranslationJobs
+      tags: [Translation]
+      x-implementation-status: local-preview
+      summary: List recent fake-local translation jobs for the Translation Desk
+      description: >-
+        Returns bounded progress metadata only for jobs in libraries where the authenticated actor currently has
+        write access. Readers and outside actors receive an empty list. Pagination uses a signed, actor-bound
+        keyset cursor over job creation time and ID. Responses are no-store and contain no source or candidate text.
+        Requires the explicit fake-local API gates and current Terms/Privacy acceptance.
+      security:
+        - appSession: []
+      parameters:
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 256
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 25
+      responses:
+        '200':
+          description: A private page of recent jobs manageable by the current actor.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TranslationJobListResponse'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
     post:
       operationId: enqueueFakeLocalTranslationJob
       tags: [Translation]
@@ -4262,6 +4309,19 @@ components:
             cancelRequestedAt:
               type: [string, 'null']
               format: date-time
+    TranslationJobListResponse:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/TranslationJobStatusResponse'
+        nextCursor:
+          type: [string, 'null']
+          maxLength: 256
     TranslationCandidatePreviewResponse:
       type: object
       additionalProperties: false

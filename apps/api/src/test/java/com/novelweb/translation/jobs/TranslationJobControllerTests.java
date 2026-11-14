@@ -120,6 +120,24 @@ class TranslationJobControllerTests {
   }
 
   @Test
+  void jobListRequiresSessionAndPolicyAndReturnsPrivatePage() {
+    TranslationJobStatusService.JobPage page =
+        new TranslationJobStatusService.JobPage(java.util.List.of(), "signed-cursor");
+    when(statusService.listManageable(actorId, null, 25)).thenReturn(page);
+
+    ResponseEntity<?> guest = controller.listJobs(null, null, 25, request());
+    ResponseEntity<?> response = controller.listJobs(authentication(), null, 25, request());
+
+    assertEquals(HttpStatus.UNAUTHORIZED, guest.getStatusCode());
+    assertEquals(HttpStatus.OK, response.getStatusCode());
+    assertEquals("no-store", response.getHeaders().getCacheControl());
+    assertEquals(
+        new TranslationJobController.JobListResponse(java.util.List.of(), "signed-cursor"),
+        response.getBody());
+    verify(statusService).listManageable(actorId, null, 25);
+  }
+
+  @Test
   void candidatePreviewRequiresSessionAndPolicyAndReturnsNoStoreWriterPage() {
     var preview =
         new TranslationCandidatePreviewService.CandidatePreview(

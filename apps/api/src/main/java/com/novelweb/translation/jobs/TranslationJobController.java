@@ -100,6 +100,24 @@ public class TranslationJobController {
                 result.replayed()));
   }
 
+  @GetMapping
+  public ResponseEntity<?> listJobs(
+      Authentication authentication,
+      @RequestParam(required = false) String cursor,
+      @RequestParam(defaultValue = "25") int limit,
+      HttpServletRequest request) {
+    UUID actorUserId = actorUserId(authentication);
+    if (actorUserId == null) {
+      return problem(
+          HttpStatus.UNAUTHORIZED, "UNAUTHENTICATED", "Sign in to view translation jobs.", request);
+    }
+    ResponseEntity<?> policyFailure = policyGate(actorUserId, request);
+    if (policyFailure != null) return policyFailure;
+    TranslationJobStatusService.JobPage page =
+        statusService.listManageable(actorUserId, cursor, limit);
+    return noStore(HttpStatus.OK).body(new JobListResponse(page.items(), page.nextCursor()));
+  }
+
   @GetMapping("/{jobId}")
   public ResponseEntity<?> status(
       Authentication authentication, @PathVariable String jobId, HttpServletRequest request) {
@@ -329,6 +347,24 @@ public class TranslationJobController {
         request);
   }
 
+  @ExceptionHandler(TranslationJobCursorCodec.SigningUnavailableException.class)
+  public ResponseEntity<ProblemDetail> cursorSigningUnavailable(HttpServletRequest request) {
+    return problem(
+        HttpStatus.SERVICE_UNAVAILABLE,
+        "TRANSLATION_PAGINATION_UNAVAILABLE",
+        "Translation job pagination is temporarily unavailable.",
+        request);
+  }
+
+  @ExceptionHandler(TranslationJobCursorCodec.InvalidCursorException.class)
+  public ResponseEntity<ProblemDetail> invalidCursor(HttpServletRequest request) {
+    return problem(
+        HttpStatus.BAD_REQUEST,
+        "TRANSLATION_CURSOR_INVALID",
+        "Refresh the translation job list and try again.",
+        request);
+  }
+
   @ExceptionHandler(HttpMessageNotReadableException.class)
   public ResponseEntity<ProblemDetail> unreadableBody(HttpServletRequest request) {
     return problem(
@@ -426,4 +462,12 @@ public class TranslationJobController {
       String providerId,
       int totalUnits,
       boolean replayed) {}
+
+  public record JobListResponse(
+      java.util.List<TranslationJobStatusService.StatusResult> items, String nextCursor) {
+
+    public JobListResponse {
+      items = java.util.List.copyOf(items);
+    }
+  }
 }
