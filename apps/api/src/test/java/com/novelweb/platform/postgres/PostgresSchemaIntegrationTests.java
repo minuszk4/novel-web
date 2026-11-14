@@ -1148,6 +1148,43 @@ class PostgresSchemaIntegrationTests {
       assertEquals("金丹", snapshot.path("terms").get(0).path("sourceTerm").asText());
       assertEquals("Golden Core", snapshot.path("terms").get(0).path("aliases").get(0).asText());
 
+      String exportRoute = "/api/v1/glossaries/{glossaryId}/export";
+      MvcResult anonymousExport = mockMvc.perform(get(exportRoute, glossaryId)).andReturn();
+      assertEquals(401, anonymousExport.getResponse().getStatus());
+      MvcResult blockedExport =
+          mockMvc.perform(get(exportRoute, glossaryId).cookie(blockedCookie)).andReturn();
+      assertEquals(403, blockedExport.getResponse().getStatus());
+      MvcResult ownerExport =
+          mockMvc
+              .perform(get(exportRoute, glossaryId).cookie(ownerCookie).param("format", "json"))
+              .andReturn();
+      assertEquals(200, ownerExport.getResponse().getStatus());
+      assertEquals("application/json;charset=UTF-8", ownerExport.getResponse().getContentType());
+      assertEquals("\"v2\"", ownerExport.getResponse().getHeader(HttpHeaders.ETAG));
+      assertTrue(
+          ownerExport.getResponse().getHeader(HttpHeaders.CACHE_CONTROL).contains("no-store"));
+      assertTrue(
+          ownerExport
+              .getResponse()
+              .getHeader(HttpHeaders.CONTENT_DISPOSITION)
+              .contains("-r1.json"));
+      JsonNode exported = objectMapper.readTree(ownerExport.getResponse().getContentAsByteArray());
+      assertEquals(1, exported.path("version").asInt());
+      assertEquals("金丹", exported.path("terms").get(0).path("sourceTerm").asText());
+      assertEquals("Golden Core", exported.path("terms").get(0).path("aliases").get(0).asText());
+
+      MvcResult invalidFormat =
+          mockMvc
+              .perform(get(exportRoute, glossaryId).cookie(ownerCookie).param("format", "xml"))
+              .andReturn();
+      assertEquals(400, invalidFormat.getResponse().getStatus());
+      MvcResult emptyExport =
+          mockMvc.perform(get(exportRoute, emptyGlossaryId).cookie(ownerCookie)).andReturn();
+      assertEquals(404, emptyExport.getResponse().getStatus());
+      MvcResult outsiderExport =
+          mockMvc.perform(get(exportRoute, glossaryId).cookie(outsiderCookie)).andReturn();
+      assertEquals(404, outsiderExport.getResponse().getStatus());
+
       MvcResult emptySnapshot =
           mockMvc.perform(get(route, emptyGlossaryId).cookie(ownerCookie)).andReturn();
       assertEquals(404, emptySnapshot.getResponse().getStatus());
@@ -1411,6 +1448,62 @@ class PostgresSchemaIntegrationTests {
       assertEquals(
           firstDraft.revisionId().toString(), activeBody.path("activeRevisionId").asText());
       assertEquals("Kim Đan", activeBody.path("terms").get(0).path("targetTerm").asText());
+
+      String exportRoute = "/api/v1/glossaries/{glossaryId}/export";
+      MvcResult readerActiveExport =
+          mockMvc
+              .perform(
+                  get(exportRoute, glossaryId)
+                      .cookie(readerCookie)
+                      .param("format", "json")
+                      .param("revision", "active"))
+              .andReturn();
+      assertEquals(200, readerActiveExport.getResponse().getStatus());
+      JsonNode readerActiveDocument =
+          objectMapper.readTree(readerActiveExport.getResponse().getContentAsByteArray());
+      assertEquals(
+          "Kim Đan", readerActiveDocument.path("terms").get(0).path("targetTerm").asText());
+
+      MvcResult readerLatestExport =
+          mockMvc
+              .perform(
+                  get(exportRoute, glossaryId)
+                      .cookie(readerCookie)
+                      .param("format", "json")
+                      .param("revision", "latest"))
+              .andReturn();
+      assertEquals(404, readerLatestExport.getResponse().getStatus());
+
+      MvcResult writerLatestExport =
+          mockMvc
+              .perform(
+                  get(exportRoute, glossaryId)
+                      .cookie(editorCookie)
+                      .param("format", "json")
+                      .param("revision", "latest"))
+              .andReturn();
+      assertEquals(200, writerLatestExport.getResponse().getStatus());
+      assertEquals("\"v3\"", writerLatestExport.getResponse().getHeader(HttpHeaders.ETAG));
+      JsonNode writerLatestDocument =
+          objectMapper.readTree(writerLatestExport.getResponse().getContentAsByteArray());
+      assertEquals(
+          "Kim Đan (draft)", writerLatestDocument.path("terms").get(0).path("targetTerm").asText());
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement verifyExportDidNotWrite =
+              connection.prepareStatement(
+                  """
+                      SELECT g.version, g.active_revision_id,
+                        (SELECT count(*) FROM glossary_revisions r WHERE r.glossary_id = g.id)
+                      FROM glossaries g WHERE g.id = ?
+                      """)) {
+        verifyExportDidNotWrite.setObject(1, glossaryId);
+        try (ResultSet result = verifyExportDidNotWrite.executeQuery()) {
+          assertTrue(result.next());
+          assertEquals(3, result.getLong(1));
+          assertEquals(firstDraft.revisionId(), result.getObject(2, UUID.class));
+          assertEquals(2, result.getInt(3));
+        }
+      }
     } finally {
       try (Connection connection = dataSource.getConnection()) {
         try (PreparedStatement deleteGlossaries =

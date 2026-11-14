@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 6.19.0
+  version: 6.20.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -14,7 +14,7 @@ info:
     Source-only Reader manifest, chapter-content, progress, reader-preferences, bookmarks, private annotations and private reading-history routes are implemented in the PostgreSQL profile.
     History is derived from the latest saved progress per accessible readable work, is visible for 365 days, and never returns chapter body text.
     Versioned cultivation catalogs, authenticated profile settings, private daily XP activity and bounded private Reader sessions with atomic XP awards are implemented in the PostgreSQL profile. The approved starting policy awards 1 XP per complete active Reader minute, capped at 120 XP per UTC day; same-day sub-minute remainder does not cross UTC midnight; top-ups and unlocks award none. Cultivation is feature-gated and off by default pending the rank-threshold pilot and release reviews.
-    Scoped glossary storage, actor-scoped catalog listing/creation, active and writer-only latest-revision reads, version-checked immutable draft creation, authenticated diff/lint/match preview, lint-gated revision publication with append-only audit, and strict JSON/CSV/TSV import preview and resolved atomic draft apply are implemented in the PostgreSQL profile; translation remains unavailable.
+    Scoped glossary storage, actor-scoped catalog listing/creation, active and writer-only latest-revision reads, version-checked immutable draft creation, authenticated diff/lint/match preview, lint-gated revision publication with append-only audit, strict JSON/CSV/TSV import preview and resolved atomic draft apply, and active/writer-only latest snapshot export are implemented in the PostgreSQL profile; translation remains unavailable.
 servers:
   - url: http://127.0.0.1:8080
 tags:
@@ -638,6 +638,84 @@ paths:
               schema:
                 $ref: '#/components/schemas/GlossaryImportApplyProblem'
         '428':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/glossaries/{glossaryId}/export:
+    get:
+      operationId: exportGlossaryRevision
+      tags: [Glossary]
+      x-implementation-status: implemented-postgres-profile
+      summary: Download one authorized immutable glossary revision
+      description: >-
+        Exports the active revision by default, or the latest immutable revision when revision=latest. Active snapshots
+        are available to actors with read access; latest snapshots are writer-only and an inaccessible latest draft is
+        concealed as 404. Current Terms and Privacy acceptance is required. JSON is version-1 and losslessly matches
+        the glossary import schema. CSV and TSV use the import header and JSON-array aliases; spreadsheet-formula-like
+        cells are prefixed with an apostrophe for spreadsheet safety, so use JSON for exact round trips. The response
+        is an attachment, includes the current glossary-version ETag and is no-store. This safe GET does not require CSRF.
+      security:
+        - appSession: []
+      parameters:
+        - name: glossaryId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: format
+          in: query
+          required: false
+          description: Defaults to JSON; CSV/TSV are spreadsheet-safe and may add an apostrophe to formula-like cells.
+          schema:
+            type: string
+            enum: [json, csv, tsv]
+            default: json
+        - name: revision
+          in: query
+          required: false
+          description: Defaults to the published active snapshot. The latest draft is restricted to writers.
+          schema:
+            type: string
+            enum: [active, latest]
+            default: active
+      responses:
+        '200':
+          description: Import-compatible glossary file download.
+          headers:
+            Content-Disposition:
+              required: true
+              schema:
+                type: string
+            ETag:
+              required: true
+              schema:
+                type: string
+                pattern: '^"v[1-9][0-9]*"$'
+            Cache-Control:
+              required: true
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GlossaryImportFile'
+            text/csv:
+              schema:
+                type: string
+                format: binary
+            text/tab-separated-values:
+              schema:
+                type: string
+                format: binary
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
           $ref: '#/components/responses/Problem'
         '503':
           $ref: '#/components/responses/Problem'
