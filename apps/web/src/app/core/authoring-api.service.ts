@@ -18,6 +18,22 @@ export interface CreatedPrivateManuscript {
   createdAt: string;
 }
 
+export interface PrivateManuscriptListItem {
+  id: string;
+  title: string;
+  author: string;
+  language: string;
+  visibility: 'private';
+  publicationState: 'draft';
+  chapterCount: number;
+  createdAt: string;
+}
+
+export interface PrivateManuscriptListPage {
+  items: PrivateManuscriptListItem[];
+  nextCursor: string | null;
+}
+
 export type AuthoringChapterStatus = 'draft' | 'ready' | 'unavailable';
 
 export interface PrivateChapterOutlineItem {
@@ -152,6 +168,36 @@ export class AuthoringApiService {
       );
       if (response.status !== 201) throw invalidResponse();
       return parseCreatedManuscript(response.body);
+    } catch (error) {
+      throw toAuthoringApiError(error);
+    }
+  }
+
+  async listPrivateManuscripts(
+    cursor?: string,
+    limit = defaultOutlineLimit,
+  ): Promise<PrivateManuscriptListPage> {
+    if (
+      !Number.isInteger(limit) ||
+      limit < 1 ||
+      limit > maxOutlineLimit ||
+      (cursor !== undefined && !isCursor(cursor))
+    ) {
+      throw new AuthoringApiError(400, 'INVALID_AUTHORING_QUERY');
+    }
+
+    try {
+      const params = new URLSearchParams({ limit: String(limit) });
+      if (cursor) params.set('cursor', cursor);
+      const response = await firstValueFrom(
+        this.http
+          .get<unknown>(`${manuscriptsUrl}?${params.toString()}`, { observe: 'response' })
+          .pipe(timeout(requestTimeoutMs)),
+      );
+      if (response.status !== 200 || response.headers.get('Cache-Control') !== 'no-store') {
+        throw invalidManuscriptListResponse();
+      }
+      return parseManuscriptListPage(response.body, limit, cursor ?? null);
     } catch (error) {
       throw toAuthoringApiError(error);
     }
@@ -364,6 +410,63 @@ function parseOutlinePage(
     throw invalidOutlineResponse();
   }
   return { items, nextCursor: value['nextCursor'] as string | null };
+}
+
+function parseManuscriptListPage(
+  value: unknown,
+  limit: number,
+  requestedCursor: string | null,
+): PrivateManuscriptListPage {
+  if (
+    !isRecord(value) ||
+    hasUnexpectedFields(value, ['items', 'nextCursor']) ||
+    !Array.isArray(value['items']) ||
+    value['items'].length > limit ||
+    !isNullableCursor(value['nextCursor']) ||
+    (value['nextCursor'] !== null && value['nextCursor'] === requestedCursor)
+  ) {
+    throw invalidManuscriptListResponse();
+  }
+
+  const items = value['items'].map(parseManuscriptListItem);
+  if (
+    new Set(items.map(({ id }) => id)).size !== items.length ||
+    items.some(
+      (item, index) =>
+        index > 0 && Date.parse(item.createdAt) > Date.parse(items[index - 1].createdAt),
+    )
+  ) {
+    throw invalidManuscriptListResponse();
+  }
+  return { items, nextCursor: value['nextCursor'] as string | null };
+}
+
+function parseManuscriptListItem(value: unknown): PrivateManuscriptListItem {
+  if (
+    !isRecord(value) ||
+    hasUnexpectedFields(value, [
+      'id',
+      'title',
+      'author',
+      'language',
+      'visibility',
+      'publicationState',
+      'chapterCount',
+      'createdAt',
+    ]) ||
+    !isUuid(value['id']) ||
+    !isBoundedString(value['title'], 1, 300) ||
+    !isBoundedString(value['author'], 0, 200) ||
+    !isBoundedString(value['language'], 2, 35) ||
+    value['visibility'] !== 'private' ||
+    value['publicationState'] !== 'draft' ||
+    !Number.isSafeInteger(value['chapterCount']) ||
+    (value['chapterCount'] as number) < 0 ||
+    !isInstant(value['createdAt'])
+  ) {
+    throw invalidManuscriptListResponse();
+  }
+  return value as unknown as PrivateManuscriptListItem;
 }
 
 function parseOutlineItem(value: unknown): PrivateChapterOutlineItem {
@@ -615,6 +718,10 @@ function invalidResponse(): AuthoringApiError {
 
 function invalidOutlineResponse(): AuthoringApiError {
   return new AuthoringApiError(502, 'INVALID_AUTHORING_OUTLINE_RESPONSE');
+}
+
+function invalidManuscriptListResponse(): AuthoringApiError {
+  return new AuthoringApiError(502, 'INVALID_AUTHORING_MANUSCRIPT_LIST_RESPONSE');
 }
 
 function invalidChapterResponse(): AuthoringApiError {

@@ -41,6 +41,15 @@ export const routes: Routes = [
         title: 'Xem lại truyện — Novel',
       },
       {
+        path: 'authoring',
+        pathMatch: 'full',
+        loadComponent: () =>
+          import('./pages/authoring-manuscripts-page.component').then(
+            (page) => page.AuthoringManuscriptsPageComponent,
+          ),
+        title: 'Tác phẩm của tôi — Novel',
+      },
+      {
         path: 'authoring/new',
         loadComponent: () =>
           import('./pages/authoring-create-page.component').then(

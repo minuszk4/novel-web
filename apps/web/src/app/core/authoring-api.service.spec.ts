@@ -114,6 +114,85 @@ describe('AuthoringApiService', () => {
     });
   });
 
+  it('reads a strict no-store page of private manuscript metadata with a signed cursor', async () => {
+    const pending = api.listPrivateManuscripts('YWJj.ZGVm', 1);
+    const request = http.expectOne('/api/v1/authoring/manuscripts?limit=1&cursor=YWJj.ZGVm');
+    expect(request.request.method).toBe('GET');
+    request.flush(
+      {
+        items: [
+          {
+            id: workId,
+            title: 'Hành trình tu luyện',
+            author: 'Bút danh',
+            language: 'vi',
+            visibility: 'private',
+            publicationState: 'draft',
+            chapterCount: 4,
+            createdAt,
+          },
+        ],
+        nextCursor: null,
+      },
+      {
+        status: 200,
+        statusText: 'OK',
+        headers: new HttpHeaders({ 'Cache-Control': 'no-store' }),
+      },
+    );
+
+    await expect(pending).resolves.toMatchObject({
+      items: [expect.objectContaining({ id: workId, visibility: 'private', chapterCount: 4 })],
+      nextCursor: null,
+    });
+  });
+
+  it('rejects malformed manuscript list entries and non-no-store responses', async () => {
+    const invalidBody = api.listPrivateManuscripts();
+    http.expectOne('/api/v1/authoring/manuscripts?limit=25').flush(
+      {
+        items: [
+          {
+            ...createdDraft,
+            chapterCount: 0,
+            sourceHash: 'must-not-be-present',
+          },
+        ],
+        nextCursor: null,
+      },
+      {
+        status: 200,
+        statusText: 'OK',
+        headers: new HttpHeaders({ 'Cache-Control': 'no-store' }),
+      },
+    );
+    await expect(invalidBody).rejects.toMatchObject({
+      status: 502,
+      code: 'INVALID_AUTHORING_MANUSCRIPT_LIST_RESPONSE',
+    });
+
+    const cacheableResponse = api.listPrivateManuscripts();
+    http
+      .expectOne('/api/v1/authoring/manuscripts?limit=25')
+      .flush({ items: [], nextCursor: null }, { status: 200, statusText: 'OK' });
+    await expect(cacheableResponse).rejects.toMatchObject({
+      status: 502,
+      code: 'INVALID_AUTHORING_MANUSCRIPT_LIST_RESPONSE',
+    });
+  });
+
+  it('rejects malformed cursors and out-of-range manuscript page sizes before networking', async () => {
+    await expect(api.listPrivateManuscripts('bad cursor')).rejects.toMatchObject({
+      status: 400,
+      code: 'INVALID_AUTHORING_QUERY',
+    });
+    await expect(api.listPrivateManuscripts(undefined, 101)).rejects.toMatchObject({
+      status: 400,
+      code: 'INVALID_AUTHORING_QUERY',
+    });
+    http.expectNone('/api/v1/authoring/manuscripts?limit=25');
+  });
+
   it('reads a strict, ordinal-ordered private outline page with an opaque cursor', async () => {
     const pending = api.listPrivateChapters(workId, 'YWJj.ZGVm', 25);
     const request = http.expectOne(

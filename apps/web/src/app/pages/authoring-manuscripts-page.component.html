@@ -1,0 +1,144 @@
+<section class="page-wrap authoring-manuscripts-page">
+  <header class="page-heading authoring-manuscripts-heading">
+    <p class="eyebrow">AUTHOR STUDIO · BẢN THỬ</p>
+    <h1 #pageHeading tabindex="-1">Tác phẩm của tôi</h1>
+    <p>Các bản thảo trong danh sách này chỉ tài khoản của bạn xem được.</p>
+    <a class="button button-primary authoring-manuscripts-create" routerLink="/app/authoring/new">
+      + Tạo bản thảo
+    </a>
+  </header>
+
+  @if (policy.status() !== 'accepted') {
+    <section
+      class="authoring-manuscripts-panel authoring-manuscripts-sign-in"
+      aria-labelledby="authoring-manuscripts-sign-in-title"
+    >
+      <span class="authoring-manuscripts-mark" aria-hidden="true">✎</span>
+      <div>
+        <p class="eyebrow">LƯU RIÊNG TƯ TRONG TÀI KHOẢN</p>
+        <h2 id="authoring-manuscripts-sign-in-title">Đăng nhập để xem bản thảo</h2>
+        <p>Danh sách không lấy từ dữ liệu demo. Đăng nhập để mở các bản thảo riêng tư của bạn.</p>
+        <a
+          class="button button-primary"
+          [routerLink]="['/sign-in']"
+          [queryParams]="{ returnTo: '/app/authoring' }"
+          >Đăng nhập bằng Google</a
+        >
+      </div>
+    </section>
+  } @else {
+    <aside class="authoring-manuscripts-privacy" aria-label="Quyền riêng tư của bản thảo">
+      <span aria-hidden="true">▣</span>
+      <p>
+        <strong>Riêng tư mặc định.</strong> Chưa có thao tác xuất bản, chia sẻ hoặc xóa trong màn
+        hình này.
+      </p>
+    </aside>
+
+    <p class="visually-hidden" role="status" aria-live="polite" aria-atomic="true">
+      {{ announcement() }}
+    </p>
+
+    @if (pageState() === 'loading') {
+      <section
+        class="authoring-manuscripts-panel authoring-manuscripts-loading"
+        aria-label="Đang tải bản thảo"
+        aria-busy="true"
+      >
+        <span class="authoring-manuscripts-spinner" aria-hidden="true"></span>
+        <p>Đang tải danh sách bản thảo…</p>
+      </section>
+    } @else if (pageState() === 'error') {
+      <section class="authoring-manuscripts-panel authoring-manuscripts-error" role="alert">
+        <h2>Chưa mở được danh sách</h2>
+        <p>{{ pageErrorMessage(pageError()!) }}</p>
+        @if (recoveryUrl; as url) {
+          <a class="button button-outline" [routerLink]="url" [queryParams]="recoveryQueryParams">
+            {{ url === '/sign-in' ? 'Đăng nhập lại' : 'Xem chính sách tài khoản' }}
+          </a>
+        } @else {
+          <button class="button button-outline" type="button" (click)="retryFirstPage()">
+            Thử tải lại
+          </button>
+        }
+      </section>
+    } @else if (manuscripts().length === 0) {
+      <section
+        class="authoring-manuscripts-panel authoring-manuscripts-empty"
+        aria-labelledby="authoring-manuscripts-empty-title"
+      >
+        <span class="authoring-manuscripts-mark" aria-hidden="true">✎</span>
+        <p class="eyebrow">BẮT ĐẦU TỪ MỘT Ý TƯỞNG</p>
+        <h2 id="authoring-manuscripts-empty-title">Chưa có bản thảo nào</h2>
+        <p>Tạo một bản thảo riêng tư để bắt đầu lập dàn ý và viết chương.</p>
+        <a class="button button-primary" routerLink="/app/authoring/new">Tạo bản thảo đầu tiên</a>
+      </section>
+    } @else {
+      <section
+        class="authoring-manuscripts-results"
+        aria-labelledby="authoring-manuscripts-results-title"
+      >
+        <div class="authoring-manuscripts-list-heading">
+          <div>
+            <p class="eyebrow">BẢN THẢO RIÊNG TƯ</p>
+            <h2 id="authoring-manuscripts-results-title">Danh sách tác phẩm</h2>
+          </div>
+          <span>{{ manuscripts().length }} bản thảo đã tải</span>
+        </div>
+
+        <ol class="authoring-manuscripts-list">
+          @for (manuscript of manuscripts(); track manuscript.id) {
+            <li class="authoring-manuscript-card">
+              <div class="authoring-manuscript-main">
+                <p class="authoring-manuscript-state">
+                  <span aria-hidden="true">●</span> Bản nháp riêng tư
+                </p>
+                <h3>{{ manuscript.title }}</h3>
+                <p class="authoring-manuscript-byline">
+                  @if (manuscript.author) {
+                    {{ manuscript.author }} ·
+                  }
+                  {{ manuscript.language }}
+                </p>
+                <p class="authoring-manuscript-meta">
+                  {{ manuscript.chapterCount }} chương · Tạo {{ createdDate(manuscript.createdAt) }}
+                </p>
+              </div>
+              <a
+                class="button button-outline authoring-manuscript-open"
+                [routerLink]="['/app/authoring', manuscript.id, 'chapters']"
+                [attr.aria-label]="'Mở dàn ý chương của ' + manuscript.title"
+              >
+                Mở dàn ý chương
+              </a>
+            </li>
+          }
+        </ol>
+
+        @if (moreError(); as error) {
+          <div class="authoring-manuscripts-more-error" role="alert">
+            <p>{{ pageErrorMessage(error) }}</p>
+            @if (recoveryUrl; as url) {
+              <a [routerLink]="url" [queryParams]="recoveryQueryParams">{{
+                url === '/sign-in' ? 'Đăng nhập lại' : 'Xem chính sách tài khoản'
+              }}</a>
+            } @else {
+              <button class="text-button" type="button" (click)="loadMore()">Thử tải thêm</button>
+            }
+          </div>
+        }
+
+        @if (nextCursor()) {
+          <button
+            class="button button-outline authoring-manuscripts-load-more"
+            type="button"
+            [disabled]="isLoadingMore() || !!recoveryUrl"
+            (click)="loadMore()"
+          >
+            {{ isLoadingMore() ? 'Đang tải…' : 'Tải thêm bản thảo' }}
+          </button>
+        }
+      </section>
+    }
+  }
+</section>

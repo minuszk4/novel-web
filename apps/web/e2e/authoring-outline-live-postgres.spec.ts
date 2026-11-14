@@ -32,6 +32,71 @@ test('private chapter outline reads and creates metadata through the real API an
     },
   ]);
 
+  const manuscriptListResponsePromise = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'GET' &&
+      new URL(response.url()).pathname === '/api/v1/authoring/manuscripts',
+  );
+  await page.goto(`${baseUrl}/app/authoring`);
+  const manuscriptListResponse = await manuscriptListResponsePromise;
+  expect(manuscriptListResponse.status()).toBe(200);
+  expect(manuscriptListResponse.headers()['cache-control']).toContain('no-store');
+  const manuscriptListText = await manuscriptListResponse.text();
+  const manuscripts = JSON.parse(manuscriptListText) as {
+    items: Array<{
+      id: string;
+      title: string;
+      visibility: string;
+      publicationState: string;
+      chapterCount: number;
+    }>;
+    nextCursor: string | null;
+  };
+  expect(manuscripts.items).toHaveLength(2);
+  expect(manuscripts.items.find((item) => item.id === workId)).toMatchObject({
+    id: workId,
+    title: 'Live E2E Novel Two',
+    visibility: 'private',
+    publicationState: 'draft',
+    chapterCount: 26,
+  });
+  expect(manuscriptListText).not.toMatch(
+    /"(?:ownerUserId|sourceHash|normalizedContent|sourceText|segments|content)"\s*:/i,
+  );
+  await expect(page.getByRole('heading', { name: 'Tác phẩm của tôi' })).toBeVisible();
+  await expect(page.getByText('Riêng tư mặc định')).toBeVisible();
+  const listWidths = await page.evaluate(() => ({
+    client: document.documentElement.clientWidth,
+    scroll: document.documentElement.scrollWidth,
+  }));
+  expect(listWidths.scroll).toBeLessThanOrEqual(listWidths.client);
+  await expectNoAxeViolations(page);
+  await page.screenshot({
+    path: screenshotPath!.replace(/authoring-outline-live\.png$/, 'authoring-manuscripts-live.png'),
+    fullPage: true,
+  });
+  for (const viewport of [
+    { width: 640, height: 450 },
+    { width: 1280, height: 900 },
+  ]) {
+    await page.setViewportSize(viewport);
+    const responsiveWidths = await page.evaluate(() => ({
+      client: document.documentElement.clientWidth,
+      scroll: document.documentElement.scrollWidth,
+    }));
+    expect(responsiveWidths.scroll).toBeLessThanOrEqual(responsiveWidths.client);
+    await expectNoAxeViolations(page);
+  }
+  await page.setViewportSize({ width: 360, height: 800 });
+
+  const outlineNavigation = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'GET' &&
+      new URL(response.url()).pathname === `/api/v1/authoring/manuscripts/${workId}/chapters`,
+  );
+  await page.getByRole('link', { name: 'Mở dàn ý chương của Live E2E Novel Two' }).click();
+  await outlineNavigation;
+
   const listResponsePromise = page.waitForResponse(
     (response) =>
       response.request().method() === 'GET' &&

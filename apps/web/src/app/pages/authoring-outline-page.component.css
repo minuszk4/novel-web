@@ -333,6 +333,12 @@
   font-weight: 650;
 }
 
+.authoring-outline-footer-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
 .authoring-outline-sign-in,
 .authoring-outline-error-state {
   display: flex;
