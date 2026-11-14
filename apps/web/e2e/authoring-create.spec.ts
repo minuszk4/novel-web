@@ -142,8 +142,9 @@ for (const viewport of [
 
     await page.getByRole('button', { name: 'Tạo bản thảo riêng tư' }).click();
     await expect(page.getByRole('heading', { name: 'Hành trình tu luyện' })).toBeVisible();
-    await expect(page.getByText(/chưa có màn hình soạn chương/)).toBeVisible();
-    await expect(page.getByText(/chưa được xuất bản hay chia sẻ/)).toBeVisible();
+    await expect(page.locator('.authoring-success')).toContainText(
+      /chưa thể nhập nội dung chương, xuất bản hay chia sẻ tác phẩm/,
+    );
     expect(receivedRequest).toEqual({
       body: { title: 'Hành trình tu luyện', author: 'Bút danh', language: 'vi' },
       csrf: csrfToken,

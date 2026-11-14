@@ -178,6 +178,28 @@ for (const viewport of responsiveViewports) {
     await page.mouse.wheel(0, viewport.height <= 400 ? 520 : 180);
     if (viewport.width <= 640) {
       await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+      await page.waitForFunction(
+        () =>
+          new Promise<boolean>((resolve) => {
+            let previous = window.scrollY;
+            let stableFrames = 0;
+            const observe = () => {
+              requestAnimationFrame(() => {
+                const current = window.scrollY;
+                stableFrames = current > 0 && current === previous ? stableFrames + 1 : 0;
+                previous = current;
+                if (stableFrames >= 3) {
+                  resolve(true);
+                } else {
+                  observe();
+                }
+              });
+            };
+            observe();
+          }),
+        undefined,
+        { timeout: 5000 },
+      );
     }
     const visibleContinueBounds = await continueAction.boundingBox();
     expect(visibleContinueBounds).not.toBeNull();

@@ -132,7 +132,10 @@ describe('TranslationJobPageComponent', () => {
     fixture.detectChanges();
 
     expect(fixture.nativeElement.textContent).toContain('Candidate giả đã sẵn sàng để đối chiếu');
-    expect(fixture.nativeElement.textContent).toContain('chưa thể chỉnh sửa hoặc xuất bản');
+    expect(fixture.nativeElement.textContent).toContain('Bản xem thử chưa được xuất bản');
+    expect(fixture.nativeElement.textContent).toContain(
+      'chưa thể chỉnh sửa hoặc thay thế nguyên tác',
+    );
     const link: HTMLAnchorElement | null =
       fixture.nativeElement.querySelector('a[href*="/candidate"]');
     expect(link?.getAttribute('href')).toContain(`/app/translation/jobs/${jobId}/candidate`);

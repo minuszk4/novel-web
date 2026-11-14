@@ -117,7 +117,9 @@
         }
       }
     </div>
-    <main class="app-main" id="main-content"><router-outlet /></main>
+    <main class="app-main" id="main-content" (focusin)="keepFocusedContentAboveMobileNav($event)">
+      <router-outlet />
+    </main>
     <nav
       class="mobile-nav"
       [class.mobile-nav-six]="showTranslationDesk()"

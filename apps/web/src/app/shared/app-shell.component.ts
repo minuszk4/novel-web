@@ -27,6 +27,19 @@ export class AppShellComponent {
     () => Array.from(this.accountLabel().trim())[0]?.toLocaleUpperCase('vi-VN') || 'D',
   );
 
+  protected keepFocusedContentAboveMobileNav(event: FocusEvent): void {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    const nav = document.querySelector<HTMLElement>('.mobile-nav');
+    if (!nav || getComputedStyle(nav).display === 'none') return;
+
+    const visibleBottom = nav.getBoundingClientRect().top - 12;
+    const targetBottom = target.getBoundingClientRect().bottom;
+    if (targetBottom > visibleBottom) {
+      window.scrollBy({ top: targetBottom - visibleBottom, behavior: 'instant' });
+    }
+  }
+
   constructor() {
     void this.checkTranslationDeskAccess();
     this.router.events

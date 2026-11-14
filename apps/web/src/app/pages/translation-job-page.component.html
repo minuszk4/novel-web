@@ -117,7 +117,10 @@
         @if (canViewCandidate) {
           <div class="translation-job-info">
             <strong>Candidate giả đã sẵn sàng để đối chiếu.</strong>
-            <p>Nội dung chỉ là nguyên tác có nhãn fake-local; chưa thể chỉnh sửa hoặc xuất bản.</p>
+            <p>
+              Bản xem thử chưa được xuất bản. Nội dung chỉ lặp lại nguyên tác dưới nhãn fake-local;
+              chưa thể chỉnh sửa hoặc thay thế nguyên tác.
+            </p>
             <a
               class="button button-primary"
               [routerLink]="['/app/translation/jobs', currentJob.id, 'candidate']"
