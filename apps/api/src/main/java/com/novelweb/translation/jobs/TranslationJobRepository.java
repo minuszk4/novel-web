@@ -7,6 +7,8 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Instant;
 import java.time.OffsetDateTime;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
@@ -20,9 +22,11 @@ import org.springframework.stereotype.Repository;
 public class TranslationJobRepository {
 
   private final DataSource dataSource;
+  private final TranslationChunkPlanner chunkPlanner;
 
-  public TranslationJobRepository(DataSource dataSource) {
+  public TranslationJobRepository(DataSource dataSource, TranslationChunkPlanner chunkPlanner) {
     this.dataSource = Objects.requireNonNull(dataSource, "data source is required");
+    this.chunkPlanner = Objects.requireNonNull(chunkPlanner, "chunk planner is required");
   }
 
   public TranslationJobService.EnqueueResult enqueue(EnqueueCommand command) {
@@ -51,6 +55,11 @@ public class TranslationJobRepository {
         if (chapter.sourceLanguage().equalsIgnoreCase(command.targetLanguage())) {
           throw new UnsupportedLanguagePairException();
         }
+        List<TranslationChunkPlanner.UnitPlan> units =
+            chunkPlanner.plan(
+                chapter.sourceLanguage(),
+                command.targetLanguage(),
+                loadTranslatableSegments(connection, command.sourceRevisionId()));
 
         UUID jobId = UUID.randomUUID();
         UUID outboxEventId = UUID.randomUUID();
@@ -68,6 +77,8 @@ public class TranslationJobRepository {
           return new TranslationJobService.EnqueueResult(raced, true);
         }
 
+        insertUnits(connection, jobId, command.sourceRevisionId(), units);
+        markJobQueued(connection, jobId, units.size());
         insertRequestedEvent(connection, outboxEventId, jobId, chapter.sourceRevisionId());
         Job created = findById(connection, jobId).orElseThrow();
         connection.commit();
@@ -83,6 +94,112 @@ public class TranslationJobRepository {
       throw exception;
     } catch (SQLException exception) {
       throw new IllegalStateException("Unable to enqueue translation job", exception);
+    }
+  }
+
+  private static List<TranslationChunkPlanner.SourceSegment> loadTranslatableSegments(
+      Connection connection, UUID sourceRevisionId) throws SQLException {
+    try (PreparedStatement select =
+        connection.prepareStatement(
+            """
+                SELECT id, ordinal, segment_type, stable_anchor, source_text, checksum,
+                       octet_length(source_text) AS source_bytes
+                FROM segments
+                WHERE chapter_revision_id = ?
+                  AND segment_type IN ('paragraph', 'heading', 'quote')
+                ORDER BY ordinal ASC
+                LIMIT 5001
+                """)) {
+      select.setObject(1, sourceRevisionId);
+      select.setFetchSize(32);
+      try (ResultSet rows = select.executeQuery()) {
+        List<TranslationChunkPlanner.SourceSegment> segments = new ArrayList<>();
+        long totalSourceBytes = 0;
+        while (rows.next()) {
+          if (segments.size() >= TranslationChunkPlanner.MAX_JOB_SEGMENTS) {
+            throw new TranslationChunkPlanner.InputLimitExceededException("segment_count");
+          }
+          int sourceBytes = rows.getInt("source_bytes");
+          if (sourceBytes > TranslationChunkPlanner.MAX_JOB_SOURCE_BYTES) {
+            throw new TranslationChunkPlanner.InputLimitExceededException("source_bytes");
+          }
+          totalSourceBytes += sourceBytes;
+          if (totalSourceBytes > TranslationChunkPlanner.MAX_JOB_SOURCE_BYTES) {
+            throw new TranslationChunkPlanner.InputLimitExceededException("source_bytes");
+          }
+          String sourceText = rows.getString("source_text");
+          segments.add(
+              new TranslationChunkPlanner.SourceSegment(
+                  rows.getObject("id", UUID.class),
+                  rows.getInt("ordinal"),
+                  rows.getString("segment_type"),
+                  rows.getString("stable_anchor"),
+                  sourceText,
+                  rows.getBytes("checksum")));
+        }
+        return List.copyOf(segments);
+      }
+    }
+  }
+
+  private static void insertUnits(
+      Connection connection,
+      UUID jobId,
+      UUID sourceRevisionId,
+      List<TranslationChunkPlanner.UnitPlan> units)
+      throws SQLException {
+    try (PreparedStatement insertUnit =
+            connection.prepareStatement(
+                """
+                    INSERT INTO translation_units
+                        (id, job_id, source_revision_id, unit_no, idempotency_key)
+                    VALUES (?, ?, ?, ?, ?)
+                    """);
+        PreparedStatement insertSegment =
+            connection.prepareStatement(
+                """
+                    INSERT INTO translation_unit_segments
+                        (job_id, unit_id, source_revision_id, source_segment_id,
+                         segment_ordinal, source_sha256)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """)) {
+      for (TranslationChunkPlanner.UnitPlan unit : units) {
+        UUID unitId = UUID.randomUUID();
+        insertUnit.setObject(1, unitId);
+        insertUnit.setObject(2, jobId);
+        insertUnit.setObject(3, sourceRevisionId);
+        insertUnit.setInt(4, unit.unitNo());
+        insertUnit.setObject(5, unitId);
+        insertUnit.executeUpdate();
+
+        for (int index = 0; index < unit.segments().size(); index++) {
+          TranslationChunkPlanner.SourceSegment segment = unit.segments().get(index);
+          insertSegment.setObject(1, jobId);
+          insertSegment.setObject(2, unitId);
+          insertSegment.setObject(3, sourceRevisionId);
+          insertSegment.setObject(4, segment.id());
+          insertSegment.setInt(5, index + 1);
+          insertSegment.setBytes(6, segment.checksum());
+          insertSegment.executeUpdate();
+        }
+      }
+    }
+  }
+
+  private static void markJobQueued(Connection connection, UUID jobId, int totalUnits)
+      throws SQLException {
+    try (PreparedStatement update =
+        connection.prepareStatement(
+            """
+                UPDATE translation_jobs
+                SET status = 'queued', total_units = ?, updated_at = clock_timestamp()
+                WHERE id = ? AND status = 'preparing'
+                """)) {
+      update.setInt(1, totalUnits);
+      update.setObject(2, jobId);
+      if (update.executeUpdate() != 1) {
+        throw new SQLException("Translation job could not be moved to queued");
+      }
     }
   }
 
@@ -126,7 +243,7 @@ public class TranslationJobRepository {
             """
                 SELECT id, requested_by_user_id, work_id, chapter_id, source_revision_id,
                        source_language, target_language, provider_id, source_sha256, request_sha256,
-                       status, created_at
+                       status, total_units, created_at
                 FROM translation_jobs
                 WHERE requested_by_user_id = ? AND chapter_id = ? AND idempotency_key = ?
                 FOR UPDATE
@@ -198,7 +315,7 @@ public class TranslationJobRepository {
             """
                 SELECT id, requested_by_user_id, work_id, chapter_id, source_revision_id,
                        source_language, target_language, provider_id, source_sha256, request_sha256,
-                       status, created_at
+                       status, total_units, created_at
                 FROM translation_jobs WHERE id = ?
                 """)) {
       select.setObject(1, jobId);
@@ -221,6 +338,7 @@ public class TranslationJobRepository {
         row.getBytes("source_sha256"),
         row.getBytes("request_sha256"),
         row.getString("status"),
+        row.getInt("total_units"),
         row.getObject("created_at", OffsetDateTime.class).toInstant());
   }
 
@@ -277,6 +395,7 @@ public class TranslationJobRepository {
       byte[] sourceSha256,
       byte[] requestSha256,
       String status,
+      int totalUnits,
       Instant createdAt) {
     public Job {
       sourceSha256 = sourceSha256.clone();

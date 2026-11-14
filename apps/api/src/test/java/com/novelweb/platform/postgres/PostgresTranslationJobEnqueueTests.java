@@ -6,8 +6,12 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.novelweb.translation.jobs.TranslationChunkPlanner;
 import com.novelweb.translation.jobs.TranslationJobRepository;
 import com.novelweb.translation.jobs.TranslationJobService;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -47,7 +51,8 @@ class PostgresTranslationJobEnqueueTests {
   }
 
   @Test
-  void enqueueStoresOnlyBoundedIntentAndOneIdentifierOnlyOutboxEvent() throws Exception {
+  void enqueuePlansAUnitAndStoresOnlyBoundedIntentAndOneIdentifierOnlyOutboxEvent()
+      throws Exception {
     Fixture fixture = createFixture("vi");
 
     TranslationJobService.EnqueueResult result =
@@ -63,8 +68,31 @@ class PostgresTranslationJobEnqueueTests {
     assertEquals("vi", result.job().sourceLanguage());
     assertEquals("en", result.job().targetLanguage());
     assertEquals("fake-local", result.job().providerId());
-    assertEquals("preparing", result.job().status());
+    assertEquals("queued", result.job().status());
+    assertEquals(1, result.job().totalUnits());
+    assertEquals(fixture.revisionId(), result.job().sourceRevisionId());
     assertEquals(32, result.job().requestSha256().length);
+
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                """
+                    SELECT profile_snapshot = '{"mode":"fake-local","schemaVersion":1}'::jsonb
+                               AS profile_matches,
+                           glossary_snapshot = '[]'::jsonb AS glossary_matches,
+                           source_sha256 = revision.content_hash AS source_hash_matches
+                    FROM translation_jobs job
+                    JOIN chapter_revisions revision ON revision.id = job.source_revision_id
+                    WHERE job.id = ?
+                    """)) {
+      select.setObject(1, result.job().id());
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        assertTrue(row.getBoolean("profile_matches"));
+        assertTrue(row.getBoolean("glossary_matches"));
+        assertTrue(row.getBoolean("source_hash_matches"));
+      }
+    }
 
     try (Connection connection = dataSource.getConnection();
         PreparedStatement select =
@@ -90,12 +118,14 @@ class PostgresTranslationJobEnqueueTests {
         assertEquals(fixture.revisionId().toString(), row.getString("payload_revision_id"));
         assertTrue(row.getBoolean("only_identifiers"));
         assertEquals("fake-local", row.getString("mode"));
-        assertEquals(0, row.getInt("total_units"));
+        assertEquals(1, row.getInt("total_units"));
         assertEquals(0, row.getInt("attempt_count"));
       }
     }
     assertEquals(1, countForChapter("translation_jobs", fixture.chapterId()));
     assertEquals(1, countForChapter("translation_outbox_events", fixture.chapterId()));
+    assertEquals(1, countForChapter("translation_units", fixture.chapterId()));
+    assertEquals(1, countForChapter("translation_unit_segments", fixture.chapterId()));
   }
 
   @Test
@@ -134,6 +164,7 @@ class PostgresTranslationJobEnqueueTests {
 
     assertEquals(1, countForChapter("translation_jobs", fixture.chapterId()));
     assertEquals(1, countForChapter("translation_outbox_events", fixture.chapterId()));
+    assertEquals(1, countForChapter("translation_units", fixture.chapterId()));
   }
 
   @Test
@@ -152,6 +183,7 @@ class PostgresTranslationJobEnqueueTests {
 
     assertEquals(0, countForChapter("translation_jobs", fixture.chapterId()));
     assertEquals(0, countForChapter("translation_outbox_events", fixture.chapterId()));
+    assertEquals(0, countForChapter("translation_units", fixture.chapterId()));
   }
 
   @Test
@@ -181,9 +213,68 @@ class PostgresTranslationJobEnqueueTests {
       assertNotEquals(firstResult.replayed(), secondResult.replayed());
       assertEquals(1, countForChapter("translation_jobs", fixture.chapterId()));
       assertEquals(1, countForChapter("translation_outbox_events", fixture.chapterId()));
+      assertEquals(1, countForChapter("translation_units", fixture.chapterId()));
     } finally {
       executor.shutdownNow();
     }
+  }
+
+  @Test
+  void orderedSourceSegmentsPersistIntoTheSameOrderInsideTheirUnit() throws Exception {
+    Fixture fixture = createFixture("vi");
+    insertExtraSegment(fixture, 2, "Second synthetic segment.");
+    insertExtraSegment(fixture, 3, "Third synthetic segment.");
+
+    TranslationJobService.EnqueueResult result = enqueue(fixture);
+
+    assertEquals("queued", result.job().status());
+    assertEquals(1, result.job().totalUnits());
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                """
+                    SELECT unit.unit_no, mapping.segment_ordinal, segment.ordinal,
+                           mapping.source_sha256 = segment.checksum AS checksum_matches
+                    FROM translation_units unit
+                    JOIN translation_unit_segments mapping ON mapping.unit_id = unit.id
+                    JOIN segments segment ON segment.id = mapping.source_segment_id
+                    WHERE unit.job_id = ? ORDER BY unit.unit_no, mapping.segment_ordinal
+                    """)) {
+      select.setObject(1, result.job().id());
+      try (ResultSet rows = select.executeQuery()) {
+        for (int expected = 1; expected <= 3; expected++) {
+          assertTrue(rows.next());
+          assertEquals(1, rows.getInt("unit_no"));
+          assertEquals(expected, rows.getInt("segment_ordinal"));
+          assertEquals(expected, rows.getInt("ordinal"));
+          assertTrue(rows.getBoolean("checksum_matches"));
+        }
+        assertFalse(rows.next());
+      }
+    }
+    assertEquals(3, countForChapter("translation_unit_segments", fixture.chapterId()));
+  }
+
+  @Test
+  void emptyAndOversizedRevisionsAreRejectedWithoutPartialJobRows() throws Exception {
+    Fixture empty = createFixture("vi");
+    try (Connection connection = dataSource.getConnection()) {
+      execute(connection, "DELETE FROM segments WHERE chapter_revision_id = ?", empty.revisionId());
+    }
+
+    assertThrows(
+        TranslationChunkPlanner.NoTranslatableSegmentsException.class, () -> enqueue(empty));
+    assertEquals(0, countForChapter("translation_jobs", empty.chapterId()));
+    assertEquals(0, countForChapter("translation_outbox_events", empty.chapterId()));
+    assertEquals(0, countForChapter("translation_units", empty.chapterId()));
+
+    Fixture oversized = createFixture("vi");
+    insertExtraSegment(oversized, 2, "x".repeat(10_001));
+
+    assertThrows(TranslationChunkPlanner.SegmentTooLargeException.class, () -> enqueue(oversized));
+    assertEquals(0, countForChapter("translation_jobs", oversized.chapterId()));
+    assertEquals(0, countForChapter("translation_outbox_events", oversized.chapterId()));
+    assertEquals(0, countForChapter("translation_units", oversized.chapterId()));
   }
 
   private TranslationJobService.EnqueueResult enqueue(Fixture fixture) {
@@ -202,7 +293,7 @@ class PostgresTranslationJobEnqueueTests {
     UUID chapterId = UUID.randomUUID();
     UUID revisionId = UUID.randomUUID();
     UUID segmentId = UUID.randomUUID();
-    Fixture fixture = new Fixture(userId, libraryId, workId, chapterId, revisionId, segmentId);
+    Fixture fixture = new Fixture(userId, libraryId, workId, chapterId, revisionId);
 
     try (Connection connection = dataSource.getConnection()) {
       connection.setAutoCommit(false);
@@ -255,7 +346,7 @@ class PostgresTranslationJobEnqueueTests {
             segmentId,
             revisionId,
             "Synthetic source sentence.",
-            new byte[32]);
+            sha256("Synthetic source sentence."));
         connection.commit();
       } catch (SQLException | RuntimeException exception) {
         connection.rollback();
@@ -272,7 +363,8 @@ class PostgresTranslationJobEnqueueTests {
       try {
         execute(
             connection, "DELETE FROM translation_jobs WHERE chapter_id = ?", fixture.chapterId());
-        execute(connection, "DELETE FROM segments WHERE id = ?", fixture.segmentId());
+        execute(
+            connection, "DELETE FROM segments WHERE chapter_revision_id = ?", fixture.revisionId());
         execute(connection, "DELETE FROM chapter_revisions WHERE id = ?", fixture.revisionId());
         execute(connection, "DELETE FROM chapters WHERE id = ?", fixture.chapterId());
         execute(connection, "DELETE FROM works WHERE id = ?", fixture.workId());
@@ -287,15 +379,31 @@ class PostgresTranslationJobEnqueueTests {
   }
 
   private long countForChapter(String table, UUID chapterId) throws SQLException {
-    if (!List.of("translation_jobs", "translation_outbox_events").contains(table)) {
+    if (!List.of(
+            "translation_jobs",
+            "translation_outbox_events",
+            "translation_units",
+            "translation_unit_segments")
+        .contains(table)) {
       throw new IllegalArgumentException("unsupported fixture count table");
     }
     String sql =
-        table.equals("translation_jobs")
-            ? "SELECT COUNT(*) FROM translation_jobs WHERE chapter_id = ?"
-            : "SELECT COUNT(*) FROM translation_outbox_events event "
-                + "JOIN translation_jobs job ON job.id = event.aggregate_id "
-                + "WHERE job.chapter_id = ?";
+        switch (table) {
+          case "translation_jobs" -> "SELECT COUNT(*) FROM translation_jobs WHERE chapter_id = ?";
+          case "translation_outbox_events" ->
+              "SELECT COUNT(*) FROM translation_outbox_events event "
+                  + "JOIN translation_jobs job ON job.id = event.aggregate_id "
+                  + "WHERE job.chapter_id = ?";
+          case "translation_units" ->
+              "SELECT COUNT(*) FROM translation_units unit "
+                  + "JOIN translation_jobs job ON job.id = unit.job_id "
+                  + "WHERE job.chapter_id = ?";
+          case "translation_unit_segments" ->
+              "SELECT COUNT(*) FROM translation_unit_segments mapping "
+                  + "JOIN translation_jobs job ON job.id = mapping.job_id "
+                  + "WHERE job.chapter_id = ?";
+          default -> throw new IllegalArgumentException("unsupported fixture count table");
+        };
     try (Connection connection = dataSource.getConnection();
         PreparedStatement select = connection.prepareStatement(sql)) {
       select.setObject(1, chapterId);
@@ -303,6 +411,30 @@ class PostgresTranslationJobEnqueueTests {
         row.next();
         return row.getLong(1);
       }
+    }
+  }
+
+  private void insertExtraSegment(Fixture fixture, int ordinal, String sourceText)
+      throws SQLException {
+    try (Connection connection = dataSource.getConnection()) {
+      execute(
+          connection,
+          "INSERT INTO segments (id, chapter_revision_id, ordinal, segment_type, source_text, "
+              + "stable_anchor, checksum) VALUES (?, ?, ?, 'paragraph', ?, ?, ?)",
+          UUID.randomUUID(),
+          fixture.revisionId(),
+          ordinal,
+          sourceText,
+          "p-" + ordinal,
+          sha256(sourceText));
+    }
+  }
+
+  private static byte[] sha256(String value) {
+    try {
+      return MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8));
+    } catch (NoSuchAlgorithmException exception) {
+      throw new IllegalStateException("SHA-256 is unavailable", exception);
     }
   }
 
@@ -317,5 +449,5 @@ class PostgresTranslationJobEnqueueTests {
   }
 
   private record Fixture(
-      UUID userId, UUID libraryId, UUID workId, UUID chapterId, UUID revisionId, UUID segmentId) {}
+      UUID userId, UUID libraryId, UUID workId, UUID chapterId, UUID revisionId) {}
 }
