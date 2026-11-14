@@ -228,3 +228,54 @@ test('chapter editor saves plain text with CSRF and version headers without brow
   expect(storedContent).not.toContain('Đêm xuống.');
   await expectNoAxeViolations(page);
 });
+
+test('chapter editor explains the per-paragraph byte limit before attempting a save', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 360, height: 800 });
+  await installAccount(page);
+  await page.route(
+    `**/api/v1/authoring/manuscripts/${workId}/chapters/${chapterId}/draft`,
+    (route) =>
+      json(
+        route,
+        {
+          id: chapterId,
+          workId,
+          title: 'Chương mở đầu',
+          status: 'draft',
+          revisionNo: 0,
+          sourceFormat: null,
+          normalizedContent: '',
+          segments: [],
+          updatedAt: '2026-11-14T12:00:00Z',
+        },
+        200,
+        { 'Cache-Control': 'no-store', ETag: '"draft-0"' },
+      ),
+  );
+  let revisionAttempted = false;
+  await page.route(
+    `**/api/v1/authoring/manuscripts/${workId}/chapters/${chapterId}/revisions`,
+    async (route) => {
+      revisionAttempted = true;
+      await route.abort();
+    },
+  );
+
+  await page.goto(`/app/authoring/${workId}/chapters/${chapterId}`);
+  const editor = page.getByLabel('Văn bản bản thảo');
+  await editor.fill('x'.repeat(1_048_577));
+  await expect(
+    page.getByText('Một đoạn văn vượt giới hạn 1 MiB. Hãy chia nội dung thành các đoạn ngắn hơn.'),
+  ).toBeVisible();
+  await expect(editor).toHaveAttribute('aria-invalid', 'true');
+  await expect(page.getByRole('button', { name: 'Lưu ngay' })).toBeDisabled();
+  expect(revisionAttempted).toBe(false);
+  const dimensions = await page.evaluate(() => ({
+    document: document.documentElement.scrollWidth,
+    viewport: document.documentElement.clientWidth,
+  }));
+  expect(dimensions.document).toBeLessThanOrEqual(dimensions.viewport);
+  await expectNoAxeViolations(page);
+});
