@@ -151,6 +151,9 @@ public class ApiSecurityConfiguration {
                     .requestMatchers(HttpMethod.POST, "/api/v1/glossaries/*/revisions/*/publish")
                     .permitAll();
                 authorize
+                    .requestMatchers(HttpMethod.POST, "/api/v1/glossaries/*/revisions/*/preview")
+                    .permitAll();
+                authorize
                     .requestMatchers(HttpMethod.POST, "/api/v1/glossaries/*/terms/import-preview")
                     .permitAll();
                 authorize

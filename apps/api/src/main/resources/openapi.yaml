@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 6.17.0
+  version: 6.18.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -13,8 +13,8 @@ info:
     commit are implemented. Markdown uses CommonMark core only, strips raw HTML and link destinations, and derives chapter boundaries from repeated top-level headings.
     Source-only Reader manifest, chapter-content, progress, reader-preferences, bookmarks, private annotations and private reading-history routes are implemented in the PostgreSQL profile.
     History is derived from the latest saved progress per accessible readable work, is visible for 365 days, and never returns chapter body text.
-    Versioned cultivation catalogs, authenticated profile settings, private daily XP activity and bounded private Reader sessions with atomic XP awards are implemented in the PostgreSQL profile. The approved starting policy awards 1 XP per complete active Reader minute, capped at 120 XP per UTC day; top-ups and unlocks award none. Cultivation is feature-gated and off by default while the frontend Reader integration and rank-threshold pilot remain pending.
-    Scoped glossary storage, actor-scoped catalog listing/creation, active and writer-only latest-revision reads, version-checked immutable draft creation, lint-gated revision publication with append-only audit, and strict JSON/CSV/TSV import preview and resolved atomic draft apply are implemented in the PostgreSQL profile; translation remains unavailable.
+    Versioned cultivation catalogs, authenticated profile settings, private daily XP activity and bounded private Reader sessions with atomic XP awards are implemented in the PostgreSQL profile. The approved starting policy awards 1 XP per complete active Reader minute, capped at 120 XP per UTC day; same-day sub-minute remainder does not cross UTC midnight; top-ups and unlocks award none. Cultivation is feature-gated and off by default pending the rank-threshold pilot and release reviews.
+    Scoped glossary storage, actor-scoped catalog listing/creation, active and writer-only latest-revision reads, version-checked immutable draft creation, authenticated diff/lint/match preview, lint-gated revision publication with append-only audit, and strict JSON/CSV/TSV import preview and resolved atomic draft apply are implemented in the PostgreSQL profile; translation remains unavailable.
 servers:
   - url: http://127.0.0.1:8080
 tags:
@@ -271,6 +271,92 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+        '428':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/glossaries/{glossaryId}/revisions/{revisionId}/preview:
+    post:
+      operationId: previewGlossaryRevision
+      tags: [Glossary]
+      x-implementation-status: implemented-postgres-profile
+      summary: Preview a glossary draft diff, lint and sample matches
+      description: >-
+        Returns the bounded diff against the immutable parent, lint findings and optional source-text matches for the
+        latest unpublished draft. Requires current glossary-writer access, accepted Terms/Privacy policy, session-bound
+        CSRF and the current strong glossary If-Match ETag. The sample source is limited to 4,000 Unicode code points;
+        at most 100 term changes, 50 lint findings, 100 matches and 50 conflicts are returned with full counts and
+        truncation flags. `canPublish` reflects the global lint gate; sample-specific match conflicts are diagnostic
+        and do not alone block publication. Publish rechecks the current snapshot and lint. This operation performs no
+        writes and never publishes the revision.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - name: glossaryId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: revisionId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: If-Match
+          in: header
+          required: true
+          description: Strong ETag returned by the current glossary representation.
+          schema:
+            type: string
+            pattern: '^"v[1-9][0-9]{0,18}"$'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GlossaryRevisionPreviewRequest'
+      responses:
+        '200':
+          description: Bounded preview for the latest unpublished draft; no state was changed.
+          headers:
+            ETag:
+              required: true
+              schema:
+                type: string
+                pattern: '^"v[1-9][0-9]*"$'
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GlossaryRevisionPreview'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          description: The glossary ETag is stale, the revision is not latest, or it is already active.
+          headers:
+            ETag:
+              required: true
+              schema:
+                type: string
+                pattern: '^"v[1-9][0-9]*"$'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '413':
+          $ref: '#/components/responses/Problem'
         '428':
           $ref: '#/components/responses/Problem'
         '503':
@@ -4565,6 +4651,193 @@ components:
         affectedValue:
           type: string
           maxLength: 4096
+    GlossaryRevisionPreviewRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        sampleSource:
+          type: string
+          maxLength: 4000
+          description: Optional sample source text to match against the proposed immutable revision.
+    GlossaryRevisionPreview:
+      type: object
+      additionalProperties: false
+      required: [glossaryId, baseRevisionId, proposedRevisionId, glossaryVersion, canPublish, changeCount, changes, changesTruncated, errorCount, warningCount, lintIssues, lintIssuesTruncated, matchCount, matches, matchesTruncated, conflictCount, conflicts, conflictsTruncated]
+      properties:
+        glossaryId:
+          type: string
+          format: uuid
+        baseRevisionId:
+          type: [string, 'null']
+          format: uuid
+        proposedRevisionId:
+          type: string
+          format: uuid
+        glossaryVersion:
+          type: integer
+          format: int64
+          minimum: 1
+        canPublish:
+          type: boolean
+        changeCount:
+          type: integer
+          minimum: 0
+        changes:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/GlossaryRevisionChange'
+        changesTruncated:
+          type: boolean
+        errorCount:
+          type: integer
+          minimum: 0
+        warningCount:
+          type: integer
+          minimum: 0
+        lintIssues:
+          type: array
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/GlossaryLintIssue'
+        lintIssuesTruncated:
+          type: boolean
+        matchCount:
+          type: integer
+          minimum: 0
+        matches:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/GlossaryRevisionMatch'
+        matchesTruncated:
+          type: boolean
+        conflictCount:
+          type: integer
+          minimum: 0
+        conflicts:
+          type: array
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/GlossaryRevisionMatchConflict'
+        conflictsTruncated:
+          type: boolean
+    GlossaryRevisionChange:
+      type: object
+      additionalProperties: false
+      required: [kind, termId, before, after]
+      properties:
+        kind:
+          type: string
+          enum: [ADDED, REMOVED, UPDATED]
+        termId:
+          type: string
+          format: uuid
+        before:
+          oneOf:
+            - $ref: '#/components/schemas/GlossaryRevisionTerm'
+            - type: 'null'
+        after:
+          oneOf:
+            - $ref: '#/components/schemas/GlossaryRevisionTerm'
+            - type: 'null'
+    GlossaryRevisionTerm:
+      type: object
+      additionalProperties: false
+      required: [id, revisionId, sourceLanguage, sourceTerm, targetTerm, aliases, scope, priority, casePolicy, matchMode, doNotTranslate]
+      properties:
+        id:
+          type: string
+          format: uuid
+        revisionId:
+          type: string
+          format: uuid
+        sourceLanguage:
+          type: string
+        sourceTerm:
+          type: string
+          maxLength: 512
+        targetTerm:
+          type: [string, 'null']
+          maxLength: 4096
+        aliases:
+          type: array
+          maxItems: 25
+          items:
+            type: string
+            maxLength: 512
+        scope:
+          type: string
+          enum: [USER_GLOBAL, LIBRARY, WORK, VOLUME, CHAPTER]
+        priority:
+          type: integer
+          minimum: -1000000
+          maximum: 1000000
+        casePolicy:
+          type: string
+          enum: [SENSITIVE, INSENSITIVE]
+        matchMode:
+          type: string
+          enum: [WHOLE_PHRASE]
+        doNotTranslate:
+          type: boolean
+    GlossaryRevisionMatch:
+      type: object
+      additionalProperties: false
+      required: [termId, revisionId, matchedText, targetTerm, startUtf16, endUtf16, alias, doNotTranslate, scope, priority]
+      properties:
+        termId:
+          type: string
+          format: uuid
+        revisionId:
+          type: string
+          format: uuid
+        matchedText:
+          type: string
+          maxLength: 512
+        targetTerm:
+          type: [string, 'null']
+          maxLength: 4096
+        startUtf16:
+          type: integer
+          minimum: 0
+        endUtf16:
+          type: integer
+          minimum: 0
+        alias:
+          type: boolean
+        doNotTranslate:
+          type: boolean
+        scope:
+          type: string
+          enum: [USER_GLOBAL, LIBRARY, WORK, VOLUME, CHAPTER]
+        priority:
+          type: integer
+          minimum: -1000000
+          maximum: 1000000
+    GlossaryRevisionMatchConflict:
+      type: object
+      additionalProperties: false
+      required: [matchedText, startUtf16, endUtf16, competingTermIds, code]
+      properties:
+        matchedText:
+          type: string
+          maxLength: 512
+        startUtf16:
+          type: integer
+          minimum: 0
+        endUtf16:
+          type: integer
+          minimum: 0
+        competingTermIds:
+          type: array
+          maxItems: 1000
+          items:
+            type: string
+            format: uuid
+        code:
+          type: string
+          maxLength: 64
     GlossaryPublishProblem:
       allOf:
         - $ref: '#/components/schemas/Problem'

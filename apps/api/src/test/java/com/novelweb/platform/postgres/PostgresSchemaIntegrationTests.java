@@ -1054,6 +1054,10 @@ class PostgresSchemaIntegrationTests {
           new jakarta.servlet.http.Cookie("__Host-novel_session", blockedSession.cookieValue());
       var outsiderCookie =
           new jakarta.servlet.http.Cookie("__Host-novel_session", outsiderSession.cookieValue());
+      String ownerCsrf = csrfTokenService.tokenFor(ownerSession.cookieValue());
+      String editorCsrf = csrfTokenService.tokenFor(editorSession.cookieValue());
+      String readerCsrf = csrfTokenService.tokenFor(readerSession.cookieValue());
+      String outsiderCsrf = csrfTokenService.tokenFor(outsiderSession.cookieValue());
 
       try (Connection connection = dataSource.getConnection()) {
         connection.setAutoCommit(false);
@@ -1171,7 +1175,11 @@ class PostgresSchemaIntegrationTests {
       assertTrue(
           policyBlocked.getResponse().getContentAsString().contains("POLICY_ACCEPTANCE_REQUIRED"));
 
-      for (var writerCookie : List.of(ownerCookie, editorCookie)) {
+      String previewRoute = "/api/v1/glossaries/{glossaryId}/revisions/{revisionId}/preview";
+      for (var writer :
+          List.of(new Object[] {ownerCookie, ownerCsrf}, new Object[] {editorCookie, editorCsrf})) {
+        var writerCookie = (jakarta.servlet.http.Cookie) writer[0];
+        String writerCsrf = (String) writer[1];
         MvcResult writerRead =
             mockMvc.perform(get(route, glossaryId).cookie(writerCookie)).andReturn();
         assertEquals(200, writerRead.getResponse().getStatus());
@@ -1187,6 +1195,27 @@ class PostgresSchemaIntegrationTests {
         assertEquals("Kim Đan (draft)", body.path("terms").get(0).path("targetTerm").asText());
         assertEquals("Golden Elixir", body.path("terms").get(0).path("aliases").get(1).asText());
         assertEquals(addedTermId.toString(), body.path("terms").get(1).path("id").asText());
+
+        MvcResult writerPreview =
+            mockMvc
+                .perform(
+                    post(previewRoute, glossaryId, latestDraft.revisionId())
+                        .cookie(writerCookie)
+                        .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, writerCsrf)
+                        .header(HttpHeaders.IF_MATCH, "\"v3\"")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(
+                            objectMapper.writeValueAsString(
+                                Map.of("sampleSource", "Golden Elixir appears."))))
+                .andReturn();
+        assertEquals(200, writerPreview.getResponse().getStatus());
+        JsonNode writerPreviewBody =
+            objectMapper.readTree(writerPreview.getResponse().getContentAsString());
+        assertEquals(2, writerPreviewBody.path("changeCount").asInt());
+        assertEquals(1, writerPreviewBody.path("matchCount").asInt());
+        assertEquals(
+            latestDraft.revisionId().toString(),
+            writerPreviewBody.path("matches").get(0).path("revisionId").asText());
       }
 
       MvcResult readerRead =
@@ -1195,6 +1224,28 @@ class PostgresSchemaIntegrationTests {
       MvcResult outsiderRead =
           mockMvc.perform(get(route, glossaryId).cookie(outsiderCookie)).andReturn();
       assertEquals(404, outsiderRead.getResponse().getStatus());
+      MvcResult readerPreview =
+          mockMvc
+              .perform(
+                  post(previewRoute, glossaryId, latestDraft.revisionId())
+                      .cookie(readerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, readerCsrf)
+                      .header(HttpHeaders.IF_MATCH, "\"v3\"")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{}"))
+              .andReturn();
+      assertEquals(404, readerPreview.getResponse().getStatus());
+      MvcResult outsiderPreview =
+          mockMvc
+              .perform(
+                  post(previewRoute, glossaryId, latestDraft.revisionId())
+                      .cookie(outsiderCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, outsiderCsrf)
+                      .header(HttpHeaders.IF_MATCH, "\"v3\"")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{}"))
+              .andReturn();
+      assertEquals(404, outsiderPreview.getResponse().getStatus());
       MvcResult emptyRead =
           mockMvc.perform(get(route, emptyGlossaryId).cookie(ownerCookie)).andReturn();
       assertEquals(404, emptyRead.getResponse().getStatus());
@@ -1293,6 +1344,118 @@ class PostgresSchemaIntegrationTests {
                       "rank name",
                       List.of("Golden Core"))));
       String route = "/api/v1/glossaries/{glossaryId}/revisions/{revisionId}/publish";
+      String previewRoute = "/api/v1/glossaries/{glossaryId}/revisions/{revisionId}/preview";
+
+      MvcResult previewPolicyBlocked =
+          mockMvc
+              .perform(
+                  post(previewRoute, glossaryId, firstDraft.revisionId())
+                      .cookie(blockedCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, blockedCsrf)
+                      .header(HttpHeaders.IF_MATCH, "\"v2\"")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{}"))
+              .andReturn();
+      assertEquals(403, previewPolicyBlocked.getResponse().getStatus());
+      assertTrue(
+          previewPolicyBlocked
+              .getResponse()
+              .getContentAsString()
+              .contains("POLICY_ACCEPTANCE_REQUIRED"));
+
+      MvcResult previewMissingCsrf =
+          mockMvc
+              .perform(
+                  post(previewRoute, glossaryId, firstDraft.revisionId())
+                      .cookie(ownerCookie)
+                      .header(HttpHeaders.IF_MATCH, "\"v2\"")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{}"))
+              .andReturn();
+      assertEquals(403, previewMissingCsrf.getResponse().getStatus());
+      assertTrue(previewMissingCsrf.getResponse().getContentAsString().contains("CSRF_FAILED"));
+
+      String anonymousSessionToken =
+          Base64.getUrlEncoder()
+              .withoutPadding()
+              .encodeToString(
+                  "0123456789abcdef0123456789abcdef".getBytes(StandardCharsets.US_ASCII));
+      MvcResult anonymousPreview =
+          mockMvc
+              .perform(
+                  post(previewRoute, glossaryId, firstDraft.revisionId())
+                      .cookie(
+                          new jakarta.servlet.http.Cookie(
+                              "__Host-novel_session", anonymousSessionToken))
+                      .header(
+                          SessionCsrfTokenService.TOKEN_HEADER_NAME,
+                          csrfTokenService.tokenFor(anonymousSessionToken))
+                      .header(HttpHeaders.IF_MATCH, "\"v2\"")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{}"))
+              .andReturn();
+      assertEquals(401, anonymousPreview.getResponse().getStatus());
+      assertTrue(anonymousPreview.getResponse().getContentAsString().contains("UNAUTHENTICATED"));
+
+      MvcResult previewMissingIfMatch =
+          mockMvc
+              .perform(
+                  post(previewRoute, glossaryId, firstDraft.revisionId())
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{}"))
+              .andReturn();
+      assertEquals(428, previewMissingIfMatch.getResponse().getStatus());
+
+      MvcResult previewMalformedIfMatch =
+          mockMvc
+              .perform(
+                  post(previewRoute, glossaryId, firstDraft.revisionId())
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(HttpHeaders.IF_MATCH, "v2")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{}"))
+              .andReturn();
+      assertEquals(400, previewMalformedIfMatch.getResponse().getStatus());
+
+      MvcResult oversizedSample =
+          mockMvc
+              .perform(
+                  post(previewRoute, glossaryId, firstDraft.revisionId())
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(HttpHeaders.IF_MATCH, "\"v2\"")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          objectMapper.writeValueAsString(
+                              Map.of("sampleSource", "x".repeat(4001)))))
+              .andReturn();
+      assertEquals(413, oversizedSample.getResponse().getStatus());
+
+      MvcResult firstPreview =
+          mockMvc
+              .perform(
+                  post(previewRoute, glossaryId, firstDraft.revisionId())
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(HttpHeaders.IF_MATCH, "\"v2\"")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          objectMapper.writeValueAsString(
+                              Map.of("sampleSource", "金丹 and Golden Core"))))
+              .andReturn();
+      assertEquals(200, firstPreview.getResponse().getStatus());
+      assertEquals("\"v2\"", firstPreview.getResponse().getHeader(HttpHeaders.ETAG));
+      assertTrue(
+          firstPreview.getResponse().getHeader(HttpHeaders.CACHE_CONTROL).contains("no-store"));
+      JsonNode firstPreviewBody =
+          objectMapper.readTree(firstPreview.getResponse().getContentAsString());
+      assertEquals(1, firstPreviewBody.path("changeCount").asInt());
+      assertEquals(1, firstPreviewBody.path("warningCount").asInt());
+      assertEquals(2, firstPreviewBody.path("matchCount").asInt());
+      assertTrue(firstPreviewBody.path("canPublish").asBoolean());
 
       MvcResult unauthenticated =
           mockMvc
@@ -1405,6 +1568,23 @@ class PostgresSchemaIntegrationTests {
                       false,
                       null,
                       List.of())));
+      MvcResult conflictPreview =
+          mockMvc
+              .perform(
+                  post(previewRoute, glossaryId, conflictingDraft.revisionId())
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(HttpHeaders.IF_MATCH, "\"v4\"")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(objectMapper.writeValueAsString(Map.of("sampleSource", "玉佩"))))
+              .andReturn();
+      assertEquals(200, conflictPreview.getResponse().getStatus());
+      JsonNode conflictPreviewBody =
+          objectMapper.readTree(conflictPreview.getResponse().getContentAsString());
+      assertFalse(conflictPreviewBody.path("canPublish").asBoolean());
+      assertEquals(1, conflictPreviewBody.path("errorCount").asInt());
+      assertEquals(1, conflictPreviewBody.path("conflictCount").asInt());
+
       MvcResult blockedByLint =
           mockMvc
               .perform(
@@ -1448,6 +1628,33 @@ class PostgresSchemaIntegrationTests {
                       null,
                       List.of())));
 
+      MvcResult stalePreview =
+          mockMvc
+              .perform(
+                  post(previewRoute, glossaryId, latestDraft.revisionId())
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(HttpHeaders.IF_MATCH, "\"v4\"")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{}"))
+              .andReturn();
+      assertEquals(409, stalePreview.getResponse().getStatus());
+      assertEquals("\"v5\"", stalePreview.getResponse().getHeader(HttpHeaders.ETAG));
+      assertTrue(
+          stalePreview.getResponse().getContentAsString().contains("GLOSSARY_VERSION_STALE"));
+
+      MvcResult previewOutsider =
+          mockMvc
+              .perform(
+                  post(previewRoute, glossaryId, latestDraft.revisionId())
+                      .cookie(outsiderCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, outsiderCsrf)
+                      .header(HttpHeaders.IF_MATCH, "\"v5\"")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{}"))
+              .andReturn();
+      assertEquals(404, previewOutsider.getResponse().getStatus());
+
       MvcResult replayOlderActiveRevision =
           mockMvc
               .perform(
@@ -1464,6 +1671,23 @@ class PostgresSchemaIntegrationTests {
               .path("alreadyActive")
               .asBoolean());
 
+      MvcResult previewAlreadyActive =
+          mockMvc
+              .perform(
+                  post(previewRoute, glossaryId, firstDraft.revisionId())
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(HttpHeaders.IF_MATCH, "\"v3\"")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{}"))
+              .andReturn();
+      assertEquals(409, previewAlreadyActive.getResponse().getStatus());
+      assertTrue(
+          previewAlreadyActive
+              .getResponse()
+              .getContentAsString()
+              .contains("GLOSSARY_REVISION_ALREADY_ACTIVE"));
+
       MvcResult nonLatest =
           mockMvc
               .perform(
@@ -1476,6 +1700,23 @@ class PostgresSchemaIntegrationTests {
       assertTrue(
           nonLatest.getResponse().getContentAsString().contains("GLOSSARY_REVISION_NOT_LATEST"));
       assertEquals("\"v5\"", nonLatest.getResponse().getHeader(HttpHeaders.ETAG));
+
+      MvcResult previewNonLatest =
+          mockMvc
+              .perform(
+                  post(previewRoute, glossaryId, conflictingDraft.revisionId())
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(HttpHeaders.IF_MATCH, "\"v5\"")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{}"))
+              .andReturn();
+      assertEquals(409, previewNonLatest.getResponse().getStatus());
+      assertTrue(
+          previewNonLatest
+              .getResponse()
+              .getContentAsString()
+              .contains("GLOSSARY_REVISION_NOT_LATEST"));
 
       MvcResult staleVersion =
           mockMvc
@@ -1542,6 +1783,54 @@ class PostgresSchemaIntegrationTests {
               update.executeUpdate();
             }
           });
+
+      List<GlossaryRevisionWriteRepository.TermDraft> boundedPreviewTerms = new ArrayList<>();
+      List<String> boundedPreviewPatterns = new ArrayList<>();
+      for (int pair = 0; pair < 51; pair++) {
+        String pattern = "collision phrase " + pair;
+        boundedPreviewPatterns.add(pattern);
+        for (String targetSuffix : List.of("one", "two")) {
+          boundedPreviewTerms.add(
+              new GlossaryRevisionWriteRepository.TermDraft(
+                  UUID.randomUUID(),
+                  pattern,
+                  "target " + targetSuffix + " " + pair,
+                  7,
+                  GlossaryMatcher.CasePolicy.INSENSITIVE,
+                  GlossaryMatcher.MatchMode.WHOLE_PHRASE,
+                  false,
+                  null,
+                  List.of()));
+        }
+      }
+      GlossaryRevisionWriteRepository.DraftCreated largePreviewDraft =
+          glossaryRevisionWriteRepository.createDraftRevision(
+              ownerId, glossaryId, 6, boundedPreviewTerms);
+      MvcResult boundedPreview =
+          mockMvc
+              .perform(
+                  post(previewRoute, glossaryId, largePreviewDraft.revisionId())
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(HttpHeaders.IF_MATCH, "\"v7\"")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          objectMapper.writeValueAsString(
+                              Map.of("sampleSource", String.join(" ", boundedPreviewPatterns)))))
+              .andReturn();
+      assertEquals(200, boundedPreview.getResponse().getStatus());
+      JsonNode boundedPreviewBody =
+          objectMapper.readTree(boundedPreview.getResponse().getContentAsString());
+      assertEquals(103, boundedPreviewBody.path("changeCount").asInt());
+      assertEquals(100, boundedPreviewBody.path("changes").size());
+      assertTrue(boundedPreviewBody.path("changesTruncated").asBoolean());
+      assertEquals(51, boundedPreviewBody.path("errorCount").asInt());
+      assertEquals(50, boundedPreviewBody.path("lintIssues").size());
+      assertTrue(boundedPreviewBody.path("lintIssuesTruncated").asBoolean());
+      assertEquals(51, boundedPreviewBody.path("conflictCount").asInt());
+      assertEquals(50, boundedPreviewBody.path("conflicts").size());
+      assertTrue(boundedPreviewBody.path("conflictsTruncated").asBoolean());
+      assertEquals(0, boundedPreviewBody.path("matchCount").asInt());
     } finally {
       try (Connection connection = dataSource.getConnection();
           PreparedStatement delete =
