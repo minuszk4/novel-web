@@ -342,6 +342,63 @@ describe('GlossaryApiService', () => {
     });
   });
 
+  it('downloads a lossless active JSON revision using the server attachment headers', async () => {
+    const pending = service.exportRevision(glossaryId, 'json', 'active');
+    const request = http.expectOne(
+      (candidate) =>
+        candidate.method === 'GET' &&
+        candidate.url === `/api/v1/glossaries/${glossaryId}/export` &&
+        candidate.params.get('format') === 'json' &&
+        candidate.params.get('revision') === 'active',
+    );
+    expect(request.request.headers.has('X-CSRF-Token')).toBe(false);
+    const blob = new Blob(['{"version":1,"terms":[]}'], { type: 'application/json' });
+    request.flush(blob, {
+      headers: new HttpHeaders({
+        'Content-Type': 'application/json;charset=UTF-8',
+        'Content-Disposition': 'attachment; filename="Tu_luyen-r1.json"',
+        ETag: '"v4"',
+        'Cache-Control': 'no-store',
+        'X-Content-Type-Options': 'nosniff',
+      }),
+    });
+
+    await expect(pending).resolves.toMatchObject({
+      blob,
+      fileName: 'Tu_luyen-r1.json',
+      etag: '"v4"',
+      format: 'json',
+      revision: 'active',
+    });
+  });
+
+  it('downloads writer latest TSV and rejects unsafe filename or missing no-store metadata', async () => {
+    const pending = service.exportRevision(glossaryId, 'tsv', 'latest');
+    const request = http.expectOne(
+      (candidate) =>
+        candidate.method === 'GET' &&
+        candidate.params.get('format') === 'tsv' &&
+        candidate.params.get('revision') === 'latest',
+    );
+    request.flush(new Blob(['"sourceTerm"'], { type: 'text/tab-separated-values' }), {
+      headers: new HttpHeaders({
+        'Content-Type': 'text/tab-separated-values;charset=UTF-8',
+        'Content-Disposition': 'attachment; filename="../draft.tsv"',
+        ETag: '"v4"',
+        'X-Content-Type-Options': 'nosniff',
+      }),
+    });
+
+    await expect(pending).rejects.toMatchObject({ code: 'INVALID_RESPONSE', status: -1 });
+  });
+
+  it('rejects invalid export format locally without sending a request', async () => {
+    await expect(
+      service.exportRevision(glossaryId, 'xml' as never, 'active'),
+    ).rejects.toMatchObject({ code: 'INVALID_GLOSSARY_REQUEST', status: 400 });
+    http.expectNone((request) => request.url.includes('/export'));
+  });
+
   it('creates an immutable draft with CSRF and the exact metadata ETag', async () => {
     const term = {
       id: termId,

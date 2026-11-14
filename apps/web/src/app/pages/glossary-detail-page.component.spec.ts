@@ -36,7 +36,7 @@ const activeRevision: GlossaryActiveRevision = {
   scope: 'USER_GLOBAL',
   sourceLanguage: 'zh-Hans',
   targetLanguage: 'vi',
-  version: 2,
+  version: 3,
   activeRevisionId,
   revisionNumber: 1,
   parentRevisionId: null,
@@ -55,17 +55,30 @@ const activeRevision: GlossaryActiveRevision = {
       aliases: ['Golden Core'],
     },
   ],
-  etag: '"v2"',
+  etag: '"v3"',
 };
 
 describe('GlossaryDetailPageComponent', () => {
-  let api: { getGlossary: ReturnType<typeof vi.fn>; getActiveRevision: ReturnType<typeof vi.fn> };
+  let api: {
+    getGlossary: ReturnType<typeof vi.fn>;
+    getActiveRevision: ReturnType<typeof vi.fn>;
+    getLatestWritableRevision: ReturnType<typeof vi.fn>;
+    exportRevision: ReturnType<typeof vi.fn>;
+  };
   let status: ReturnType<typeof signal>;
 
   beforeEach(() => {
     api = {
       getGlossary: vi.fn().mockResolvedValue(writerGlossary),
       getActiveRevision: vi.fn().mockResolvedValue(activeRevision),
+      getLatestWritableRevision: vi.fn(),
+      exportRevision: vi.fn().mockResolvedValue({
+        blob: new Blob(['{}'], { type: 'application/json' }),
+        fileName: 'Tu_luyen-r1.json',
+        etag: '"v3"',
+        format: 'json',
+        revision: 'active',
+      }),
     };
     status = signal('accepted');
     TestBed.configureTestingModule({
@@ -96,6 +109,8 @@ describe('GlossaryDetailPageComponent', () => {
     expect(fixture.nativeElement.textContent).toContain('Kim Đan');
     expect(fixture.nativeElement.textContent).toContain('Golden Core');
     expect(fixture.nativeElement.textContent).not.toContain(glossaryId);
+    expect(api.getLatestWritableRevision).not.toHaveBeenCalled();
+    expect(fixture.nativeElement.querySelector('#glossary-export-revision')).not.toBeNull();
   });
 
   it('does not reveal draft state to a reader', async () => {
@@ -114,6 +129,11 @@ describe('GlossaryDetailPageComponent', () => {
     expect(fixture.nativeElement.textContent).toContain('Chỉ xem');
     expect(fixture.nativeElement.textContent).not.toContain('Có bản nháp');
     expect(fixture.nativeElement.textContent).not.toContain('bản nháp chưa xuất bản');
+    const revisionSelect = fixture.nativeElement.querySelector(
+      '#glossary-export-revision',
+    ) as HTMLSelectElement;
+    expect(revisionSelect.options.length).toBe(1);
+    expect(revisionSelect.options[0].value).toBe('active');
   });
 
   it('does not request or reveal an unpublished first revision', async () => {
@@ -131,9 +151,145 @@ describe('GlossaryDetailPageComponent', () => {
     });
 
     expect(api.getActiveRevision).not.toHaveBeenCalled();
+    expect(api.getLatestWritableRevision).not.toHaveBeenCalled();
     expect(fixture.nativeElement.textContent).toContain('Chưa có bản thuật ngữ đang dùng');
     expect(fixture.nativeElement.textContent).toContain('Có bản nháp chưa xuất bản');
     expect(fixture.nativeElement.textContent).not.toContain('Kim Đan');
+    const revisionSelect = fixture.nativeElement.querySelector(
+      '#glossary-export-revision',
+    ) as HTMLSelectElement;
+    expect([...revisionSelect.options].map((option) => option.value)).toEqual(['latest']);
+    const exportButton = fixture.nativeElement.querySelector(
+      '.glossary-export-submit',
+    ) as HTMLButtonElement;
+    exportButton.click();
+    expect(api.exportRevision).toHaveBeenCalledWith(glossaryId, 'json', 'latest');
+  });
+
+  it('lets a writer explicitly download the latest snapshot and revokes its temporary URL', async () => {
+    const createObjectUrl = vi.fn(() => 'blob:glossary-export');
+    const revokeObjectUrl = vi.fn();
+    const oldCreateObjectUrl = URL.createObjectURL;
+    const oldRevokeObjectUrl = URL.revokeObjectURL;
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      value: createObjectUrl,
+    });
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      configurable: true,
+      value: revokeObjectUrl,
+    });
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    const fixture = TestBed.createComponent(GlossaryDetailPageComponent);
+    fixture.detectChanges();
+    await vi.waitFor(() => {
+      fixture.detectChanges();
+      expect(fixture.nativeElement.querySelector('#glossary-export-revision')).not.toBeNull();
+    });
+
+    const revisionSelect = fixture.nativeElement.querySelector(
+      '#glossary-export-revision',
+    ) as HTMLSelectElement;
+    revisionSelect.value = 'latest';
+    revisionSelect.dispatchEvent(new Event('change'));
+    fixture.detectChanges();
+    const download = fixture.nativeElement.querySelector(
+      '.glossary-export-submit',
+    ) as HTMLButtonElement;
+    download.click();
+
+    await vi.waitFor(() => {
+      fixture.detectChanges();
+      expect(fixture.nativeElement.textContent).toContain('Đã tải xuống bản 2.');
+    });
+    expect(api.exportRevision).toHaveBeenCalledWith(glossaryId, 'json', 'latest');
+    expect(createObjectUrl).toHaveBeenCalledOnce();
+    expect(click).toHaveBeenCalledOnce();
+    fixture.destroy();
+    expect(revokeObjectUrl).toHaveBeenCalledWith('blob:glossary-export');
+    click.mockRestore();
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      value: oldCreateObjectUrl,
+    });
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      configurable: true,
+      value: oldRevokeObjectUrl,
+    });
+  });
+
+  it.each([
+    { status: 401, code: 'UNAUTHENTICATED', action: 'Đăng nhập lại', tag: 'A' },
+    {
+      status: 403,
+      code: 'POLICY_ACCEPTANCE_REQUIRED',
+      action: 'Mở phần xác nhận chính sách',
+      tag: 'A',
+    },
+    { status: 404, code: 'NOT_FOUND', action: 'Tải lại glossary', tag: 'BUTTON' },
+    {
+      status: 409,
+      code: 'GLOSSARY_EXPORT_VERSION_STALE',
+      action: 'Tải lại glossary',
+      tag: 'BUTTON',
+    },
+    { status: 503, code: 'GLOSSARY_EXPORT_UNAVAILABLE', action: 'Thử lại', tag: 'BUTTON' },
+  ])(
+    'shows a safe export recovery action for HTTP $status',
+    async ({ status, code, action, tag }) => {
+      api.exportRevision.mockRejectedValue(new GlossaryApiError(code, status, code));
+      const fixture = TestBed.createComponent(GlossaryDetailPageComponent);
+      fixture.detectChanges();
+      await vi.waitFor(() => {
+        fixture.detectChanges();
+        expect(fixture.nativeElement.querySelector('.glossary-export-submit')).not.toBeNull();
+      });
+      (fixture.nativeElement.querySelector('.glossary-export-submit') as HTMLButtonElement).click();
+
+      await vi.waitFor(() => {
+        fixture.detectChanges();
+        expect(fixture.nativeElement.querySelector('.glossary-export-error')).not.toBeNull();
+      });
+      const actionElement = fixture.nativeElement.querySelector(
+        '.glossary-export-error .text-link, .glossary-export-error .text-button',
+      ) as HTMLAnchorElement | HTMLButtonElement;
+      expect(actionElement.tagName).toBe(tag);
+      expect(actionElement.textContent).toContain(action);
+      if (status === 401) {
+        expect(decodeURIComponent((actionElement as HTMLAnchorElement).href)).toContain(
+          '/app/glossaries/' + glossaryId,
+        );
+      }
+      if (status === 503) {
+        actionElement.click();
+        expect(api.exportRevision).toHaveBeenCalledTimes(2);
+      }
+    },
+  );
+
+  it('refuses a download whose ETag no longer matches the detail-page version', async () => {
+    api.exportRevision.mockResolvedValue({
+      blob: new Blob(['{}'], { type: 'application/json' }),
+      fileName: 'Tu_luyen-r2.json',
+      etag: '"v4"',
+      format: 'json',
+      revision: 'active',
+    });
+    const fixture = TestBed.createComponent(GlossaryDetailPageComponent);
+    fixture.detectChanges();
+    await vi.waitFor(() => {
+      fixture.detectChanges();
+      expect(fixture.nativeElement.querySelector('.glossary-export-submit')).not.toBeNull();
+    });
+    (fixture.nativeElement.querySelector('.glossary-export-submit') as HTMLButtonElement).click();
+
+    await vi.waitFor(() => {
+      fixture.detectChanges();
+      expect(fixture.nativeElement.textContent).toContain('Glossary đã thay đổi sau khi tải trang');
+    });
+    expect(
+      fixture.nativeElement.querySelector('.glossary-export-error .text-button')?.textContent,
+    ).toContain('Tải lại glossary');
   });
 
   it('renders missing glossary as a not-found state', async () => {

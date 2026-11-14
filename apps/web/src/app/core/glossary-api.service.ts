@@ -10,6 +10,8 @@ import { firstValueFrom, timeout } from 'rxjs';
 
 export type GlossaryScope = 'USER_GLOBAL' | 'LIBRARY' | 'WORK' | 'VOLUME' | 'CHAPTER';
 export type GlossaryImportFormat = 'JSON' | 'CSV' | 'TSV';
+export type GlossaryExportFormat = 'json' | 'csv' | 'tsv';
+export type GlossaryExportRevision = 'active' | 'latest';
 export type GlossaryCasePolicy = 'SENSITIVE' | 'INSENSITIVE';
 export type GlossarySuggestedAction = 'ADD' | 'UPDATE' | 'UNCHANGED' | 'RESOLVE_CONFLICT';
 export type GlossaryImportAction = 'ADD' | 'REPLACE' | 'MERGE' | 'SKIP';
@@ -36,6 +38,14 @@ export interface GlossaryPage {
 export interface GlossaryMetadataSnapshot {
   glossary: GlossaryCatalogItem;
   etag: string;
+}
+
+export interface GlossaryExportDownload {
+  blob: Blob;
+  fileName: string;
+  etag: string;
+  format: GlossaryExportFormat;
+  revision: GlossaryExportRevision;
 }
 
 export interface GlossaryCurrentTerm {
@@ -436,6 +446,55 @@ export class GlossaryApiService {
           .pipe(timeout(requestTimeoutMs)),
       );
       return parseActiveRevision(response, glossaryId);
+    } catch (error) {
+      throw toGlossaryApiError(error);
+    }
+  }
+
+  async exportRevision(
+    glossaryId: string,
+    format: GlossaryExportFormat,
+    revision: GlossaryExportRevision,
+  ): Promise<GlossaryExportDownload> {
+    if (
+      !isUuid(glossaryId) ||
+      (format !== 'json' && format !== 'csv' && format !== 'tsv') ||
+      (revision !== 'active' && revision !== 'latest')
+    ) {
+      throw invalidQuery();
+    }
+    try {
+      const params = new HttpParams().set('format', format).set('revision', revision);
+      const response = await firstValueFrom(
+        this.http
+          .get(`${glossariesUrl}/${glossaryId}/export`, {
+            params,
+            observe: 'response',
+            responseType: 'blob',
+          })
+          .pipe(timeout(30_000)),
+      );
+      const contentType = response.headers.get('Content-Type')?.split(';', 1)[0].trim();
+      const expectedContentType =
+        format === 'json'
+          ? 'application/json'
+          : format === 'csv'
+            ? 'text/csv'
+            : 'text/tab-separated-values';
+      const contentDisposition = response.headers.get('Content-Disposition');
+      const fileName = parseExportFileName(contentDisposition, format);
+      const etag = response.headers.get('ETag');
+      if (
+        !(response.body instanceof Blob) ||
+        contentType !== expectedContentType ||
+        !fileName ||
+        !isEtag(etag) ||
+        !response.headers.get('Cache-Control')?.toLowerCase().includes('no-store') ||
+        response.headers.get('X-Content-Type-Options')?.toLowerCase() !== 'nosniff'
+      ) {
+        throw invalidResponse();
+      }
+      return { blob: response.body, fileName, etag, format, revision };
     } catch (error) {
       throw toGlossaryApiError(error);
     }
@@ -1348,6 +1407,13 @@ function toGlossaryApiError(error: unknown): GlossaryApiError {
 
 function parseEtag(value: string | null): string | null {
   return value && etagPattern.test(value) ? value : null;
+}
+
+function parseExportFileName(value: string | null, format: GlossaryExportFormat): string | null {
+  if (!value) return null;
+  const match =
+    /^attachment; filename="([A-Za-z0-9_-]{1,64}-r[1-9][0-9]{0,18}\.(json|csv|tsv))"$/.exec(value);
+  return match?.[2] === format ? match[1] : null;
 }
 
 function parseIssues(value: unknown[]): GlossaryImportIssue[] {

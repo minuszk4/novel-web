@@ -2861,6 +2861,100 @@ label:has(input:focus-visible) {
   flex-wrap: wrap;
   gap: 8px;
 }
+.glossary-export-panel {
+  min-width: 0;
+  margin-top: 15px;
+  padding: 15px 17px;
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  background: var(--surface-muted, var(--surface));
+}
+.glossary-export-panel h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 650;
+}
+.glossary-export-intro,
+.glossary-export-safety-note,
+.glossary-export-warning,
+.glossary-export-status,
+.glossary-export-error p,
+.glossary-export-unavailable {
+  margin: 7px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.glossary-export-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+.glossary-export-field {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+.glossary-export-field label {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 650;
+}
+.glossary-export-field select {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+.glossary-export-field select:focus-visible {
+  outline: 3px solid var(--focus-ring, #7a5af8);
+  outline-offset: 2px;
+}
+.glossary-export-field select:disabled {
+  cursor: wait;
+}
+.glossary-export-safety-note {
+  margin-top: 9px;
+}
+.glossary-export-submit {
+  min-height: 44px;
+  margin-top: 11px;
+}
+.glossary-export-submit:disabled {
+  cursor: not-allowed;
+}
+.glossary-export-status {
+  color: var(--success, #176b47);
+}
+.glossary-export-warning,
+.glossary-export-unavailable {
+  color: var(--muted);
+}
+.glossary-export-error {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 7px;
+  background: var(--surface);
+}
+.glossary-export-error p {
+  margin: 0;
+  color: var(--error, #a1222a);
+}
+.glossary-export-error .text-link,
+.glossary-export-error .text-button {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  margin-top: 4px;
+}
 .glossary-import-heading,
 .glossary-import-file,
 .glossary-import-row,
@@ -6236,6 +6330,12 @@ button.reader-chapter-nav {
   .glossary-detail-actions .button {
     width: 100%;
     min-height: 44px;
+  }
+  .glossary-export-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .glossary-export-submit {
+    width: 100%;
   }
   .library-heading-actions {
     width: 100%;

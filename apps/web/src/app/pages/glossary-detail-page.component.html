@@ -70,6 +70,95 @@
           </a>
         </div>
       }
+      @if (canExport()) {
+        <section class="glossary-export-panel" aria-labelledby="glossary-export-heading">
+          <h2 id="glossary-export-heading">Xuất glossary</h2>
+          <p class="glossary-export-intro">
+            Tải một bản bất biến xuống thiết bị. Thao tác này không sửa hay xuất bản glossary.
+          </p>
+          <div class="glossary-export-fields">
+            <div class="glossary-export-field">
+              <label for="glossary-export-revision">Phiên bản</label>
+              <select
+                id="glossary-export-revision"
+                [value]="exportRevision()"
+                [disabled]="exportState() === 'downloading'"
+                (change)="setExportRevision($event)"
+              >
+                @if (item.activeRevisionId) {
+                  <option value="active" [disabled]="!canExportActive()">
+                    Bản đang áp dụng · {{ item.activeRevisionNumber }}
+                  </option>
+                }
+                @if (item.canWrite && item.latestRevisionNumber !== null) {
+                  <option value="latest" [disabled]="!canExportLatest()">
+                    Bản nháp mới nhất · {{ item.latestRevisionNumber }}
+                  </option>
+                }
+              </select>
+            </div>
+            <div class="glossary-export-field">
+              <label for="glossary-export-format">Định dạng tệp</label>
+              <select
+                id="glossary-export-format"
+                [value]="exportFormat()"
+                [disabled]="exportState() === 'downloading'"
+                (change)="setExportFormat($event)"
+              >
+                <option value="json">JSON · giữ nguyên dữ liệu</option>
+                <option value="csv">CSV · bảng tính</option>
+                <option value="tsv">TSV · bảng tính</option>
+              </select>
+            </div>
+          </div>
+          <p class="glossary-export-safety-note">{{ spreadsheetSafetyNote() }}</p>
+          <button
+            class="button button-primary glossary-export-submit"
+            type="button"
+            [disabled]="exportState() === 'downloading' || !selectedExportAvailable()"
+            (click)="downloadExport()"
+          >
+            {{ exportState() === 'downloading' ? 'Đang chuẩn bị…' : 'Tải tệp xuống' }}
+          </button>
+          @if (exportStatusMessage(); as statusMessage) {
+            <p class="glossary-export-status" role="status" aria-live="polite">
+              {{ statusMessage }}
+            </p>
+          }
+          @if (exportState() === 'error' && exportErrorMessage(); as message) {
+            <div class="glossary-export-error" role="alert">
+              <p>{{ message }}</p>
+              @if (exportRequiresSignIn()) {
+                <a
+                  class="text-link"
+                  [routerLink]="['/sign-in']"
+                  [queryParams]="{ returnTo: signInReturnTo() }"
+                  >Đăng nhập lại</a
+                >
+              } @else if (exportPolicyRequired()) {
+                <a
+                  class="text-link"
+                  [routerLink]="['/app/setup']"
+                  [queryParams]="{ returnUrl: signInReturnTo() }"
+                  >Mở phần xác nhận chính sách</a
+                >
+              } @else if (exportNeedsReload()) {
+                <button class="text-button" type="button" (click)="retry()">
+                  Tải lại glossary
+                </button>
+              } @else {
+                <button class="text-button" type="button" (click)="downloadExport()">
+                  Thử lại
+                </button>
+              }
+            </div>
+          }
+        </section>
+      } @else if (!item.activeRevisionId && item.canWrite && item.latestRevisionNumber === null) {
+        <p class="glossary-export-unavailable" role="status">
+          Tạo bản nháp có thuật ngữ trước khi xuất tệp.
+        </p>
+      }
     </header>
 
     @if (!item.activeRevisionId) {
