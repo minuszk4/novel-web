@@ -1,4 +1,10 @@
-import { HttpClient, HttpErrorResponse, HttpHeaders, HttpResponse } from '@angular/common/http';
+import {
+  HttpClient,
+  HttpErrorResponse,
+  HttpHeaders,
+  HttpParams,
+  HttpResponse,
+} from '@angular/common/http';
 import { Injectable, inject } from '@angular/core';
 import { firstValueFrom, timeout } from 'rxjs';
 
@@ -58,6 +64,29 @@ export interface TranslationEnqueueResult {
 export interface TranslationJobStatusResult {
   status: TranslationJobStatus;
   retryAfterSeconds: number | null;
+}
+
+export interface TranslationCandidatePreview {
+  jobId: string;
+  candidateId: string;
+  sourceRevisionId: string;
+  sourceRevisionCurrent: true;
+  sourceLanguage: string;
+  targetLanguage: string;
+  providerId: 'fake-local';
+  candidateStatus: 'ready_for_review';
+  pageOffset: number;
+  pageLimit: number;
+  totalSegments: number;
+  segments: TranslationCandidatePreviewSegment[];
+}
+
+export interface TranslationCandidatePreviewSegment {
+  sourceSegmentId: string;
+  ordinal: number;
+  sourceType: 'paragraph' | 'heading' | 'quote';
+  sourceText: string;
+  fakeResultText: string;
 }
 
 export interface TranslationActionReceipt {
@@ -144,6 +173,38 @@ export class TranslationJobApiService {
         status: parseStatus(response.body),
         retryAfterSeconds: parseRetryAfter(response),
       };
+    } catch (error) {
+      throw toApiError(error);
+    }
+  }
+
+  async getCandidatePreview(
+    jobId: string,
+    offset = 0,
+    limit = 10,
+  ): Promise<TranslationCandidatePreview> {
+    if (
+      !isUuid(jobId) ||
+      !isNonNegativeInteger(offset) ||
+      offset > 5000 ||
+      !isPositiveInteger(limit) ||
+      limit > 25
+    ) {
+      throw new TranslationJobApiError(400, 'INVALID_TRANSLATION_REQUEST');
+    }
+    try {
+      const response = await firstValueFrom(
+        this.http
+          .get<unknown>(`${jobsUrl}/${jobId}/candidate`, {
+            params: new HttpParams().set('offset', offset).set('limit', limit),
+            observe: 'response',
+          })
+          .pipe(timeout(requestTimeoutMs)),
+      );
+      if (!response.headers.get('Cache-Control')?.toLowerCase().includes('no-store')) {
+        throw new TranslationJobApiError(502, 'INVALID_TRANSLATION_RESPONSE');
+      }
+      return parseCandidatePreview(response.body, offset, limit);
     } catch (error) {
       throw toApiError(error);
     }
@@ -265,6 +326,97 @@ function parseStatus(value: unknown): TranslationJobStatus {
   return value as unknown as TranslationJobStatus;
 }
 
+function parseCandidatePreview(
+  value: unknown,
+  expectedOffset: number,
+  expectedLimit: number,
+): TranslationCandidatePreview {
+  const keys = [
+    'jobId',
+    'candidateId',
+    'sourceRevisionId',
+    'sourceRevisionCurrent',
+    'sourceLanguage',
+    'targetLanguage',
+    'providerId',
+    'candidateStatus',
+    'pageOffset',
+    'pageLimit',
+    'totalSegments',
+    'segments',
+  ];
+  if (!isRecord(value) || !hasOnlyKeys(value, keys)) {
+    throw new TranslationJobApiError(502, 'INVALID_TRANSLATION_RESPONSE');
+  }
+  const validHeader =
+    isUuid(value['jobId']) &&
+    isUuid(value['candidateId']) &&
+    isUuid(value['sourceRevisionId']) &&
+    value['sourceRevisionCurrent'] === true &&
+    isLanguageTag(value['sourceLanguage']) &&
+    isLanguageTag(value['targetLanguage']) &&
+    value['providerId'] === 'fake-local' &&
+    value['candidateStatus'] === 'ready_for_review' &&
+    value['pageOffset'] === expectedOffset &&
+    value['pageLimit'] === expectedLimit &&
+    isNonNegativeInteger(value['totalSegments']) &&
+    value['totalSegments'] > 0 &&
+    value['totalSegments'] <= 5000 &&
+    Array.isArray(value['segments']) &&
+    value['segments'].length <= expectedLimit &&
+    value['segments'].length ===
+      Math.max(0, Math.min(expectedLimit, Number(value['totalSegments']) - expectedOffset));
+  if (!validHeader || !Array.isArray(value['segments'])) {
+    throw new TranslationJobApiError(502, 'INVALID_TRANSLATION_RESPONSE');
+  }
+
+  let previousOrdinal = 0;
+  const segmentIds = new Set<string>();
+  const segments: TranslationCandidatePreviewSegment[] = [];
+  for (const segment of value['segments']) {
+    if (
+      !isRecord(segment) ||
+      !hasOnlyKeys(segment, [
+        'sourceSegmentId',
+        'ordinal',
+        'sourceType',
+        'sourceText',
+        'fakeResultText',
+      ])
+    ) {
+      throw new TranslationJobApiError(502, 'INVALID_TRANSLATION_RESPONSE');
+    }
+    const sourceType = segment['sourceType'];
+    const sourceText = segment['sourceText'];
+    const fakeResultText = segment['fakeResultText'];
+    if (
+      !isUuid(segment['sourceSegmentId']) ||
+      segmentIds.has(segment['sourceSegmentId']) ||
+      !isPositiveInteger(segment['ordinal']) ||
+      segment['ordinal'] <= previousOrdinal ||
+      !['paragraph', 'heading', 'quote'].includes(String(sourceType)) ||
+      typeof sourceText !== 'string' ||
+      countCodePoints(sourceText) < 1 ||
+      countCodePoints(sourceText) > 4000 ||
+      typeof fakeResultText !== 'string' ||
+      countCodePoints(fakeResultText) > 4016 ||
+      !fakeResultText.startsWith(`[fake ${value['sourceLanguage']}->${value['targetLanguage']}] `)
+    ) {
+      throw new TranslationJobApiError(502, 'INVALID_TRANSLATION_RESPONSE');
+    }
+    segmentIds.add(segment['sourceSegmentId']);
+    previousOrdinal = segment['ordinal'];
+    segments.push({
+      sourceSegmentId: segment['sourceSegmentId'],
+      ordinal: segment['ordinal'],
+      sourceType: sourceType as TranslationCandidatePreviewSegment['sourceType'],
+      sourceText,
+      fakeResultText,
+    });
+  }
+  return { ...(value as unknown as Omit<TranslationCandidatePreview, 'segments'>), segments };
+}
+
 function parseReceipt(value: unknown, action: 'retry' | 'cancel'): TranslationActionReceipt {
   if (
     !isRecord(value) ||
@@ -305,6 +457,23 @@ function toApiError(error: unknown): TranslationJobApiError {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, expected: string[]): boolean {
+  const actual = Object.keys(value);
+  return actual.length === expected.length && expected.every((key) => key in value);
+}
+
+function isLanguageTag(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    value.length <= 35 &&
+    /^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(value)
+  );
+}
+
+function countCodePoints(value: string): number {
+  return [...value].length;
 }
 
 function isString(value: unknown): value is string {

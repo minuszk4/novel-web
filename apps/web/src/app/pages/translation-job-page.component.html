@@ -111,10 +111,31 @@
         </p>
       }
       @if (currentJob.status === 'review_required') {
-        <div class="translation-job-info">
-          <strong>Candidate đã sẵn sàng, nhưng hiện chưa có màn hình xem hoặc duyệt.</strong>
-          <p>Bản xem thử chưa được xuất bản và không thay thế nguyên tác.</p>
-        </div>
+        @if (canViewCandidate) {
+          <div class="translation-job-info">
+            <strong>Candidate giả đã sẵn sàng để đối chiếu.</strong>
+            <p>Nội dung chỉ là nguyên tác có nhãn fake-local; chưa thể chỉnh sửa hoặc xuất bản.</p>
+            <a
+              class="button button-primary"
+              [routerLink]="['/app/translation/jobs', currentJob.id, 'candidate']"
+            >
+              Mở đối chiếu bản giả
+            </a>
+          </div>
+        } @else if (!currentJob.canManage) {
+          <div class="translation-job-info">
+            <strong>Candidate giả đã sẵn sàng.</strong>
+            <p>Chỉ người có quyền chỉnh sửa thư viện mới được xem nội dung để đối chiếu.</p>
+          </div>
+        } @else {
+          <div class="translation-job-info">
+            <strong>Candidate giả chưa thể mở.</strong>
+            <p>
+              Nguồn chương có thể đã đổi. Bản xem thử chưa được xuất bản và không thay thế nguyên
+              tác.
+            </p>
+          </div>
+        }
       }
       @if (currentJob.status === 'completed') {
         <p class="translation-job-info">Job đã hoàn tất; nội dung vẫn chưa được xuất bản.</p>

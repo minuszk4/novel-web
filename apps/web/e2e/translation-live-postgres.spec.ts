@@ -1,4 +1,4 @@
-import { expect, test } from './support';
+import { expect, expectNoAxeViolations, test } from './support';
 import type { Response } from '@playwright/test';
 
 const baseUrl = 'http://localhost:4300';
@@ -92,9 +92,9 @@ test('fake-local Reader preview reaches a private candidate through real API and
 
   await expect(page).toHaveURL(new RegExp(`/app/translation/jobs/${enqueueBody.jobId}$`));
   await expect(page.getByRole('heading', { name: 'Live Translation Chapter' })).toBeVisible();
-  await expect(
-    page.getByText('Candidate đã sẵn sàng, nhưng hiện chưa có màn hình xem hoặc duyệt.'),
-  ).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByText('Candidate giả đã sẵn sàng để đối chiếu.')).toBeVisible({
+    timeout: 30_000,
+  });
   await expect(page.getByText('KẾT QUẢ GIẢ · BẢN XEM THỬ CỤC BỘ')).toBeVisible();
   await expect(
     page.getByText(/không gửi chương ra dịch vụ ngoài và không tính phí/i),
@@ -161,6 +161,53 @@ test('fake-local Reader preview reaches a private candidate through real API and
   expect(statusBody.job.candidateId).toMatch(/^[0-9a-f-]{36}$/i);
   expect(statusText).not.toContain(sourceText);
   expect(statusText).not.toMatch(/"(?:sourceText|translatedText|segments|content)"\s*:/i);
+
+  const candidatePromise = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'GET' &&
+      new URL(response.url()).pathname === `${statusPath}/candidate`,
+  );
+  await page.getByRole('link', { name: 'Mở đối chiếu bản giả' }).click();
+  const candidateResponse = await candidatePromise;
+  expect(candidateResponse.status()).toBe(200);
+  expect(candidateResponse.headers()['cache-control']).toContain('no-store');
+  const candidateText = await candidateResponse.text();
+  const candidateBody = JSON.parse(candidateText) as {
+    jobId: string;
+    providerId: string;
+    candidateStatus: string;
+    sourceRevisionCurrent: boolean;
+    pageOffset: number;
+    pageLimit: number;
+    totalSegments: number;
+    segments: { sourceText: string; fakeResultText: string }[];
+  };
+  expect(candidateBody).toMatchObject({
+    jobId: enqueueBody.jobId,
+    providerId: 'fake-local',
+    candidateStatus: 'ready_for_review',
+    sourceRevisionCurrent: true,
+    pageOffset: 0,
+    pageLimit: 10,
+    totalSegments: 1,
+  });
+  expect(candidateBody.segments).toEqual([
+    {
+      sourceSegmentId: expect.stringMatching(/^[0-9a-f-]{36}$/i),
+      ordinal: 1,
+      sourceType: 'paragraph',
+      sourceText,
+      fakeResultText: `[fake en->vi] ${sourceText}`,
+    },
+  ]);
+  expect(candidateText).not.toMatch(/"(?:ownerId|sourcePath|translatedHtml|html)"\s*:/i);
+  await expect(page.getByRole('heading', { name: 'Đối chiếu candidate' })).toBeVisible();
+  await expect(page.getByText('Đây không phải bản dịch.')).toBeVisible();
+  await expect(page.getByText(sourceText, { exact: true })).toBeVisible();
+  await expect(page.getByText(`[fake en->vi] ${sourceText}`, { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Phần trước' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Phần tiếp' })).toBeDisabled();
+  await expectNoAxeViolations(page);
 
   const documentWidths = await page.evaluate(() => ({
     client: document.documentElement.clientWidth,

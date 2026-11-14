@@ -78,6 +78,18 @@ export class TranslationJobPageComponent {
     );
   }
 
+  protected get canViewCandidate(): boolean {
+    const job = this.job();
+    return (
+      !!job &&
+      job.canManage &&
+      job.sourceRevisionCurrent &&
+      job.status === 'review_required' &&
+      job.candidateStatus === 'ready_for_review' &&
+      job.candidateId !== null
+    );
+  }
+
   protected get sourceIsStale(): boolean {
     const job = this.job();
     return !!job && !job.sourceRevisionCurrent;

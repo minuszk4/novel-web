@@ -1,0 +1,210 @@
+.translation-candidate-page {
+  width: min(100%, 1000px);
+  min-width: 0;
+  margin-inline: auto;
+  padding-block: clamp(20px, 4vw, 42px) 100px;
+}
+
+.translation-candidate-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 16px;
+}
+
+.translation-candidate-heading h1,
+.translation-candidate-state h1 {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--font-display);
+  font-size: clamp(25px, 4vw, 38px);
+  line-height: 1.15;
+}
+
+.translation-candidate-heading h1:focus,
+.translation-candidate-state h1:focus {
+  outline: 3px solid var(--focus-ring, #2862cc);
+  outline-offset: 4px;
+}
+
+.translation-candidate-language {
+  margin: 7px 0 0;
+  color: var(--muted);
+}
+
+.translation-candidate-back,
+.translation-candidate-pagination .button,
+.translation-candidate-actions .button {
+  min-height: 44px;
+}
+
+.translation-candidate-notice,
+.translation-candidate-state,
+.translation-candidate-error,
+.translation-candidate-segment {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+}
+
+.translation-candidate-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  margin-bottom: 16px;
+  padding: 14px 16px;
+  color: #583e10;
+  background: var(--warning-soft);
+  border-color: #ead6ae;
+}
+
+.translation-candidate-notice > span {
+  flex: 0 0 auto;
+  font-size: 18px;
+}
+
+.translation-candidate-notice p,
+.translation-candidate-error p {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+
+.translation-candidate-page-status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
+
+.translation-candidate-list {
+  display: grid;
+  min-width: 0;
+  gap: 12px;
+}
+
+.translation-candidate-segment {
+  padding: clamp(14px, 2.5vw, 22px);
+  box-shadow: var(--shadow-soft);
+}
+
+.translation-candidate-segment > h2 {
+  margin: 0 0 12px;
+  font-family: var(--font-display);
+  font-size: 18px;
+}
+
+.translation-candidate-pair {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.translation-candidate-text {
+  min-width: 0;
+  padding: 13px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--surface-soft);
+}
+
+.translation-candidate-text h3 {
+  margin: 0 0 8px;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.translation-candidate-text p {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  line-height: 1.6;
+}
+
+.translation-candidate-fake {
+  border-color: #ead6ae;
+  background: var(--warning-soft);
+}
+
+.translation-candidate-pagination,
+.translation-candidate-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.translation-candidate-pagination > span {
+  color: var(--muted);
+  text-align: center;
+}
+
+.translation-candidate-error,
+.translation-candidate-state {
+  padding: 20px;
+}
+
+.translation-candidate-error {
+  margin-bottom: 14px;
+  color: var(--error);
+  background: #fff7f6;
+  border-color: #efc8c7;
+}
+
+.translation-candidate-error button {
+  margin-top: 8px;
+}
+
+.translation-candidate-state {
+  display: grid;
+  justify-items: start;
+  gap: 10px;
+}
+
+.translation-candidate-state > p {
+  margin: 0;
+}
+
+@media (max-width: 640px) {
+  .translation-candidate-heading {
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .translation-candidate-back,
+  .translation-candidate-actions .button {
+    width: 100%;
+  }
+
+  .translation-candidate-pair {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .translation-candidate-pagination {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .translation-candidate-pagination > span {
+    grid-column: 1 / -1;
+    grid-row: 1;
+  }
+
+  .translation-candidate-pagination .button {
+    width: 100%;
+  }
+
+  .translation-candidate-actions {
+    align-items: stretch;
+    flex-direction: column;
+    width: 100%;
+  }
+}

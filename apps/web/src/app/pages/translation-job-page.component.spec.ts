@@ -37,7 +37,7 @@ const makeStatus = (statusName: string, canManage = false): TranslationJobStatus
     retryWaitUnits: 0,
     cancelledUnits: 0,
     failureCode: statusName === 'failed' ? 'TEMPORARY' : null,
-    candidateId: null,
+    candidateId: statusName === 'review_required' ? revisionId : null,
     candidateStatus: statusName === 'review_required' ? 'ready_for_review' : null,
     createdAt: '2026-11-14T10:00:00Z',
     updatedAt: '2026-11-14T10:00:01Z',
@@ -117,6 +117,36 @@ describe('TranslationJobPageComponent', () => {
     fixture.detectChanges();
 
     expect(fixture.nativeElement.textContent).toContain('Thử lại phần lỗi');
+  });
+
+  it('offers the private candidate comparison only to a writer with a current ready candidate', async () => {
+    getStatus.mockResolvedValue({
+      status: makeStatus('review_required', true),
+      retryAfterSeconds: null,
+    });
+    const fixture = TestBed.createComponent(TranslationJobPageComponent);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    expect(fixture.nativeElement.textContent).toContain('Candidate giả đã sẵn sàng để đối chiếu');
+    expect(fixture.nativeElement.textContent).toContain('chưa thể chỉnh sửa hoặc xuất bản');
+    const link: HTMLAnchorElement | null =
+      fixture.nativeElement.querySelector('a[href*="/candidate"]');
+    expect(link?.getAttribute('href')).toContain(`/app/translation/jobs/${jobId}/candidate`);
+
+    getStatus.mockResolvedValue({
+      status: makeStatus('review_required', false),
+      retryAfterSeconds: null,
+    });
+    const readerFixture = TestBed.createComponent(TranslationJobPageComponent);
+    readerFixture.detectChanges();
+    await readerFixture.whenStable();
+    readerFixture.detectChanges();
+    expect(readerFixture.nativeElement.querySelector('a[href*="/candidate"]')).toBeNull();
+    expect(readerFixture.nativeElement.textContent).toContain(
+      'Chỉ người có quyền chỉnh sửa thư viện mới được xem nội dung',
+    );
   });
 
   it('keeps the current-source link and hides retry when the job revision is stale', async () => {

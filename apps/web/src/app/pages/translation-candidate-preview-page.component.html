@@ -1,0 +1,104 @@
+<div class="page-wrap translation-candidate-page">
+  @if (pageState() === 'loading') {
+    <div class="translation-candidate-state" role="status" aria-live="polite">
+      <p>Đang tải phần đối chiếu…</p>
+    </div>
+  } @else if (pageState() === 'error') {
+    <section class="translation-candidate-state" role="alert">
+      <p class="eyebrow">ĐỐI CHIẾU CỤC BỘ · KẾT QUẢ GIẢ</p>
+      <h1 #pageHeading tabindex="-1">Chưa mở được candidate</h1>
+      <p>{{ pageError() }}</p>
+      <div class="translation-candidate-actions">
+        <button class="button button-primary" type="button" (click)="refresh()">Thử tải lại</button>
+        <a class="button button-outline" [routerLink]="['/app/translation/jobs', requestedJobId()]">
+          Về trạng thái job
+        </a>
+      </div>
+    </section>
+  } @else if (preview(); as current) {
+    <header class="translation-candidate-heading">
+      <div>
+        <p class="eyebrow">ĐỐI CHIẾU CỤC BỘ · KẾT QUẢ GIẢ</p>
+        <h1 #pageHeading tabindex="-1">Đối chiếu candidate</h1>
+        <p class="translation-candidate-language">
+          {{ current.sourceLanguage }} → {{ current.targetLanguage }} · Candidate chưa xuất bản
+        </p>
+      </div>
+      <a
+        class="button button-outline translation-candidate-back"
+        [routerLink]="['/app/translation/jobs', current.jobId]"
+      >
+        Về trạng thái job
+      </a>
+    </header>
+
+    <aside class="translation-candidate-notice" aria-label="Giới hạn candidate fake-local">
+      <span aria-hidden="true">ⓘ</span>
+      <p>
+        <strong>Đây không phải bản dịch.</strong> Kết quả chỉ lặp lại nguyên tác có nhãn để kiểm tra
+        luồng và bố cục. Không gửi chương ra dịch vụ ngoài, không tính phí và không thể xuất bản
+        candidate này.
+      </p>
+    </aside>
+
+    <div
+      class="translation-candidate-page-status"
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+    >
+      {{ announcement() }}
+    </div>
+
+    @if (refreshError(); as error) {
+      <div class="translation-candidate-error" role="alert">
+        <p>{{ error }}</p>
+        <button class="text-button" type="button" (click)="refresh()">Tải lại phần này</button>
+      </div>
+    }
+
+    <section class="translation-candidate-list" aria-label="Các cặp nguyên tác và kết quả giả">
+      @for (segment of current.segments; track segment.sourceSegmentId) {
+        <article class="translation-candidate-segment">
+          <h2>Phần {{ segment.ordinal }}</h2>
+          <div class="translation-candidate-pair">
+            <section class="translation-candidate-text" aria-label="Nguyên tác">
+              <h3>Nguyên tác</h3>
+              <p>{{ segment.sourceText }}</p>
+            </section>
+            <section
+              class="translation-candidate-text translation-candidate-fake"
+              aria-label="Kết quả giả, không phải bản dịch"
+            >
+              <h3>Kết quả giả · không phải bản dịch</h3>
+              <p>{{ segment.fakeResultText }}</p>
+            </section>
+          </div>
+        </article>
+      }
+    </section>
+
+    <nav class="translation-candidate-pagination" aria-label="Phân trang candidate">
+      <button
+        class="button button-outline"
+        type="button"
+        [disabled]="!canGoBack"
+        (click)="previousPage()"
+      >
+        Phần trước
+      </button>
+      <span>
+        {{ current.pageOffset + 1 }}–{{ current.pageOffset + current.segments.length }} /
+        {{ current.totalSegments }}
+      </span>
+      <button
+        class="button button-outline"
+        type="button"
+        [disabled]="!canGoForward"
+        (click)="nextPage()"
+      >
+        Phần tiếp
+      </button>
+    </nav>
+  }
+</div>

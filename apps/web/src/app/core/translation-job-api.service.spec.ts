@@ -9,6 +9,8 @@ const jobId = '66666666-6666-4666-8666-666666666666';
 const workId = '33333333-3333-4333-8333-333333333333';
 const chapterId = '77777777-7777-4777-8777-777777777777';
 const revisionId = '88888888-8888-4888-8888-888888888888';
+const candidateId = '99999999-9999-4999-8999-999999999999';
+const sourceSegmentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const csrfToken = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
 const idempotencyKey = 'translation-preview-key-0001';
 
@@ -103,6 +105,181 @@ describe('TranslationJobApiService', () => {
     request.flush(status, { headers: new HttpHeaders({ 'Retry-After': '2' }) });
 
     await expect(result).resolves.toEqual({ status, retryAfterSeconds: 2 });
+  });
+
+  it('loads a bounded exact-source fake candidate page and requires no-store', async () => {
+    const result = api.getCandidatePreview(jobId, 10, 10);
+    const request = http.expectOne(
+      (candidate) =>
+        candidate.url === `/api/v1/translation/jobs/${jobId}/candidate` &&
+        candidate.params.get('offset') === '10' &&
+        candidate.params.get('limit') === '10',
+    );
+    expect(request.request.method).toBe('GET');
+    const body = {
+      jobId,
+      candidateId,
+      sourceRevisionId: revisionId,
+      sourceRevisionCurrent: true,
+      sourceLanguage: 'vi',
+      targetLanguage: 'en',
+      providerId: 'fake-local',
+      candidateStatus: 'ready_for_review',
+      pageOffset: 10,
+      pageLimit: 10,
+      totalSegments: 11,
+      segments: [
+        {
+          sourceSegmentId,
+          ordinal: 11,
+          sourceType: 'paragraph',
+          sourceText: 'Nội dung nguyên tác.',
+          fakeResultText: '[fake vi->en] Nội dung nguyên tác.',
+        },
+      ],
+    };
+    request.flush(body, { headers: new HttpHeaders({ 'Cache-Control': 'no-store' }) });
+
+    await expect(result).resolves.toEqual(body);
+  });
+
+  it('rejects stale, unmarked or body-bearing candidate responses and invalid pages', async () => {
+    const invalidPage = api.getCandidatePreview(jobId, 5001, 10);
+    await expect(invalidPage).rejects.toMatchObject({
+      status: 400,
+      code: 'INVALID_TRANSLATION_REQUEST',
+    });
+    http.expectNone((candidate) => candidate.url.includes('/candidate'));
+
+    const stale = api.getCandidatePreview(jobId);
+    http
+      .expectOne((candidate) => candidate.url.includes('/candidate'))
+      .flush(
+        {
+          jobId,
+          candidateId,
+          sourceRevisionId: revisionId,
+          sourceRevisionCurrent: false,
+          sourceLanguage: 'vi',
+          targetLanguage: 'en',
+          providerId: 'fake-local',
+          candidateStatus: 'ready_for_review',
+          pageOffset: 0,
+          pageLimit: 10,
+          totalSegments: 1,
+          segments: [
+            {
+              sourceSegmentId,
+              ordinal: 1,
+              sourceType: 'paragraph',
+              sourceText: 'Nội dung nguyên tác.',
+              fakeResultText: '[fake vi->en] Nội dung nguyên tác.',
+            },
+          ],
+        },
+        { headers: new HttpHeaders({ 'Cache-Control': 'no-store' }) },
+      );
+    await expect(stale).rejects.toMatchObject({
+      status: 502,
+      code: 'INVALID_TRANSLATION_RESPONSE',
+    });
+
+    const bodyBearing = api.getCandidatePreview(jobId);
+    http
+      .expectOne((candidate) => candidate.url.includes('/candidate'))
+      .flush(
+        {
+          jobId,
+          candidateId,
+          sourceRevisionId: revisionId,
+          sourceRevisionCurrent: true,
+          sourceLanguage: 'vi',
+          targetLanguage: 'en',
+          providerId: 'fake-local',
+          candidateStatus: 'ready_for_review',
+          pageOffset: 0,
+          pageLimit: 10,
+          totalSegments: 1,
+          ownerId: 'must-not-appear',
+          segments: [
+            {
+              sourceSegmentId,
+              ordinal: 1,
+              sourceType: 'paragraph',
+              sourceText: 'Nội dung nguyên tác.',
+              fakeResultText: '[fake vi->en] Nội dung nguyên tác.',
+            },
+          ],
+        },
+        { headers: new HttpHeaders({ 'Cache-Control': 'no-store' }) },
+      );
+    await expect(bodyBearing).rejects.toMatchObject({
+      status: 502,
+      code: 'INVALID_TRANSLATION_RESPONSE',
+    });
+
+    const unmarked = api.getCandidatePreview(jobId);
+    http
+      .expectOne((candidate) => candidate.url.includes('/candidate'))
+      .flush(
+        {
+          jobId,
+          candidateId,
+          sourceRevisionId: revisionId,
+          sourceRevisionCurrent: true,
+          sourceLanguage: 'vi',
+          targetLanguage: 'en',
+          providerId: 'fake-local',
+          candidateStatus: 'ready_for_review',
+          pageOffset: 0,
+          pageLimit: 10,
+          totalSegments: 1,
+          segments: [
+            {
+              sourceSegmentId,
+              ordinal: 1,
+              sourceType: 'paragraph',
+              sourceText: 'Nội dung nguyên tác.',
+              fakeResultText: 'Nội dung nguyên tác.',
+            },
+          ],
+        },
+        { headers: new HttpHeaders({ 'Cache-Control': 'no-store' }) },
+      );
+    await expect(unmarked).rejects.toMatchObject({
+      status: 502,
+      code: 'INVALID_TRANSLATION_RESPONSE',
+    });
+
+    const cacheable = api.getCandidatePreview(jobId);
+    http
+      .expectOne((candidate) => candidate.url.includes('/candidate'))
+      .flush({
+        jobId,
+        candidateId,
+        sourceRevisionId: revisionId,
+        sourceRevisionCurrent: true,
+        sourceLanguage: 'vi',
+        targetLanguage: 'en',
+        providerId: 'fake-local',
+        candidateStatus: 'ready_for_review',
+        pageOffset: 0,
+        pageLimit: 10,
+        totalSegments: 1,
+        segments: [
+          {
+            sourceSegmentId,
+            ordinal: 1,
+            sourceType: 'paragraph',
+            sourceText: 'Nội dung nguyên tác.',
+            fakeResultText: '[fake vi->en] Nội dung nguyên tác.',
+          },
+        ],
+      });
+    await expect(cacheable).rejects.toMatchObject({
+      status: 502,
+      code: 'INVALID_TRANSLATION_RESPONSE',
+    });
   });
 
   it('uses CSRF and the same idempotency contract for writer retry and cancellation', async () => {
