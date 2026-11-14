@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 6.26.0
+  version: 6.27.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -3720,6 +3720,62 @@ paths:
           $ref: '#/components/responses/Problem'
         '503':
           $ref: '#/components/responses/Problem'
+  /api/v1/translation/jobs/{jobId}/candidate:
+    get:
+      operationId: getFakeLocalTranslationCandidatePreview
+      tags: [Translation]
+      x-implementation-status: local-preview
+      summary: Read one bounded source and fake-result candidate page
+      description: >-
+        Returns paired source and visibly fake-local identity-style result segments only when the actor has
+        write access to the containing library, the job is fake-local and review-required, the candidate is
+        ready-for-review, and its exact source revision/hash remains current. This is a preview only: it does
+        not accept/reject, edit, publish or grant Reader access. Pages contain at most 25 segments and are
+        capped to limit response size. Responses are no-store; fake-local content is not a usable translation.
+      security:
+        - appSession: []
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 5000
+            default: 0
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 25
+            default: 20
+      responses:
+        '200':
+          description: One bounded page of a current, unpublished fake-local candidate.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TranslationCandidatePreviewResponse'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
   /api/v1/translation/jobs/{jobId}/retry:
     post:
       operationId: retryFailedTranslationJob
@@ -4206,6 +4262,70 @@ components:
             cancelRequestedAt:
               type: [string, 'null']
               format: date-time
+    TranslationCandidatePreviewResponse:
+      type: object
+      additionalProperties: false
+      required: [jobId, candidateId, sourceRevisionId, sourceRevisionCurrent, sourceLanguage, targetLanguage, providerId, candidateStatus, pageOffset, pageLimit, totalSegments, segments]
+      properties:
+        jobId:
+          type: string
+          format: uuid
+        candidateId:
+          type: string
+          format: uuid
+        sourceRevisionId:
+          type: string
+          format: uuid
+        sourceRevisionCurrent:
+          type: boolean
+          const: true
+        sourceLanguage:
+          type: string
+        targetLanguage:
+          type: string
+        providerId:
+          type: string
+          const: fake-local
+        candidateStatus:
+          type: string
+          const: ready_for_review
+        pageOffset:
+          type: integer
+          minimum: 0
+          maximum: 5000
+        pageLimit:
+          type: integer
+          minimum: 1
+          maximum: 25
+        totalSegments:
+          type: integer
+          minimum: 1
+          maximum: 5000
+        segments:
+          type: array
+          maxItems: 25
+          items:
+            type: object
+            additionalProperties: false
+            required: [sourceSegmentId, ordinal, sourceType, sourceText, fakeResultText]
+            properties:
+              sourceSegmentId:
+                type: string
+                format: uuid
+              ordinal:
+                type: integer
+                minimum: 1
+                maximum: 5000
+              sourceType:
+                type: string
+                enum: [paragraph, heading, quote]
+              sourceText:
+                type: string
+                maxLength: 4000
+              fakeResultText:
+                type: string
+                maxLength: 4016
+                description: Identity-style source echo prefixed with an explicit fake-local marker; never a usable translation.
     TranslationRetryResponse:
       type: object
       additionalProperties: false

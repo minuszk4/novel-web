@@ -2,6 +2,7 @@ package com.novelweb.translation.jobs;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -28,6 +29,7 @@ class TranslationJobControllerTests {
   private TranslationJobStatusService statusService;
   private TranslationJobRetryService retryService;
   private TranslationJobCancelService cancelService;
+  private TranslationCandidatePreviewService candidatePreviewService;
   private PolicyService policyService;
   private TranslationJobController controller;
   private UUID actorId;
@@ -39,10 +41,16 @@ class TranslationJobControllerTests {
     statusService = mock(TranslationJobStatusService.class);
     retryService = mock(TranslationJobRetryService.class);
     cancelService = mock(TranslationJobCancelService.class);
+    candidatePreviewService = mock(TranslationCandidatePreviewService.class);
     policyService = mock(PolicyService.class);
     controller =
         new TranslationJobController(
-            jobService, statusService, retryService, cancelService, policyService);
+            jobService,
+            statusService,
+            retryService,
+            cancelService,
+            candidatePreviewService,
+            policyService);
     actorId = UUID.randomUUID();
     jobId = UUID.randomUUID();
     when(policyService.requiredAcceptance(actorId))
@@ -97,7 +105,8 @@ class TranslationJobControllerTests {
             new TranslationJobController.EnqueueRequest("bad", "bad", "en"),
             request());
     assertEquals(HttpStatus.FORBIDDEN, policyRequired.getStatusCode());
-    verifyNoInteractions(jobService, statusService, retryService, cancelService);
+    verifyNoInteractions(
+        jobService, statusService, retryService, cancelService, candidatePreviewService);
   }
 
   @Test
@@ -108,6 +117,50 @@ class TranslationJobControllerTests {
 
     assertEquals(HttpStatus.NOT_FOUND, response.getStatusCode());
     assertEquals("no-store", response.getHeaders().getCacheControl());
+  }
+
+  @Test
+  void candidatePreviewRequiresSessionAndPolicyAndReturnsNoStoreWriterPage() {
+    var preview =
+        new TranslationCandidatePreviewService.CandidatePreview(
+            jobId,
+            UUID.randomUUID(),
+            UUID.randomUUID(),
+            true,
+            "vi",
+            "en",
+            "fake-local",
+            "ready_for_review",
+            0,
+            20,
+            1,
+            java.util.List.of(
+                new TranslationCandidatePreviewService.PreviewSegment(
+                    UUID.randomUUID(),
+                    1,
+                    "paragraph",
+                    "Source sentence.",
+                    "[fake vi->en] Source sentence.")));
+    when(candidatePreviewService.findCurrentReadyForReview(actorId, jobId, 0, 20))
+        .thenReturn(Optional.of(preview));
+
+    ResponseEntity<?> guest = controller.candidatePreview(null, jobId.toString(), 0, 20, request());
+    ResponseEntity<?> response =
+        controller.candidatePreview(authentication(), jobId.toString(), 0, 20, request());
+
+    assertEquals(HttpStatus.UNAUTHORIZED, guest.getStatusCode());
+    assertEquals(HttpStatus.OK, response.getStatusCode());
+    assertEquals("no-store", response.getHeaders().getCacheControl());
+    assertEquals(preview, response.getBody());
+    verify(candidatePreviewService).findCurrentReadyForReview(actorId, jobId, 0, 20);
+  }
+
+  @Test
+  void candidatePreviewRejectsInvalidPageBeforeReadingAnyCandidate() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> controller.candidatePreview(authentication(), jobId.toString(), 5001, 20, request()));
+    verifyNoInteractions(candidatePreviewService);
   }
 
   @Test

@@ -13,6 +13,8 @@ import com.novelweb.translation.jobs.TranslationAttemptFailureRepository;
 import com.novelweb.translation.jobs.TranslationAttemptFailureService;
 import com.novelweb.translation.jobs.TranslationAttemptRepository;
 import com.novelweb.translation.jobs.TranslationAttemptService;
+import com.novelweb.translation.jobs.TranslationCandidatePreviewRepository;
+import com.novelweb.translation.jobs.TranslationCandidatePreviewService;
 import com.novelweb.translation.jobs.TranslationFakeLocalWorkerService;
 import com.novelweb.translation.jobs.TranslationJobCancelRepository;
 import com.novelweb.translation.jobs.TranslationJobCancelService;
@@ -75,6 +77,8 @@ class PostgresTranslationUnitLeaseTests {
   @Autowired private TranslationJobCancelService jobCancelService;
 
   @Autowired private TranslationJobStatusService jobStatusService;
+
+  @Autowired private TranslationCandidatePreviewService candidatePreviewService;
 
   @Autowired private TranslationUnitLeaseService leaseService;
 
@@ -934,6 +938,71 @@ class PostgresTranslationUnitLeaseTests {
     assertFalse(stale.job().sourceRevisionCurrent());
     assertTrue(stale.job().canManage());
     assertNotEquals(stale.job().sourceRevisionId(), currentRevisionId);
+  }
+
+  @Test
+  void readyFakeCandidatePreviewReturnsOnlyTheRequestedOrderedPageToTheWriter() throws Exception {
+    Fixture fixture = createQueuedJob(3);
+    fakeLocalWorkerService.processNext("translation-preview-worker", Duration.ofSeconds(60));
+
+    TranslationCandidatePreviewService.CandidatePreview preview =
+        candidatePreviewService
+            .findCurrentReadyForReview(fixture.userId(), fixture.jobId(), 1, 1)
+            .orElseThrow();
+
+    assertEquals(fixture.jobId(), preview.jobId());
+    assertEquals(fixture.revisionId(), preview.sourceRevisionId());
+    assertTrue(preview.sourceRevisionCurrent());
+    assertEquals("fake-local", preview.providerId());
+    assertEquals("ready_for_review", preview.candidateStatus());
+    assertEquals(3, preview.totalSegments());
+    assertEquals(1, preview.pageOffset());
+    assertEquals(1, preview.segments().size());
+    assertEquals(2, preview.segments().getFirst().ordinal());
+    assertEquals("Synthetic source sentence 2.", preview.segments().getFirst().sourceText());
+    assertEquals(
+        "[fake vi->en] Synthetic source sentence 2.",
+        preview.segments().getFirst().fakeResultText());
+  }
+
+  @Test
+  void candidatePreviewConcealsReadOnlyWorkspaceMembersAndRejectsStaleSource() throws Exception {
+    Fixture readOnlyFixture = createQueuedJob(1);
+    UUID workspaceId = createWorkspace(readOnlyFixture);
+    UUID readerId = addWorkspaceMember(workspaceId, "reader");
+    fakeLocalWorkerService.processNext("translation-preview-reader-worker", Duration.ofSeconds(60));
+
+    assertTrue(
+        jobStatusService.findVisible(readerId, readOnlyFixture.jobId()).isPresent(),
+        "a workspace reader can read progress metadata");
+    assertTrue(
+        candidatePreviewService
+            .findCurrentReadyForReview(readerId, readOnlyFixture.jobId(), 0, 20)
+            .isEmpty(),
+        "candidate text is withheld from read-only workspace members");
+
+    Fixture staleFixture = createQueuedJob(1);
+    fakeLocalWorkerService.processNext("translation-preview-stale-worker", Duration.ofSeconds(60));
+    advanceCurrentSourceRevision(staleFixture);
+
+    assertThrows(
+        TranslationCandidatePreviewRepository.SourceRevisionStaleException.class,
+        () ->
+            candidatePreviewService.findCurrentReadyForReview(
+                staleFixture.userId(), staleFixture.jobId(), 0, 20));
+  }
+
+  @Test
+  void candidatePreviewDoesNotExposeAnIncompleteCandidate() throws Exception {
+    Fixture fixture = createQueuedJob(101);
+    fakeLocalWorkerService.processNext(
+        "translation-preview-partial-worker", Duration.ofSeconds(60));
+
+    assertThrows(
+        TranslationCandidatePreviewRepository.CandidateNotReadyException.class,
+        () ->
+            candidatePreviewService.findCurrentReadyForReview(
+                fixture.userId(), fixture.jobId(), 0, 20));
   }
 
   private Optional<TranslationUnitLeaseRepository.Lease> claimAfterBarrier(

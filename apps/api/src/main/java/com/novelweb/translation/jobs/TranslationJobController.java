@@ -22,6 +22,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /** HTTP lifecycle operations for the explicitly enabled fake-local translation pipeline. */
@@ -38,6 +39,7 @@ public class TranslationJobController {
   private final TranslationJobStatusService statusService;
   private final TranslationJobRetryService retryService;
   private final TranslationJobCancelService cancelService;
+  private final TranslationCandidatePreviewService candidatePreviewService;
   private final PolicyService policyService;
 
   public TranslationJobController(
@@ -45,11 +47,13 @@ public class TranslationJobController {
       TranslationJobStatusService statusService,
       TranslationJobRetryService retryService,
       TranslationJobCancelService cancelService,
+      TranslationCandidatePreviewService candidatePreviewService,
       PolicyService policyService) {
     this.jobService = jobService;
     this.statusService = statusService;
     this.retryService = retryService;
     this.cancelService = cancelService;
+    this.candidatePreviewService = candidatePreviewService;
     this.policyService = policyService;
   }
 
@@ -122,6 +126,39 @@ public class TranslationJobController {
     ResponseEntity.BodyBuilder response = noStore(HttpStatus.OK);
     if (!terminal(status.job().status())) response.header(HttpHeaders.RETRY_AFTER, "2");
     return response.body(status);
+  }
+
+  @GetMapping("/{jobId}/candidate")
+  public ResponseEntity<?> candidatePreview(
+      Authentication authentication,
+      @PathVariable String jobId,
+      @RequestParam(defaultValue = "0") int offset,
+      @RequestParam(defaultValue = "20") int limit,
+      HttpServletRequest request) {
+    UUID actorUserId = actorUserId(authentication);
+    if (actorUserId == null) {
+      return problem(
+          HttpStatus.UNAUTHORIZED,
+          "UNAUTHENTICATED",
+          "Sign in to view the translation preview.",
+          request);
+    }
+    ResponseEntity<?> policyFailure = policyGate(actorUserId, request);
+    if (policyFailure != null) return policyFailure;
+    if (offset < 0 || offset > 5000 || limit < 1 || limit > 25) {
+      throw new IllegalArgumentException("candidate preview page is outside supported bounds");
+    }
+    Optional<TranslationCandidatePreviewService.CandidatePreview> preview =
+        candidatePreviewService.findCurrentReadyForReview(
+            actorUserId, parseRequiredUuid(jobId, "jobId"), offset, limit);
+    if (preview.isEmpty()) {
+      return problem(
+          HttpStatus.NOT_FOUND,
+          "TRANSLATION_CANDIDATE_NOT_FOUND",
+          "This translation candidate is unavailable.",
+          request);
+    }
+    return noStore(HttpStatus.OK).body(preview.orElseThrow());
   }
 
   @PostMapping("/{jobId}/retry")
@@ -206,6 +243,24 @@ public class TranslationJobController {
         HttpStatus.NOT_FOUND,
         "TRANSLATION_JOB_NOT_FOUND",
         "This translation job is unavailable.",
+        request);
+  }
+
+  @ExceptionHandler(TranslationCandidatePreviewRepository.SourceRevisionStaleException.class)
+  public ResponseEntity<ProblemDetail> staleCandidateSource(HttpServletRequest request) {
+    return problem(
+        HttpStatus.CONFLICT,
+        "TRANSLATION_SOURCE_STALE",
+        "The chapter changed after this candidate was created. Refresh the current source before reviewing it.",
+        request);
+  }
+
+  @ExceptionHandler(TranslationCandidatePreviewRepository.CandidateNotReadyException.class)
+  public ResponseEntity<ProblemDetail> candidateNotReady(HttpServletRequest request) {
+    return problem(
+        HttpStatus.CONFLICT,
+        "TRANSLATION_CANDIDATE_NOT_READY",
+        "This candidate is not ready for preview.",
         request);
   }
 
