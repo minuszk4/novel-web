@@ -99,6 +99,14 @@ export const routes: Routes = [
         title: 'Đang đọc — Novel',
       },
       {
+        path: 'translation',
+        loadComponent: () =>
+          import('./pages/translation-desk-page.component').then(
+            (page) => page.TranslationDeskPageComponent,
+          ),
+        title: 'Bàn dịch — Novel',
+      },
+      {
         path: 'translation/jobs/:jobId/candidate',
         loadComponent: () =>
           import('./pages/translation-candidate-preview-page.component').then(

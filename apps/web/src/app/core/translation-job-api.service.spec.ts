@@ -107,6 +107,82 @@ describe('TranslationJobApiService', () => {
     await expect(result).resolves.toEqual({ status, retryAfterSeconds: 2 });
   });
 
+  it('loads signed-cursor pages of writer-only job metadata and requires no-store', async () => {
+    const nextCursor = `${'A'.repeat(60)}.${'B'.repeat(43)}`;
+    const firstPage = api.getManageableJobs(null, 1);
+    const firstRequest = http.expectOne(
+      (request) =>
+        request.url === '/api/v1/translation/jobs' && request.params.get('limit') === '1',
+    );
+    expect(firstRequest.request.method).toBe('GET');
+    expect(firstRequest.request.params.has('cursor')).toBe(false);
+    firstRequest.flush(
+      { items: [status], nextCursor },
+      { headers: new HttpHeaders({ 'Cache-Control': 'no-store' }) },
+    );
+    await expect(firstPage).resolves.toEqual({ items: [status], nextCursor });
+
+    const secondPage = api.getManageableJobs(nextCursor, 1);
+    const secondRequest = http.expectOne(
+      (request) =>
+        request.url === '/api/v1/translation/jobs' &&
+        request.params.get('limit') === '1' &&
+        request.params.get('cursor') === nextCursor,
+    );
+    secondRequest.flush(
+      { items: [], nextCursor: null },
+      { headers: new HttpHeaders({ 'Cache-Control': 'no-store' }) },
+    );
+    await expect(secondPage).resolves.toEqual({ items: [], nextCursor: null });
+  });
+
+  it('rejects body-bearing, non-writer, or cacheable list responses', async () => {
+    const leaked = structuredClone(status) as typeof status & { job: { sourceText?: string } };
+    leaked.job.sourceText = 'private chapter text';
+    const bodyBearing = api.getManageableJobs();
+    http
+      .expectOne('/api/v1/translation/jobs?limit=25')
+      .flush(
+        { items: [leaked], nextCursor: null },
+        { headers: new HttpHeaders({ 'Cache-Control': 'no-store' }) },
+      );
+    await expect(bodyBearing).rejects.toMatchObject({ code: 'INVALID_TRANSLATION_RESPONSE' });
+
+    const nonWriter = api.getManageableJobs();
+    http
+      .expectOne('/api/v1/translation/jobs?limit=25')
+      .flush(
+        { items: [{ ...status, job: { ...status.job, canManage: false } }], nextCursor: null },
+        { headers: new HttpHeaders({ 'Cache-Control': 'no-store' }) },
+      );
+    await expect(nonWriter).rejects.toMatchObject({ code: 'INVALID_TRANSLATION_RESPONSE' });
+
+    const duplicate = api.getManageableJobs(null, 2);
+    http
+      .expectOne('/api/v1/translation/jobs?limit=2')
+      .flush(
+        { items: [status, status], nextCursor: null },
+        { headers: new HttpHeaders({ 'Cache-Control': 'no-store' }) },
+      );
+    await expect(duplicate).rejects.toMatchObject({ code: 'INVALID_TRANSLATION_RESPONSE' });
+
+    const cacheable = api.getManageableJobs();
+    http.expectOne('/api/v1/translation/jobs?limit=25').flush({ items: [], nextCursor: null });
+    await expect(cacheable).rejects.toMatchObject({ code: 'INVALID_TRANSLATION_RESPONSE' });
+  });
+
+  it('rejects malformed local cursors and out-of-range page sizes without a request', async () => {
+    await expect(api.getManageableJobs('not-signed')).rejects.toMatchObject({
+      status: 400,
+      code: 'INVALID_TRANSLATION_REQUEST',
+    });
+    await expect(api.getManageableJobs(null, 51)).rejects.toMatchObject({
+      status: 400,
+      code: 'INVALID_TRANSLATION_REQUEST',
+    });
+    http.expectNone('/api/v1/translation/jobs');
+  });
+
   it('loads a bounded exact-source fake candidate page and requires no-store', async () => {
     const result = api.getCandidatePreview(jobId, 10, 10);
     const request = http.expectOne(

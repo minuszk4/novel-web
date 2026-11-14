@@ -209,10 +209,48 @@ test('fake-local Reader preview reaches a private candidate through real API and
   await expect(page.getByRole('button', { name: 'Phần tiếp' })).toBeDisabled();
   await expectNoAxeViolations(page);
 
+  const deskListPromise = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'GET' &&
+      new URL(response.url()).pathname === '/api/v1/translation/jobs' &&
+      new URL(response.url()).searchParams.get('limit') === '25',
+  );
+  await page.getByRole('link', { name: 'Về trạng thái job' }).click();
+  await expect(page.getByRole('heading', { name: /Live Translation Chapter/ })).toBeVisible();
+  await expect(page.locator('.mobile-nav').getByRole('link', { name: 'Bàn dịch' })).toBeVisible();
+  await page.getByRole('link', { name: 'Về Bàn dịch' }).click();
+  const deskListResponse = await deskListPromise;
+  expect(deskListResponse.status()).toBe(200);
+  expect(deskListResponse.headers()['cache-control']).toContain('no-store');
+  expect(deskListResponse.headers().pragma).toBe('no-cache');
+  const deskListText = await deskListResponse.text();
+  const deskListBody = JSON.parse(deskListText) as {
+    items: { job: { id: string; status: string; chapterTitle: string } }[];
+    nextCursor: string | null;
+  };
+  expect(deskListBody.items.some((item) => item.job.id === enqueueBody.jobId)).toBe(true);
+  expect(deskListText).not.toContain(sourceText);
+  expect(deskListText).not.toMatch(
+    /"(?:sourceText|fakeResultText|translatedText|segments|content)"\s*:/i,
+  );
+  await expect(page.getByRole('heading', { name: 'Bàn dịch' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: /Live Translation Chapter/ })).toBeVisible();
+  await expect(page.getByText('Bản thử cục bộ · kết quả giả.')).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Đối chiếu bản giả' })).toHaveAttribute(
+    'href',
+    `/app/translation/jobs/${enqueueBody.jobId}/candidate`,
+  );
+  await expect(page.getByText(sourceText, { exact: true })).toHaveCount(0);
+  await expectNoAxeViolations(page);
+
   const documentWidths = await page.evaluate(() => ({
     client: document.documentElement.clientWidth,
     scroll: document.documentElement.scrollWidth,
   }));
   expect(documentWidths.scroll).toBeLessThanOrEqual(documentWidths.client);
+  await page.screenshot({
+    path: test.info().outputPath('translation-desk-live.png'),
+    fullPage: true,
+  });
   await page.screenshot({ path: screenshotPath!, fullPage: true });
 });

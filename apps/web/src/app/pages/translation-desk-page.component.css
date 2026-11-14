@@ -1,0 +1,292 @@
+.translation-desk-page {
+  width: min(100%, 980px);
+  padding-block: clamp(24px, 4vw, 42px) 112px;
+}
+.translation-desk-heading,
+.translation-desk-card-header,
+.translation-desk-progress-copy,
+.translation-desk-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+}
+.translation-desk-heading {
+  align-items: flex-end;
+  margin-bottom: 18px;
+}
+.translation-desk-heading h1,
+.translation-desk-card-title h2,
+.translation-desk-state h2,
+.translation-desk-empty h2 {
+  margin: 0;
+  font-family: var(--font-display);
+}
+.translation-desk-heading h1 {
+  font-size: clamp(29px, 4vw, 40px);
+  line-height: 1.1;
+}
+.translation-desk-heading p:not(.eyebrow),
+.translation-desk-empty p,
+.translation-desk-state > p {
+  margin: 8px 0 0;
+  color: var(--muted);
+}
+.translation-desk-refresh,
+.translation-desk-actions .button,
+.translation-desk-state-actions .button,
+.translation-desk-empty .button,
+.translation-desk-load-more {
+  min-height: 44px;
+}
+.translation-desk-refresh {
+  flex: 0 0 auto;
+}
+.translation-desk-notice,
+.translation-desk-card,
+.translation-desk-state,
+.translation-desk-empty,
+.translation-desk-skeletons > div {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+}
+.translation-desk-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  margin-bottom: 20px;
+  padding: 14px 16px;
+  border-color: #ead6ae;
+  color: #583e10;
+  background: var(--warning-soft);
+}
+.translation-desk-notice > span {
+  font-size: 18px;
+}
+.translation-desk-notice p,
+.translation-desk-inline-error p {
+  margin: 0;
+}
+.translation-desk-loading {
+  color: var(--muted);
+}
+.translation-desk-skeletons,
+.translation-desk-list {
+  display: grid;
+  gap: 14px;
+}
+.translation-desk-skeletons > div {
+  min-height: 180px;
+  background: var(--surface-soft);
+}
+.translation-desk-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.translation-desk-card {
+  padding: clamp(16px, 3vw, 24px);
+  box-shadow: var(--shadow-soft);
+}
+.translation-desk-card-header {
+  align-items: flex-start;
+}
+.translation-desk-card-title {
+  min-width: 0;
+}
+.translation-desk-card-title .eyebrow {
+  margin-bottom: 6px;
+  overflow-wrap: anywhere;
+}
+.translation-desk-card-title h2 {
+  font-size: clamp(20px, 3vw, 25px);
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+.translation-desk-card-title h2 a:hover {
+  color: var(--primary);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.translation-desk-language {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+.translation-desk-status {
+  max-width: 240px;
+  flex: 0 0 auto;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text);
+  background: var(--surface-soft);
+  font-size: 12px;
+  font-weight: 700;
+  text-align: center;
+}
+.translation-desk-status-active {
+  border-color: #cfd6f5;
+  color: var(--primary-dark);
+  background: var(--primary-soft);
+}
+.translation-desk-status-error {
+  border-color: #efc8c7;
+  color: var(--error);
+  background: #fff7f6;
+}
+.translation-desk-status-quiet {
+  border-color: #d7e7dc;
+  color: #365a43;
+  background: #f1f7f2;
+}
+.translation-desk-progress {
+  margin-top: 18px;
+}
+.translation-desk-progress-copy {
+  color: var(--muted);
+  font-size: 13px;
+}
+.translation-desk-progress-copy strong {
+  color: var(--text);
+  white-space: nowrap;
+}
+.translation-desk-progress progress {
+  display: block;
+  width: 100%;
+  height: 12px;
+  margin-top: 8px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--surface-soft);
+  accent-color: var(--primary);
+}
+.translation-desk-counts {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+  margin: 15px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.translation-desk-counts > div {
+  min-width: 0;
+  padding: 9px 11px;
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  background: var(--surface-soft);
+}
+.translation-desk-counts dt {
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.translation-desk-counts dd {
+  margin: 3px 0 0;
+  font-size: 18px;
+  font-weight: 750;
+}
+.translation-desk-card-footer {
+  display: grid;
+  gap: 11px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-soft);
+}
+.translation-desk-meta {
+  flex-wrap: wrap;
+  color: var(--muted);
+  font-size: 12px;
+}
+.translation-desk-meta > span {
+  color: var(--warning);
+  font-weight: 700;
+}
+.translation-desk-stale,
+.translation-desk-failure {
+  margin: 0;
+  color: var(--primary-dark);
+  font-size: 13px;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+.translation-desk-stale {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.translation-desk-failure,
+.translation-desk-inline-error {
+  color: var(--error);
+}
+.translation-desk-actions,
+.translation-desk-state-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+}
+.translation-desk-load-more {
+  display: block;
+  min-width: min(100%, 220px);
+  margin: 18px auto 0;
+}
+.translation-desk-inline-error,
+.translation-desk-state,
+.translation-desk-empty {
+  padding: clamp(18px, 3vw, 26px);
+}
+.translation-desk-inline-error {
+  margin: 12px 0;
+  padding: 14px;
+  border: 1px solid #efc8c7;
+  border-radius: 12px;
+  background: #fff7f6;
+}
+.translation-desk-inline-error a {
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.translation-desk-empty {
+  display: grid;
+  justify-items: center;
+  padding-block: clamp(32px, 7vw, 64px);
+  text-align: center;
+}
+.translation-desk-empty-mark {
+  display: grid;
+  width: 48px;
+  height: 48px;
+  place-items: center;
+  margin-bottom: 12px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  color: var(--primary);
+  background: var(--primary-soft);
+  font-size: 23px;
+}
+@media (max-width: 640px) {
+  .translation-desk-page {
+    padding-top: 22px;
+  }
+  .translation-desk-heading,
+  .translation-desk-card-header {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .translation-desk-refresh,
+  .translation-desk-actions .button,
+  .translation-desk-state-actions .button {
+    width: 100%;
+  }
+  .translation-desk-counts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .translation-desk-counts > div:last-child {
+    grid-column: 1/-1;
+  }
+  .translation-desk-actions,
+  .translation-desk-state-actions {
+    flex-direction: column;
+  }
+}

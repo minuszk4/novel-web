@@ -93,6 +93,7 @@ export class SetupPageComponent implements AfterViewInit {
       '/app/search',
       '/app/import',
       '/app/import/review',
+      '/app/translation',
       '/app/cultivation',
       '/app/settings',
     ]);

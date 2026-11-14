@@ -66,6 +66,11 @@ export interface TranslationJobStatusResult {
   retryAfterSeconds: number | null;
 }
 
+export interface TranslationJobListPage {
+  items: TranslationJobStatus[];
+  nextCursor: string | null;
+}
+
 export interface TranslationCandidatePreview {
   jobId: string;
   candidateId: string;
@@ -173,6 +178,37 @@ export class TranslationJobApiService {
         status: parseStatus(response.body),
         retryAfterSeconds: parseRetryAfter(response),
       };
+    } catch (error) {
+      throw toApiError(error);
+    }
+  }
+
+  async getManageableJobs(
+    cursor: string | null = null,
+    limit = 25,
+  ): Promise<TranslationJobListPage> {
+    if (
+      !isPositiveInteger(limit) ||
+      limit > 50 ||
+      (cursor !== null &&
+        (typeof cursor !== 'string' ||
+          cursor.length > 256 ||
+          !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(cursor)))
+    ) {
+      throw new TranslationJobApiError(400, 'INVALID_TRANSLATION_REQUEST');
+    }
+    let params = new HttpParams().set('limit', limit);
+    if (cursor !== null) params = params.set('cursor', cursor);
+    try {
+      const response = await firstValueFrom(
+        this.http
+          .get<unknown>(jobsUrl, { params, observe: 'response' })
+          .pipe(timeout(requestTimeoutMs)),
+      );
+      if (!response.headers.get('Cache-Control')?.toLowerCase().includes('no-store')) {
+        throw new TranslationJobApiError(502, 'INVALID_TRANSLATION_RESPONSE');
+      }
+      return parseJobList(response.body, limit);
     } catch (error) {
       throw toApiError(error);
     }
@@ -324,6 +360,82 @@ function parseStatus(value: unknown): TranslationJobStatus {
     Number(value['progressPercent']) <= 100;
   if (!valid) throw new TranslationJobApiError(502, 'INVALID_TRANSLATION_RESPONSE');
   return value as unknown as TranslationJobStatus;
+}
+
+function parseJobList(value: unknown, requestedLimit: number): TranslationJobListPage {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['items', 'nextCursor']) ||
+    !Array.isArray(value['items']) ||
+    value['items'].length > requestedLimit ||
+    !(
+      value['nextCursor'] === null ||
+      (typeof value['nextCursor'] === 'string' &&
+        value['nextCursor'].length <= 256 &&
+        /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(value['nextCursor']))
+    ) ||
+    (value['nextCursor'] !== null && value['items'].length !== requestedLimit)
+  ) {
+    throw new TranslationJobApiError(502, 'INVALID_TRANSLATION_RESPONSE');
+  }
+
+  const statusKeys = [
+    'id',
+    'workId',
+    'chapterId',
+    'sourceRevisionId',
+    'sourceRevisionCurrent',
+    'workTitle',
+    'chapterTitle',
+    'chapterOrdinal',
+    'canManage',
+    'sourceLanguage',
+    'targetLanguage',
+    'providerId',
+    'status',
+    'totalUnits',
+    'completedUnits',
+    'failedUnits',
+    'queuedUnits',
+    'runningUnits',
+    'retryWaitUnits',
+    'cancelledUnits',
+    'failureCode',
+    'candidateId',
+    'candidateStatus',
+    'createdAt',
+    'updatedAt',
+    'startedAt',
+    'completedAt',
+    'cancelRequestedAt',
+  ];
+  const jobIds = new Set<string>();
+  const items = value['items'].map((entry) => {
+    if (
+      !isRecord(entry) ||
+      !hasOnlyKeys(entry, ['job', 'terminalUnits', 'progressPercent']) ||
+      !isRecord(entry['job']) ||
+      !hasOnlyKeys(entry['job'], statusKeys)
+    ) {
+      throw new TranslationJobApiError(502, 'INVALID_TRANSLATION_RESPONSE');
+    }
+    const status = parseStatus(entry);
+    if (
+      !status.job.canManage ||
+      jobIds.has(status.job.id) ||
+      status.terminalUnits !==
+        status.job.completedUnits + status.job.failedUnits + status.job.cancelledUnits ||
+      status.progressPercent !==
+        (status.job.totalUnits === 0
+          ? 0
+          : Math.min(100, Math.floor((status.terminalUnits * 100) / status.job.totalUnits)))
+    ) {
+      throw new TranslationJobApiError(502, 'INVALID_TRANSLATION_RESPONSE');
+    }
+    jobIds.add(status.job.id);
+    return status;
+  });
+  return { items, nextCursor: value['nextCursor'] as string | null };
 }
 
 function parseCandidatePreview(

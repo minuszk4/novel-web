@@ -1,0 +1,231 @@
+<section class="page-wrap translation-desk-page" aria-labelledby="translation-desk-title">
+  <header class="translation-desk-heading">
+    <div>
+      <p class="eyebrow">KHÔNG GIAN BIÊN TẬP</p>
+      <h1 id="translation-desk-title">Bàn dịch</h1>
+      <p>Theo dõi các bản thử cục bộ bạn có quyền quản lý.</p>
+    </div>
+    <button
+      class="button button-outline translation-desk-refresh"
+      type="button"
+      [disabled]="refreshing() || loadingMore()"
+      (click)="refresh()"
+    >
+      {{ refreshing() ? 'Đang tải…' : 'Làm mới danh sách' }}
+    </button>
+  </header>
+
+  <aside class="translation-desk-notice" aria-label="Giới hạn bản thử cục bộ">
+    <span aria-hidden="true">ⓘ</span>
+    <p>
+      <strong>Bản thử cục bộ · kết quả giả.</strong> Job ở đây chỉ kiểm tra luồng xử lý; kết quả
+      hiện tại lặp lại nguyên tác, không phải bản dịch dùng được và không thể xuất bản.
+    </p>
+  </aside>
+
+  <p class="visually-hidden" role="status" aria-live="polite" aria-atomic="true">
+    {{ announcement() }}
+  </p>
+
+  @if (pageState() === 'loading') {
+    <p class="translation-desk-loading" role="status" aria-live="polite">Đang tải danh sách job…</p>
+    <div class="translation-desk-skeletons" aria-hidden="true">
+      <div></div>
+      <div></div>
+      <div></div>
+    </div>
+  } @else if (pageState() === 'error') {
+    @if (initialError(); as error) {
+      <section class="translation-desk-state" role="alert">
+        <h2>Chưa tải được danh sách</h2>
+        <p>{{ error.message }}</p>
+        <div class="translation-desk-state-actions">
+          @if (error.action === 'retry' || error.action === 'reload') {
+            <button class="button button-primary" type="button" (click)="refresh()">
+              Thử tải lại
+            </button>
+          } @else if (error.action === 'sign-in') {
+            <a
+              class="button button-primary"
+              routerLink="/sign-in"
+              [queryParams]="{ returnTo: '/app/translation' }"
+              >Đăng nhập lại</a
+            >
+          } @else if (error.action === 'policy') {
+            <a
+              class="button button-primary"
+              routerLink="/app/setup"
+              [queryParams]="{ returnUrl: '/app/translation' }"
+              >Xem chính sách tài khoản</a
+            >
+          }
+        </div>
+      </section>
+    }
+  } @else if (!jobs().length) {
+    <section class="translation-desk-empty">
+      <span class="translation-desk-empty-mark" aria-hidden="true">⇄</span>
+      <h2>Chưa có job nào bạn có thể quản lý</h2>
+      <p>
+        Job bản thử sẽ xuất hiện sau khi bạn bắt đầu từ một chương có quyền chỉnh sửa. Quyền truy
+        cập được kiểm tra lại mỗi lần tải danh sách.
+      </p>
+      <a class="button button-outline" routerLink="/app/library">Mở thư viện</a>
+    </section>
+  } @else {
+    @if (refreshError(); as error) {
+      <div class="translation-desk-inline-error" role="alert">
+        <p>{{ error.message }}</p>
+        @if (error.action === 'retry' || error.action === 'reload') {
+          <button class="text-button" type="button" (click)="refresh()">Thử tải lại</button>
+        } @else if (error.action === 'sign-in') {
+          <a routerLink="/sign-in" [queryParams]="{ returnTo: '/app/translation' }"
+            >Đăng nhập lại</a
+          >
+        } @else if (error.action === 'policy') {
+          <a routerLink="/app/setup" [queryParams]="{ returnUrl: '/app/translation' }"
+            >Xem chính sách tài khoản</a
+          >
+        }
+      </div>
+    }
+
+    <ul class="translation-desk-list" aria-label="Job bản thử cục bộ">
+      @for (item of jobs(); track item.job.id) {
+        <li>
+          <article class="translation-desk-card">
+            <div class="translation-desk-card-header">
+              <div class="translation-desk-card-title">
+                <p class="eyebrow">{{ item.job.workTitle }}</p>
+                <h2>
+                  <a [routerLink]="['/app/translation/jobs', item.job.id]">
+                    Chương {{ item.job.chapterOrdinal }} · {{ item.job.chapterTitle }}
+                  </a>
+                </h2>
+                <p class="translation-desk-language">
+                  {{ item.job.sourceLanguage }} → {{ item.job.targetLanguage }}
+                </p>
+              </div>
+              <span
+                class="translation-desk-status"
+                [class.translation-desk-status-active]="statusTone(item.job.status) === 'active'"
+                [class.translation-desk-status-error]="statusTone(item.job.status) === 'error'"
+                [class.translation-desk-status-quiet]="statusTone(item.job.status) === 'quiet'"
+              >
+                {{ statusLabel(item.job.status) }}
+              </span>
+            </div>
+
+            <div class="translation-desk-progress">
+              <div class="translation-desk-progress-copy">
+                <span>Đơn vị đã xử lý</span>
+                <strong>{{ processedUnits(item) }} / {{ item.job.totalUnits }}</strong>
+              </div>
+              <progress
+                [value]="item.progressPercent"
+                max="100"
+                [attr.aria-label]="
+                  'Job chương ' +
+                  item.job.chapterOrdinal +
+                  ': ' +
+                  processedUnits(item) +
+                  ' trên ' +
+                  item.job.totalUnits +
+                  ' đơn vị đã xử lý'
+                "
+              ></progress>
+            </div>
+
+            <dl class="translation-desk-counts">
+              <div>
+                <dt>Đang chờ</dt>
+                <dd>{{ item.job.queuedUnits }}</dd>
+              </div>
+              <div>
+                <dt>Đang chạy</dt>
+                <dd>{{ item.job.runningUnits }}</dd>
+              </div>
+              <div>
+                <dt>Chờ thử lại</dt>
+                <dd>{{ item.job.retryWaitUnits }}</dd>
+              </div>
+              <div>
+                <dt>Lỗi</dt>
+                <dd>{{ item.job.failedUnits }}</dd>
+              </div>
+              <div>
+                <dt>Đã dừng</dt>
+                <dd>{{ item.job.cancelledUnits }}</dd>
+              </div>
+            </dl>
+
+            <div class="translation-desk-card-footer">
+              <div class="translation-desk-meta">
+                <span>Bản thử cục bộ</span>
+                <time [attr.datetime]="item.job.updatedAt">
+                  Cập nhật {{ item.job.updatedAt | date: 'dd/MM/yyyy HH:mm' }}
+                </time>
+              </div>
+              @if (!item.job.sourceRevisionCurrent) {
+                <a
+                  class="translation-desk-stale"
+                  [routerLink]="['/app/reader', item.job.workId, item.job.chapterId]"
+                >
+                  Nguyên tác đã đổi · Mở bản hiện tại
+                </a>
+              } @else if (item.job.failedUnits > 0) {
+                <p class="translation-desk-failure">
+                  Một số đơn vị chưa xử lý được. Mở job để xem trạng thái và thao tác hiện có.
+                </p>
+              }
+              <div class="translation-desk-actions">
+                <a
+                  class="button button-outline"
+                  [routerLink]="['/app/translation/jobs', item.job.id]"
+                  >Mở trạng thái job</a
+                >
+                @if (canViewCandidate(item)) {
+                  <a
+                    class="button button-primary"
+                    [routerLink]="['/app/translation/jobs', item.job.id, 'candidate']"
+                    >Đối chiếu bản giả</a
+                  >
+                }
+              </div>
+            </div>
+          </article>
+        </li>
+      }
+    </ul>
+
+    @if (loadMoreError(); as error) {
+      <div class="translation-desk-inline-error" role="alert">
+        <p>{{ error.message }}</p>
+        @if (error.action === 'retry') {
+          <button class="text-button" type="button" (click)="retryLoadMore()">Thử lại</button>
+        } @else if (error.action === 'reload') {
+          <button class="text-button" type="button" (click)="refresh()">Tải lại danh sách</button>
+        } @else if (error.action === 'sign-in') {
+          <a routerLink="/sign-in" [queryParams]="{ returnTo: '/app/translation' }"
+            >Đăng nhập lại</a
+          >
+        } @else if (error.action === 'policy') {
+          <a routerLink="/app/setup" [queryParams]="{ returnUrl: '/app/translation' }"
+            >Xem chính sách tài khoản</a
+          >
+        }
+      </div>
+    }
+
+    @if (nextCursor()) {
+      <button
+        class="button button-outline translation-desk-load-more"
+        type="button"
+        [disabled]="loadingMore() || refreshing()"
+        (click)="loadMore()"
+      >
+        {{ loadingMore() ? 'Đang tải thêm…' : 'Tải thêm job' }}
+      </button>
+    }
+  }
+</section>

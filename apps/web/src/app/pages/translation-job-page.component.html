@@ -27,6 +27,9 @@
         Quay lại chương
       </a>
     </header>
+    @if (currentJob.canManage) {
+      <a class="translation-job-desk-link" routerLink="/app/translation">Về Bàn dịch</a>
+    }
 
     <aside class="translation-job-preview-notice" aria-label="Giới hạn bản xem thử">
       <span aria-hidden="true">ⓘ</span>

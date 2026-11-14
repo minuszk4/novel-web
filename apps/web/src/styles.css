@@ -5212,6 +5212,9 @@ button.reader-chapter-nav {
     border-top: 1px solid var(--border-soft);
     backdrop-filter: blur(12px);
   }
+  .mobile-nav.mobile-nav-six {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
   .mobile-nav a {
     display: flex;
     flex-direction: column;

@@ -100,6 +100,7 @@ describe('TranslationJobPageComponent', () => {
     expect(fixture.nativeElement.textContent).toContain('Bản thử gặp lỗi');
     expect(fixture.nativeElement.textContent).not.toContain('Thử lại phần lỗi');
     expect(fixture.nativeElement.textContent).not.toContain('Dừng bản xem thử');
+    expect(fixture.nativeElement.textContent).not.toContain('Về Bàn dịch');
   });
 
   it('offers retry only to a writer when a job has retryable failure units', async () => {
@@ -117,6 +118,7 @@ describe('TranslationJobPageComponent', () => {
     fixture.detectChanges();
 
     expect(fixture.nativeElement.textContent).toContain('Thử lại phần lỗi');
+    expect(fixture.nativeElement.textContent).toContain('Về Bàn dịch');
   });
 
   it('offers the private candidate comparison only to a writer with a current ready candidate', async () => {

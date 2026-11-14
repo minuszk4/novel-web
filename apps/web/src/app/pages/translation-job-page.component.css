@@ -25,6 +25,16 @@
   color: var(--muted);
 }
 
+.translation-job-desk-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  margin-bottom: 10px;
+  color: var(--primary);
+  font-size: 13px;
+  font-weight: 700;
+}
+
 .translation-job-back {
   min-height: 44px;
   flex: 0 0 auto;
