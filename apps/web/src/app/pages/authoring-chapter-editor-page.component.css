@@ -126,6 +126,76 @@
   line-height: 1.3;
 }
 
+.chapter-editor-mode-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 10px 16px;
+  margin: 0 0 16px;
+}
+
+.chapter-editor-mode-actions p {
+  flex: 1 1 260px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.chapter-editor-mode-actions .button {
+  min-height: 46px;
+}
+
+.chapter-editor-preview {
+  min-width: 0;
+  padding: clamp(16px, 4vw, 36px);
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--surface-soft);
+}
+
+.chapter-editor-preview header {
+  max-width: 720px;
+  margin: 0 auto 24px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.chapter-editor-preview header .eyebrow {
+  margin: 0 0 8px;
+  color: var(--primary-dark);
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0.06em;
+}
+
+.chapter-editor-preview h3 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: clamp(22px, 4vw, 30px);
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.chapter-editor-preview header > p:last-child {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.chapter-editor-preview-content {
+  max-width: 720px;
+  margin: 0 auto;
+  color: var(--text);
+  font-family: var(--font-display);
+  font-size: 17px;
+  line-height: 1.85;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 .chapter-editor-save-state[data-state='saved'] {
   border-color: #cfe5d6;
   color: #1b5b31;
@@ -337,6 +407,10 @@
     align-items: flex-start;
   }
 
+  .chapter-editor-mode-actions {
+    align-items: flex-start;
+  }
+
   .chapter-editor-field textarea {
     min-height: 320px;
     padding: 13px;
@@ -353,6 +427,15 @@
   .chapter-editor-toolbar {
     display: grid;
     gap: 10px;
+  }
+
+  .chapter-editor-mode-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .chapter-editor-mode-actions .button {
+    width: 100%;
   }
 
   .chapter-editor-save-state {

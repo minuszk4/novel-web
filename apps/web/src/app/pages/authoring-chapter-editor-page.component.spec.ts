@@ -99,10 +99,66 @@ describe('AuthoringChapterEditorPageComponent', () => {
     expect(fixture.nativeElement.querySelector('script')).toBeNull();
     expect(fixture.nativeElement.textContent).toContain('Bản thảo riêng tư');
     expect(fixture.nativeElement.textContent).toContain(
-      'chưa có chức năng xem thử bản dịch cho chương này',
+      'Bản xem trước chỉ đọc phiên bản đã lưu gần nhất',
     );
     expect(fixture.nativeElement.textContent).toContain('Đã lưu · phiên bản 1');
     expect(fixture.nativeElement.querySelector('a[href*="reader"]')).toBeNull();
+  });
+
+  it('previews only the saved revision and treats manuscript markup as plain text', async () => {
+    const source = '<script>alert("x")</script>\n\nVăn bản chương.';
+    api.getPrivateChapterDraft.mockResolvedValue(draft(2, source, '"draft-2"'));
+    const fixture = await createEditor();
+    const previewButton = fixture.nativeElement.querySelector(
+      '.chapter-editor-mode-actions button',
+    ) as HTMLButtonElement;
+
+    expect(previewButton.disabled).toBe(false);
+    previewButton.click();
+    fixture.detectChanges();
+
+    const article = fixture.nativeElement.querySelector('.chapter-editor-preview');
+    expect(article.textContent).toContain('Phiên bản 2 · Chưa xuất bản');
+    expect(fixture.nativeElement.querySelector('.chapter-editor-preview-content').textContent).toBe(
+      source,
+    );
+    expect(fixture.nativeElement.querySelector('script')).toBeNull();
+    expect(fixture.nativeElement.querySelector('#chapter-draft-content')).toBeNull();
+    expect(api.savePrivateChapterDraftRevision).not.toHaveBeenCalled();
+    expect(fixture.componentInstance['isPreviewMode']()).toBe(true);
+
+    previewButton.click();
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('#chapter-draft-content').value).toBe(source);
+    expect(fixture.componentInstance['isPreviewMode']()).toBe(false);
+  });
+
+  it('disables preview until the first revision exists and whenever edits are unsaved', async () => {
+    const fixture = await createEditor();
+    let previewButton = fixture.nativeElement.querySelector(
+      '.chapter-editor-mode-actions button',
+    ) as HTMLButtonElement;
+    expect(previewButton.disabled).toBe(true);
+    expect(fixture.nativeElement.textContent).toContain(
+      'Lưu phiên bản đầu tiên trước khi xem trước.',
+    );
+
+    api.getPrivateChapterDraft.mockResolvedValue(draft(1, 'Bản đã lưu.', '"draft-1"'));
+    await fixture.componentInstance.retryLoad();
+    fixture.detectChanges();
+    previewButton = fixture.nativeElement.querySelector(
+      '.chapter-editor-mode-actions button',
+    ) as HTMLButtonElement;
+    expect(previewButton.disabled).toBe(false);
+
+    fixture.componentInstance.updateContent(inputEvent('Thay đổi chưa lưu.'));
+    fixture.detectChanges();
+    expect(previewButton.disabled).toBe(true);
+    expect(fixture.nativeElement.querySelector('.chapter-editor-preview')).toBeNull();
+    expect(fixture.nativeElement.textContent).toContain(
+      'Lưu hết thay đổi trước khi xem bản đã lưu.',
+    );
+    expect(api.savePrivateChapterDraftRevision).not.toHaveBeenCalled();
   });
 
   it('saves a new immutable revision using the current ETag and ordered paragraph anchors', async () => {
@@ -220,6 +276,9 @@ describe('AuthoringChapterEditorPageComponent', () => {
     fixture.detectChanges();
     expect(fixture.nativeElement.querySelector('#chapter-draft-content').disabled).toBe(true);
     expect(fixture.nativeElement.textContent).toContain('Xác nhận lưu lại');
+    expect(fixture.nativeElement.textContent).toContain(
+      'Xác nhận kết quả lần lưu trước khi xem bản đã lưu.',
+    );
 
     fixture.componentInstance.retryUncertainSave();
     await flushMicrotasks();

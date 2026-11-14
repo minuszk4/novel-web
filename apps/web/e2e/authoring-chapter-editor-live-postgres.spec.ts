@@ -146,6 +146,31 @@ test('private chapter editor saves to PostgreSQL and resolves stale edits by exp
   await expect(page.getByRole('status').filter({ hasText: 'Đã lưu · phiên bản 3' })).toBeVisible();
   await expect(page.getByLabel('Văn bản bản thảo')).toHaveValue(finalLocalText);
 
+  let previewRevisionWrites = 0;
+  page.on('request', (request) => {
+    if (request.method() === 'POST' && new URL(request.url()).pathname === revisionsPath) {
+      previewRevisionWrites += 1;
+    }
+  });
+  const previewDraftReadsBefore = await page.evaluate(
+    () =>
+      performance.getEntriesByType('resource').filter((entry) => entry.name.endsWith('/draft'))
+        .length,
+  );
+  await page.getByRole('button', { name: 'Xem bản đã lưu' }).click();
+  await expect(page.getByRole('article')).toContainText('Phiên bản 3 · Chưa xuất bản');
+  await expect(page.locator('.chapter-editor-preview-content')).toHaveText(finalLocalText);
+  await expectNoAxeViolations(page);
+  expect(previewRevisionWrites).toBe(0);
+  expect(
+    await page.evaluate(
+      () =>
+        performance.getEntriesByType('resource').filter((entry) => entry.name.endsWith('/draft'))
+          .length,
+    ),
+  ).toBe(previewDraftReadsBefore);
+  await page.getByRole('button', { name: 'Tiếp tục biên tập' }).click();
+
   const storedContent = await page.evaluate(() =>
     JSON.stringify({ local: Object.values(localStorage), session: Object.values(sessionStorage) }),
   );

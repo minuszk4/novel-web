@@ -61,7 +61,7 @@
       <span aria-hidden="true">▣</span>
       <div>
         <strong>Bản thảo riêng tư</strong>
-        <p>Chưa xuất bản và chưa có chức năng xem thử bản dịch cho chương này.</p>
+        <p>Bản xem trước chỉ đọc phiên bản đã lưu gần nhất. Chương này chưa được xuất bản.</p>
       </div>
     </aside>
 
@@ -82,64 +82,96 @@
         </p>
       </div>
 
-      <label class="chapter-editor-field" for="chapter-draft-content">
-        <span class="chapter-editor-label">Văn bản bản thảo</span>
-        <textarea
-          id="chapter-draft-content"
-          rows="18"
-          spellcheck="true"
-          autocapitalize="sentences"
-          autocomplete="off"
-          [value]="content()"
-          [disabled]="saveState() === 'uncertain'"
-          [attr.aria-invalid]="contentLimitError ? 'true' : null"
-          aria-describedby="chapter-editor-help chapter-editor-count chapter-editor-limit"
-          (input)="updateContent($event)"
-          placeholder="Bắt đầu viết chương của bạn…"
-        ></textarea>
-      </label>
-
-      <div class="chapter-editor-meta">
-        <p id="chapter-editor-help">
-          Tự lưu sau khi bạn ngừng gõ. Mỗi lần lưu tạo một phiên bản mới.
+      <div class="chapter-editor-mode-actions">
+        <button
+          class="button button-outline"
+          type="button"
+          [disabled]="!canPreviewSavedRevision && !isPreviewMode()"
+          aria-describedby="chapter-preview-help"
+          (click)="togglePreviewMode()"
+        >
+          {{ isPreviewMode() ? 'Tiếp tục biên tập' : 'Xem bản đã lưu' }}
+        </button>
+        <p id="chapter-preview-help">
+          @if (isPreviewMode()) {
+            Đang xem nội dung đã lưu ở dạng văn bản thuần; nội dung chưa xuất bản hoặc chia sẻ.
+          } @else if (canPreviewSavedRevision) {
+            Bản xem trước không lưu nội dung và không hiển thị thay đổi chưa lưu.
+          } @else {
+            {{ previewUnavailableText }}
+          }
         </p>
-        <p id="chapter-editor-count">{{ byteLength() | number }} / 10.485.760 byte</p>
       </div>
-      @if (contentLimitError; as error) {
-        <p id="chapter-editor-limit" class="chapter-editor-inline-error">{{ error }}</p>
-      } @else {
-        <span id="chapter-editor-limit" class="sr-only">Giới hạn nội dung: 10 MiB.</span>
-      }
 
-      @if (saveError(); as error) {
-        <div class="chapter-editor-error-box" role="alert">
-          <p>{{ errorMessage(error) }}</p>
-          @if (recoveryUrl; as url) {
-            <a [routerLink]="url" [queryParams]="recoveryQueryParams">{{ recoveryLabel }}</a>
-          }
+      @if (isPreviewMode()) {
+        <article class="chapter-editor-preview" aria-labelledby="chapter-editor-preview-title">
+          <header>
+            <p class="eyebrow">BẢN THẢO RIÊNG TƯ · BẢN ĐÃ LƯU</p>
+            <h3 id="chapter-editor-preview-title">{{ draft()?.title }}</h3>
+            <p>Phiên bản {{ draft()?.revisionNo }} · Chưa xuất bản</p>
+          </header>
+          <pre class="chapter-editor-preview-content">{{ draft()?.normalizedContent }}</pre>
+        </article>
+      } @else {
+        <label class="chapter-editor-field" for="chapter-draft-content">
+          <span class="chapter-editor-label">Văn bản bản thảo</span>
+          <textarea
+            id="chapter-draft-content"
+            rows="18"
+            spellcheck="true"
+            autocapitalize="sentences"
+            autocomplete="off"
+            [value]="content()"
+            [disabled]="saveState() === 'uncertain'"
+            [attr.aria-invalid]="contentLimitError ? 'true' : null"
+            aria-describedby="chapter-editor-help chapter-editor-count chapter-editor-limit"
+            (input)="updateContent($event)"
+            placeholder="Bắt đầu viết chương của bạn…"
+          ></textarea>
+        </label>
+
+        <div class="chapter-editor-meta">
+          <p id="chapter-editor-help">
+            Tự lưu sau khi bạn ngừng gõ. Mỗi lần lưu tạo một phiên bản mới.
+          </p>
+          <p id="chapter-editor-count">{{ byteLength() | number }} / 10.485.760 byte</p>
+        </div>
+        @if (contentLimitError; as error) {
+          <p id="chapter-editor-limit" class="chapter-editor-inline-error">{{ error }}</p>
+        } @else {
+          <span id="chapter-editor-limit" class="sr-only">Giới hạn nội dung: 10 MiB.</span>
+        }
+
+        @if (saveError(); as error) {
+          <div class="chapter-editor-error-box" role="alert">
+            <p>{{ errorMessage(error) }}</p>
+            @if (recoveryUrl; as url) {
+              <a [routerLink]="url" [queryParams]="recoveryQueryParams">{{ recoveryLabel }}</a>
+            }
+            @if (saveState() === 'uncertain') {
+              <p>Giữ nguyên nội dung. Lần xác nhận lại sẽ dùng đúng yêu cầu và mã an toàn cũ.</p>
+            }
+          </div>
+        }
+
+        <div class="chapter-editor-actions">
           @if (saveState() === 'uncertain') {
-            <p>Giữ nguyên nội dung. Lần xác nhận lại sẽ dùng đúng yêu cầu và mã an toàn cũ.</p>
+            <button class="button button-primary" type="button" (click)="retryUncertainSave()">
+              {{ isSaving() ? 'Đang xác nhận…' : 'Xác nhận lưu lại' }}
+            </button>
+          } @else {
+            <button
+              class="button button-primary"
+              type="button"
+              [disabled]="!canSave"
+              (click)="saveNow()"
+            >
+              {{ isSaving() ? 'Đang lưu…' : 'Lưu ngay' }}
+            </button>
           }
+          <a class="button button-outline" [routerLink]="returnTo">Quay lại dàn ý</a>
         </div>
       }
-
-      <div class="chapter-editor-actions">
-        @if (saveState() === 'uncertain') {
-          <button class="button button-primary" type="button" (click)="retryUncertainSave()">
-            {{ isSaving() ? 'Đang xác nhận…' : 'Xác nhận lưu lại' }}
-          </button>
-        } @else {
-          <button
-            class="button button-primary"
-            type="button"
-            [disabled]="!canSave"
-            (click)="saveNow()"
-          >
-            {{ isSaving() ? 'Đang lưu…' : 'Lưu ngay' }}
-          </button>
-        }
-        <a class="button button-outline" [routerLink]="returnTo">Quay lại dàn ý</a>
-      </div>
     </section>
 
     @if (saveState() === 'conflict') {

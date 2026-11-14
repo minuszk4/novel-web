@@ -229,6 +229,67 @@ test('chapter editor saves plain text with CSRF and version headers without brow
   await expectNoAxeViolations(page);
 });
 
+for (const viewport of [
+  { name: 'mobile 360×800', width: 360, height: 800 },
+  { name: '200% zoom equivalent 640×450', width: 640, height: 450 },
+  { name: 'desktop 1280×900', width: 1280, height: 900 },
+] as const) {
+  test(`saved private chapter preview is read-only and responsive at ${viewport.name}`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    await installAccount(page);
+    const savedText = '<script>không chạy</script>\n\nĐêm xuống.';
+    let draftReads = 0;
+    let revisionWrites = 0;
+    page.on('request', (request) => {
+      const url = new URL(request.url());
+      if (url.pathname.endsWith(`/chapters/${chapterId}/draft`)) draftReads += 1;
+      if (url.pathname.endsWith(`/chapters/${chapterId}/revisions`)) revisionWrites += 1;
+    });
+    await page.route(
+      `**/api/v1/authoring/manuscripts/${workId}/chapters/${chapterId}/draft`,
+      (route) =>
+        json(
+          route,
+          {
+            id: chapterId,
+            workId,
+            title: 'Chương mở đầu',
+            status: 'draft',
+            revisionNo: 4,
+            sourceFormat: 'plain_text',
+            normalizedContent: savedText,
+            segments: [],
+            updatedAt: '2026-11-14T12:00:00Z',
+          },
+          200,
+          { 'Cache-Control': 'no-store', ETag: '"draft-4"' },
+        ),
+    );
+
+    await page.goto(`/app/authoring/${workId}/chapters/${chapterId}`);
+    await expect(page.getByRole('button', { name: 'Xem bản đã lưu' })).toBeEnabled();
+    await page.getByRole('button', { name: 'Xem bản đã lưu' }).click();
+    await expect(page.getByRole('article')).toContainText('Phiên bản 4 · Chưa xuất bản');
+    await expect(page.locator('.chapter-editor-preview-content')).toHaveText(savedText);
+    await expect(page.locator('.chapter-editor-preview script')).toHaveCount(0);
+    await expect(page.getByLabel('Văn bản bản thảo')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Tiếp tục biên tập' })).toBeVisible();
+    await expectNoAxeViolations(page);
+
+    const dimensions = await page.evaluate(() => ({
+      document: document.documentElement.scrollWidth,
+      viewport: document.documentElement.clientWidth,
+    }));
+    expect(dimensions.document).toBeLessThanOrEqual(dimensions.viewport);
+    expect(draftReads).toBe(1);
+    expect(revisionWrites).toBe(0);
+    await page.getByRole('button', { name: 'Tiếp tục biên tập' }).click();
+    await expect(page.getByLabel('Văn bản bản thảo')).toHaveValue(savedText);
+  });
+}
+
 test('chapter editor explains the per-paragraph byte limit before attempting a save', async ({
   page,
 }) => {

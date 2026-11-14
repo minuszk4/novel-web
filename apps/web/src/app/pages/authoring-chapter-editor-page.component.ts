@@ -56,6 +56,7 @@ export class AuthoringChapterEditorPageComponent {
   protected readonly isLoadingRemote = signal(false);
   protected readonly byteLength = signal(0);
   protected readonly hasOversizedSegment = signal(false);
+  protected readonly isPreviewMode = signal(false);
 
   private readonly route = inject(ActivatedRoute);
   private readonly api = inject(AuthoringApiService);
@@ -149,6 +150,45 @@ export class AuthoringChapterEditorPageComponent {
       this.content() !== this.savedContent &&
       this.contentLimitError === null
     );
+  }
+
+  protected get canPreviewSavedRevision(): boolean {
+    return (
+      this.pageState() === 'ready' &&
+      (this.draft()?.revisionNo ?? 0) > 0 &&
+      this.saveState() === 'saved' &&
+      !this.isSaving() &&
+      this.content() === this.savedContent
+    );
+  }
+
+  protected get previewUnavailableText(): string {
+    switch (this.saveState()) {
+      case 'uncertain':
+        return 'Xác nhận kết quả lần lưu trước khi xem bản đã lưu.';
+      case 'conflict':
+        return 'Chọn phiên bản muốn giữ trước khi xem bản đã lưu.';
+      case 'saving':
+        return 'Đợi lần lưu hiện tại hoàn tất trước khi xem bản đã lưu.';
+      case 'error':
+        return 'Xử lý lỗi và lưu thay đổi trước khi xem bản đã lưu.';
+      default:
+        if ((this.draft()?.revisionNo ?? 0) === 0) {
+          return 'Lưu phiên bản đầu tiên trước khi xem trước.';
+        }
+        return 'Lưu hết thay đổi trước khi xem bản đã lưu.';
+    }
+  }
+
+  protected togglePreviewMode(): void {
+    if (this.isPreviewMode()) {
+      this.isPreviewMode.set(false);
+      this.announcement.set('Đã quay lại trình soạn thảo.');
+      return;
+    }
+    if (!this.canPreviewSavedRevision) return;
+    this.isPreviewMode.set(true);
+    this.announcement.set(`Đang xem bản đã lưu, phiên bản ${this.draft()?.revisionNo}.`);
   }
 
   protected errorMessage(error: AuthoringApiError): string {
@@ -262,6 +302,7 @@ export class AuthoringChapterEditorPageComponent {
     this.byteLength.set(utf8Bytes(remote.normalizedContent));
     this.hasOversizedSegment.set(hasOversizedParagraph(remote.normalizedContent));
     this.remoteDraft.set(null);
+    this.isPreviewMode.set(false);
     this.conflictError.set(null);
     this.saveError.set(null);
     this.saveState.set('saved');
@@ -327,6 +368,7 @@ export class AuthoringChapterEditorPageComponent {
   }
 
   private async load(token: number): Promise<void> {
+    this.isPreviewMode.set(false);
     this.pageError.set(null);
     this.saveError.set(null);
     this.conflictError.set(null);
