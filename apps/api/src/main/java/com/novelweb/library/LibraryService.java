@@ -113,6 +113,22 @@ public class LibraryService {
         authoredWorkRequestHash(title, author, language));
   }
 
+  public LibraryRepository.ChapterRecord createPrivateAuthoredChapter(
+      UUID ownerUserId, UUID workId, String requestedTitle, String idempotencyKey) {
+    Objects.requireNonNull(ownerUserId, "owner user id is required");
+    Objects.requireNonNull(workId, "work id is required");
+    String title = requestedTitle == null ? "" : requestedTitle.trim();
+    int titleLength = title.codePointCount(0, title.length());
+    if (titleLength < 1 || titleLength > 300) {
+      throw new IllegalArgumentException("title must contain between 1 and 300 characters");
+    }
+    if (idempotencyKey == null || !idempotencyKey.matches("[A-Za-z0-9._~-]{16,128}")) {
+      throw new IllegalArgumentException("Idempotency-Key must contain 16 to 128 safe characters");
+    }
+    return repository.createPrivateAuthoredChapter(
+        ownerUserId, workId, title, idempotencyKey, authoredChapterRequestHash(title));
+  }
+
   private static byte[] authoredWorkRequestHash(String title, String author, String language) {
     try {
       MessageDigest digest = MessageDigest.getInstance("SHA-256");
@@ -121,6 +137,18 @@ public class LibraryService {
         digest.update(ByteBuffer.allocate(Integer.BYTES).putInt(bytes.length).array());
         digest.update(bytes);
       }
+      return digest.digest();
+    } catch (NoSuchAlgorithmException exception) {
+      throw new IllegalStateException("SHA-256 is unavailable", exception);
+    }
+  }
+
+  private static byte[] authoredChapterRequestHash(String title) {
+    try {
+      MessageDigest digest = MessageDigest.getInstance("SHA-256");
+      byte[] bytes = title.getBytes(StandardCharsets.UTF_8);
+      digest.update(ByteBuffer.allocate(Integer.BYTES).putInt(bytes.length).array());
+      digest.update(bytes);
       return digest.digest();
     } catch (NoSuchAlgorithmException exception) {
       throw new IllegalStateException("SHA-256 is unavailable", exception);

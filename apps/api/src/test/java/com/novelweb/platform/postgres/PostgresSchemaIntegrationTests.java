@@ -203,7 +203,8 @@ class PostgresSchemaIntegrationTests {
           "import_actor_rate_limits",
           "import_parse_jobs",
           "import_commits",
-          "authoring_manuscript_creations");
+          "authoring_manuscript_creations",
+          "authoring_chapter_creations");
 
   @Autowired private DataSource dataSource;
 
@@ -220,6 +221,8 @@ class PostgresSchemaIntegrationTests {
   @Autowired private LogoutAllConfirmationService logoutAllConfirmationService;
 
   @Autowired private LibraryService libraryService;
+
+  @Autowired private LibraryRepository libraryRepository;
 
   @Autowired private WorkspaceService workspaceService;
 
@@ -284,7 +287,7 @@ class PostgresSchemaIntegrationTests {
             connection.prepareStatement("SELECT COUNT(*) FROM databasechangelog");
         ResultSet changesets = changesetCount.executeQuery()) {
       changesets.next();
-      assertEquals(101, changesets.getInt(1), "unexpected number of applied changesets");
+      assertEquals(102, changesets.getInt(1), "unexpected number of applied changesets");
     }
 
     Set<String> actualTables = new HashSet<>();
@@ -7173,6 +7176,261 @@ class PostgresSchemaIntegrationTests {
   }
 
   @Test
+  void authoringChapterCreateIsPrivateCsrfProtectedIdempotentAndBlank() throws Exception {
+    UUID ownerId = createSessionTestUser("Authoring Chapter Owner");
+    UUID otherOwnerId = createSessionTestUser("Other Authoring Chapter Owner");
+    UUID workId = null;
+    UUID foreignWorkId = null;
+    try {
+      LibraryRepository.WorkRecord work =
+          libraryService.createPrivateAuthoredWork(
+              ownerId, "Chapter Draft Parent", "Pen Name", "zh-Hans", "chapter-parent-owner-0001");
+      workId = work.id();
+      UUID authoredWorkId = work.id();
+      LibraryRepository.WorkRecord foreignWork =
+          libraryService.createPrivateAuthoredWork(
+              otherOwnerId,
+              "Foreign Chapter Parent",
+              "Other Pen Name",
+              "vi",
+              "chapter-parent-foreign-0001");
+      foreignWorkId = foreignWork.id();
+
+      SessionService.IssuedSession ownerSession = sessionService.create(ownerId).orElseThrow();
+      jakarta.servlet.http.Cookie ownerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", ownerSession.cookieValue());
+      String ownerCsrf = csrfTokenService.tokenFor(ownerSession.cookieValue());
+      String chapterPath = "/api/v1/authoring/manuscripts/{workId}/chapters";
+
+      MvcResult missingCsrf =
+          mockMvc
+              .perform(
+                  post(chapterPath, workId)
+                      .header("Idempotency-Key", "authoring-chapter-create-0001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"title\":\"Chapter One\"}")
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(403, missingCsrf.getResponse().getStatus());
+      assertTrue(missingCsrf.getResponse().getContentAsString().contains("CSRF_FAILED"));
+
+      MvcResult missingPolicy =
+          mockMvc
+              .perform(
+                  post(chapterPath, workId)
+                      .header("Idempotency-Key", "authoring-chapter-create-0001")
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"title\":\"Chapter One\"}")
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(403, missingPolicy.getResponse().getStatus());
+      assertTrue(
+          missingPolicy.getResponse().getContentAsString().contains("POLICY_ACCEPTANCE_REQUIRED"));
+
+      addCurrentPolicyAcceptances(ownerId);
+      MvcResult first =
+          mockMvc
+              .perform(
+                  post(chapterPath, workId)
+                      .header("Idempotency-Key", "authoring-chapter-create-0001")
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"title\":\" 第一章 \"}")
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(201, first.getResponse().getStatus());
+      assertTrue(first.getResponse().getHeader("Cache-Control").contains("no-store"));
+      JsonNode firstBody = objectMapper.readTree(first.getResponse().getContentAsString());
+      UUID firstChapterId = UUID.fromString(firstBody.path("id").asText());
+      assertEquals(workId, UUID.fromString(firstBody.path("workId").asText()));
+      assertEquals(1, firstBody.path("ordinal").asInt());
+      assertEquals("第一章", firstBody.path("title").asText());
+      assertEquals("zh-Hans", firstBody.path("language").asText());
+      assertEquals("draft", firstBody.path("status").asText());
+      assertFalse(firstBody.has("ownerUserId"));
+      assertFalse(firstBody.has("sourceRevisionId"));
+
+      MvcResult replay =
+          mockMvc
+              .perform(
+                  post(chapterPath, workId)
+                      .header("Idempotency-Key", "authoring-chapter-create-0001")
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"title\":\"第一章\"}")
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(201, replay.getResponse().getStatus());
+      assertEquals(
+          first.getResponse().getContentAsString(), replay.getResponse().getContentAsString());
+
+      MvcResult keyCollision =
+          mockMvc
+              .perform(
+                  post(chapterPath, workId)
+                      .header("Idempotency-Key", "authoring-chapter-create-0001")
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"title\":\"Different Chapter\"}")
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(409, keyCollision.getResponse().getStatus());
+      assertTrue(
+          keyCollision.getResponse().getContentAsString().contains("IDEMPOTENCY_KEY_REUSED"));
+
+      MvcResult second =
+          mockMvc
+              .perform(
+                  post(chapterPath, workId)
+                      .header("Idempotency-Key", "authoring-chapter-create-0002")
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"title\":\"第二章\"}")
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(201, second.getResponse().getStatus());
+      assertEquals(
+          2,
+          objectMapper.readTree(second.getResponse().getContentAsString()).path("ordinal").asInt());
+
+      ExecutorService chapterCreators = Executors.newFixedThreadPool(4);
+      try {
+        CountDownLatch startConcurrentCreates = new CountDownLatch(1);
+        List<Future<LibraryRepository.ChapterRecord>> concurrentCreates = new ArrayList<>();
+        for (int index = 1; index <= 4; index++) {
+          int requestIndex = index;
+          concurrentCreates.add(
+              chapterCreators.submit(
+                  () -> {
+                    startConcurrentCreates.await();
+                    return libraryService.createPrivateAuthoredChapter(
+                        ownerId,
+                        authoredWorkId,
+                        "Concurrent Chapter " + requestIndex,
+                        "authoring-chapter-concurrent-000" + requestIndex);
+                  }));
+        }
+        startConcurrentCreates.countDown();
+        List<Integer> concurrentOrdinals = new ArrayList<>();
+        for (Future<LibraryRepository.ChapterRecord> creation : concurrentCreates) {
+          concurrentOrdinals.add(creation.get(20, TimeUnit.SECONDS).ordinal());
+        }
+        assertEquals(List.of(3, 4, 5, 6), concurrentOrdinals.stream().sorted().toList());
+      } finally {
+        chapterCreators.shutdownNow();
+      }
+
+      MvcResult foreign =
+          mockMvc
+              .perform(
+                  post(chapterPath, foreignWorkId)
+                      .header("Idempotency-Key", "authoring-chapter-foreign-0001")
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"title\":\"Hidden\"}")
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(404, foreign.getResponse().getStatus());
+
+      setWorkSourceKind(workId, "imported");
+      MvcResult imported =
+          mockMvc
+              .perform(
+                  post(chapterPath, workId)
+                      .header("Idempotency-Key", "authoring-chapter-imported-0001")
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"title\":\"Hidden\"}")
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(404, imported.getResponse().getStatus());
+      setWorkSourceKind(workId, "authored");
+
+      setWorkVisibility(workId, "public");
+      MvcResult publicWork =
+          mockMvc
+              .perform(
+                  post(chapterPath, workId)
+                      .header("Idempotency-Key", "authoring-chapter-public-0001")
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"title\":\"Hidden\"}")
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(404, publicWork.getResponse().getStatus());
+      setWorkVisibility(workId, "private");
+
+      MvcResult unreadableContent =
+          mockMvc
+              .perform(
+                  get("/api/v1/chapters/{chapterId}/content", firstChapterId).cookie(ownerCookie))
+              .andReturn();
+      assertEquals(404, unreadableContent.getResponse().getStatus());
+
+      assertThrows(
+          IllegalStateException.class,
+          () ->
+              libraryRepository.createPrivateAuthoredChapter(
+                  ownerId,
+                  authoredWorkId,
+                  "Must Roll Back",
+                  "invalid-key",
+                  sha256("rollback-after-chapter-insert")));
+
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement select =
+              connection.prepareStatement(
+                  """
+                      SELECT
+                        (SELECT COUNT(*) FROM chapters WHERE work_id = ?) AS chapters,
+                        (SELECT COUNT(*) FROM volumes WHERE work_id = ?) AS volumes,
+                        (SELECT COUNT(*) FROM chapter_revisions r JOIN chapters c
+                          ON c.id = r.chapter_id WHERE c.work_id = ?) AS revisions,
+                        (SELECT COUNT(*) FROM segments s JOIN chapter_revisions r
+                          ON r.id = s.chapter_revision_id JOIN chapters c
+                          ON c.id = r.chapter_id WHERE c.work_id = ?) AS segments,
+                        (SELECT COUNT(*) FROM authoring_chapter_creations WHERE work_id = ?) AS receipts
+                      """)) {
+        for (int index = 1; index <= 5; index++) select.setObject(index, workId);
+        try (ResultSet row = select.executeQuery()) {
+          assertTrue(row.next());
+          assertEquals(6, row.getInt("chapters"));
+          assertEquals(0, row.getInt("volumes"));
+          assertEquals(0, row.getInt("revisions"));
+          assertEquals(0, row.getInt("segments"));
+          assertEquals(6, row.getInt("receipts"));
+        }
+      }
+    } finally {
+      if (workId != null) deleteLibraryUserData(ownerId, workId);
+      if (foreignWorkId != null) deleteLibraryUserData(otherOwnerId, foreignWorkId);
+      deleteSessionTestUser(ownerId);
+      deleteSessionTestUser(otherOwnerId);
+    }
+  }
+
+  private void setWorkSourceKind(UUID workId, String sourceKind) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement update =
+            connection.prepareStatement("UPDATE works SET source_kind = ? WHERE id = ?")) {
+      update.setString(1, sourceKind);
+      update.setObject(2, workId);
+      assertEquals(1, update.executeUpdate());
+    }
+  }
+
+  private void setWorkVisibility(UUID workId, String visibility) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement update =
+            connection.prepareStatement("UPDATE works SET visibility = ? WHERE id = ?")) {
+      update.setString(1, visibility);
+      update.setObject(2, workId);
+      assertEquals(1, update.executeUpdate());
+    }
+  }
+
+  @Test
   void privateLibraryCoreScopesOwnersDefaultsPrivateAndRejectsDuplicateHashesAndOrder()
       throws Exception {
     UUID ownerId = createSessionTestUser("Library Owner");
@@ -12895,6 +13153,18 @@ class PostgresSchemaIntegrationTests {
         deleteCollections.executeUpdate();
       }
       if (workId != null) {
+        try (PreparedStatement deleteChapterCreations =
+            connection.prepareStatement(
+                "DELETE FROM authoring_chapter_creations WHERE work_id = ?")) {
+          deleteChapterCreations.setObject(1, workId);
+          deleteChapterCreations.executeUpdate();
+        }
+        try (PreparedStatement deleteManuscriptCreations =
+            connection.prepareStatement(
+                "DELETE FROM authoring_manuscript_creations WHERE work_id = ?")) {
+          deleteManuscriptCreations.setObject(1, workId);
+          deleteManuscriptCreations.executeUpdate();
+        }
         try (PreparedStatement deleteBookmarkRetries =
             connection.prepareStatement(
                 "DELETE FROM reader_bookmark_idempotency WHERE response_work_id = ? OR "

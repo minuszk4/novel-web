@@ -156,6 +156,105 @@ class AuthoringControllerTests {
     verifyNoInteractions(libraryService);
   }
 
+  @Test
+  void createChapterResponseContainsOnlyPrivateDraftMetadata() throws Exception {
+    when(policyService.requiredAcceptance(actorId))
+        .thenReturn(PolicyService.RequiredAcceptance.COMPLETE);
+    UUID workId = UUID.randomUUID();
+    UUID chapterId = UUID.randomUUID();
+    when(libraryService.createPrivateAuthoredChapter(
+            actorId, workId, " Chapter One ", "authoring-chapter-create-0001"))
+        .thenReturn(
+            new LibraryRepository.ChapterRecord(
+                chapterId,
+                workId,
+                null,
+                1,
+                "Chapter One",
+                "zh-Hans",
+                null,
+                "draft",
+                Instant.EPOCH));
+
+    var response =
+        mockMvc
+            .perform(
+                post("/api/v1/authoring/manuscripts/{workId}/chapters", workId)
+                    .principal(authentication())
+                    .header("Idempotency-Key", "authoring-chapter-create-0001")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("{\"title\":\" Chapter One \"}"))
+            .andReturn()
+            .getResponse();
+
+    assertEquals(201, response.getStatus());
+    assertTrue(response.getHeader("Cache-Control").contains("no-store"));
+    String body = response.getContentAsString();
+    assertTrue(body.contains(chapterId.toString()));
+    assertTrue(body.contains(workId.toString()));
+    assertTrue(body.contains("\"ordinal\":1"));
+    assertTrue(body.contains("\"language\":\"zh-Hans\""));
+    assertTrue(body.contains("\"status\":\"draft\""));
+    assertTrue(!body.contains("sourceRevisionId"));
+    assertTrue(!body.contains("ownerUserId"));
+    verify(libraryService)
+        .createPrivateAuthoredChapter(
+            actorId, workId, " Chapter One ", "authoring-chapter-create-0001");
+  }
+
+  @Test
+  void createChapterRequiresSessionAndCurrentPolicy() throws Exception {
+    UUID workId = UUID.randomUUID();
+    var anonymous =
+        mockMvc
+            .perform(
+                post("/api/v1/authoring/manuscripts/{workId}/chapters", workId)
+                    .header("Idempotency-Key", "authoring-chapter-create-0001")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("{\"title\":\"Chapter One\"}"))
+            .andReturn()
+            .getResponse();
+    assertEquals(401, anonymous.getStatus());
+    assertTrue(anonymous.getContentAsString().contains("UNAUTHENTICATED"));
+
+    when(policyService.requiredAcceptance(actorId))
+        .thenReturn(PolicyService.RequiredAcceptance.REQUIRED);
+    var policyBlocked =
+        mockMvc
+            .perform(
+                post("/api/v1/authoring/manuscripts/{workId}/chapters", workId)
+                    .principal(authentication())
+                    .header("Idempotency-Key", "authoring-chapter-create-0001")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("{\"title\":\"Chapter One\"}"))
+            .andReturn()
+            .getResponse();
+    assertEquals(403, policyBlocked.getStatus());
+    assertTrue(policyBlocked.getContentAsString().contains("POLICY_ACCEPTANCE_REQUIRED"));
+    verifyNoInteractions(libraryService);
+  }
+
+  @Test
+  void invalidChapterBodyIsRejectedBeforeServiceAccess() throws Exception {
+    when(policyService.requiredAcceptance(actorId))
+        .thenReturn(PolicyService.RequiredAcceptance.COMPLETE);
+    UUID workId = UUID.randomUUID();
+    var response =
+        mockMvc
+            .perform(
+                post("/api/v1/authoring/manuscripts/{workId}/chapters", workId)
+                    .principal(authentication())
+                    .header("Idempotency-Key", "authoring-chapter-create-0001")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("{\"title\":\"Chapter One\",\"language\":\"vi\"}"))
+            .andReturn()
+            .getResponse();
+
+    assertEquals(400, response.getStatus());
+    assertTrue(response.getContentAsString().contains("INVALID_CHAPTER"));
+    verifyNoInteractions(libraryService);
+  }
+
   private TestingAuthenticationToken authentication() {
     return new TestingAuthenticationToken(
         new SessionService.SessionPrincipal(actorId, Instant.MAX), null);

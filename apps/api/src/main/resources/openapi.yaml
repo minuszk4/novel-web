@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 6.24.0
+  version: 6.25.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -1440,6 +1440,82 @@ paths:
           $ref: '#/components/responses/Problem'
         '409':
           description: Idempotency-Key was already used with different normalized fields.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/authoring/manuscripts/{workId}/chapters:
+    post:
+      operationId: createPrivateDraftChapter
+      tags: [Authoring]
+      x-implementation-status: implemented-postgres-profile
+      summary: Add a blank private draft chapter
+      description: >-
+        Adds a metadata-only chapter to an active private authored manuscript in the actor's personal library.
+        The actor is derived from the authenticated session; owner, language, ordinal, volume and revision fields
+        are server controlled. Current Terms and Privacy acceptance, session-bound CSRF and an Idempotency-Key are
+        required. Same key and normalized title returns the original chapter; a changed title returns 409. The
+        chapter has draft status and no volume, source revision, revision row or segments. Imported, foreign,
+        public, archived or deleted manuscripts are hidden as 404. This endpoint does not create chapter text,
+        reorder or delete chapters, publish the manuscript, or make the chapter readable in Reader.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - name: workId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: Reuse this exact key and normalized title when retrying an uncertain create result.
+          schema:
+            type: string
+            minLength: 16
+            maxLength: 128
+            pattern: '^[A-Za-z0-9._~-]{16,128}$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateDraftChapterRequest'
+      responses:
+        '201':
+          description: Private, blank chapter metadata.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreatedDraftChapter'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          description: Session CSRF or current Terms/Privacy acceptance is missing.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: Manuscript is not an active, owner-visible private authored draft.
+          $ref: '#/components/responses/Problem'
+        '409':
+          description: Idempotency-Key was already used with a different normalized title.
           content:
             application/problem+json:
               schema:
@@ -3567,6 +3643,44 @@ components:
           minLength: 2
           maxLength: 35
           example: vi
+    CreateDraftChapterRequest:
+      type: object
+      additionalProperties: false
+      required: [title]
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 300
+          description: Trimmed by the server; Unicode code point count must be 1–300.
+    CreatedDraftChapter:
+      type: object
+      additionalProperties: false
+      required: [id, workId, ordinal, title, language, status, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        workId:
+          type: string
+          format: uuid
+        ordinal:
+          type: integer
+          minimum: 1
+        title:
+          type: string
+          minLength: 1
+          maxLength: 300
+        language:
+          type: string
+          minLength: 2
+          maxLength: 35
+        status:
+          type: string
+          const: draft
+        createdAt:
+          type: string
+          format: date-time
     CreatedManuscript:
       type: object
       additionalProperties: false

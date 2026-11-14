@@ -555,6 +555,145 @@ public class LibraryRepository {
 
   public static class IdempotencyKeyReusedException extends RuntimeException {}
 
+  public ChapterRecord createPrivateAuthoredChapter(
+      UUID ownerUserId, UUID workId, String title, String idempotencyKey, byte[] requestHash) {
+    Objects.requireNonNull(ownerUserId, "owner user id is required");
+    Objects.requireNonNull(workId, "work id is required");
+    Objects.requireNonNull(requestHash, "request hash is required");
+    if (requestHash.length != 32)
+      throw new IllegalArgumentException("request hash must be SHA-256");
+    UUID chapterId = UUID.randomUUID();
+    try (Connection connection = dataSource.getConnection()) {
+      connection.setAutoCommit(false);
+      try {
+        try (PreparedStatement actor =
+            connection.prepareStatement(
+                "SELECT id FROM users WHERE id = ? AND status = 'active' FOR UPDATE")) {
+          actor.setObject(1, ownerUserId);
+          try (ResultSet row = actor.executeQuery()) {
+            if (!row.next()) throw new WorkNotFoundException();
+          }
+        }
+
+        String language;
+        try (PreparedStatement manuscript =
+            connection.prepareStatement(
+                """
+                    SELECT w.source_language
+                    FROM works w
+                    JOIN libraries l ON l.id = w.library_id
+                    WHERE w.id = ? AND w.owner_user_id = ?
+                      AND w.source_kind = 'authored' AND w.visibility = 'private'
+                      AND w.status = 'active' AND w.deleted_at IS NULL
+                      AND l.owner_user_id = w.owner_user_id AND l.workspace_id IS NULL
+                      AND l.visibility = 'private' AND l.deleted_at IS NULL
+                    FOR UPDATE OF w, l
+                    """)) {
+          manuscript.setObject(1, workId);
+          manuscript.setObject(2, ownerUserId);
+          try (ResultSet row = manuscript.executeQuery()) {
+            if (!row.next()) throw new WorkNotFoundException();
+            language = row.getString("source_language");
+          }
+        }
+
+        try (PreparedStatement prior =
+            connection.prepareStatement(
+                """
+                    SELECT request_sha256, chapter_id FROM authoring_chapter_creations
+                    WHERE actor_user_id = ? AND work_id = ? AND idempotency_key = ?
+                    """)) {
+          prior.setObject(1, ownerUserId);
+          prior.setObject(2, workId);
+          prior.setString(3, idempotencyKey);
+          try (ResultSet row = prior.executeQuery()) {
+            if (row.next()) {
+              if (!MessageDigest.isEqual(requestHash, row.getBytes("request_sha256"))) {
+                throw new IdempotencyKeyReusedException();
+              }
+              UUID priorChapterId = row.getObject("chapter_id", UUID.class);
+              ChapterRecord replay;
+              try (PreparedStatement select =
+                  connection.prepareStatement(
+                      """
+                          SELECT id, work_id, volume_id, ordinal, title, source_language,
+                                 source_revision_id, status, created_at
+                          FROM chapters
+                          WHERE id = ? AND work_id = ? AND deleted_at IS NULL
+                          """)) {
+                select.setObject(1, priorChapterId);
+                select.setObject(2, workId);
+                try (ResultSet chapter = select.executeQuery()) {
+                  if (!chapter.next()) throw new WorkNotFoundException();
+                  replay = chapter(chapter);
+                }
+              }
+              connection.commit();
+              return replay;
+            }
+          }
+        }
+
+        int ordinal;
+        try (PreparedStatement next =
+            connection.prepareStatement(
+                "SELECT COALESCE(MAX(ordinal), 0) + 1 FROM chapters WHERE work_id = ?")) {
+          next.setObject(1, workId);
+          try (ResultSet row = next.executeQuery()) {
+            row.next();
+            ordinal = row.getInt(1);
+          }
+        }
+
+        ChapterRecord created;
+        try (PreparedStatement insert =
+            connection.prepareStatement(
+                """
+                    INSERT INTO chapters
+                        (id, work_id, volume_id, ordinal, title, source_language, status)
+                    VALUES (?, ?, NULL, ?, ?, ?, 'draft')
+                    RETURNING id, work_id, volume_id, ordinal, title, source_language,
+                              source_revision_id, status, created_at
+                    """)) {
+          insert.setObject(1, chapterId);
+          insert.setObject(2, workId);
+          insert.setInt(3, ordinal);
+          insert.setString(4, title);
+          insert.setString(5, language);
+          try (ResultSet row = insert.executeQuery()) {
+            row.next();
+            created = chapter(row);
+          }
+        }
+        try (PreparedStatement receipt =
+            connection.prepareStatement(
+                """
+                    INSERT INTO authoring_chapter_creations
+                        (actor_user_id, work_id, idempotency_key, request_sha256, chapter_id)
+                    VALUES (?, ?, ?, ?, ?)
+                    """)) {
+          receipt.setObject(1, ownerUserId);
+          receipt.setObject(2, workId);
+          receipt.setString(3, idempotencyKey);
+          receipt.setBytes(4, requestHash);
+          receipt.setObject(5, chapterId);
+          receipt.executeUpdate();
+        }
+        connection.commit();
+        return created;
+      } catch (SQLException | RuntimeException exception) {
+        connection.rollback();
+        throw exception;
+      }
+    } catch (WorkNotFoundException exception) {
+      throw exception;
+    } catch (SQLException exception) {
+      if ("23505".equals(exception.getSQLState())) throw new OrderConflictException();
+      throw new IllegalStateException(
+          "Unable to create a private authored draft chapter", exception);
+    }
+  }
+
   public Optional<WorkRecord> findWork(UUID ownerUserId, UUID workId) {
     Objects.requireNonNull(ownerUserId, "owner user id is required");
     Objects.requireNonNull(workId, "work id is required");

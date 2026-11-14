@@ -16,6 +16,7 @@ import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
@@ -80,6 +81,58 @@ public class AuthoringController {
                 work.createdAt()));
   }
 
+  @PostMapping("/{workId}/chapters")
+  public ResponseEntity<?> createChapter(
+      Authentication authentication,
+      @PathVariable UUID workId,
+      @RequestBody CreateChapterRequest body,
+      @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+      HttpServletRequest request) {
+    Optional<UUID> actor = actorUserId(authentication);
+    if (actor.isEmpty())
+      return problem(
+          HttpStatus.UNAUTHORIZED, "UNAUTHENTICATED", "Sign in to create a chapter.", request);
+    ResponseEntity<?> policyGate = policyGate(actor.orElseThrow(), request);
+    if (policyGate != null) return policyGate;
+    if (body == null || body.hasUnknownFields())
+      return problem(
+          HttpStatus.BAD_REQUEST,
+          "INVALID_CHAPTER",
+          "Request body is missing or contains unsupported fields.",
+          request);
+    if (body.title() == null
+        || body.title().trim().isEmpty()
+        || body.title().trim().codePointCount(0, body.title().trim().length()) > 300) {
+      return problem(
+          HttpStatus.BAD_REQUEST,
+          "INVALID_CHAPTER",
+          "Chapter title must contain between 1 and 300 characters.",
+          request);
+    }
+    if (idempotencyKey == null || !idempotencyKey.matches("[A-Za-z0-9._~-]{16,128}"))
+      return problem(
+          HttpStatus.BAD_REQUEST,
+          "INVALID_IDEMPOTENCY_KEY",
+          "Provide a 16 to 128 character Idempotency-Key for this create attempt.",
+          request);
+
+    LibraryRepository.ChapterRecord chapter =
+        libraryService.createPrivateAuthoredChapter(
+            actor.orElseThrow(), workId, body.title(), idempotencyKey);
+    return ResponseEntity.status(HttpStatus.CREATED)
+        .cacheControl(CacheControl.noStore())
+        .header(HttpHeaders.PRAGMA, "no-cache")
+        .body(
+            new CreatedDraftChapterResponse(
+                chapter.id(),
+                chapter.workId(),
+                chapter.ordinal(),
+                chapter.title(),
+                chapter.language(),
+                chapter.status(),
+                chapter.createdAt()));
+  }
+
   @ExceptionHandler(IllegalArgumentException.class)
   public ResponseEntity<ProblemDetail> invalidRequest(
       IllegalArgumentException exception, HttpServletRequest request) {
@@ -91,7 +144,16 @@ public class AuthoringController {
     return problem(
         HttpStatus.CONFLICT,
         "IDEMPOTENCY_KEY_REUSED",
-        "This Idempotency-Key belongs to a different manuscript request. Use a new key.",
+        "This Idempotency-Key belongs to a different authoring request. Use a new key.",
+        request);
+  }
+
+  @ExceptionHandler(LibraryRepository.WorkNotFoundException.class)
+  public ResponseEntity<ProblemDetail> manuscriptNotFound(HttpServletRequest request) {
+    return problem(
+        HttpStatus.NOT_FOUND,
+        "MANUSCRIPT_NOT_FOUND",
+        "The private authored manuscript is not available.",
         request);
   }
 
@@ -112,7 +174,7 @@ public class AuthoringController {
             problem(
                 HttpStatus.FORBIDDEN,
                 "POLICY_ACCEPTANCE_REQUIRED",
-                "Review and accept the current Terms and Privacy Notice before creating a manuscript.",
+                "Review and accept the current Terms and Privacy Notice before using Author Studio.",
                 request);
         case NOT_CONFIGURED ->
             problem(
@@ -191,6 +253,28 @@ public class AuthoringController {
     }
   }
 
+  public static final class CreateChapterRequest {
+    private String title;
+    private boolean unknownFields;
+
+    public String title() {
+      return title;
+    }
+
+    boolean hasUnknownFields() {
+      return unknownFields;
+    }
+
+    public void setTitle(String title) {
+      this.title = title;
+    }
+
+    @JsonAnySetter
+    public void captureUnknownField(String name, Object ignoredValue) {
+      unknownFields = true;
+    }
+  }
+
   public record CreatedManuscriptResponse(
       UUID id,
       String title,
@@ -198,5 +282,14 @@ public class AuthoringController {
       String language,
       String publicationState,
       String visibility,
+      Instant createdAt) {}
+
+  public record CreatedDraftChapterResponse(
+      UUID id,
+      UUID workId,
+      int ordinal,
+      String title,
+      String language,
+      String status,
       Instant createdAt) {}
 }
