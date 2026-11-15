@@ -81,6 +81,7 @@ class ActuatorMetricsExposureTests {
 
     assertFalse(
         preflight.headers().firstValue(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN).isPresent());
+    assertEquals("127.0.0.1", environment.getProperty("server.address"));
     assertEquals("127.0.0.1", environment.getProperty("management.server.address"));
   }
 

@@ -144,7 +144,7 @@ The status response exposes API version, deployment environment and feature avai
 
 ### Optional local API metrics
 
-The default API profile continues to expose health only. For local diagnostics, start with the additional `observability` Spring profile. It serves Actuator health and Micrometer metrics on the separate `127.0.0.1:9090` management listener (or the local-only `MANAGEMENT_PORT` from `.env`), not on the public API listener. For PostgreSQL pool metrics, combine it with the `postgres` profile:
+The default API profile continues to expose health only. For local diagnostics, start with the additional `observability` Spring profile. That explicitly local-only profile binds both the API listener and the separate Actuator management listener to `127.0.0.1`; health and Micrometer metrics are served on port `9090`, not on the API listener. For PostgreSQL pool metrics, combine it with the `postgres` profile:
 
 ```powershell
 .\mvnw.cmd -Ppostgres spring-boot:run '-Dspring-boot.run.profiles=postgres,observability'

@@ -1,6 +1,9 @@
+server:
+  address: 127.0.0.1
+
 management:
   server:
-    port: ${MANAGEMENT_PORT:9090}
+    port: 9090
     address: 127.0.0.1
   endpoints:
     web:
