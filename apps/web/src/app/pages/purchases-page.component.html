@@ -1,0 +1,287 @@
+<section class="page-wrap purchases-page" aria-labelledby="purchases-title">
+  <header class="page-heading purchases-heading">
+    <p class="eyebrow">TÀI KHOẢN · LỊCH SỬ COMMERCE</p>
+    <h1 id="purchases-title" tabindex="-1">Lịch sử nạp và mở chương</h1>
+    <p>Tra riêng lệnh nạp, sổ credit và quyền đọc chương đã mở.</p>
+  </header>
+
+  <section class="purchases-balance" aria-labelledby="credit-balance-title">
+    <div class="purchases-balance-heading">
+      <div>
+        <p class="eyebrow">SỐ DƯ HIỆN TẠI</p>
+        <h2 id="credit-balance-title">Credit</h2>
+      </div>
+      <span class="purchases-test-badge">{{
+        sandboxEnabled() ? 'MÔI TRƯỜNG TEST' : 'TEST ĐANG TẮT'
+      }}</span>
+    </div>
+
+    @if (balancePhase() === 'loading') {
+      <p class="purchases-balance-state" role="status" aria-live="polite">Đang tải số dư…</p>
+    } @else if (balancePhase() === 'error') {
+      <div class="purchases-balance-state" role="status">
+        <span>{{ balanceError() }}</span>
+        <button class="text-button" type="button" (click)="retryBalance()">Thử lại số dư</button>
+      </div>
+    } @else if (balance(); as currentBalance) {
+      <div class="purchases-balance-values">
+        <p>
+          <strong>{{ amount(currentBalance.paidCredits) }}</strong
+          ><span>Credit đã mua</span>
+        </p>
+        <p>
+          <strong>{{ amount(currentBalance.bonusCredits) }}</strong
+          ><span>Credit thưởng</span>
+        </p>
+        <p>
+          <strong>{{ amount(currentBalance.totalCredits) }}</strong
+          ><span>Tổng hiện có</span>
+        </p>
+      </div>
+      <p class="purchases-as-of">Số dư tại {{ dateTime(currentBalance.asOf) }}</p>
+    }
+
+    <p class="purchases-disclosure">
+      @if (sandboxEnabled()) {
+        Đây là môi trường MoMo TEST, không dùng tiền thật. Chỉ số dư và trạng thái do máy chủ xác
+        nhận mới có hiệu lực.
+      } @else {
+        MoMo TEST hiện chưa được bật. Lịch sử đã ghi nhận vẫn có thể xem; không tạo giao dịch từ màn
+        hình này.
+      }
+    </p>
+  </section>
+
+  <nav class="purchases-tabs" aria-label="Các loại lịch sử mua hàng">
+    <a
+      routerLink="/app/purchases"
+      [queryParams]="{ view: 'orders' }"
+      [attr.aria-current]="view() === 'orders' ? 'page' : null"
+      [class.selected]="view() === 'orders'"
+      >Lệnh nạp</a
+    >
+    <a
+      routerLink="/app/purchases"
+      [queryParams]="{ view: 'credits' }"
+      [attr.aria-current]="view() === 'credits' ? 'page' : null"
+      [class.selected]="view() === 'credits'"
+      >Biến động credit</a
+    >
+    <a
+      routerLink="/app/purchases"
+      [queryParams]="{ view: 'unlocks' }"
+      [attr.aria-current]="view() === 'unlocks' ? 'page' : null"
+      [class.selected]="view() === 'unlocks'"
+      >Chương đã mở</a
+    >
+  </nav>
+
+  <section class="purchases-list-section" aria-label="Nội dung lịch sử">
+    @if (view() === 'orders') {
+      <div class="purchases-list-heading">
+        <div>
+          <h2>Lệnh nạp</h2>
+          <p>Credit chỉ được tính là đã nhận khi giao dịch được máy chủ xác nhận.</p>
+        </div>
+        <label class="purchases-filter">
+          <span>Trạng thái</span>
+          <select [value]="orderState() ?? ''" (change)="changeOrderState($event)">
+            <option value="">Tất cả</option>
+            @for (state of availableStates; track state) {
+              <option [value]="state">{{ orderStatusLabel(state) }}</option>
+            }
+          </select>
+        </label>
+      </div>
+    } @else if (view() === 'credits') {
+      <div class="purchases-list-heading">
+        <div>
+          <h2>Biến động credit</h2>
+          <p>Sổ ghi bất biến gồm các khoản đã được máy chủ ghi nhận.</p>
+        </div>
+      </div>
+    } @else {
+      <div class="purchases-list-heading">
+        <div>
+          <h2>Chương đã mở</h2>
+          <p>Quyền đã mua được lưu riêng, kể cả khi chương hiện không còn đọc được.</p>
+        </div>
+      </div>
+    }
+
+    @if (phase() === 'loading') {
+      <p class="purchases-state" role="status" aria-live="polite">Đang tải lịch sử…</p>
+    } @else if (phase() === 'error') {
+      <div class="purchases-state-panel" role="alert">
+        <h3>Chưa thể mở lịch sử</h3>
+        <p>{{ errorMessage() }}</p>
+        @if (recovery() === 'sign-in') {
+          <a
+            class="button button-primary"
+            routerLink="/sign-in"
+            [queryParams]="{ returnTo: recoveryReturnUrl() }"
+            >Đăng nhập</a
+          >
+        } @else if (recovery() === 'settings') {
+          <a
+            class="button button-primary"
+            routerLink="/app/setup"
+            [queryParams]="{ returnUrl: recoveryReturnUrl() }"
+            >Xem chính sách tài khoản</a
+          >
+        } @else {
+          <button class="button button-primary" type="button" (click)="retryList()">
+            Thử tải lại
+          </button>
+        }
+      </div>
+    } @else if (!items().length) {
+      <div class="purchases-state-panel purchases-empty">
+        @if (view() === 'orders') {
+          <h3>Chưa có lệnh nạp</h3>
+          <p>Các lần nạp credit sẽ xuất hiện tại đây. Lệnh đang chờ không làm tăng số dư.</p>
+        } @else if (view() === 'credits') {
+          <h3>Chưa có biến động credit</h3>
+          <p>Chỉ những thay đổi đã ghi vào sổ mới xuất hiện trong danh sách này.</p>
+        } @else {
+          <h3>Bạn chưa mở chương nào</h3>
+          <p>Khi có chương được mở bằng credit, quyền đọc sẽ được lưu ở đây.</p>
+          <a class="text-link" routerLink="/app/library">Mở thư viện</a>
+        }
+      </div>
+    } @else {
+      @if (view() === 'orders') {
+        <ol class="purchases-list" aria-label="Các lệnh nạp credit">
+          @for (item of items(); track itemKey(item)) {
+            @if ('packId' in item) {
+              <li class="purchases-card">
+                <div class="purchases-card-main">
+                  <div class="purchases-card-icon" aria-hidden="true">₫</div>
+                  <div class="purchases-card-copy">
+                    <div class="purchases-row-title">
+                      <h3>{{ orderQuantityLabel(item) }} · {{ amount(item.amountVnd) }} ₫</h3>
+                      <span
+                        class="purchases-status"
+                        [class.purchases-status-success]="item.status === 'SUCCEEDED'"
+                        [class.purchases-status-terminal]="
+                          item.status === 'FAILED' ||
+                          item.status === 'CANCELLED' ||
+                          item.status === 'EXPIRED'
+                        "
+                        [class.purchases-status-pending]="isPendingOrder(item.status)"
+                        >{{ orderStatusLabel(item.status) }}</span
+                      >
+                    </div>
+                    <p class="purchases-meta">
+                      <time [attr.datetime]="item.createdAt">{{ dateTime(item.createdAt) }}</time>
+                      <span aria-hidden="true">·</span> Lệnh #{{ orderReference(item.id) }}
+                      <span aria-hidden="true">·</span> {{ item.environment }}
+                    </p>
+                    <p class="purchases-pack">{{ packLabel(item) }}</p>
+                    @if (grantedCreditTotal(item) > 0) {
+                      <p class="purchases-order-credit">
+                        {{ amount(grantedCreditTotal(item)) }} credit đã được ghi nhận
+                      </p>
+                    } @else {
+                      <p class="purchases-order-credit purchases-muted">Chưa ghi nhận credit</p>
+                    }
+                    @if (isPendingOrder(item.status)) {
+                      <p class="purchases-pending-note">
+                        Đang chờ xác nhận. Đừng thanh toán lại lệnh này.
+                      </p>
+                    }
+                  </div>
+                </div>
+              </li>
+            }
+          }
+        </ol>
+      } @else if (view() === 'credits') {
+        <ol class="purchases-list" aria-label="Các biến động credit">
+          @for (item of items(); track itemKey(item)) {
+            @if ('entryType' in item) {
+              <li class="purchases-card">
+                <div class="purchases-card-main">
+                  <div class="purchases-card-icon" aria-hidden="true">✧</div>
+                  <div class="purchases-card-copy">
+                    <div class="purchases-row-title">
+                      <h3>{{ ledgerEntryLabel(item) }}</h3>
+                      <strong
+                        class="purchases-delta"
+                        [class.purchases-delta-negative]="item.amountDelta < 0"
+                      >
+                        {{ creditDelta(item.amountDelta) }} credit
+                      </strong>
+                    </div>
+                    <p class="purchases-meta">
+                      <time [attr.datetime]="item.occurredAt">{{ dateTime(item.occurredAt) }}</time>
+                      <span aria-hidden="true">·</span> {{ bucketLabel(item.bucket) }}
+                      <span aria-hidden="true">·</span> {{ sourceLabel(item.sourceType) }}
+                    </p>
+                    @if (item.expiresAt) {
+                      <p class="purchases-expiry">
+                        Hạn dùng credit thưởng: {{ dateTime(item.expiresAt) }}
+                      </p>
+                    }
+                  </div>
+                </div>
+              </li>
+            }
+          }
+        </ol>
+      } @else {
+        <ol class="purchases-list" aria-label="Các chương đã mở">
+          @for (item of items(); track itemKey(item)) {
+            @if ('entitlementId' in item) {
+              <li class="purchases-card">
+                <div class="purchases-card-main">
+                  <div class="purchases-card-icon" aria-hidden="true">▤</div>
+                  <div class="purchases-card-copy">
+                    <h3>{{ item.workTitle }}</h3>
+                    <p class="purchases-chapter-title">{{ item.chapterTitle }}</p>
+                    <p class="purchases-meta">
+                      <time [attr.datetime]="item.grantedAt">{{ dateTime(item.grantedAt) }}</time>
+                      <span aria-hidden="true">·</span> Đã dùng
+                      {{ amount(item.creditsSpent) }} credit
+                    </p>
+                    @if (item.currentReadAccess === 'READABLE') {
+                      <a
+                        class="button button-outline purchases-read-link"
+                        [routerLink]="purchaseRoute(item)"
+                      >
+                        Đọc chương <span aria-hidden="true">→</span>
+                      </a>
+                    } @else {
+                      <p class="purchases-unavailable" role="status">
+                        Chương hiện không khả dụng; lịch sử mở chương vẫn được lưu.
+                      </p>
+                    }
+                  </div>
+                </div>
+              </li>
+            }
+          }
+        </ol>
+      }
+    }
+
+    @if (errorMessage() && phase() === 'ready') {
+      <div class="purchases-load-more-error" role="alert">
+        <p>{{ errorMessage() }}</p>
+        <button class="text-button" type="button" (click)="retryList()">Thử lại trang này</button>
+      </div>
+    }
+    @if (nextCursor() && phase() === 'ready') {
+      <div class="purchases-load-more">
+        <button
+          class="button button-outline"
+          type="button"
+          [disabled]="loadingMore()"
+          (click)="loadMore()"
+        >
+          {{ loadingMore() ? 'Đang tải…' : 'Tải thêm' }}
+        </button>
+      </div>
+    }
+  </section>
+</section>

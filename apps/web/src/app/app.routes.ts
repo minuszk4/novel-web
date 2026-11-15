@@ -113,6 +113,12 @@ export const routes: Routes = [
         title: 'Lịch sử đọc — Novel',
       },
       {
+        path: 'purchases',
+        loadComponent: () =>
+          import('./pages/purchases-page.component').then((page) => page.PurchasesPageComponent),
+        title: 'Lịch sử nạp và mở chương — Novel',
+      },
+      {
         path: 'works/:workId',
         loadComponent: () =>
           import('./pages/account-work-detail-page.component').then(

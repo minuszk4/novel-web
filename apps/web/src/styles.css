@@ -5215,6 +5215,9 @@ button.reader-chapter-nav {
   .mobile-nav.mobile-nav-six {
     grid-template-columns: repeat(6, minmax(0, 1fr));
   }
+  .mobile-nav.mobile-nav-seven {
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+  }
   .mobile-nav a {
     display: flex;
     flex-direction: column;

@@ -22,6 +22,9 @@
       <a routerLink="/app/history" routerLinkActive="selected">
         <span class="nav-symbol" aria-hidden="true">↶</span><span>Lịch sử đọc</span>
       </a>
+      <a routerLink="/app/purchases" routerLinkActive="selected">
+        <span class="nav-symbol" aria-hidden="true">▣</span><span>Lịch sử nạp &amp; mở chương</span>
+      </a>
       <a routerLink="/app/search" routerLinkActive="selected">
         <span class="nav-symbol" aria-hidden="true">⌕</span><span>Tìm kiếm</span>
       </a>
@@ -122,7 +125,8 @@
     </main>
     <nav
       class="mobile-nav"
-      [class.mobile-nav-six]="showTranslationDesk()"
+      [class.mobile-nav-six]="!showTranslationDesk()"
+      [class.mobile-nav-seven]="showTranslationDesk()"
       aria-label="Điều hướng di động"
     >
       <a
@@ -139,6 +143,9 @@
       >
       <a routerLink="/app/glossaries" routerLinkActive="selected"
         ><span aria-hidden="true">文</span><small>Thuật ngữ</small></a
+      >
+      <a routerLink="/app/purchases" routerLinkActive="selected"
+        ><span aria-hidden="true">▣</span><small>Giao dịch</small></a
       >
       @if (showTranslationDesk()) {
         <a routerLink="/app/translation" routerLinkActive="selected"
