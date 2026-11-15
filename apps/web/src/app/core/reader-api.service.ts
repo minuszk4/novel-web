@@ -2,7 +2,7 @@ import { HttpClient, HttpErrorResponse, HttpHeaders, HttpParams } from '@angular
 import { Injectable, inject } from '@angular/core';
 import { firstValueFrom, timeout } from 'rxjs';
 
-export type ReaderChapterAccess = 'readable' | 'unavailable';
+export type ReaderChapterAccess = 'readable' | 'preview' | 'locked' | 'owned' | 'unavailable';
 export type ReaderSegmentType = 'paragraph' | 'heading' | 'quote';
 
 export interface ReaderWork {
@@ -11,7 +11,7 @@ export interface ReaderWork {
   title: string;
   author: string;
   language: string;
-  visibility: 'private';
+  visibility: 'private' | 'public';
   chapterCount: number;
   createdAt: string;
 }
@@ -1041,7 +1041,7 @@ function parseWork(value: unknown): ReaderWork {
     typeof value['author'] !== 'string' ||
     [...value['author']].length > 200 ||
     !isLanguage(value['language']) ||
-    value['visibility'] !== 'private' ||
+    (value['visibility'] !== 'private' && value['visibility'] !== 'public') ||
     !Number.isSafeInteger(value['chapterCount']) ||
     (value['chapterCount'] as number) < 0 ||
     !isTimestamp(value['createdAt'])
@@ -1054,7 +1054,7 @@ function parseWork(value: unknown): ReaderWork {
     title: value['title'],
     author: value['author'],
     language: value['language'],
-    visibility: 'private',
+    visibility: value['visibility'],
     chapterCount: value['chapterCount'] as number,
     createdAt: value['createdAt'],
   };
@@ -1068,7 +1068,9 @@ function parseChapter(value: unknown): ReaderChapter {
     (value['ordinal'] as number) < 1 ||
     typeof value['title'] !== 'string' ||
     [...value['title']].length > 300 ||
-    (value['accessState'] !== 'readable' && value['accessState'] !== 'unavailable')
+    !['readable', 'preview', 'locked', 'owned', 'unavailable'].includes(
+      String(value['accessState']),
+    )
   ) {
     throw invalidResponse();
   }
@@ -1076,7 +1078,7 @@ function parseChapter(value: unknown): ReaderChapter {
     id: value['id'],
     ordinal: value['ordinal'] as number,
     title: value['title'],
-    accessState: value['accessState'],
+    accessState: value['accessState'] as ReaderChapterAccess,
   };
 }
 

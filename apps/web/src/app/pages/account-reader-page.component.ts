@@ -27,6 +27,16 @@ import {
   ReaderWork,
 } from '../core/reader-api.service';
 import { CultivationApiService } from '../core/cultivation-api.service';
+import {
+  ChapterUnlockApiError,
+  ChapterUnlockApiService,
+  ChapterUnlockQuote,
+} from '../core/chapter-unlock-api.service';
+import {
+  CommerceCreditBalance,
+  CommerceHistoryApiError,
+  CommerceHistoryApiService,
+} from '../core/commerce-history-api.service';
 import { SystemStatusService } from '../core/system-status.service';
 import { TranslationPreviewActionComponent } from './translation-preview-action.component';
 
@@ -120,7 +130,7 @@ export class AccountReaderPageComponent {
   protected readonly sourceRevisionId = signal<string | null>(null);
   protected readonly manifestState = signal<'loading' | 'ready' | 'error'>('loading');
   protected readonly contentState = signal<
-    'idle' | 'loading' | 'ready' | 'empty' | 'unavailable' | 'error'
+    'idle' | 'loading' | 'ready' | 'empty' | 'unavailable' | 'locked' | 'error'
   >('idle');
   protected readonly manifestError = signal<ReaderApiError | null>(null);
   protected readonly contentError = signal<ReaderApiError | null>(null);
@@ -174,8 +184,26 @@ export class AccountReaderPageComponent {
   protected readonly preferencesSyncState = signal<'loading' | 'saved' | 'saving' | 'pending'>(
     'loading',
   );
+  protected readonly unlockQuote = signal<ChapterUnlockQuote | null>(null);
+  protected readonly unlockQuoteState = signal<'idle' | 'loading' | 'ready' | 'disabled' | 'error'>(
+    'idle',
+  );
+  protected readonly unlockQuoteError = signal<ChapterUnlockApiError | null>(null);
+  protected readonly creditBalance = signal<CommerceCreditBalance | null>(null);
+  protected readonly creditBalanceState = signal<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  protected readonly creditBalanceError = signal<CommerceHistoryApiError | null>(null);
+  protected readonly unlockConfirming = signal(false);
+  protected readonly unlockSubmitting = signal(false);
+  protected readonly unlockMessage = signal('');
+  protected readonly canAffordUnlock = computed(() => {
+    const quote = this.unlockQuote();
+    const balance = this.creditBalance();
+    return !!quote && !!balance && balance.paidCredits >= quote.priceCredits;
+  });
 
   private readonly api = inject(ReaderApiService);
+  private readonly chapterUnlockApi = inject(ChapterUnlockApiService);
+  private readonly commerceHistoryApi = inject(CommerceHistoryApiService);
   private readonly cultivationApi = inject(CultivationApiService);
   private readonly systemStatus = inject(SystemStatusService);
   private readonly route = inject(ActivatedRoute);
@@ -202,6 +230,25 @@ export class AccountReaderPageComponent {
   private cultivationStartQueuedTarget: CultivationSessionTarget | null = null;
   private cultivationSession: ActiveCultivationSession | null = null;
   private cultivationTransition: Promise<void> = Promise.resolve();
+
+  protected readonly commerceSandboxEnabled = computed(() => {
+    const status = this.systemStatus.status();
+    return (
+      status?.features.commerceSandboxEnabled === true &&
+      status.integrations.momoTestEnabled === true &&
+      status.integrations.momoEnvironment === 'TEST'
+    );
+  });
+
+  protected get creditShopQueryParams(): Record<string, string> {
+    const workId = this.work()?.id;
+    const chapterId = this.activeChapter()?.id;
+    return workId && chapterId ? { returnTo: `/app/reader/${workId}/${chapterId}` } : {};
+  }
+
+  protected get unlockRecoveryUrl(): string {
+    return this.unlockQuoteError()?.status === 403 ? '/app/setup' : '/sign-in';
+  }
 
   @ViewChild('tocPanel') private set tocPanel(panel: ElementRef<HTMLElement> | undefined) {
     if (panel) this.focusPanel(panel.nativeElement);
@@ -356,7 +403,7 @@ export class AccountReaderPageComponent {
     if (!current) return null;
     const items = this.chapters();
     const index = items.findIndex((chapter) => chapter.id === current.id);
-    return items.slice(index + 1).find((chapter) => chapter.accessState === 'readable') ?? null;
+    return items.slice(index + 1).find((chapter) => this.canOpenChapter(chapter)) ?? null;
   }
 
   protected async retry(): Promise<void> {
@@ -422,9 +469,9 @@ export class AccountReaderPageComponent {
     if (!this.nextManifestCursor() || this.manifestBusy()) return;
     const newChapters = await this.loadNextManifestPage();
     if (this.manifestPageError()) return;
-    const firstReadable = newChapters.find((chapter) => chapter.accessState === 'readable');
-    if (firstReadable) {
-      this.navigateToChapter(firstReadable);
+    const firstOpenable = newChapters.find((chapter) => this.canOpenChapter(chapter));
+    if (firstOpenable) {
+      this.navigateToChapter(firstOpenable);
       return;
     }
 
@@ -437,9 +484,101 @@ export class AccountReaderPageComponent {
   }
 
   protected openChapter(chapter: ReaderChapter): void {
-    if (chapter.accessState !== 'readable') return;
+    if (!this.canOpenChapter(chapter)) return;
     this.closePanel(false);
     this.navigateToChapter(chapter);
+  }
+
+  protected beginUnlockConfirmation(): void {
+    if (this.contentState() !== 'locked' || !this.canAffordUnlock() || this.unlockSubmitting()) {
+      return;
+    }
+    this.unlockMessage.set('');
+    this.unlockConfirming.set(true);
+  }
+
+  protected cancelUnlockConfirmation(): void {
+    if (this.unlockSubmitting()) return;
+    this.unlockConfirming.set(false);
+    this.unlockMessage.set('');
+  }
+
+  protected async confirmChapterUnlock(): Promise<void> {
+    const chapter = this.activeChapter();
+    const quote = this.unlockQuote();
+    if (
+      !chapter ||
+      !quote ||
+      !this.unlockConfirming() ||
+      this.unlockSubmitting() ||
+      chapter.id !== quote.chapterId ||
+      !this.canAffordUnlock() ||
+      !this.commerceSandboxEnabled()
+    ) {
+      return;
+    }
+    const token = this.loadToken;
+    this.unlockSubmitting.set(true);
+    this.unlockMessage.set('');
+    try {
+      const key = this.chapterUnlockApi.getOrCreateIdempotencyKey(chapter.id);
+      const result = await this.chapterUnlockApi.unlock(chapter.id, quote.priceVersion, key);
+      if (token !== this.loadToken || this.activeChapter()?.id !== chapter.id) return;
+      this.chapterUnlockApi.clearIdempotencyKey(chapter.id);
+      this.unlockConfirming.set(false);
+      this.unlockMessage.set('Đã xác nhận quyền đọc. Đang tải nội dung chương…');
+      this.markChapterReadable(chapter.id);
+      await this.activateChapter({ ...chapter, accessState: 'readable' }, token);
+      if (result.outcome === 'ALREADY_ACCESSIBLE') {
+        this.unlockMessage.set('Bạn đã có quyền đọc chương này.');
+      }
+    } catch (error) {
+      if (token !== this.loadToken || this.activeChapter()?.id !== chapter.id) return;
+      const mapped = asChapterUnlockApiError(error);
+      this.unlockQuoteError.set(mapped);
+      if (mapped.code === 'INSUFFICIENT_CREDITS') {
+        this.chapterUnlockApi.clearIdempotencyKey(chapter.id);
+        this.unlockConfirming.set(false);
+        this.unlockMessage.set('Số paid credit đã thay đổi. Hãy nạp thêm rồi xác nhận mở chương.');
+        await this.refreshChapterCreditBalance(chapter.id, token);
+      } else if (mapped.code === 'CHAPTER_PRICE_VERSION_STALE') {
+        this.chapterUnlockApi.clearIdempotencyKey(chapter.id);
+        this.unlockConfirming.set(false);
+        this.unlockMessage.set('Giá chương đã thay đổi. Đang tải lại giá hiện tại để bạn xem lại.');
+        await this.loadChapterUnlock(chapter, token);
+      } else if (mapped.status === 0 || mapped.status >= 500) {
+        this.unlockMessage.set(
+          'Chưa xác nhận được kết quả. Thử gửi lại yêu cầu này an toàn; cùng một yêu cầu sẽ không trừ credit hai lần.',
+        );
+      } else {
+        this.chapterUnlockApi.clearIdempotencyKey(chapter.id);
+        this.unlockConfirming.set(false);
+        this.unlockMessage.set(this.unlockErrorMessage(mapped));
+      }
+    } finally {
+      if (token === this.loadToken) this.unlockSubmitting.set(false);
+    }
+  }
+
+  protected async retryUnlockQuote(): Promise<void> {
+    const chapter = this.activeChapter();
+    if (chapter?.accessState === 'locked') await this.loadChapterUnlock(chapter, this.loadToken);
+  }
+
+  protected async retryCreditBalance(): Promise<void> {
+    const chapterId = this.activeChapter()?.id;
+    if (chapterId) await this.refreshChapterCreditBalance(chapterId, this.loadToken);
+  }
+
+  protected unlockErrorMessage(error: ChapterUnlockApiError): string {
+    if (error.status === 0) return 'Không kết nối được. Kiểm tra mạng rồi thử lại.';
+    if (error.status === 401) return 'Phiên đăng nhập đã hết hạn. Hãy đăng nhập lại để tiếp tục.';
+    if (error.status === 403) return 'Cần xác nhận chính sách tài khoản hiện hành để mở chương.';
+    if (error.status === 404) return 'Chương này hiện không còn khả dụng để mở bằng credit.';
+    if (error.code === 'CHAPTER_PRICE_VERSION_STALE') return 'Giá chương đã thay đổi.';
+    if (error.code === 'INSUFFICIENT_CREDITS') return 'Không đủ paid credit để mở chương này.';
+    if (error.status >= 500) return 'Dịch vụ mở chương đang tạm thời không khả dụng. Thử lại sau.';
+    return 'Chưa tải được thông tin mở chương. Hãy thử lại.';
   }
 
   protected toggleToc(event?: Event): void {
@@ -1000,7 +1139,7 @@ export class AccountReaderPageComponent {
                 (chapter) =>
                   chapter.id === restoredProgress?.chapterId && chapter.accessState === 'readable',
               )
-            : this.chapters().find((chapter) => chapter.accessState === 'readable');
+            : this.chapters().find((chapter) => this.canOpenChapter(chapter));
         if (target) {
           this.loadedWorkId = workId;
           this.manifestState.set('ready');
@@ -1023,7 +1162,7 @@ export class AccountReaderPageComponent {
       if (chapterId) {
         this.setManifestError(new ReaderApiError('NOT_FOUND', 404, 'NOT_FOUND'));
       } else {
-        const fallback = this.chapters().find((chapter) => chapter.accessState === 'readable');
+        const fallback = this.chapters().find((chapter) => this.canOpenChapter(chapter));
         if (fallback) {
           await this.activateChapter(fallback, token, null);
         } else {
@@ -1037,14 +1176,14 @@ export class AccountReaderPageComponent {
 
   private async activateRouteChapter(chapterId: string | null, token: number): Promise<void> {
     if (!chapterId) {
-      const firstReadable = this.chapters().find((chapter) => chapter.accessState === 'readable');
-      if (!firstReadable && this.nextManifestCursor()) {
+      const firstOpenable = this.chapters().find((chapter) => this.canOpenChapter(chapter));
+      if (!firstOpenable && this.nextManifestCursor()) {
         const newChapters = await this.loadNextManifestPage();
-        const nextReadable = newChapters.find((chapter) => chapter.accessState === 'readable');
-        if (nextReadable) await this.activateChapter(nextReadable, token);
+        const nextOpenable = newChapters.find((chapter) => this.canOpenChapter(chapter));
+        if (nextOpenable) await this.activateChapter(nextOpenable, token);
         return;
       }
-      if (firstReadable) await this.activateChapter(firstReadable, token);
+      if (firstOpenable) await this.activateChapter(firstOpenable, token);
       else this.contentState.set('empty');
       return;
     }
@@ -1077,6 +1216,21 @@ export class AccountReaderPageComponent {
     this.chapterAnnotations.set([]);
     this.contentError.set(null);
     this.manifestError.set(null);
+    this.unlockQuote.set(null);
+    this.unlockQuoteState.set('idle');
+    this.unlockQuoteError.set(null);
+    this.creditBalance.set(null);
+    this.creditBalanceState.set('idle');
+    this.creditBalanceError.set(null);
+    this.unlockConfirming.set(false);
+    this.unlockSubmitting.set(false);
+    this.unlockMessage.set('');
+    if (chapter.accessState === 'locked' && this.work()?.visibility === 'public') {
+      this.contentState.set('locked');
+      this.focusReaderHeading();
+      void this.loadChapterUnlock(chapter, token);
+      return;
+    }
     if (chapter.accessState !== 'readable') {
       this.contentState.set('unavailable');
       this.focusReaderHeading();
@@ -1149,6 +1303,88 @@ export class AccountReaderPageComponent {
     }
   }
 
+  private async loadChapterUnlock(chapter: ReaderChapter, token: number): Promise<void> {
+    this.unlockQuote.set(null);
+    this.unlockQuoteError.set(null);
+    this.unlockQuoteState.set('loading');
+    this.creditBalance.set(null);
+    this.creditBalanceError.set(null);
+    this.creditBalanceState.set('idle');
+    const status = await this.systemStatus.waitForStatus();
+    if (token !== this.loadToken || this.activeChapter()?.id !== chapter.id) return;
+    if (
+      status?.features.commerceSandboxEnabled !== true ||
+      status.integrations.momoTestEnabled !== true ||
+      status.integrations.momoEnvironment !== 'TEST'
+    ) {
+      this.unlockQuoteState.set('disabled');
+      return;
+    }
+    this.creditBalanceState.set('loading');
+    const [quoteResult, balanceResult] = await Promise.allSettled([
+      this.chapterUnlockApi.getQuote(chapter.id),
+      this.commerceHistoryApi.getCreditBalance(),
+    ]);
+    if (token !== this.loadToken || this.activeChapter()?.id !== chapter.id) return;
+    if (quoteResult.status === 'fulfilled') {
+      const quote = quoteResult.value;
+      if (quote.workId !== this.work()?.id) {
+        this.unlockQuoteState.set('error');
+        this.unlockQuoteError.set(
+          new ChapterUnlockApiError('INVALID_RESPONSE', 502, 'INVALID_RESPONSE'),
+        );
+      } else if (quote.accessAlreadyGranted) {
+        this.chapterUnlockApi.clearIdempotencyKey(chapter.id);
+        this.markChapterReadable(chapter.id);
+        await this.activateChapter({ ...chapter, accessState: 'readable' }, token);
+        return;
+      } else {
+        this.unlockQuote.set(quote);
+        this.unlockQuoteState.set('ready');
+      }
+    } else {
+      const error = asChapterUnlockApiError(quoteResult.reason);
+      this.unlockQuoteError.set(error);
+      this.unlockQuoteState.set('error');
+    }
+    if (balanceResult.status === 'fulfilled') {
+      this.creditBalance.set(balanceResult.value);
+      this.creditBalanceState.set('ready');
+    } else {
+      this.creditBalanceError.set(asCommerceHistoryApiError(balanceResult.reason));
+      this.creditBalanceState.set('error');
+    }
+  }
+
+  private async refreshChapterCreditBalance(chapterId: string, token: number): Promise<void> {
+    this.creditBalanceState.set('loading');
+    this.creditBalanceError.set(null);
+    try {
+      const balance = await this.commerceHistoryApi.getCreditBalance();
+      if (token !== this.loadToken || this.activeChapter()?.id !== chapterId) return;
+      this.creditBalance.set(balance);
+      this.creditBalanceState.set('ready');
+    } catch (error) {
+      if (token !== this.loadToken || this.activeChapter()?.id !== chapterId) return;
+      this.creditBalance.set(null);
+      this.creditBalanceError.set(asCommerceHistoryApiError(error));
+      this.creditBalanceState.set('error');
+    }
+  }
+
+  protected canOpenChapter(chapter: ReaderChapter): boolean {
+    return (
+      chapter.accessState === 'readable' ||
+      (chapter.accessState === 'locked' && this.work()?.visibility === 'public')
+    );
+  }
+
+  private markChapterReadable(chapterId: string): void {
+    this.chapters.update((items) =>
+      items.map((item) => (item.id === chapterId ? { ...item, accessState: 'readable' } : item)),
+    );
+  }
+
   private appendManifestPage(page: ReaderManifestPage): ReaderChapter[] {
     const current = this.chapters();
     const ids = new Set(current.map((chapter) => chapter.id));
@@ -1161,7 +1397,7 @@ export class AccountReaderPageComponent {
 
   private navigateToChapter(chapter: ReaderChapter): void {
     const workId = this.work()?.id;
-    if (!workId || chapter.accessState !== 'readable') return;
+    if (!workId || !this.canOpenChapter(chapter)) return;
     this.closePanel(false);
     void this.router.navigate(['/app/reader', workId, chapter.id]);
   }
@@ -1773,7 +2009,7 @@ export class AccountReaderPageComponent {
   }
 
   private focusManifestPageResult(newChapters: ReaderChapter[]): void {
-    const chapterId = newChapters.find((chapter) => chapter.accessState === 'readable')?.id;
+    const chapterId = newChapters.find((chapter) => this.canOpenChapter(chapter))?.id;
     requestAnimationFrame(() => {
       if (!this.tocOpen()) return;
       const panel = document.getElementById('account-reader-toc-panel');
@@ -1792,7 +2028,10 @@ export class AccountReaderPageComponent {
       document
         .querySelector<HTMLElement>('.account-reader-content')
         ?.scrollTo({ top: 0, behavior: 'auto' });
-      document.getElementById('account-reader-title')?.focus({ preventScroll: true });
+      (
+        document.getElementById('account-reader-title') ??
+        document.getElementById('account-reader-paywall-title')
+      )?.focus({ preventScroll: true });
     });
   }
 
@@ -1961,6 +2200,18 @@ function asReaderApiError(error: unknown): ReaderApiError {
   return error instanceof ReaderApiError
     ? error
     : new ReaderApiError('NETWORK_OR_INVALID_RESPONSE', 0, null);
+}
+
+function asChapterUnlockApiError(error: unknown): ChapterUnlockApiError {
+  return error instanceof ChapterUnlockApiError
+    ? error
+    : new ChapterUnlockApiError('NETWORK_OR_INVALID_RESPONSE', 0, null);
+}
+
+function asCommerceHistoryApiError(error: unknown): CommerceHistoryApiError {
+  return error instanceof CommerceHistoryApiError
+    ? error
+    : new CommerceHistoryApiError('NETWORK_OR_INVALID_RESPONSE', 0, null);
 }
 
 function isUuid(value: string): boolean {

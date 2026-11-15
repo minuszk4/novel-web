@@ -3,7 +3,7 @@
 
   @if (state() === 'loading') {
     <p class="library-status-message library-sync-message" role="status" aria-live="polite">
-      Đang tải thông tin tác phẩm và mục lục riêng tư…
+      Đang tải thông tin tác phẩm và mục lục…
     </p>
   } @else if (state() === 'error') {
     <section class="empty-state-panel" aria-labelledby="detail-load-error-heading">
@@ -25,10 +25,17 @@
   } @else if (work(); as currentWork) {
     <section class="work-detail-hero" aria-labelledby="workHeading">
       <div class="detail-cover account-detail-cover" aria-hidden="true">
-        <span>✧</span><small>THƯ VIỆN RIÊNG</small>
+        <span>✧</span
+        ><small>{{
+          currentWork.visibility === 'public' ? 'TÁC PHẨM CÔNG KHAI' : 'THƯ VIỆN RIÊNG'
+        }}</small>
       </div>
       <div class="work-detail-copy">
-        <p class="eyebrow">TÁC PHẨM TRONG TÀI KHOẢN</p>
+        <p class="eyebrow">
+          {{
+            currentWork.visibility === 'public' ? 'TÁC PHẨM CÔNG KHAI' : 'TÁC PHẨM TRONG TÀI KHOẢN'
+          }}
+        </p>
         <h1 #workHeading id="workHeading" class="route-heading" tabindex="-1">
           {{ currentWork.title }}
         </h1>
@@ -36,11 +43,16 @@
         <div class="detail-tags">
           <span>{{ currentWork.language }}</span>
           <span>{{ currentWork.chapterCount }} chương</span>
-          <span>Riêng tư</span>
+          <span>{{ currentWork.visibility === 'public' ? 'Công khai' : 'Riêng tư' }}</span>
         </div>
         <p class="account-work-detail-description">
-          Tác phẩm thuộc thư viện tài khoản của bạn. Novel chỉ hiển thị chương mà phiên hiện tại có
-          quyền đọc.
+          @if (currentWork.visibility === 'public') {
+            Chương miễn phí và quyền mở chương được xác nhận từ máy chủ. Nội dung chưa được cấp
+            quyền sẽ không tải vào trình đọc.
+          } @else {
+            Tác phẩm thuộc thư viện tài khoản của bạn. Novel chỉ hiển thị chương mà phiên hiện tại
+            có quyền đọc.
+          }
         </p>
         <div class="detail-privacy-note">
           <span aria-hidden="true">i</span>
@@ -93,14 +105,17 @@
         <ol class="account-detail-chapter-list">
           @for (chapter of chapters(); track chapter.id) {
             <li>
-              @if (chapter.accessState === 'readable') {
+              @if (canReadOrUnlock(chapter)) {
                 <a
                   class="detail-chapter-row"
+                  [class.account-chapter-locked]="chapter.accessState === 'locked'"
                   [routerLink]="['/app/reader', currentWork.id, chapter.id]"
                 >
                   <span class="chapter-ordinal">Chương {{ chapter.ordinal }}</span>
                   <span class="chapter-name">{{ chapter.title }}</span>
-                  <span class="chapter-read-label">Đọc →</span>
+                  <span class="chapter-read-label">{{
+                    chapter.accessState === 'locked' ? 'Xem giá & mở →' : 'Đọc →'
+                  }}</span>
                 </a>
               } @else {
                 <div class="detail-chapter-row account-chapter-unavailable">

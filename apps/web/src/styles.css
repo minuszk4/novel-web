@@ -4189,6 +4189,116 @@ button.reader-chapter-nav {
   font-size: 12px;
   font-weight: 700;
 }
+.account-reader-paywall {
+  width: min(calc(100% - 32px), 560px);
+  max-height: 100%;
+  min-height: 0;
+  align-self: stretch;
+  box-sizing: border-box;
+  justify-content: flex-start;
+  margin: 12px auto;
+  overflow-y: auto;
+  border: 1px solid #e7e2d8;
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 12px 36px rgb(37 39 48 / 8%);
+}
+.account-reader-paywall:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.account-reader-paywall .button {
+  min-height: 46px;
+  height: auto;
+  padding-block: 10px;
+  line-height: 1.35;
+  white-space: normal;
+}
+.reader-app:has(.account-reader-paywall) .reader-tools,
+.reader-app:has(.account-reader-paywall) .reader-account-bar,
+.reader-app:has(.account-reader-paywall) .account-reader-bottom {
+  display: none;
+}
+.reader-app:has(.account-reader-paywall) .reader-topbar {
+  min-height: 56px;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 12px;
+  padding-inline: 14px;
+}
+.reader-app:has(.account-reader-paywall) .reader-chapter-context {
+  align-items: flex-start;
+}
+.reader-app:has(.account-reader-paywall) .reader-chapter-context span {
+  display: none;
+}
+.account-reader-paywall .eyebrow {
+  margin: 0;
+  color: #75613b;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+.account-reader-paywall-facts {
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 4px 0;
+}
+.account-reader-paywall-facts > div {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid #ebe8e1;
+  border-radius: 8px;
+  background: #fbfaf7;
+  text-align: left;
+}
+.account-reader-paywall-facts dt {
+  margin-bottom: 5px;
+  color: var(--muted);
+  font-size: 10px;
+}
+.account-reader-paywall-facts dd {
+  margin: 0;
+  color: #282b34;
+  font-size: 14px;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+.account-reader-paywall-notice,
+.account-reader-paywall-note,
+.account-reader-unlock-confirm {
+  width: 100%;
+  padding: 12px;
+  border-radius: 8px;
+  background: #f7f5ef;
+}
+.account-reader-paywall-note {
+  color: var(--muted);
+  font-size: 11px;
+}
+.account-reader-paywall-actions {
+  width: 100%;
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 9px;
+}
+.account-reader-paywall-actions .button {
+  min-height: 44px;
+}
+.account-reader-unlock-confirm p {
+  margin: 0 0 12px;
+}
+.account-toc-locked .account-toc-status {
+  color: #83682e;
+}
+.account-chapter-locked {
+  background: #fbf8ef;
+}
+.account-chapter-locked .chapter-read-label {
+  color: #80672f;
+}
 .reader-state-mark {
   width: 38px;
   height: 38px;
@@ -4221,6 +4331,10 @@ button.reader-chapter-nav {
 .reader-sepia .account-reader-state {
   color: #39352e;
 }
+.reader-sepia .account-reader-paywall {
+  border-color: #d9cbb5;
+  background: #fffaf0;
+}
 .reader-dark .reader-account-bar {
   border-color: #3a3b40;
   color: #c4c5c8;
@@ -4249,6 +4363,19 @@ button.reader-chapter-nav {
 }
 .reader-dark .account-reader-state {
   color: #eeeae1;
+}
+.reader-dark .account-reader-paywall,
+.reader-dark .account-reader-paywall-facts > div {
+  border-color: #45464d;
+  background: #26272d;
+}
+.reader-dark .account-reader-paywall-facts dd {
+  color: #eeeae1;
+}
+.reader-dark .account-reader-paywall-notice,
+.reader-dark .account-reader-paywall-note,
+.reader-dark .account-reader-unlock-confirm {
+  background: #303139;
 }
 .reader-panel-backdrop {
   position: fixed;
@@ -5909,6 +6036,19 @@ button.reader-chapter-nav {
   }
 }
 @media (max-width: 380px) {
+  .account-reader-paywall .reader-state-mark {
+    display: none;
+  }
+  .account-reader-paywall-intro {
+    font-size: 11px !important;
+    line-height: 1.45 !important;
+  }
+  .account-reader-paywall-facts {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .account-reader-paywall > .button {
+    width: 100%;
+  }
   .cultivation-page .eyebrow {
     letter-spacing: 0.5px;
   }

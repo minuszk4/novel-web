@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 6.39.0
+  version: 7.0.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -2311,9 +2311,10 @@ paths:
       x-implementation-status: implemented-postgres-profile
       summary: Get an accessible work's table of contents and reader access state
       description: >-
-        Requires an authenticated actor with current Terms/Privacy acceptance and personal-library or workspace read
-        access. It contains work/chapter metadata and access state only; chapter body, translations and inaccessible
-        asset URLs are never included. The manifest does not evaluate paid chapter entitlements or preview ranges.
+        Requires an authenticated actor with current Terms/Privacy acceptance and personal-library/workspace read access,
+        or an active public work. It contains work/chapter metadata and server-calculated access state only; chapter body,
+        translations and inaccessible asset URLs are never included. For public chapters, `locked` changes to `readable`
+        only when the actor has a valid entitlement. This manifest does not evaluate preview ranges.
       security:
         - appSession: []
       parameters:
@@ -5888,7 +5889,7 @@ components:
       required: [work, sourceLanguage, chapters, nextCursor]
       properties:
         work:
-          $ref: '#/components/schemas/WorkSummary'
+          $ref: '#/components/schemas/ReaderWorkSummary'
         sourceLanguage:
           type: string
           maxLength: 35
@@ -5901,6 +5902,39 @@ components:
           type: [string, 'null']
           maxLength: 2048
           description: Opaque cursor bound to work and chapter order.
+    ReaderWorkSummary:
+      type: object
+      additionalProperties: false
+      required: [id, libraryId, title, author, language, visibility, chapterCount, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        libraryId:
+          type: string
+          format: uuid
+        title:
+          type: string
+          minLength: 1
+          maxLength: 300
+        author:
+          type: string
+          maxLength: 200
+        language:
+          type: string
+          maxLength: 35
+        visibility:
+          type: string
+          enum: [private, public]
+        chapterCount:
+          type: integer
+          minimum: 0
+        createdAt:
+          type: string
+          format: date-time
+        lastReadAt:
+          type: [string, 'null']
+          format: date-time
     ReaderChapterSummary:
       type: object
       additionalProperties: false

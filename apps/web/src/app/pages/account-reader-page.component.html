@@ -16,7 +16,12 @@
     <div class="reader-chapter-context">
       <strong>{{ activeChapter()?.title || work()?.title || 'Đang mở Reader' }}</strong>
       @if (work(); as currentWork) {
-        <span>{{ currentWork.title }} · NỘI DUNG RIÊNG TƯ</span>
+        <span
+          >{{ currentWork.title }} ·
+          {{
+            currentWork.visibility === 'public' ? 'TÁC PHẨM CÔNG KHAI' : 'NỘI DUNG RIÊNG TƯ'
+          }}</span
+        >
       }
     </div>
     <div class="reader-tools">
@@ -79,7 +84,10 @@
   />
 
   <div class="reader-account-bar" aria-label="Thông tin nội dung">
-    <span class="reader-account-private"><span aria-hidden="true">◈</span> THƯ VIỆN TÀI KHOẢN</span>
+    <span class="reader-account-private"
+      ><span aria-hidden="true">◈</span>
+      {{ work()?.visibility === 'public' ? 'TÁC PHẨM CÔNG KHAI' : 'THƯ VIỆN TÀI KHOẢN' }}</span
+    >
     @if (work(); as currentWork) {
       <span class="reader-account-source">Nguyên tác · {{ currentWork.language }}</span>
     }
@@ -124,14 +132,17 @@
             type="button"
             [class.current]="chapter.id === activeChapter()?.id"
             [class.unavailable]="chapter.accessState !== 'readable'"
+            [class.account-toc-locked]="chapter.accessState === 'locked'"
             [attr.aria-current]="chapter.id === activeChapter()?.id ? 'page' : null"
             [attr.data-reader-chapter-id]="chapter.id"
-            [disabled]="chapter.accessState !== 'readable'"
+            [disabled]="!canOpenChapter(chapter)"
             (click)="openChapter(chapter)"
           >
             <span>Chương {{ chapter.ordinal }}</span>
             <strong>{{ chapter.title || 'Chưa có tiêu đề' }}</strong>
-            @if (chapter.accessState !== 'readable') {
+            @if (chapter.accessState === 'locked') {
+              <span class="account-toc-status">Cần mở khóa</span>
+            } @else if (chapter.accessState !== 'readable') {
               <span class="account-toc-status">Chưa sẵn sàng</span>
             }
             <span class="toc-current-mark" aria-hidden="true">{{
@@ -698,6 +709,160 @@
           Mở mục lục
         </button>
       </div>
+    } @else if (contentState() === 'locked') {
+      <section
+        class="account-reader-state account-reader-paywall"
+        role="region"
+        aria-labelledby="account-reader-paywall-title"
+        tabindex="0"
+      >
+        <span class="reader-state-mark" aria-hidden="true">⌑</span>
+        <p class="eyebrow">CHƯƠNG TRẢ PHÍ · MÔI TRƯỜNG TEST</p>
+        <h1 id="account-reader-paywall-title" tabindex="-1">
+          {{ activeChapter()?.title || 'Chương này cần mở khóa' }}
+        </h1>
+        <p class="account-reader-paywall-intro">
+          Chương chưa được gửi xuống trình đọc. Xem giá và số paid credit trước khi xác nhận mở.
+          Thưởng credit không dùng cho thao tác này.
+        </p>
+
+        @if (unlockQuoteState() === 'disabled') {
+          <p class="account-reader-paywall-notice" role="status">
+            Mở chương bằng credit đang tắt. MoMo TEST chưa được bật cho môi trường này.
+          </p>
+          <a class="button button-outline" routerLink="/app/purchases"
+            >Xem số dư và lịch sử credit</a
+          >
+        } @else if (unlockQuoteState() === 'loading') {
+          <p class="account-reader-paywall-notice" role="status" aria-live="polite">
+            Đang lấy giá hiện tại và số dư paid credit…
+          </p>
+        } @else if (unlockQuoteState() === 'error' && unlockQuoteError(); as error) {
+          <p class="account-reader-paywall-notice" role="alert">
+            {{ unlockErrorMessage(error) }}
+          </p>
+          @if (error.status === 401 || error.status === 403) {
+            <a
+              class="button button-primary"
+              [routerLink]="unlockRecoveryUrl"
+              [queryParams]="recoveryQueryParams"
+              >{{ error.status === 403 ? 'Xem chính sách tài khoản' : 'Đăng nhập lại' }}</a
+            >
+          } @else {
+            <button class="button button-outline" type="button" (click)="retryUnlockQuote()">
+              Tải lại giá chương
+            </button>
+          }
+        } @else if (unlockQuote(); as quote) {
+          <dl class="account-reader-paywall-facts">
+            <div>
+              <dt>Giá hiện tại</dt>
+              <dd>{{ quote.priceCredits }} paid credit</dd>
+            </div>
+            <div>
+              <dt>Paid credit còn lại</dt>
+              <dd>
+                @if (creditBalanceState() === 'loading') {
+                  Đang tải…
+                } @else if (creditBalance(); as balance) {
+                  {{ balance.paidCredits }}
+                } @else {
+                  Chưa tải được
+                }
+              </dd>
+            </div>
+          </dl>
+          @if (creditBalanceState() === 'error') {
+            <div class="account-reader-paywall-notice" role="alert">
+              <p>Chưa tải được số dư nên chưa thể xác nhận mức trừ.</p>
+              <button class="text-button" type="button" (click)="retryCreditBalance()">
+                Thử tải lại số dư
+              </button>
+            </div>
+          }
+          @if (creditBalance(); as balance) {
+            @if (balance.bonusCredits > 0) {
+              <p class="account-reader-paywall-note">
+                Bạn có {{ balance.bonusCredits }} credit thưởng; gói mở chương này chỉ dùng paid
+                credit.
+              </p>
+            }
+            @if (canAffordUnlock()) {
+              @if (unlockConfirming()) {
+                <div class="account-reader-unlock-confirm" aria-label="Xác nhận mở chương">
+                  <p>
+                    Xác nhận dùng <strong>{{ quote.priceCredits }} paid credit</strong> để mở chương
+                    này. Số dư sau đó là khoảng
+                    <strong>{{ balance.paidCredits - quote.priceCredits }} paid credit</strong>.
+                  </p>
+                  <div class="account-reader-paywall-actions">
+                    <button
+                      class="button button-primary"
+                      type="button"
+                      [disabled]="unlockSubmitting()"
+                      (click)="confirmChapterUnlock()"
+                    >
+                      {{
+                        unlockSubmitting()
+                          ? 'Đang xác nhận…'
+                          : 'Xác nhận · ' + quote.priceCredits + ' credit'
+                      }}
+                    </button>
+                    <button
+                      class="button button-outline"
+                      type="button"
+                      [disabled]="unlockSubmitting()"
+                      (click)="cancelUnlockConfirmation()"
+                    >
+                      Hủy
+                    </button>
+                  </div>
+                </div>
+              } @else {
+                <button
+                  class="button button-primary"
+                  type="button"
+                  [disabled]="creditBalanceState() !== 'ready'"
+                  (click)="beginUnlockConfirmation()"
+                >
+                  Xem lại điều kiện
+                </button>
+              }
+            } @else {
+              <p class="account-reader-paywall-notice" role="status">
+                Bạn còn {{ balance.paidCredits }} paid credit, chưa đủ
+                {{ quote.priceCredits }} credit để mở chương.
+              </p>
+              <a
+                class="button button-primary"
+                [routerLink]="['/app/credits']"
+                [queryParams]="creditShopQueryParams"
+                >Nạp credit MoMo TEST</a
+              >
+              <p class="account-reader-paywall-note">
+                Sau khi máy chủ xác nhận nạp, bạn sẽ quay lại chương này và vẫn cần xác nhận mở
+                riêng.
+              </p>
+            }
+          }
+          @if (unlockMessage()) {
+            <p class="account-reader-paywall-notice" role="status" aria-live="polite">
+              {{ unlockMessage() }}
+            </p>
+            @if (unlockQuoteError()?.status === 401 || unlockQuoteError()?.status === 403) {
+              <a
+                class="text-link"
+                [routerLink]="unlockRecoveryUrl"
+                [queryParams]="recoveryQueryParams"
+                >{{
+                  unlockQuoteError()?.status === 403 ? 'Xem chính sách tài khoản' : 'Đăng nhập lại'
+                }}</a
+              >
+            }
+          }
+        }
+        <a class="text-link" [routerLink]="workDetailUrl()">Quay lại tác phẩm</a>
+      </section>
     } @else if (contentState() === 'ready' && activeChapter(); as chapter) {
       <div
         class="reader-content-scroller account-reader-content"

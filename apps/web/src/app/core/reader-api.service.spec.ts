@@ -28,6 +28,8 @@ const work = {
   createdAt: '2026-11-11T00:00:00Z',
 };
 
+const publicWork = { ...work, visibility: 'public', title: 'Truyện công khai' };
+
 const annotation = {
   id: '99999999-9999-4999-8999-999999999999',
   workId,
@@ -92,6 +94,23 @@ describe('ReaderApiService', () => {
         { ordinal: 2, accessState: 'unavailable' },
       ],
       nextCursor: cursor,
+    });
+  });
+
+  it('accepts a public work manifest and preserves locked chapter access state', async () => {
+    const result = service.getManifestPage(workId);
+    http
+      .expectOne((candidate) => candidate.url === `/api/v1/works/${workId}/reader-manifest`)
+      .flush({
+        work: publicWork,
+        sourceLanguage: 'vi',
+        chapters: [{ id: chapterId, ordinal: 1, title: 'Chương khóa', accessState: 'locked' }],
+        nextCursor: null,
+      });
+
+    await expect(result).resolves.toMatchObject({
+      work: { visibility: 'public' },
+      chapters: [{ accessState: 'locked' }],
     });
   });
 

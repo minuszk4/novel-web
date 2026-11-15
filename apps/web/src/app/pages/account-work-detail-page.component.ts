@@ -42,11 +42,16 @@ export class AccountWorkDetailPageComponent {
     () => this.chapters().filter(({ accessState }) => accessState === 'readable').length,
   );
   protected readonly canOpenReader = computed(
-    () => this.readableCount() > 0 || !!this.nextCursor(),
+    () =>
+      this.readableCount() > 0 ||
+      (this.work()?.visibility === 'public' &&
+        this.chapters().some(({ accessState }) => accessState === 'locked')) ||
+      !!this.nextCursor(),
   );
-  protected readonly primaryActionLabel = computed(() =>
-    this.progress()?.chapterId ? 'Tiếp tục đọc' : 'Đọc từ đầu',
-  );
+  protected readonly primaryActionLabel = computed(() => {
+    if (this.progress()?.chapterId) return 'Tiếp tục đọc';
+    return this.work()?.visibility === 'public' ? 'Xem chương đầu' : 'Đọc từ đầu';
+  });
 
   private readonly route = inject(ActivatedRoute);
   private readonly router = inject(Router);
@@ -105,17 +110,15 @@ export class AccountWorkDetailPageComponent {
       if (savedChapterId) {
         target = await this.findChapter(savedChapterId);
         if (this.pageError()) return;
-        if (target?.accessState !== 'readable') {
+        if (!this.canReadOrUnlock(target)) {
           target = null;
-          this.notice.set(
-            'Chương đã lưu không còn trong phần bạn có thể đọc. Mở chương đầu tiên hiện khả dụng.',
-          );
+          this.notice.set('Chương đã lưu không còn khả dụng. Mở chương đầu tiên hiện có thể đọc.');
         }
       }
-      if (!target) target = await this.findFirstReadableChapter();
+      if (!target) target = await this.findFirstOpenableChapter();
       if (this.pageError()) return;
       if (!target) {
-        this.notice.set('Tác phẩm hiện chưa có chương nào bạn có thể đọc.');
+        this.notice.set('Tác phẩm hiện chưa có chương nào sẵn sàng để mở.');
         return;
       }
       await this.router.navigate(['/app/reader', workId, target.id]);
@@ -246,9 +249,16 @@ export class AccountWorkDetailPageComponent {
     return null;
   }
 
-  private async findFirstReadableChapter(): Promise<ReaderChapter | null> {
+  protected canReadOrUnlock(chapter: ReaderChapter | null): boolean {
+    return (
+      chapter?.accessState === 'readable' ||
+      (chapter?.accessState === 'locked' && this.work()?.visibility === 'public')
+    );
+  }
+
+  private async findFirstOpenableChapter(): Promise<ReaderChapter | null> {
     for (let pageIndex = 0; pageIndex < maxManifestPages; pageIndex += 1) {
-      const chapter = this.chapters().find(({ accessState }) => accessState === 'readable');
+      const chapter = this.chapters().find((item) => this.canReadOrUnlock(item));
       if (chapter) return chapter;
       if (!this.nextCursor() || !(await this.loadNextManifestPage())) return null;
     }

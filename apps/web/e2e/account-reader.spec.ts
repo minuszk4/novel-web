@@ -589,6 +589,40 @@ const viewports = [
   { name: 'desktop 1280×900', width: 1280, height: 900 },
 ] as const;
 
+async function installPublicLockedManifest(page: Page, commerceEnabled: boolean): Promise<void> {
+  const publicWork = { ...work, visibility: 'public', title: 'Gió qua núi công khai' };
+  const lockedChapters = [
+    chapters[0],
+    { ...chapters[1], accessState: 'locked' as const },
+    chapters[2],
+  ];
+  await page.route('**/api/v1/system/status', (route) =>
+    json(route, {
+      apiVersion: 'v1',
+      environment: 'test',
+      integrations: {
+        googleOidcEnabled: false,
+        momoTestEnabled: commerceEnabled,
+        momoEnvironment: commerceEnabled ? 'TEST' : 'OFF',
+      },
+      features: {
+        importProcessingEnabled: false,
+        cultivationEnabled: false,
+        commerceSandboxEnabled: commerceEnabled,
+        translationFakePreviewEnabled: false,
+      },
+    }),
+  );
+  await page.route(`**/api/v1/works/${workId}/reader-manifest**`, (route) =>
+    json(route, {
+      work: publicWork,
+      sourceLanguage: 'vi',
+      chapters: lockedChapters,
+      nextCursor: null,
+    }),
+  );
+}
+
 for (const viewport of viewports) {
   test(`account Reader supports TOC and safe chapter content at ${viewport.name}`, async ({
     page,
@@ -1037,6 +1071,207 @@ test('keeps an explicitly requested unavailable chapter in its recovery state', 
   await expect(page).toHaveURL(new RegExp(`/app/reader/${workId}/${chapterIds[1]}$`));
   await expect(page.getByRole('heading', { name: 'Chương chưa sẵn sàng' })).toBeVisible();
   await expect(page.locator('.account-reader-state button')).toContainText('Mở mục lục');
+});
+
+test('public work details link a locked chapter to its Reader paywall', async ({ page }) => {
+  await installReaderRoutes(page, 200, false);
+  await installPublicLockedManifest(page, true);
+  await page.route(`**/api/v1/chapters/${chapterIds[1]}/unlock-quote`, (route) =>
+    json(route, {
+      chapterId: chapterIds[1],
+      workId,
+      chapterTitle: 'Bản nháp',
+      workTitle: 'Gió qua núi công khai',
+      priceVersion: 1,
+      priceCredits: 10,
+      accessAlreadyGranted: false,
+    }),
+  );
+  await page.route('**/api/v1/me/credits/balance', (route) =>
+    json(route, {
+      paidCredits: 100,
+      bonusCredits: 0,
+      totalCredits: 100,
+      asOf: '2026-11-15T10:00:00Z',
+    }),
+  );
+
+  await page.goto(`/app/works/${workId}`);
+  await expect(page.getByRole('heading', { name: 'Gió qua núi công khai' })).toBeVisible();
+  await expect(page.getByText('Công khai', { exact: true })).toBeVisible();
+  await page.getByRole('link', { name: /Chương 2 Bản nháp Xem giá & mở/ }).click();
+  await expect(page).toHaveURL(new RegExp(`/app/reader/${workId}/${chapterIds[1]}$`));
+  await expect(page.getByRole('heading', { name: 'Bản nháp' })).toBeVisible();
+  await expect(page.getByText('10 paid credit', { exact: true })).toBeVisible();
+  await expectNoAxeViolations(page);
+});
+
+test('requires explicit confirmation before paid-credit chapter unlock', async ({
+  page,
+}, testInfo) => {
+  await page.setViewportSize({ width: 360, height: 800 });
+  const loadedChapters = await installReaderRoutes(page, 200, false);
+  const publicWork = { ...work, visibility: 'public', title: 'Gió qua núi công khai' };
+  await installPublicLockedManifest(page, true);
+  let quoteRequests = 0;
+  await page.route(`**/api/v1/chapters/${chapterIds[1]}/unlock-quote`, async (route) => {
+    quoteRequests += 1;
+    await json(route, {
+      chapterId: chapterIds[1],
+      workId,
+      chapterTitle: 'Bản nháp',
+      workTitle: publicWork.title,
+      priceVersion: 1,
+      priceCredits: 10,
+      accessAlreadyGranted: false,
+    });
+  });
+  let balanceRequests = 0;
+  await page.route('**/api/v1/me/credits/balance', async (route) => {
+    balanceRequests += 1;
+    await json(route, {
+      paidCredits: 100,
+      bonusCredits: 0,
+      totalCredits: 100,
+      asOf: '2026-11-15T10:00:00Z',
+    });
+  });
+  let unlockRequests = 0;
+  const idempotencyKeys: string[] = [];
+  await page.route(`**/api/v1/chapters/${chapterIds[1]}/unlock`, async (route) => {
+    unlockRequests += 1;
+    const request = route.request();
+    expect(request.method()).toBe('POST');
+    expect(request.headers()['x-csrf-token']).toBe('AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
+    expect(request.postDataJSON()).toEqual({ priceVersion: 1 });
+    const idempotencyKey = request.headers()['idempotency-key'] ?? '';
+    idempotencyKeys.push(idempotencyKey);
+    expect(idempotencyKey).toMatch(/^[A-Za-z0-9._~-]{16,128}$/);
+    if (unlockRequests === 1) {
+      await json(route, { code: 'TEMPORARY_RESULT_UNKNOWN' }, 503);
+      return;
+    }
+    await json(
+      route,
+      {
+        outcome: 'REPLAYED',
+        entitlementId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        chapterId: chapterIds[1],
+        priceVersion: 1,
+        creditsSpent: 10,
+        grantedAt: '2026-11-15T10:15:00Z',
+      },
+      200,
+    );
+  });
+
+  await page.goto(`/app/reader/${workId}/${chapterIds[1]}`);
+  await expect(page.getByRole('heading', { name: 'Bản nháp' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Bản nháp' })).toBeFocused();
+  await expect(page.getByText('10 paid credit', { exact: true })).toBeVisible();
+  await expect(page.getByText('100', { exact: true })).toBeVisible();
+  await expect.poll(() => quoteRequests).toBe(1);
+  expect(loadedChapters).not.toContain(chapterIds[1]);
+  await expectNoAxeViolations(page);
+  await page.screenshot({ path: testInfo.outputPath('reader-paywall-360x800.png') });
+
+  await page.getByRole('button', { name: 'Xem lại điều kiện' }).click();
+  await expect(page.getByRole('button', { name: 'Xác nhận · 10 credit' })).toBeVisible();
+  await page.getByRole('button', { name: 'Hủy', exact: true }).click();
+  expect(unlockRequests).toBe(0);
+  await expectNoAxeViolations(page);
+
+  await page.getByRole('button', { name: 'Xem lại điều kiện' }).click();
+  await page.getByRole('button', { name: 'Xác nhận · 10 credit' }).click();
+  await expect(page.getByText(/Chưa xác nhận được kết quả/)).toBeVisible();
+  expect(unlockRequests).toBe(1);
+  expect(loadedChapters).not.toContain(chapterIds[1]);
+  await page.reload();
+  await expect(page.getByRole('heading', { name: 'Bản nháp' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Xem lại điều kiện' })).toBeVisible();
+  await expect.poll(() => quoteRequests).toBe(2);
+  await page.getByRole('button', { name: 'Xem lại điều kiện' }).click();
+  await page.getByRole('button', { name: 'Xác nhận · 10 credit' }).click();
+  await expect(page.locator('.account-reader-content')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Bản nháp' })).toBeVisible();
+  await expect.poll(() => unlockRequests).toBe(2);
+  await expect.poll(() => balanceRequests).toBe(2);
+  expect(idempotencyKeys[0].length).toBeGreaterThanOrEqual(16);
+  expect(idempotencyKeys[1]).toBe(idempotencyKeys[0]);
+  expect(loadedChapters).toContain(chapterIds[1]);
+  await expectNoAxeViolations(page);
+});
+
+test('does not request a quote or show an unlock action when MoMo TEST is off', async ({
+  page,
+}) => {
+  await installReaderRoutes(page, 200, false);
+  await installPublicLockedManifest(page, false);
+  let quoteRequests = 0;
+  await page.route(`**/api/v1/chapters/${chapterIds[1]}/unlock-quote`, async (route) => {
+    quoteRequests += 1;
+    await json(route, { code: 'SHOULD_NOT_BE_REQUESTED' }, 503);
+  });
+
+  await page.goto(`/app/reader/${workId}/${chapterIds[1]}`);
+  await expect(page.getByRole('heading', { name: 'Bản nháp' })).toBeVisible();
+  await expect(page.getByText(/MoMo TEST chưa được bật/)).toBeVisible();
+  await expect(page.getByRole('button', { name: /mở chương/i })).toHaveCount(0);
+  await expect.poll(() => quoteRequests).toBe(0);
+  await expectNoAxeViolations(page);
+});
+
+test('locked-chapter paywall fits a 200% effective mobile viewport', async ({ browser }) => {
+  const context = await browser.newContext({
+    viewport: { width: 180, height: 400 },
+    deviceScaleFactor: 2,
+  });
+  try {
+    const page = await context.newPage();
+    await installReaderRoutes(page, 200, false);
+    await installPublicLockedManifest(page, true);
+    await page.route(`**/api/v1/chapters/${chapterIds[1]}/unlock-quote`, (route) =>
+      json(route, {
+        chapterId: chapterIds[1],
+        workId,
+        chapterTitle: 'Bản nháp',
+        workTitle: 'Gió qua núi công khai',
+        priceVersion: 1,
+        priceCredits: 10,
+        accessAlreadyGranted: false,
+      }),
+    );
+    await page.route('**/api/v1/me/credits/balance', (route) =>
+      json(route, {
+        paidCredits: 100,
+        bonusCredits: 0,
+        totalCredits: 100,
+        asOf: '2026-11-15T10:00:00Z',
+      }),
+    );
+
+    await page.goto(`/app/reader/${workId}/${chapterIds[1]}`);
+    await expect(page.getByRole('heading', { name: 'Bản nháp' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Xem lại điều kiện' })).toBeVisible();
+    const paywall = page.getByRole('region', { name: 'Bản nháp' });
+    await paywall.focus();
+    await page.keyboard.press('End');
+    await expect(page.getByRole('button', { name: 'Xem lại điều kiện' })).toBeInViewport();
+    const dimensions = await page.evaluate(() => ({
+      document: document.documentElement.scrollWidth,
+      viewport: document.documentElement.clientWidth,
+      dpr: window.devicePixelRatio,
+    }));
+    expect(dimensions.dpr).toBe(2);
+    expect(dimensions.document).toBeLessThanOrEqual(dimensions.viewport);
+    await expectNoAxeViolations(page);
+    await page.screenshot({
+      path: test.info().outputPath('reader-paywall-effective-200-percent.png'),
+      fullPage: false,
+    });
+  } finally {
+    await context.close();
+  }
 });
 
 test('account Reader remains usable in an effective 200% mobile viewport', async ({ browser }) => {
