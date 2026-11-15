@@ -33,6 +33,23 @@ for (const viewport of viewports) {
   }
 }
 
+for (const route of pages) {
+  test(`${route.name} reflows without page overflow at 320 CSS px`, async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 800 });
+    await page.goto(route.path);
+    await expect(page.locator('h1').first()).toBeVisible();
+
+    const dimensions = await page.evaluate(() => ({
+      document: document.documentElement.scrollWidth,
+      viewport: document.documentElement.clientWidth,
+      body: document.body.scrollWidth,
+    }));
+    expect(dimensions.document).toBeLessThanOrEqual(dimensions.viewport);
+    expect(dimensions.body).toBeLessThanOrEqual(dimensions.viewport);
+    await expectNoAxeViolations(page);
+  });
+}
+
 for (const viewport of viewports) {
   for (const panel of [
     { name: 'table of contents', trigger: 'Mở mục lục', dialog: 'Chương mẫu' },
