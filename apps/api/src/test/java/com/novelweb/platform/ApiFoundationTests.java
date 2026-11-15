@@ -112,6 +112,16 @@ class ApiFoundationTests {
   }
 
   @Test
+  void corsReturnsExactOriginOnActualApiResponse() throws Exception {
+    mockMvc
+        .perform(get("/api/v1/system/status").header("Origin", ALLOWED_ORIGIN))
+        .andExpect(status().isOk())
+        .andExpect(header().string("Access-Control-Allow-Origin", ALLOWED_ORIGIN))
+        .andExpect(header().string("Access-Control-Allow-Credentials", "true"))
+        .andExpect(header().string("Vary", org.hamcrest.Matchers.containsString("Origin")));
+  }
+
+  @Test
   void corsPreflightAllowsSessionCsrfHeaderFromExactConfiguredOrigin() throws Exception {
     mockMvc
         .perform(
@@ -141,5 +151,44 @@ class ApiFoundationTests {
                 .header("Origin", "https://attacker.example")
                 .header("Access-Control-Request-Method", "GET"))
         .andExpect(header().doesNotExist("Access-Control-Allow-Origin"));
+  }
+
+  @Test
+  void corsRejectsUnconfiguredMethodsEvenForAnAllowedOrigin() throws Exception {
+    mockMvc
+        .perform(
+            options("/api/v1/system/status")
+                .header("Origin", ALLOWED_ORIGIN)
+                .header("Access-Control-Request-Method", "TRACE"))
+        .andExpect(status().isForbidden())
+        .andExpect(header().doesNotExist("Access-Control-Allow-Methods"));
+  }
+
+  @Test
+  void corsRejectsUnconfiguredRequestHeadersEvenForAnAllowedOrigin() throws Exception {
+    mockMvc
+        .perform(
+            options("/api/v1/auth/csrf")
+                .header("Origin", ALLOWED_ORIGIN)
+                .header("Access-Control-Request-Method", "POST")
+                .header("Access-Control-Request-Headers", "Authorization"))
+        .andExpect(status().isForbidden())
+        .andExpect(header().doesNotExist("Access-Control-Allow-Headers"));
+  }
+
+  @Test
+  void actuatorCorsAllowsReadOnlyAccessWithoutCredentials() throws Exception {
+    mockMvc
+        .perform(
+            options("/actuator/health")
+                .header("Origin", ALLOWED_ORIGIN)
+                .header("Access-Control-Request-Method", "GET"))
+        .andExpect(status().isOk())
+        .andExpect(header().string("Access-Control-Allow-Origin", ALLOWED_ORIGIN))
+        .andExpect(header().doesNotExist("Access-Control-Allow-Credentials"))
+        .andExpect(
+            header()
+                .string(
+                    "Access-Control-Allow-Methods", org.hamcrest.Matchers.containsString("GET")));
   }
 }
