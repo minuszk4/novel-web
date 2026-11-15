@@ -67,6 +67,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
@@ -12648,6 +12649,20 @@ class PostgresSchemaIntegrationTests {
       assertEquals(90, creditProjectedBalance(userId, "PAID"));
 
       UUID grantEntryId = grant.ledgerEntryIds().getFirst();
+      assertEquals(
+          CreditLedgerService.Outcome.REVERSAL_AMOUNT_EXCEEDS_SOURCE,
+          inCreditLedgerTransaction(
+                  connection ->
+                      creditLedgerService.reverseEntry(connection, userId, grantEntryId, 101))
+              .outcome());
+      assertEquals(
+          CreditLedgerService.Outcome.BALANCE_CONFLICT,
+          inCreditLedgerTransaction(
+                  connection ->
+                      creditLedgerService.reverseEntry(connection, userId, grantEntryId, 95))
+              .outcome());
+      assertEquals(90, creditProjectedBalance(userId, "PAID"));
+
       CreditLedgerService.OperationResult reversal =
           inCreditLedgerTransaction(
               connection -> creditLedgerService.reverseEntry(connection, userId, grantEntryId, 50));
@@ -12699,8 +12714,8 @@ class PostgresSchemaIntegrationTests {
                   connection ->
                       creditLedgerService.grantPaidTopUp(connection, userId, paymentOrderId, 20))
               .outcome());
-      Instant liveExpiry = Instant.now().plusSeconds(3600);
-      Instant expiredAt = Instant.now().minusSeconds(60);
+      Instant liveExpiry = Instant.now().plusSeconds(3600).truncatedTo(ChronoUnit.MICROS);
+      Instant expiredAt = Instant.now().minusSeconds(60).truncatedTo(ChronoUnit.MICROS);
       insertCreditLedgerEntry(
           userId, "BONUS_GRANT", "BONUS", 15, liveExpiry, "OPERATOR", liveBonusSource, null);
       insertCreditLedgerEntry(
