@@ -40,6 +40,18 @@ public class CreditTopUpOrderService {
    */
   public CreateResult createOrReplay(
       UUID userId, String idempotencyKey, CreditPackCatalog catalog, String packId) {
+    Objects.requireNonNull(catalog, "server-owned credit pack catalog is required");
+    int packVersion = catalog.quote(packId).map(CreditPackQuote::version).orElse(-1);
+    return createOrReplay(userId, idempotencyKey, catalog, packId, packVersion);
+  }
+
+  /** Creates/replays only the exact server-owned pack version that the user reviewed. */
+  public CreateResult createOrReplay(
+      UUID userId,
+      String idempotencyKey,
+      CreditPackCatalog catalog,
+      String packId,
+      int packVersion) {
     Objects.requireNonNull(userId, "user id is required");
     Objects.requireNonNull(catalog, "server-owned credit pack catalog is required");
     if (idempotencyKey == null || !IDEMPOTENCY_KEY.matcher(idempotencyKey).matches()) {
@@ -58,7 +70,7 @@ public class CreditTopUpOrderService {
         if (existing.isPresent()) {
           TopUpOrder prior = existing.orElseThrow();
           connection.commit();
-          return prior.quote().packId().equals(packId)
+          return prior.quote().packId().equals(packId) && prior.quote().version() == packVersion
               ? CreateResult.replayed(prior)
               : CreateResult.outcome(Outcome.IDEMPOTENCY_KEY_REUSED);
         }
@@ -69,6 +81,10 @@ public class CreditTopUpOrderService {
           return CreateResult.outcome(Outcome.PACK_NOT_FOUND);
         }
         CreditPackQuote quote = requestedQuote.orElseThrow();
+        if (quote.version() != packVersion) {
+          connection.commit();
+          return CreateResult.outcome(Outcome.PACK_VERSION_STALE);
+        }
         validateTestQuote(quote);
 
         TopUpOrder inserted = insertOrder(connection, userId, idempotencyKey, quote);
@@ -80,6 +96,32 @@ public class CreditTopUpOrderService {
       }
     } catch (SQLException exception) {
       throw new IllegalStateException("Unable to persist the top-up order snapshot", exception);
+    }
+  }
+
+  /**
+   * Finds an order only inside the active actor's account namespace; URL/provider data is omitted.
+   */
+  public Optional<TopUpOrder> findForActor(UUID userId, UUID orderId) {
+    Objects.requireNonNull(userId, "user id is required");
+    Objects.requireNonNull(orderId, "order id is required");
+    try (Connection connection = dataSource.getConnection()) {
+      connection.setAutoCommit(false);
+      try {
+        AccountState account = lockAccount(connection, userId);
+        if (account != AccountState.ACTIVE) {
+          connection.commit();
+          return Optional.empty();
+        }
+        Optional<StoredOrder> found = findById(connection, userId, orderId);
+        connection.commit();
+        return found.map(StoredOrder::order);
+      } catch (SQLException | RuntimeException exception) {
+        rollback(connection, exception);
+        throw exception;
+      }
+    } catch (SQLException exception) {
+      throw new IllegalStateException("Unable to load the actor's top-up order", exception);
     }
   }
 
@@ -382,6 +424,7 @@ public class CreditTopUpOrderService {
     IDEMPOTENCY_KEY_REUSED,
     INVALID_IDEMPOTENCY_KEY,
     PACK_NOT_FOUND,
+    PACK_VERSION_STALE,
     ACCOUNT_NOT_FOUND,
     ACCOUNT_INACTIVE
   }

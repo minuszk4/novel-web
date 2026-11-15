@@ -7,9 +7,12 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -264,6 +267,8 @@ class PostgresSchemaIntegrationTests {
   @Autowired private CreditHistoryService creditHistoryService;
 
   @Autowired private CreditTopUpOrderService creditTopUpOrderService;
+
+  @MockitoBean private CreditTopUpCheckoutService creditTopUpCheckoutService;
 
   @Autowired private MomoTestIpnService momoTestIpnService;
 
@@ -12963,6 +12968,23 @@ class PostgresSchemaIntegrationTests {
       assertEquals(CreditTopUpOrderService.Outcome.REPLAYED, replay.outcome());
       assertEquals(order.id(), replay.order().id());
       assertEquals(order.requestId(), replay.order().requestId());
+      assertEquals(
+          CreditTopUpOrderService.Outcome.IDEMPOTENCY_KEY_REUSED,
+          creditTopUpOrderService
+              .createOrReplay(userId, idempotencyKey, catalog, "momo-test-credits-100", 2)
+              .outcome());
+      assertEquals(
+          CreditTopUpOrderService.Outcome.PACK_VERSION_STALE,
+          creditTopUpOrderService
+              .createOrReplay(
+                  userId,
+                  "credit-top-up-order-stale-version-01",
+                  catalog,
+                  "momo-test-credits-100",
+                  2)
+              .outcome());
+      assertTrue(creditTopUpOrderService.findForActor(userId, order.id()).isPresent());
+      assertTrue(creditTopUpOrderService.findForActor(otherUserId, order.id()).isEmpty());
 
       assertEquals(
           CreditTopUpOrderService.Outcome.IDEMPOTENCY_KEY_REUSED,
@@ -12991,6 +13013,148 @@ class PostgresSchemaIntegrationTests {
     } finally {
       deleteSessionTestUser(userId);
       deleteSessionTestUser(otherUserId);
+    }
+  }
+
+  @Test
+  void topUpCatalogAndCheckoutRoutesRequirePolicyCsrfAndUseOnlyServerPackValues() throws Exception {
+    UUID userId = createSessionTestUser("HTTP TEST Top-up Owner");
+    try {
+      addCurrentPolicyAcceptances(userId);
+      SessionService.IssuedSession session = sessionService.create(userId).orElseThrow();
+      jakarta.servlet.http.Cookie cookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", session.cookieValue());
+      String csrfToken = csrfTokenService.tokenFor(session.cookieValue());
+      String idempotencyKey = "credit-top-up-http-route-01";
+      String requestBody =
+          objectMapper.writeValueAsString(
+              Map.of("packId", "momo-test-credits-100", "packVersion", 1));
+
+      MvcResult catalog = mockMvc.perform(get("/api/v1/credit-packs").cookie(cookie)).andReturn();
+      assertEquals(200, catalog.getResponse().getStatus());
+      assertTrue(catalog.getResponse().getHeader("Cache-Control").contains("no-store"));
+      assertTrue(catalog.getResponse().getContentAsString().contains("\"amountVnd\":1000"));
+      assertTrue(catalog.getResponse().getContentAsString().contains("\"paidCredits\":100"));
+      assertTrue(catalog.getResponse().getContentAsString().contains("\"environment\":\"TEST\""));
+
+      MvcResult csrfRejected =
+          mockMvc
+              .perform(
+                  post("/api/v1/momo/payment-orders")
+                      .cookie(cookie)
+                      .header("Idempotency-Key", idempotencyKey)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(requestBody))
+              .andReturn();
+      assertEquals(403, csrfRejected.getResponse().getStatus());
+      assertTrue(csrfRejected.getResponse().getContentAsString().contains("CSRF_FAILED"));
+      verifyNoInteractions(creditTopUpCheckoutService);
+
+      CreditPackCatalog.CreditPackQuote quote =
+          CreditPackCatalog.momoTestFixture().quote("momo-test-credits-100").orElseThrow();
+      UUID orderId = UUID.randomUUID();
+      CreditTopUpOrderService.TopUpOrder order =
+          new CreditTopUpOrderService.TopUpOrder(
+              orderId,
+              userId,
+              UUID.randomUUID(),
+              CreditTopUpOrderService.Provider.MOMO,
+              quote,
+              CreditTopUpOrderService.OrderStatus.PENDING,
+              Instant.now());
+      String checkoutUrl = "https://test-payment.momo.vn/v2/gateway/pay?token=synthetic";
+      when(creditTopUpCheckoutService.createOrReplay(
+              eq(userId),
+              eq(idempotencyKey),
+              any(CreditPackCatalog.class),
+              eq("momo-test-credits-100"),
+              eq(1)))
+          .thenReturn(
+              new CreditTopUpCheckoutService.CheckoutResult(
+                  CreditTopUpOrderService.Outcome.CREATED,
+                  CreditTopUpOrderService.CheckoutOutcome.READY,
+                  order,
+                  checkoutUrl));
+
+      MvcResult checkout =
+          mockMvc
+              .perform(
+                  post("/api/v1/momo/payment-orders")
+                      .cookie(cookie)
+                      .header("X-CSRF-Token", csrfToken)
+                      .header("Idempotency-Key", idempotencyKey)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(requestBody))
+              .andReturn();
+      assertEquals(201, checkout.getResponse().getStatus());
+      assertEquals(
+          "/api/v1/payment-orders/" + orderId,
+          checkout.getResponse().getHeader(HttpHeaders.LOCATION));
+      assertTrue(checkout.getResponse().getHeader("Cache-Control").contains("no-store"));
+      assertTrue(checkout.getResponse().getContentAsString().contains(checkoutUrl));
+      assertTrue(!checkout.getResponse().getContentAsString().contains(userId.toString()));
+      assertTrue(
+          !checkout.getResponse().getContentAsString().contains(order.requestId().toString()));
+      verify(creditTopUpCheckoutService)
+          .createOrReplay(
+              eq(userId),
+              eq(idempotencyKey),
+              any(CreditPackCatalog.class),
+              eq("momo-test-credits-100"),
+              eq(1));
+    } finally {
+      deleteSessionTestUser(userId);
+    }
+  }
+
+  @Test
+  void paymentOrderStatusRouteIsActorScopedAndNeverReturnsCheckoutUrl() throws Exception {
+    UUID ownerId = createSessionTestUser("HTTP TEST Top-up Status Owner");
+    UUID foreignId = createSessionTestUser("HTTP TEST Foreign Top-up Status");
+    try {
+      addCurrentPolicyAcceptances(ownerId);
+      addCurrentPolicyAcceptances(foreignId);
+      CreditTopUpOrderService.TopUpOrder order =
+          creditTopUpOrderService
+              .createOrReplay(
+                  ownerId,
+                  "credit-top-up-status-owner-01",
+                  CreditPackCatalog.momoTestFixture(),
+                  "momo-test-credits-100")
+              .order();
+      SessionService.IssuedSession ownerSession = sessionService.create(ownerId).orElseThrow();
+      SessionService.IssuedSession foreignSession = sessionService.create(foreignId).orElseThrow();
+
+      MvcResult ownerResponse =
+          mockMvc
+              .perform(
+                  get("/api/v1/payment-orders/{orderId}", order.id())
+                      .cookie(
+                          new jakarta.servlet.http.Cookie(
+                              "__Host-novel_session", ownerSession.cookieValue())))
+              .andReturn();
+      assertEquals(200, ownerResponse.getResponse().getStatus());
+      assertTrue(ownerResponse.getResponse().getHeader("Cache-Control").contains("no-store"));
+      assertTrue(
+          ownerResponse.getResponse().getContentAsString().contains("\"status\":\"CREATED\""));
+      assertTrue(!ownerResponse.getResponse().getContentAsString().contains("checkoutUrl"));
+      assertTrue(!ownerResponse.getResponse().getContentAsString().contains("requestId"));
+      assertTrue(!ownerResponse.getResponse().getContentAsString().contains("userId"));
+
+      MvcResult foreignResponse =
+          mockMvc
+              .perform(
+                  get("/api/v1/payment-orders/{orderId}", order.id())
+                      .cookie(
+                          new jakarta.servlet.http.Cookie(
+                              "__Host-novel_session", foreignSession.cookieValue())))
+              .andReturn();
+      assertEquals(404, foreignResponse.getResponse().getStatus());
+      assertTrue(
+          foreignResponse.getResponse().getContentAsString().contains("PAYMENT_ORDER_NOT_FOUND"));
+    } finally {
+      deleteSessionTestUser(ownerId);
+      deleteSessionTestUser(foreignId);
     }
   }
 

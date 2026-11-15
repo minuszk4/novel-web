@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 6.36.0
+  version: 6.37.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -43,7 +43,7 @@ tags:
     description: Private-first author manuscript drafts with owner-only chapter content and immutable revisions; collaboration and publication are not available.
     x-implementation-status: partial
   - name: Commerce
-    description: Actor-owned credit balance/history and a MoMo TEST-only feature-flagged IPN settlement receiver are implemented; customer checkout routes, chapter purchases/unlocks and production payment remain unavailable.
+    description: Actor-owned credit balance/history, MoMo TEST-only feature-gated pack checkout/order status/IPN settlement are implemented; chapter purchases/unlocks and production payment remain unavailable.
     x-implementation-status: partial
 paths:
   /api/v1/glossaries:
@@ -3362,6 +3362,140 @@ paths:
           $ref: '#/components/responses/Problem'
         '503':
           $ref: '#/components/responses/Problem'
+  /api/v1/credit-packs:
+    get:
+      operationId: listMomoTestCreditPacks
+      tags: [Commerce]
+      x-implementation-status: test-only-feature-flag
+      summary: List available MoMo TEST credit packs
+      description: >-
+        Returns the server-owned TEST catalog only in the PostgreSQL profile after explicit
+        NOVEL_MOMO_TEST_ENABLED=true and full TEST configuration. Requires an authenticated account
+        with current Terms and Privacy acceptance. Amount, credit quantities, environment and expiry
+        are server-owned; values are sandbox fixtures, not production offers. Response is no-store.
+      security:
+        - appSession: []
+      responses:
+        '200':
+          description: Current server-owned TEST catalog.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreditPackCatalog'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/momo/payment-orders:
+    post:
+      operationId: createMomoTestPaymentOrder
+      tags: [Commerce]
+      x-implementation-status: test-only-feature-flag
+      summary: Create or replay a MoMo TEST credit top-up
+      description: >-
+        Requires an authenticated account, current Terms and Privacy acceptance, session-bound CSRF,
+        Idempotency-Key and the explicit MoMo TEST feature configuration. The request selects only a
+        server-owned pack ID/version; price, credits, VND currency, TEST environment and provider URLs
+        cannot be supplied by the client. A durable order snapshot is created before one provider create
+        attempt. Same-key/same-request replay never creates another provider order. Only this response
+        may contain a validated TEST checkout URL, and all responses are no-store. HTTP 201 means the
+        application order exists; it does not mean payment succeeded or credits were granted. Check the
+        returned status URL for server-confirmed state. No production payment is available.
+      security:
+        - appSession: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            minLength: 16
+            maxLength: 128
+            pattern: '^[A-Za-z0-9._~-]+$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCreditTopUpRequest'
+      responses:
+        '200':
+          description: Existing idempotent order; no second provider create request was made.
+          headers:
+            Idempotency-Replayed:
+              schema:
+                type: string
+                const: 'true'
+            Location:
+              schema:
+                type: string
+                format: uri-reference
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreatePaymentOrderResponse'
+        '201':
+          description: New application order persisted; payment remains pending until verified settlement.
+          headers:
+            Location:
+              schema:
+                type: string
+                format: uri-reference
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreatePaymentOrderResponse'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '415':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/payment-orders/{orderId}:
+    get:
+      operationId: getMomoTestPaymentOrder
+      tags: [Commerce]
+      x-implementation-status: test-only-feature-flag
+      summary: Read the status of the current user's payment order
+      description: >-
+        Returns the authenticated actor's safe order snapshot and current server-side status. Foreign
+        and nonexistent order IDs are indistinguishable. This status response never includes checkoutUrl,
+        provider signature, raw provider fields, request ID or another actor's identifiers. A browser
+        return URL does not prove payment. Responses are no-store.
+      security:
+        - appSession: []
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Safe order snapshot and server-confirmed status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentOrder'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
   /api/v1/payments/momo/ipn:
     post:
       operationId: receiveMomoTestPaymentNotification
@@ -6199,6 +6333,124 @@ components:
           type: string
           format: date-time
           description: Ledger commit timestamp used for newest-first pagination.
+    CreditPackCatalog:
+      type: object
+      additionalProperties: false
+      required: [environment, offers]
+      properties:
+        environment:
+          type: string
+          const: TEST
+        offers:
+          type: array
+          maxItems: 20
+          items:
+            $ref: '#/components/schemas/CreditPack'
+    CreditPack:
+      type: object
+      additionalProperties: false
+      required: [packId, packVersion, environment, currency, amountVnd, paidCredits, bonusCredits, paidExpiresAt, bonusExpiresAt]
+      properties:
+        packId:
+          type: string
+          pattern: '^[A-Za-z0-9._-]{1,64}$'
+        packVersion:
+          type: integer
+          minimum: 1
+        environment:
+          type: string
+          const: TEST
+        currency:
+          type: string
+          const: VND
+        amountVnd:
+          type: integer
+          format: int64
+          minimum: 1000
+        paidCredits:
+          type: integer
+          format: int64
+          minimum: 1
+        bonusCredits:
+          type: integer
+          format: int64
+          minimum: 0
+        paidExpiresAt:
+          type: [string, 'null']
+          format: date-time
+        bonusExpiresAt:
+          type: [string, 'null']
+          format: date-time
+    CreateCreditTopUpRequest:
+      type: object
+      additionalProperties: false
+      required: [packId, packVersion]
+      properties:
+        packId:
+          type: string
+          pattern: '^[A-Za-z0-9._-]{1,64}$'
+        packVersion:
+          type: integer
+          minimum: 1
+    CreatePaymentOrderResponse:
+      type: object
+      additionalProperties: false
+      required: [order, checkoutOutcome, checkoutUrl]
+      properties:
+        order:
+          $ref: '#/components/schemas/PaymentOrder'
+        checkoutOutcome:
+          type: [string, 'null']
+          enum: [READY, WAITING_FOR_PROVIDER, PROVIDER_CREATE_IN_PROGRESS, PROVIDER_RESULT_UNKNOWN, NOT_STARTED, TERMINAL, 'null']
+        checkoutUrl:
+          type: [string, 'null']
+          format: uri
+          description: >-
+            Validated MoMo TEST hosted checkout URL available only in the create response when provider
+            creation has been verified. Never returned by order status/history.
+    PaymentOrder:
+      type: object
+      additionalProperties: false
+      required: [id, packId, packVersion, environment, currency, amountVnd, paidCredits, bonusCredits, paidExpiresAt, bonusExpiresAt, status, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        packId:
+          type: string
+        packVersion:
+          type: integer
+          minimum: 1
+        environment:
+          type: string
+          const: TEST
+        currency:
+          type: string
+          const: VND
+        amountVnd:
+          type: integer
+          format: int64
+          minimum: 1000
+        paidCredits:
+          type: integer
+          format: int64
+          minimum: 1
+        bonusCredits:
+          type: integer
+          format: int64
+          minimum: 0
+        paidExpiresAt:
+          type: [string, 'null']
+          format: date-time
+        bonusExpiresAt:
+          type: [string, 'null']
+          format: date-time
+        status:
+          type: string
+          enum: [CREATED, INITIATING, PENDING, UNKNOWN, SUCCEEDED, FAILED, CANCELLED, EXPIRED]
+        createdAt:
+          type: string
+          format: date-time
     ReaderPreferences:
       type: object
       additionalProperties: false

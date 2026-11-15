@@ -25,7 +25,19 @@ public final class CreditTopUpCheckoutService {
    */
   public CheckoutResult createOrReplay(
       UUID userId, String idempotencyKey, CreditPackCatalog catalog, String packId) {
-    CreateResult creation = orders.createOrReplay(userId, idempotencyKey, catalog, packId);
+    int packVersion =
+        catalog.quote(packId).map(CreditPackCatalog.CreditPackQuote::version).orElse(-1);
+    return createOrReplay(userId, idempotencyKey, catalog, packId, packVersion);
+  }
+
+  public CheckoutResult createOrReplay(
+      UUID userId,
+      String idempotencyKey,
+      CreditPackCatalog catalog,
+      String packId,
+      int packVersion) {
+    CreateResult creation =
+        orders.createOrReplay(userId, idempotencyKey, catalog, packId, packVersion);
     if (creation.order() == null) {
       return new CheckoutResult(creation.outcome(), null, null, null);
     }
