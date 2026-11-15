@@ -325,6 +325,20 @@ test('fake-local Reader preview reaches a private candidate through real API and
     expect(foreignEditBody).toContain('TRANSLATION_CANDIDATE_NOT_FOUND');
     expect(foreignEditBody).not.toContain('Outsider must not replace this candidate.');
 
+    for (const action of ['retry', 'cancel'] as const) {
+      const foreignAction = await page.request.post(`${baseUrl}${statusPath}/${action}`, {
+        headers: {
+          'X-CSRF-Token': outsiderCsrf.token,
+          'Idempotency-Key': `outsider-translation-${action}-0001`,
+        },
+      });
+      expect(foreignAction.status()).toBe(404);
+      expect(foreignAction.headers()['cache-control']).toContain('no-store');
+      const foreignActionBody = await foreignAction.text();
+      expect(foreignActionBody).toContain('TRANSLATION_JOB_NOT_FOUND');
+      expect(foreignActionBody).not.toContain(sourceText);
+    }
+
     await page.context().clearCookies();
     await page.context().addCookies([
       {
@@ -337,6 +351,17 @@ test('fake-local Reader preview reaches a private candidate through real API and
         sameSite: 'Lax',
       },
     ]);
+    const unchangedOwnerStatus = await page.request.get(`${baseUrl}${statusPath}`);
+    expect(unchangedOwnerStatus.status()).toBe(200);
+    expect(unchangedOwnerStatus.headers()['cache-control']).toContain('no-store');
+    expect(await unchangedOwnerStatus.json()).toMatchObject({
+      job: {
+        id: enqueueBody.jobId,
+        status: 'review_required',
+        completedUnits: 1,
+        failedUnits: 0,
+      },
+    });
     const unchangedOwnerCandidate = await page.request.get(`${baseUrl}${statusPath}/candidate`);
     expect(unchangedOwnerCandidate.status()).toBe(200);
     expect(unchangedOwnerCandidate.headers()['cache-control']).toContain('no-store');
