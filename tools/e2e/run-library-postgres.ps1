@@ -60,7 +60,8 @@ $environmentNames = @(
     'LIBRARY_LIVE_TEST_SESSION_TOKEN', 'LIBRARY_LIVE_TEST_LIBRARY_ID',
     'MOMO_PAYMENT_RETURN_LIVE_TEST_SESSION_TOKEN', 'MOMO_PAYMENT_RETURN_LIVE_TEST_ORDER_ID',
     'MOMO_PAYMENT_RETURN_LIVE_TEST_SCREENSHOT',
-    'MOMO_COMMERCE_LIVE_TEST_SESSION_TOKEN', 'MOMO_COMMERCE_LIVE_TEST_ORDER_ID',
+    'MOMO_COMMERCE_LIVE_TEST_SESSION_TOKEN', 'MOMO_COMMERCE_LIVE_TEST_OTHER_SESSION_TOKEN',
+    'MOMO_COMMERCE_LIVE_TEST_ORDER_ID',
     'MOMO_COMMERCE_LIVE_TEST_REQUEST_ID', 'MOMO_COMMERCE_LIVE_TEST_WORK_ID',
     'MOMO_COMMERCE_LIVE_TEST_CHAPTER_ID', 'MOMO_COMMERCE_LIVE_TEST_SUCCESS_SCREENSHOT',
     'MOMO_COMMERCE_LIVE_TEST_UNLOCK_SCREENSHOT',
@@ -98,6 +99,11 @@ $sessionBytes = New-Object byte[] 32
 $sessionToken = [Convert]::ToBase64String($sessionBytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
 $sessionHash = [Convert]::ToHexString(
     [System.Security.Cryptography.SHA256]::HashData($sessionBytes))
+$commerceOtherSessionBytes = New-Object byte[] 32
+[System.Security.Cryptography.RandomNumberGenerator]::Fill($commerceOtherSessionBytes)
+$commerceOtherSessionToken = [Convert]::ToBase64String($commerceOtherSessionBytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+$commerceOtherSessionHash = [Convert]::ToHexString(
+    [System.Security.Cryptography.SHA256]::HashData($commerceOtherSessionBytes))
 $userId = [guid]::NewGuid()
 $libraryId = [guid]::NewGuid()
 $firstWorkId = [guid]::NewGuid()
@@ -115,6 +121,7 @@ $glossaryId = [guid]::NewGuid()
 $paymentReturnOrderId = [guid]::NewGuid()
 $commerceOrderId = [guid]::NewGuid()
 $commerceRequestId = [guid]::NewGuid()
+$commerceOtherUserId = [guid]::NewGuid()
 $commerceAuthorId = [guid]::NewGuid()
 $commerceLibraryId = [guid]::NewGuid()
 $commerceWorkId = [guid]::NewGuid()
@@ -309,6 +316,13 @@ VALUES
     if ($IncludeCommerceSettlement) {
         $commerceSettlementFixtureSql = @"
 INSERT INTO users (id, display_name, contact_email, email_verified_at, status)
+VALUES ('$commerceOtherUserId', 'Live Commerce Other Reader', 'commerce-other-$commerceOtherUserId@example.test', clock_timestamp(), 'active');
+INSERT INTO policy_acceptances (id, user_id, policy_type, version, decision, recorded_at, source) VALUES
+(gen_random_uuid(), '$commerceOtherUserId', 'TERMS', 'terms-live-e2e-v1', 'TERMS_ACCEPTED', clock_timestamp(), 'e2e-fixture'),
+(gen_random_uuid(), '$commerceOtherUserId', 'PRIVACY_NOTICE', 'privacy-live-e2e-v1', 'PRIVACY_NOTICE_ACKNOWLEDGED', clock_timestamp(), 'e2e-fixture');
+INSERT INTO sessions (id_hash, user_id, expires_at)
+VALUES (decode('$commerceOtherSessionHash', 'hex'), '$commerceOtherUserId', clock_timestamp() + INTERVAL '1 day');
+INSERT INTO users (id, display_name, contact_email, email_verified_at, status)
 VALUES ('$commerceAuthorId', 'Live Commerce Author', 'commerce-author-$commerceAuthorId@example.test', clock_timestamp(), 'active');
 INSERT INTO libraries (id, owner_user_id, name, visibility, is_default)
 VALUES ('$commerceLibraryId', '$commerceAuthorId', 'Live Public Commerce Shelf', 'private', FALSE);
@@ -406,6 +420,7 @@ COMMIT;
     }
     if ($IncludeCommerceSettlement) {
         $env:MOMO_COMMERCE_LIVE_TEST_SESSION_TOKEN = $sessionToken
+        $env:MOMO_COMMERCE_LIVE_TEST_OTHER_SESSION_TOKEN = $commerceOtherSessionToken
         $env:MOMO_COMMERCE_LIVE_TEST_ORDER_ID = [string]$commerceOrderId
         $env:MOMO_COMMERCE_LIVE_TEST_REQUEST_ID = [string]$commerceRequestId
         $env:MOMO_COMMERCE_LIVE_TEST_WORK_ID = [string]$commerceWorkId
@@ -586,7 +601,7 @@ COMMIT;
         $(if ($authoringEditorParts.Count -eq 6) { '- PostgreSQL authoring editor: three immutable revisions, three idempotency receipts, explicit local-version conflict resolution, latest revision pointer matches the saved content and chapter remains draft/unpublished' } else { '- PostgreSQL authoring editor: not requested' })
         $(if ($translationParts.Count -eq 4) { "- PostgreSQL fake-local translation: $($translationParts[0]) job, $($translationParts[2]) successful attempt and $($translationParts[3]) unpublished candidate segment verified with the fake marker" } else { '- PostgreSQL fake-local translation: not requested' })
         $(if ($IncludePaymentReturn) { '- MoMo TEST return: resultCode=0 and synthetic signature were ignored; actor-scoped order remained PENDING after refresh; ledger and balance projection remained zero; browser made no create/IPN request; reconciliation worker was disabled; no MoMo network request was made' } else { '- MoMo TEST return: not requested' })
-        $(if ($IncludeCommerceSettlement) { '- MoMo TEST commerce: a locally signed synthetic IPN was delivered twice to the real API; actor-owned order settled once, 100 paid credits were granted once, the Reader debited exactly 10 paid credits after explicit confirmation, one entitlement unlocked the public chapter and the saved balance is 90; no MoMo network request or reconciliation query was made' } else { '- MoMo TEST commerce settlement/unlock: not requested' })
+        $(if ($IncludeCommerceSettlement) { '- MoMo TEST commerce: a locally signed synthetic IPN was delivered twice to the real API; actor-owned order settled once, 100 paid credits were granted once, the Reader debited exactly 10 paid credits after explicit confirmation, one entitlement unlocked the public chapter and the saved balance is 90; a second actor received 404 for the order, empty histories/zero balance and no paid chapter body; no MoMo network request or reconciliation query was made' } else { '- MoMo TEST commerce settlement/unlock: not requested' })
         '- API route mocks: none'
         "- Elapsed: $duration seconds"
         "- Cleanup: $cleanup"

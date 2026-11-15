@@ -5,6 +5,7 @@ test('synthetic signed settlement grants credits once and unlocks a public chapt
   page,
 }) => {
   const sessionToken = process.env['MOMO_COMMERCE_LIVE_TEST_SESSION_TOKEN'];
+  const otherSessionToken = process.env['MOMO_COMMERCE_LIVE_TEST_OTHER_SESSION_TOKEN'];
   const orderId = process.env['MOMO_COMMERCE_LIVE_TEST_ORDER_ID'];
   const requestId = process.env['MOMO_COMMERCE_LIVE_TEST_REQUEST_ID'];
   const workId = process.env['MOMO_COMMERCE_LIVE_TEST_WORK_ID'];
@@ -16,6 +17,7 @@ test('synthetic signed settlement grants credits once and unlocks a public chapt
 
   test.skip(
     !sessionToken ||
+      !otherSessionToken ||
       !orderId ||
       !requestId ||
       !workId ||
@@ -27,6 +29,7 @@ test('synthetic signed settlement grants credits once and unlocks a public chapt
     'run tools/e2e/run-library-postgres.ps1 -IncludeCommerceSettlement for the disposable fixture',
   );
   expect(sessionToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
+  expect(otherSessionToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
   expect(orderId).toMatch(/^[0-9a-f-]{36}$/i);
   expect(requestId).toMatch(/^[0-9a-f-]{36}$/i);
   expect(workId).toMatch(/^[0-9a-f-]{36}$/i);
@@ -167,4 +170,78 @@ test('synthetic signed settlement grants credits once and unlocks a public chapt
   await page.goto('http://localhost:4300/app/purchases?view=unlocks');
   await expect(page.getByRole('heading', { name: 'Chương đã mở' })).toBeVisible();
   await expect(page.getByText('Live Paid Chapter')).toBeVisible();
+
+  await page.context().clearCookies();
+  await page.context().addCookies([
+    {
+      name: '__Host-novel_session',
+      value: otherSessionToken!,
+      domain: 'localhost',
+      path: '/',
+      httpOnly: true,
+      secure: true,
+      sameSite: 'Lax',
+    },
+  ]);
+
+  const foreignOrderResponse = await page.request.get(
+    `http://localhost:4300/api/v1/payment-orders/${orderId}`,
+  );
+  expect(foreignOrderResponse.status()).toBe(404);
+  expect(await foreignOrderResponse.text()).toContain('PAYMENT_ORDER_NOT_FOUND');
+
+  const foreignPaymentOrders = await page.request.get(
+    'http://localhost:4300/api/v1/me/payment-orders',
+  );
+  expect(foreignPaymentOrders.status()).toBe(200);
+  expect(foreignPaymentOrders.headers()['cache-control']).toContain('no-store');
+  expect(await foreignPaymentOrders.json()).toMatchObject({ items: [], nextCursor: null });
+
+  const foreignCreditTransactions = await page.request.get(
+    'http://localhost:4300/api/v1/me/credits/transactions',
+  );
+  expect(foreignCreditTransactions.status()).toBe(200);
+  expect(await foreignCreditTransactions.json()).toMatchObject({ items: [], nextCursor: null });
+
+  const foreignPurchases = await page.request.get('http://localhost:4300/api/v1/me/purchases');
+  expect(foreignPurchases.status()).toBe(200);
+  expect(await foreignPurchases.json()).toMatchObject({ items: [], nextCursor: null });
+
+  const foreignBalance = await page.request.get('http://localhost:4300/api/v1/me/credits/balance');
+  expect(foreignBalance.status()).toBe(200);
+  expect(await foreignBalance.json()).toMatchObject({
+    paidCredits: 0,
+    bonusCredits: 0,
+    totalCredits: 0,
+  });
+
+  await page.goto(
+    `http://localhost:4300/app/payment/result?orderId=${encodeURIComponent(orderId!)}`,
+  );
+  await expect(page.getByRole('heading', { name: 'Chưa tải được trạng thái' })).toBeVisible();
+  await expect(page.getByText(/Chưa tải được trạng thái do máy chủ lưu/)).toBeVisible();
+  await expect(page.getByText(/100 paid credit|1\.000 ₫/)).toHaveCount(0);
+
+  await page.goto('http://localhost:4300/app/purchases?view=orders');
+  await expect(page.getByRole('heading', { name: 'Chưa có lệnh nạp' })).toBeVisible();
+  await expect(page.locator('.purchases-balance-values strong')).toHaveText(['0', '0', '0']);
+  await expect(page.getByRole('list', { name: 'Các lệnh nạp credit' })).toHaveCount(0);
+
+  await page.goto('http://localhost:4300/app/purchases?view=credits');
+  await expect(page.getByRole('heading', { name: 'Chưa có biến động credit' })).toBeVisible();
+  await expect(page.getByRole('list', { name: 'Các biến động credit' })).toHaveCount(0);
+
+  await page.goto('http://localhost:4300/app/purchases?view=unlocks');
+  await expect(page.getByRole('heading', { name: 'Bạn chưa mở chương nào' })).toBeVisible();
+  await expect(page.getByRole('list', { name: 'Các chương đã mở' })).toHaveCount(0);
+  await expect(page.getByText('Live Paid Chapter')).toHaveCount(0);
+  await expect(page.getByText('Live Public Commerce Story')).toHaveCount(0);
+
+  chapterContentRequests.length = 0;
+  await page.goto(`http://localhost:4300/app/reader/${workId}/${chapterId}`);
+  await expect(page.getByRole('heading', { name: 'Live Paid Chapter' })).toBeVisible();
+  await expect(page.getByText(/Bạn còn 0 paid credit, chưa đủ 10 credit/)).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Xem lại điều kiện' })).toHaveCount(0);
+  await expect(page.getByRole('link', { name: 'Nạp credit MoMo TEST' })).toBeVisible();
+  expect(chapterContentRequests).toEqual([]);
 });
