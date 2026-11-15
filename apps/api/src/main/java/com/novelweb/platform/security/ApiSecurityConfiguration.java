@@ -99,6 +99,13 @@ public class ApiSecurityConfiguration {
                 authorize.requestMatchers(HttpMethod.GET, "/api/v1/me/cultivation").permitAll();
                 authorize.requestMatchers(HttpMethod.GET, "/api/v1/me/credits/balance").permitAll();
                 authorize
+                    .requestMatchers(
+                        HttpMethod.GET,
+                        "/api/v1/me/credits/transactions",
+                        "/api/v1/me/payment-orders",
+                        "/api/v1/me/purchases")
+                    .permitAll();
+                authorize
                     .requestMatchers(HttpMethod.GET, "/api/v1/me/cultivation/activity")
                     .permitAll();
                 authorize

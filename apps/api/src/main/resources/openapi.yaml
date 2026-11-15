@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 6.38.0
+  version: 6.39.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -3491,6 +3491,121 @@ paths:
           $ref: '#/components/responses/Problem'
         '503':
           $ref: '#/components/responses/Problem'
+  /api/v1/me/payment-orders:
+    get:
+      operationId: listCurrentUserPaymentOrders
+      tags: [Commerce]
+      x-implementation-status: implemented-postgres-profile
+      summary: List the current user's payment attempts
+      description: >-
+        Returns actor-owned payment-order snapshots newest first, including CREATED, pending, unknown
+        and terminal states. Current Terms and Privacy acceptance is required. Optional `state` filters
+        by the saved order state and is bound into the actor-scoped HMAC cursor; page size is 1–50.
+        Grant totals come from committed payment-order ledger entries, so a pending or failed attempt
+        is never represented as credited balance. Responses omit checkoutUrl, requestId and raw provider
+        data, are read-only and no-store. Credit ledger entries and chapter entitlements remain separate
+        histories. This route is not gated on live provider configuration and does not reconcile orders.
+      security:
+        - appSession: []
+      parameters:
+        - name: state
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [CREATED, INITIATING, PENDING, UNKNOWN, SUCCEEDED, FAILED, CANCELLED, EXPIRED]
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 256
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 25
+            minimum: 1
+            maximum: 50
+      responses:
+        '200':
+          description: Private actor-owned payment-order history page.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentOrderHistoryPage'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/me/purchases:
+    get:
+      operationId: listCurrentUserChapterPurchases
+      tags: [Commerce]
+      x-implementation-status: implemented-postgres-profile
+      summary: List chapter entitlements owned by the current user
+      description: >-
+        Returns the actor's granted chapter entitlements newest first, separate from payment orders
+        and credit ledger history. Current Terms and Privacy acceptance is required. The actor-bound
+        HMAC cursor uses keyset pagination with page size 1–50. Items include only opaque IDs, safe
+        work/chapter labels, snapshotted price version and credits spent, grant time and current Reader
+        availability. No source text, payment URL or provider data is returned. The endpoint is read-only
+        and no-store; current content unavailability does not erase historical purchase evidence.
+      security:
+        - appSession: []
+      parameters:
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 256
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 25
+            minimum: 1
+            maximum: 50
+      responses:
+        '200':
+          description: Private actor-owned chapter entitlement history page.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChapterPurchaseHistoryPage'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
   /api/v1/credit-packs:
     get:
       operationId: listMomoTestCreditPacks
@@ -6601,6 +6716,127 @@ components:
           description: >-
             Validated MoMo TEST hosted checkout URL available only in the create response when provider
             creation has been verified. Never returned by order status/history.
+    PaymentOrderHistoryPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/PaymentOrderHistoryItem'
+        nextCursor:
+          type: [string, 'null']
+          maxLength: 256
+          description: Actor- and state-bound signed keyset cursor.
+    PaymentOrderHistoryItem:
+      type: object
+      additionalProperties: false
+      required: [id, packId, packVersion, provider, environment, currency, amountVnd, paidCreditsPurchased, bonusCreditsPurchased, paidExpiresAt, bonusExpiresAt, paidCreditsGranted, bonusCreditsGranted, status, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Opaque actor-owned order identifier.
+        packId:
+          type: string
+        packVersion:
+          type: integer
+          minimum: 1
+        provider:
+          type: string
+          const: MOMO
+        environment:
+          type: string
+          const: TEST
+        currency:
+          type: string
+          const: VND
+        amountVnd:
+          type: integer
+          format: int64
+          minimum: 1000
+        paidCreditsPurchased:
+          type: integer
+          format: int64
+          minimum: 1
+        bonusCreditsPurchased:
+          type: integer
+          format: int64
+          minimum: 0
+        paidExpiresAt:
+          type: [string, 'null']
+          format: date-time
+        bonusExpiresAt:
+          type: [string, 'null']
+          format: date-time
+        paidCreditsGranted:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Positive committed payment-order grant ledger entries, or zero when no grant exists.
+        bonusCreditsGranted:
+          type: integer
+          format: int64
+          minimum: 0
+        status:
+          type: string
+          enum: [CREATED, INITIATING, PENDING, UNKNOWN, SUCCEEDED, FAILED, CANCELLED, EXPIRED]
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    ChapterPurchaseHistoryPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/ChapterPurchaseHistoryItem'
+        nextCursor:
+          type: [string, 'null']
+          maxLength: 256
+          description: Actor-bound signed keyset cursor.
+    ChapterPurchaseHistoryItem:
+      type: object
+      additionalProperties: false
+      required: [entitlementId, chapterId, workId, workTitle, chapterTitle, entitlementStatus, priceVersion, creditsSpent, grantedAt, currentReadAccess]
+      properties:
+        entitlementId:
+          type: string
+          format: uuid
+        chapterId:
+          type: string
+          format: uuid
+        workId:
+          type: string
+          format: uuid
+        workTitle:
+          type: string
+        chapterTitle:
+          type: string
+        entitlementStatus:
+          type: string
+          const: GRANTED
+        priceVersion:
+          type: integer
+          minimum: 1
+        creditsSpent:
+          type: integer
+          format: int64
+          minimum: 1
+        grantedAt:
+          type: string
+          format: date-time
+        currentReadAccess:
+          type: string
+          enum: [READABLE, UNAVAILABLE]
     PaymentOrder:
       type: object
       additionalProperties: false

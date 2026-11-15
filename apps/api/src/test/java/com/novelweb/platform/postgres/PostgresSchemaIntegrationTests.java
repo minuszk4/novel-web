@@ -13937,6 +13937,249 @@ class PostgresSchemaIntegrationTests {
   }
 
   @Test
+  void paymentOrderHistorySeparatesAttemptsFromGrantedCreditsAndBindsFilterAndActorCursors()
+      throws Exception {
+    UUID userId = createSessionTestUser("Payment History Owner");
+    UUID otherUserId = createSessionTestUser("Payment History Other Owner");
+    try {
+      addCurrentPolicyAcceptances(userId);
+      addCurrentPolicyAcceptances(otherUserId);
+      CreditTopUpOrderService.TopUpOrder pendingFirst = createPendingMomoTestTopUp(userId);
+      CreditTopUpOrderService.TopUpOrder pendingSecond = createPendingMomoTestTopUp(userId);
+      CreditTopUpOrderService.TopUpOrder succeeded = createPendingMomoTestTopUp(userId);
+      SignedNotification successNotification =
+          MomoTestIpnTestSupport.sign(
+              succeeded.id().toString(),
+              succeeded.requestId().toString(),
+              1_000,
+              0,
+              8_765_433_201L);
+      assertEquals(
+          MomoTestIpnService.Result.SUCCEEDED,
+          momoTestIpnService.process(
+              successNotification.notification(), successNotification.signature()));
+      CreditTopUpOrderService.TopUpOrder created =
+          creditTopUpOrderService
+              .createOrReplay(
+                  userId,
+                  "credit-history-created-order-01",
+                  creditPackCatalog,
+                  "momo-test-credits-100")
+              .order();
+
+      SessionService.IssuedSession ownerSession = sessionService.create(userId).orElseThrow();
+      SessionService.IssuedSession otherSession = sessionService.create(otherUserId).orElseThrow();
+      jakarta.servlet.http.Cookie ownerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", ownerSession.cookieValue());
+      jakarta.servlet.http.Cookie otherCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", otherSession.cookieValue());
+
+      MvcResult ledgerHistory =
+          mockMvc.perform(get("/api/v1/me/credits/transactions").cookie(ownerCookie)).andReturn();
+      assertEquals(200, ledgerHistory.getResponse().getStatus());
+      assertTrue(ledgerHistory.getResponse().getHeader("Cache-Control").contains("no-store"));
+
+      Set<UUID> observed = new HashSet<>();
+      String cursor = null;
+      for (int pageIndex = 0; pageIndex < 4; pageIndex++) {
+        var request = get("/api/v1/me/payment-orders").cookie(ownerCookie).param("limit", "1");
+        if (cursor != null) request.param("cursor", cursor);
+        MvcResult page = mockMvc.perform(request).andReturn();
+        assertEquals(200, page.getResponse().getStatus());
+        assertTrue(page.getResponse().getHeader("Cache-Control").contains("no-store"));
+        JsonNode body = objectMapper.readTree(page.getResponse().getContentAsString());
+        JsonNode order = body.path("items").get(0);
+        assertNotNull(order);
+        observed.add(UUID.fromString(order.path("id").asText()));
+        assertFalse(page.getResponse().getContentAsString().contains("checkoutUrl"));
+        assertFalse(page.getResponse().getContentAsString().contains("requestId"));
+        assertFalse(page.getResponse().getContentAsString().contains(userId.toString()));
+        cursor = body.path("nextCursor").isNull() ? null : body.path("nextCursor").asText();
+        if (pageIndex < 3) assertNotNull(cursor);
+        else assertNull(cursor);
+      }
+      assertEquals(
+          Set.of(pendingFirst.id(), pendingSecond.id(), succeeded.id(), created.id()), observed);
+
+      MvcResult pendingPage =
+          mockMvc
+              .perform(
+                  get("/api/v1/me/payment-orders")
+                      .cookie(ownerCookie)
+                      .param("state", "PENDING")
+                      .param("limit", "1"))
+              .andReturn();
+      JsonNode pendingBody = objectMapper.readTree(pendingPage.getResponse().getContentAsString());
+      assertEquals(200, pendingPage.getResponse().getStatus());
+      assertEquals("PENDING", pendingBody.path("items").get(0).path("status").asText());
+      assertEquals(0, pendingBody.path("items").get(0).path("paidCreditsGranted").asInt());
+      String pendingCursor = pendingBody.path("nextCursor").asText();
+      MvcResult changedFilter =
+          mockMvc
+              .perform(
+                  get("/api/v1/me/payment-orders")
+                      .cookie(ownerCookie)
+                      .param("state", "SUCCEEDED")
+                      .param("cursor", pendingCursor))
+              .andReturn();
+      assertEquals(400, changedFilter.getResponse().getStatus());
+      assertTrue(changedFilter.getResponse().getContentAsString().contains("INVALID_CURSOR"));
+
+      MvcResult succeededPage =
+          mockMvc
+              .perform(
+                  get("/api/v1/me/payment-orders").cookie(ownerCookie).param("state", "SUCCEEDED"))
+              .andReturn();
+      JsonNode succeededBody =
+          objectMapper.readTree(succeededPage.getResponse().getContentAsString());
+      assertEquals(200, succeededPage.getResponse().getStatus());
+      assertEquals(
+          succeeded.id().toString(), succeededBody.path("items").get(0).path("id").asText());
+      assertEquals(100, succeededBody.path("items").get(0).path("paidCreditsGranted").asInt());
+
+      MvcResult foreignPage =
+          mockMvc.perform(get("/api/v1/me/payment-orders").cookie(otherCookie)).andReturn();
+      assertEquals(200, foreignPage.getResponse().getStatus());
+      assertEquals(
+          0,
+          objectMapper
+              .readTree(foreignPage.getResponse().getContentAsString())
+              .path("items")
+              .size());
+      MvcResult foreignCursor =
+          mockMvc
+              .perform(
+                  get("/api/v1/me/payment-orders")
+                      .cookie(otherCookie)
+                      .param("cursor", pendingCursor))
+              .andReturn();
+      assertEquals(400, foreignCursor.getResponse().getStatus());
+    } finally {
+      deleteSessionTestUser(userId);
+      deleteSessionTestUser(otherUserId);
+    }
+  }
+
+  @Test
+  void purchaseHistoryReturnsOnlyActorEntitlementsAndCurrentReadAccess() throws Exception {
+    UUID authorId = createSessionTestUser("Purchase History Author");
+    UUID buyerId = createSessionTestUser("Purchase History Buyer");
+    UUID otherBuyerId = createSessionTestUser("Purchase History Other Buyer");
+    try {
+      addCurrentPolicyAcceptances(buyerId);
+      addCurrentPolicyAcceptances(otherBuyerId);
+      LibraryRepository.LibraryRecord library =
+          libraryService.createLibrary(authorId, "Purchase History Shelf");
+      LibraryRepository.WorkRecord work =
+          libraryService.createPrivateImportedWork(
+              authorId,
+              library.id(),
+              "Purchase History Story",
+              "Synthetic Author",
+              "vi",
+              sha256("purchase-history-fixture"));
+      LibraryRepository.VolumeRecord volume =
+          libraryService.createVolume(authorId, work.id(), 1, "Volume 1");
+      LibraryRepository.ChapterRecord firstChapter =
+          libraryService.createChapter(authorId, work.id(), volume.id(), 1, "Chapter 1", "vi");
+      LibraryRepository.ChapterRecord secondChapter =
+          libraryService.createChapter(authorId, work.id(), volume.id(), 2, "Chapter 2", "vi");
+      libraryService.appendChapterRevision(
+          authorId,
+          firstChapter.id(),
+          "plain_text",
+          "Private test body one.",
+          List.of(new LibraryService.NewSegment(1, "paragraph", "Private test body one.", "ph-1")));
+      libraryService.appendChapterRevision(
+          authorId,
+          secondChapter.id(),
+          "plain_text",
+          "Private test body two.",
+          List.of(new LibraryService.NewSegment(1, "paragraph", "Private test body two.", "ph-2")));
+      setWorkVisibility(work.id(), "public");
+      inCreditLedgerTransaction(
+          connection ->
+              creditLedgerService.grantPaidTopUp(connection, buyerId, UUID.randomUUID(), 20));
+      assertEquals(
+          ChapterUnlockService.Outcome.CREATED,
+          chapterUnlockService
+              .unlock(buyerId, firstChapter.id(), 1, "purchase-history-unlock-001")
+              .outcome());
+      assertEquals(
+          ChapterUnlockService.Outcome.CREATED,
+          chapterUnlockService
+              .unlock(buyerId, secondChapter.id(), 1, "purchase-history-unlock-002")
+              .outcome());
+
+      SessionService.IssuedSession buyerSession = sessionService.create(buyerId).orElseThrow();
+      SessionService.IssuedSession otherSession = sessionService.create(otherBuyerId).orElseThrow();
+      jakarta.servlet.http.Cookie buyerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", buyerSession.cookieValue());
+      jakarta.servlet.http.Cookie otherCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", otherSession.cookieValue());
+
+      MvcResult firstPage =
+          mockMvc
+              .perform(get("/api/v1/me/purchases").cookie(buyerCookie).param("limit", "1"))
+              .andReturn();
+      assertEquals(200, firstPage.getResponse().getStatus());
+      assertTrue(firstPage.getResponse().getHeader("Cache-Control").contains("no-store"));
+      JsonNode firstBody = objectMapper.readTree(firstPage.getResponse().getContentAsString());
+      assertEquals(1, firstBody.path("items").size());
+      assertEquals("READABLE", firstBody.path("items").get(0).path("currentReadAccess").asText());
+      assertEquals(10, firstBody.path("items").get(0).path("creditsSpent").asInt());
+      assertFalse(firstPage.getResponse().getContentAsString().contains("Private test body"));
+      String cursor = firstBody.path("nextCursor").asText();
+      assertFalse(cursor.isBlank());
+
+      MvcResult secondPage =
+          mockMvc
+              .perform(
+                  get("/api/v1/me/purchases")
+                      .cookie(buyerCookie)
+                      .param("limit", "1")
+                      .param("cursor", cursor))
+              .andReturn();
+      JsonNode secondBody = objectMapper.readTree(secondPage.getResponse().getContentAsString());
+      assertEquals(200, secondPage.getResponse().getStatus());
+      assertEquals(1, secondBody.path("items").size());
+      assertNotEquals(
+          firstBody.path("items").get(0).path("entitlementId").asText(),
+          secondBody.path("items").get(0).path("entitlementId").asText());
+      assertTrue(secondBody.path("nextCursor").isNull());
+
+      MvcResult foreignCursor =
+          mockMvc
+              .perform(get("/api/v1/me/purchases").cookie(otherCookie).param("cursor", cursor))
+              .andReturn();
+      assertEquals(400, foreignCursor.getResponse().getStatus());
+      MvcResult emptyOtherHistory =
+          mockMvc.perform(get("/api/v1/me/purchases").cookie(otherCookie)).andReturn();
+      assertEquals(200, emptyOtherHistory.getResponse().getStatus());
+      assertEquals(
+          0,
+          objectMapper
+              .readTree(emptyOtherHistory.getResponse().getContentAsString())
+              .path("items")
+              .size());
+
+      setWorkVisibility(work.id(), "private");
+      MvcResult unavailableContent =
+          mockMvc.perform(get("/api/v1/me/purchases").cookie(buyerCookie)).andReturn();
+      JsonNode unavailableBody =
+          objectMapper.readTree(unavailableContent.getResponse().getContentAsString());
+      assertEquals(200, unavailableContent.getResponse().getStatus());
+      assertTrue(unavailableBody.path("items").toString().contains("UNAVAILABLE"));
+      assertEquals(2, contentEntitlementCount(buyerId));
+    } finally {
+      deleteSessionTestUser(buyerId);
+      deleteSessionTestUser(otherBuyerId);
+      deleteLibraryTestData(authorId);
+      deleteSessionTestUser(authorId);
+    }
+  }
+
+  @Test
   void creditHistoryUsesActorBoundKeysetPagesAndNeverIncludesForeignEntries() throws Exception {
     UUID userId = createSessionTestUser("Credit History Owner");
     UUID otherUserId = createSessionTestUser("Credit History Other Owner");
