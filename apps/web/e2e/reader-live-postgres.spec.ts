@@ -121,4 +121,53 @@ test('account Reader reads source and persists a bookmark through the real API a
       exact: true,
     }),
   ).toBeVisible();
+
+  const otherSessionToken = process.env['MOMO_COMMERCE_LIVE_TEST_OTHER_SESSION_TOKEN'];
+  if (otherSessionToken) {
+    expect(otherSessionToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    await page.context().clearCookies();
+    await page.context().addCookies([
+      {
+        name: '__Host-novel_session',
+        value: otherSessionToken,
+        domain: 'localhost',
+        path: '/',
+        httpOnly: true,
+        secure: true,
+        sameSite: 'Lax',
+      },
+    ]);
+
+    const foreignBookmarks = await page.request.get(`${baseUrl}${bookmarkPath}`);
+    expect(foreignBookmarks.status()).toBe(404);
+    expect(foreignBookmarks.headers()['cache-control']).toContain('no-store');
+    expect(foreignBookmarks.headers().pragma).toBe('no-cache');
+    const foreignBookmarkBody = await foreignBookmarks.text();
+    expect(foreignBookmarkBody).toContain('NOT_FOUND');
+    expect(foreignBookmarkBody).not.toContain(bookmark.id);
+    expect(foreignBookmarkBody).not.toContain('Live Reader Chapter');
+    expect(foreignBookmarkBody).not.toContain(sourceText);
+
+    await page.context().clearCookies();
+    await page.context().addCookies([
+      {
+        name: '__Host-novel_session',
+        value: sessionToken!,
+        domain: 'localhost',
+        path: '/',
+        httpOnly: true,
+        secure: true,
+        sameSite: 'Lax',
+      },
+    ]);
+    const unchangedOwnerBookmarks = await page.request.get(`${baseUrl}${bookmarkPath}`);
+    expect(unchangedOwnerBookmarks.status()).toBe(200);
+    expect(unchangedOwnerBookmarks.headers()['cache-control']).toContain('no-store');
+    const unchangedOwnerBookmarkBody = (await unchangedOwnerBookmarks.json()) as {
+      items: Array<{ id: string; workId: string }>;
+    };
+    expect(unchangedOwnerBookmarkBody.items).toContainEqual(
+      expect.objectContaining({ id: bookmark.id, workId }),
+    );
+  }
 });
