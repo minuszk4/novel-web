@@ -95,5 +95,66 @@ test('account library renders data from the real API and PostgreSQL session', as
     ]),
   );
 
+  const otherSessionToken = process.env['MOMO_COMMERCE_LIVE_TEST_OTHER_SESSION_TOKEN'];
+  if (otherSessionToken) {
+    expect(otherSessionToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    const ownerCsrfResponse = await page.request.get(`${baseUrl}/api/v1/auth/csrf`);
+    expect(ownerCsrfResponse.status()).toBe(200);
+    const ownerCsrf = (await ownerCsrfResponse.json()) as { token: string };
+    const createCollection = await page.request.post(`${baseUrl}/api/v1/me/library/collections`, {
+      headers: { 'X-CSRF-Token': ownerCsrf.token },
+      data: { name: 'Private E2E Owner Collection' },
+    });
+    expect(createCollection.status()).toBe(201);
+    expect(createCollection.headers()['cache-control']).toContain('no-store');
+    const ownerCollection = (await createCollection.json()) as { id: string; name: string };
+    expect(ownerCollection.name).toBe('Private E2E Owner Collection');
+
+    await page.context().clearCookies();
+    await page.context().addCookies([
+      {
+        name: '__Host-novel_session',
+        value: otherSessionToken,
+        domain: 'localhost',
+        path: '/',
+        httpOnly: true,
+        secure: true,
+        sameSite: 'Lax',
+      },
+    ]);
+    const outsiderCsrfResponse = await page.request.get(`${baseUrl}/api/v1/auth/csrf`);
+    expect(outsiderCsrfResponse.status()).toBe(200);
+    const outsiderCsrf = (await outsiderCsrfResponse.json()) as { token: string };
+    const foreignDelete = await page.request.delete(
+      `${baseUrl}/api/v1/me/library/collections/${ownerCollection.id}`,
+      { headers: { 'X-CSRF-Token': outsiderCsrf.token } },
+    );
+    expect(foreignDelete.status()).toBe(404);
+    expect(foreignDelete.headers()['cache-control']).toContain('no-store');
+    expect(foreignDelete.headers().pragma).toBe('no-cache');
+    const foreignDeleteBody = await foreignDelete.text();
+    expect(foreignDeleteBody).toContain('NOT_FOUND');
+    expect(foreignDeleteBody).not.toContain(ownerCollection.name);
+
+    await page.context().clearCookies();
+    await page.context().addCookies([
+      {
+        name: '__Host-novel_session',
+        value: sessionToken!,
+        domain: 'localhost',
+        path: '/',
+        httpOnly: true,
+        secure: true,
+        sameSite: 'Lax',
+      },
+    ]);
+    const ownerCollections = await page.request.get(`${baseUrl}/api/v1/me/library/collections`);
+    expect(ownerCollections.status()).toBe(200);
+    expect(ownerCollections.headers()['cache-control']).toContain('no-store');
+    expect(await ownerCollections.json()).toEqual(
+      expect.arrayContaining([expect.objectContaining(ownerCollection)]),
+    );
+  }
+
   await page.screenshot({ path: screenshotPath!, fullPage: true });
 });
