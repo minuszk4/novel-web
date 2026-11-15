@@ -110,6 +110,74 @@ test('glossary import saves one real PostgreSQL draft without publishing it', as
   await expect(page.getByRole('heading', { name: 'Đã lưu bản nháp 3' })).toBeFocused();
   await expect(page.getByText('Bản đang áp dụng vẫn là 1.')).toBeVisible();
 
+  const ownerActiveExport = await page.request.get(
+    `${baseUrl}/api/v1/glossaries/${glossaryId}/export?format=json&revision=active`,
+  );
+  expect(ownerActiveExport.status()).toBe(200);
+  expect(ownerActiveExport.headers()['cache-control']).toContain('no-store');
+  expect(ownerActiveExport.headers()['etag']).toBe('"v5"');
+  expect(ownerActiveExport.headers()['content-disposition']).toContain('-r1.json');
+  const ownerActiveExportBody = JSON.parse(await ownerActiveExport.text()) as {
+    version: number;
+    terms: Array<{ sourceTerm: string; targetTerm: string | null }>;
+  };
+  expect(ownerActiveExportBody.version).toBe(1);
+  expect(ownerActiveExportBody.terms).toContainEqual(
+    expect.objectContaining({ sourceTerm: '金丹', targetTerm: 'Kim Đan' }),
+  );
+
+  const ownerLatestExport = await page.request.get(
+    `${baseUrl}/api/v1/glossaries/${glossaryId}/export?format=json&revision=latest`,
+  );
+  expect(ownerLatestExport.status()).toBe(200);
+  expect(ownerLatestExport.headers()['cache-control']).toContain('no-store');
+  expect(ownerLatestExport.headers()['etag']).toBe('"v5"');
+  expect(ownerLatestExport.headers()['content-disposition']).toContain('-r3.json');
+  expect(await ownerLatestExport.text()).toContain('丹田');
+
+  const otherSessionToken = process.env['MOMO_COMMERCE_LIVE_TEST_OTHER_SESSION_TOKEN'];
+  if (otherSessionToken) {
+    expect(otherSessionToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    await page.context().clearCookies();
+    await page.context().addCookies([
+      {
+        name: '__Host-novel_session',
+        value: otherSessionToken,
+        domain: 'localhost',
+        path: '/',
+        httpOnly: true,
+        secure: true,
+        sameSite: 'Lax',
+      },
+    ]);
+
+    for (const revision of ['active', 'latest']) {
+      const foreignExport = await page.request.get(
+        `${baseUrl}/api/v1/glossaries/${glossaryId}/export?format=json&revision=${revision}`,
+      );
+      expect(foreignExport.status()).toBe(404);
+      expect(foreignExport.headers()['cache-control']).toContain('no-store');
+      const foreignExportBody = await foreignExport.text();
+      expect(foreignExportBody).toContain('NOT_FOUND');
+      expect(foreignExportBody).not.toContain('金丹');
+      expect(foreignExportBody).not.toContain('丹田');
+      expect(foreignExportBody).not.toContain('Kim Đan');
+    }
+
+    await page.context().clearCookies();
+    await page.context().addCookies([
+      {
+        name: '__Host-novel_session',
+        value: sessionToken!,
+        domain: 'localhost',
+        path: '/',
+        httpOnly: true,
+        secure: true,
+        sameSite: 'Lax',
+      },
+    ]);
+  }
+
   const persistedMetadata = await page.evaluate(async (id) => {
     const response = await fetch(`/api/v1/glossaries/${id}`, { cache: 'no-store' });
     return {
