@@ -2,6 +2,7 @@ package com.novelweb.payment.momo;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.novelweb.payment.credit.CreditPackCatalog;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import org.junit.jupiter.api.Test;
@@ -28,6 +29,7 @@ class MomoTestGatewayConfigurationTests {
               assertThat(context).doesNotHaveBean(MomoTestGatewaySettings.class);
               assertThat(context).doesNotHaveBean(MomoTestGatewayClient.class);
               assertThat(context).doesNotHaveBean(MomoTestHttpTransport.class);
+              assertThat(context).doesNotHaveBean(CreditPackCatalog.class);
             });
   }
 
@@ -57,6 +59,10 @@ class MomoTestGatewayConfigurationTests {
               assertThat(context).hasSingleBean(MomoTestGatewaySettings.class);
               assertThat(context).hasSingleBean(MomoTestGatewayClient.class);
               assertThat(context).hasSingleBean(MomoTestHttpTransport.class);
+              assertThat(context).hasSingleBean(CreditPackCatalog.class);
+              assertThat(context.getBean(CreditPackCatalog.class).offers()).hasSize(1);
+              assertThat(context.getBean(CreditPackCatalog.class).offers().getFirst().amountVnd())
+                  .isEqualTo(1_000);
               assertThat(context.getBean(MomoTestGatewayProperties.class).toString())
                   .doesNotContain(ACCESS_KEY, SECRET_KEY);
             });

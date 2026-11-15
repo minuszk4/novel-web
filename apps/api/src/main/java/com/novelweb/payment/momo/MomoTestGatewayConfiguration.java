@@ -1,5 +1,6 @@
 package com.novelweb.payment.momo;
 
+import com.novelweb.payment.credit.CreditPackCatalog;
 import java.util.Map;
 import java.util.Objects;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -32,6 +33,11 @@ public class MomoTestGatewayConfiguration {
             valueOrEmpty(properties.ipnUrl()),
             "MOMO_TEST_REDIRECT_URL",
             valueOrEmpty(properties.redirectUrl())));
+  }
+
+  @Bean
+  CreditPackCatalog momoTestCreditPackCatalog() {
+    return CreditPackCatalog.momoTestFixture();
   }
 
   private static String valueOrEmpty(String value) {
