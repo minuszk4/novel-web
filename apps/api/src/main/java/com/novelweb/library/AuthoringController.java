@@ -110,6 +110,33 @@ public class AuthoringController {
         .body(new ManuscriptListResponse(items, nextCursor));
   }
 
+  @GetMapping("/{workId}")
+  public ResponseEntity<?> getManuscript(
+      Authentication authentication, @PathVariable UUID workId, HttpServletRequest request) {
+    Optional<UUID> actor = actorUserId(authentication);
+    if (actor.isEmpty())
+      return problem(
+          HttpStatus.UNAUTHORIZED, "UNAUTHENTICATED", "Sign in to view this manuscript.", request);
+    ResponseEntity<?> policyGate = policyGate(actor.orElseThrow(), request);
+    if (policyGate != null) return policyGate;
+
+    LibraryRepository.PrivateAuthoredWorkDetails details =
+        libraryService.getPrivateAuthoredWorkDetails(actor.orElseThrow(), workId);
+    return ResponseEntity.ok()
+        .cacheControl(CacheControl.noStore())
+        .header(HttpHeaders.PRAGMA, "no-cache")
+        .body(
+            new PrivateManuscriptDetailsResponse(
+                details.id(),
+                details.title(),
+                details.author(),
+                details.language(),
+                "private",
+                "draft",
+                details.chapterCount(),
+                details.createdAt()));
+  }
+
   @PostMapping
   public ResponseEntity<?> createManuscript(
       Authentication authentication,
@@ -714,6 +741,16 @@ public class AuthoringController {
       items = List.copyOf(items);
     }
   }
+
+  public record PrivateManuscriptDetailsResponse(
+      UUID id,
+      String title,
+      String author,
+      String language,
+      String visibility,
+      String publicationState,
+      int chapterCount,
+      Instant createdAt) {}
 
   public record CreatedDraftChapterResponse(
       UUID id,

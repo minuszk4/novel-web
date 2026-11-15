@@ -29,6 +29,8 @@ export interface PrivateManuscriptListItem {
   createdAt: string;
 }
 
+export type PrivateManuscriptDetails = PrivateManuscriptListItem;
+
 export interface PrivateManuscriptListPage {
   items: PrivateManuscriptListItem[];
   nextCursor: string | null;
@@ -198,6 +200,31 @@ export class AuthoringApiService {
         throw invalidManuscriptListResponse();
       }
       return parseManuscriptListPage(response.body, limit, cursor ?? null);
+    } catch (error) {
+      throw toAuthoringApiError(error);
+    }
+  }
+
+  async getPrivateManuscript(workId: string): Promise<PrivateManuscriptDetails> {
+    if (!isUuid(workId)) throw new AuthoringApiError(400, 'INVALID_AUTHORING_QUERY');
+
+    try {
+      const response = await firstValueFrom(
+        this.http
+          .get<unknown>(`${manuscriptsUrl}/${workId}`, { observe: 'response' })
+          .pipe(timeout(requestTimeoutMs)),
+      );
+      if (response.status !== 200 || response.headers.get('Cache-Control') !== 'no-store') {
+        throw invalidManuscriptDetailResponse();
+      }
+      let details: PrivateManuscriptListItem;
+      try {
+        details = parseManuscriptListItem(response.body);
+      } catch {
+        throw invalidManuscriptDetailResponse();
+      }
+      if (details.id !== workId) throw invalidManuscriptDetailResponse();
+      return details;
     } catch (error) {
       throw toAuthoringApiError(error);
     }
@@ -722,6 +749,10 @@ function invalidOutlineResponse(): AuthoringApiError {
 
 function invalidManuscriptListResponse(): AuthoringApiError {
   return new AuthoringApiError(502, 'INVALID_AUTHORING_MANUSCRIPT_LIST_RESPONSE');
+}
+
+function invalidManuscriptDetailResponse(): AuthoringApiError {
+  return new AuthoringApiError(502, 'INVALID_AUTHORING_MANUSCRIPT_RESPONSE');
 }
 
 function invalidChapterResponse(): AuthoringApiError {

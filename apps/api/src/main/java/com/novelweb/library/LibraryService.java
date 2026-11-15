@@ -143,6 +143,13 @@ public class LibraryService {
     return repository.listPrivateAuthoredWorks(ownerUserId, beforeCreatedAt, beforeWorkId, limit);
   }
 
+  public LibraryRepository.PrivateAuthoredWorkDetails getPrivateAuthoredWorkDetails(
+      UUID ownerUserId, UUID workId) {
+    Objects.requireNonNull(ownerUserId, "owner user id is required");
+    Objects.requireNonNull(workId, "work id is required");
+    return repository.getPrivateAuthoredWorkDetails(ownerUserId, workId);
+  }
+
   private static byte[] authoredWorkRequestHash(String title, String author, String language) {
     try {
       MessageDigest digest = MessageDigest.getInstance("SHA-256");

@@ -844,6 +844,63 @@ public class LibraryRepository {
     }
   }
 
+  public PrivateAuthoredWorkDetails getPrivateAuthoredWorkDetails(UUID ownerUserId, UUID workId) {
+    Objects.requireNonNull(ownerUserId, "owner user id is required");
+    Objects.requireNonNull(workId, "work id is required");
+    try (Connection connection = dataSource.getConnection()) {
+      connection.setAutoCommit(false);
+      try {
+        try (PreparedStatement actor =
+            connection.prepareStatement(
+                "SELECT id FROM users WHERE id = ? AND status = 'active' FOR SHARE")) {
+          actor.setObject(1, ownerUserId);
+          try (ResultSet row = actor.executeQuery()) {
+            if (!row.next()) throw new WorkNotFoundException();
+          }
+        }
+
+        String query =
+            """
+                SELECT w.id, w.title, w.author, w.source_language, w.created_at,
+                       count(c.id) FILTER (WHERE c.deleted_at IS NULL) AS chapter_count
+                FROM works w
+                JOIN libraries l ON l.id = w.library_id
+                LEFT JOIN chapters c ON c.work_id = w.id
+                WHERE w.id = ? AND w.owner_user_id = ? AND w.source_kind = 'authored'
+                  AND w.visibility = 'private' AND w.status = 'active'
+                  AND w.deleted_at IS NULL AND l.owner_user_id = w.owner_user_id
+                  AND l.workspace_id IS NULL AND l.visibility = 'private' AND l.deleted_at IS NULL
+                GROUP BY w.id
+                """;
+        PrivateAuthoredWorkDetails details;
+        try (PreparedStatement select = connection.prepareStatement(query)) {
+          select.setObject(1, workId);
+          select.setObject(2, ownerUserId);
+          try (ResultSet row = select.executeQuery()) {
+            if (!row.next()) throw new WorkNotFoundException();
+            details =
+                new PrivateAuthoredWorkDetails(
+                    row.getObject("id", UUID.class),
+                    row.getString("title"),
+                    row.getString("author"),
+                    row.getString("source_language"),
+                    row.getInt("chapter_count"),
+                    instant(row, "created_at"));
+          }
+        }
+        connection.commit();
+        return details;
+      } catch (SQLException | RuntimeException exception) {
+        connection.rollback();
+        throw exception;
+      }
+    } catch (WorkNotFoundException exception) {
+      throw exception;
+    } catch (SQLException exception) {
+      throw new IllegalStateException("Unable to load private authored manuscript", exception);
+    }
+  }
+
   public Optional<WorkRecord> findWork(UUID ownerUserId, UUID workId) {
     Objects.requireNonNull(ownerUserId, "owner user id is required");
     Objects.requireNonNull(workId, "work id is required");
@@ -1653,6 +1710,9 @@ public class LibraryRepository {
       return sourceHash == null ? null : sourceHash.clone();
     }
   }
+
+  public record PrivateAuthoredWorkDetails(
+      UUID id, String title, String author, String language, int chapterCount, Instant createdAt) {}
 
   public record VolumeRecord(UUID id, UUID workId, int ordinal, String title, Instant createdAt) {}
 

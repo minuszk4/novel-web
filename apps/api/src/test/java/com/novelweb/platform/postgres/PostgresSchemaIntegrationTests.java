@@ -7178,6 +7178,70 @@ class PostgresSchemaIntegrationTests {
   }
 
   @Test
+  void authoringManuscriptDetailIsOwnerScopedPrivateAndMetadataOnly() throws Exception {
+    UUID ownerId = createSessionTestUser("Authoring Detail Owner");
+    UUID outsiderId = createSessionTestUser("Authoring Detail Outsider");
+    UUID ownerWorkId = null;
+    UUID outsiderWorkId = null;
+    try {
+      addCurrentPolicyAcceptances(ownerId);
+      addCurrentPolicyAcceptances(outsiderId);
+      LibraryRepository.WorkRecord ownerWork =
+          libraryService.createPrivateAuthoredWork(
+              ownerId, "Private Detail Draft", "Pen Name", "vi", "detail-owner-key-0001");
+      ownerWorkId = ownerWork.id();
+      libraryService.createPrivateAuthoredChapter(
+          ownerId, ownerWorkId, "First chapter", "detail-chapter-key-0001");
+      outsiderWorkId =
+          libraryService
+              .createPrivateAuthoredWork(
+                  outsiderId, "Outsider Draft", "Other Pen Name", "en", "detail-outsider-key-0001")
+              .id();
+
+      SessionService.IssuedSession ownerSession = sessionService.create(ownerId).orElseThrow();
+      jakarta.servlet.http.Cookie ownerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", ownerSession.cookieValue());
+      SessionService.IssuedSession outsiderSession =
+          sessionService.create(outsiderId).orElseThrow();
+      jakarta.servlet.http.Cookie outsiderCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", outsiderSession.cookieValue());
+
+      MvcResult ownerRead =
+          mockMvc
+              .perform(
+                  get("/api/v1/authoring/manuscripts/{workId}", ownerWorkId).cookie(ownerCookie))
+              .andReturn();
+      assertEquals(200, ownerRead.getResponse().getStatus());
+      assertTrue(ownerRead.getResponse().getHeader("Cache-Control").contains("no-store"));
+      JsonNode body = objectMapper.readTree(ownerRead.getResponse().getContentAsString());
+      assertEquals(ownerWorkId.toString(), body.path("id").asText());
+      assertEquals("Private Detail Draft", body.path("title").asText());
+      assertEquals("Pen Name", body.path("author").asText());
+      assertEquals("vi", body.path("language").asText());
+      assertEquals("private", body.path("visibility").asText());
+      assertEquals("draft", body.path("publicationState").asText());
+      assertEquals(1, body.path("chapterCount").asInt());
+      assertFalse(body.has("ownerUserId"));
+      assertFalse(body.has("sourceHash"));
+      assertFalse(body.has("normalizedContent"));
+
+      MvcResult outsiderRead =
+          mockMvc
+              .perform(
+                  get("/api/v1/authoring/manuscripts/{workId}", ownerWorkId).cookie(outsiderCookie))
+              .andReturn();
+      assertEquals(404, outsiderRead.getResponse().getStatus());
+      assertTrue(outsiderRead.getResponse().getContentAsString().contains("MANUSCRIPT_NOT_FOUND"));
+
+    } finally {
+      deleteLibraryUserData(ownerId, ownerWorkId);
+      deleteLibraryUserData(outsiderId, outsiderWorkId);
+      deleteSessionTestUser(ownerId);
+      deleteSessionTestUser(outsiderId);
+    }
+  }
+
+  @Test
   void authoringChapterCreateIsPrivateCsrfProtectedIdempotentAndBlank() throws Exception {
     UUID ownerId = createSessionTestUser("Authoring Chapter Owner");
     UUID otherOwnerId = createSessionTestUser("Other Authoring Chapter Owner");

@@ -1,7 +1,13 @@
 <section class="page-wrap authoring-outline-page">
   <header class="page-heading authoring-outline-heading">
     <p class="eyebrow">AUTHOR STUDIO · BẢN THỬ</p>
-    <h1 #pageHeading tabindex="-1">Dàn ý bản thảo</h1>
+    <h1 #pageHeading tabindex="-1">{{ manuscript()?.title ?? 'Dàn ý bản thảo' }}</h1>
+    @if (manuscript(); as details) {
+      <p class="authoring-outline-manuscript-meta">
+        {{ details.author || 'Chưa có bút danh' }} · Ngôn ngữ {{ details.language }} ·
+        {{ details.chapterCount }} chương
+      </p>
+    }
     <p>Thêm tên chương và sắp xếp theo thứ tự. Chương mới hiện chưa có nội dung.</p>
   </header>
 

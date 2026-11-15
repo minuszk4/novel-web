@@ -14,6 +14,7 @@ import {
   AuthoringApiError,
   AuthoringApiService,
   PrivateChapterOutlineItem,
+  PrivateManuscriptDetails,
   newAuthoringIdempotencyKey,
 } from '../core/authoring-api.service';
 import { PolicyOnboardingService } from '../core/policy-onboarding.service';
@@ -34,6 +35,7 @@ interface ChapterCreateAttempt {
 export class AuthoringOutlinePageComponent {
   protected readonly policy = inject(PolicyOnboardingService);
   protected readonly pageState = signal<OutlinePageState>('loading');
+  protected readonly manuscript = signal<PrivateManuscriptDetails | null>(null);
   protected readonly chapters = signal<PrivateChapterOutlineItem[]>([]);
   protected readonly nextCursor = signal<string | null>(null);
   protected readonly pageError = signal<AuthoringApiError | null>(null);
@@ -75,6 +77,7 @@ export class AuthoringOutlinePageComponent {
     this.route.paramMap.pipe(takeUntilDestroyed(this.destroyRef)).subscribe((params) => {
       this.requestedWorkId = params.get('workId');
       this.requestedWorkIdView.set(this.requestedWorkId);
+      this.manuscript.set(null);
       this.isAddFormOpen.set(false);
       this.chapterTitle.set('');
       this.isCreating.set(false);
@@ -220,6 +223,10 @@ export class AuthoringOutlinePageComponent {
       this.chapters.set(
         mergeChapterPages(this.chapters(), [{ ...chapter, contentAvailable: false }]),
       );
+      const manuscript = this.manuscript();
+      if (manuscript) {
+        this.manuscript.set({ ...manuscript, chapterCount: manuscript.chapterCount + 1 });
+      }
       this.createAnnouncement.set(
         `Đã thêm Chương ${chapter.ordinal}: ${chapter.title}. Chương hiện chưa có nội dung.`,
       );
@@ -266,6 +273,7 @@ export class AuthoringOutlinePageComponent {
   private async loadFirstPage(token: number): Promise<void> {
     this.pageError.set(null);
     this.moreError.set(null);
+    this.manuscript.set(null);
     this.chapters.set([]);
     this.nextCursor.set(null);
     this.createAnnouncement.set('');
@@ -284,8 +292,12 @@ export class AuthoringOutlinePageComponent {
 
     this.pageState.set('loading');
     try {
-      const page = await this.api.listPrivateChapters(workId, undefined, 25);
+      const [manuscript, page] = await Promise.all([
+        this.api.getPrivateManuscript(workId),
+        this.api.listPrivateChapters(workId, undefined, 25),
+      ]);
       if (token !== this.loadToken) return;
+      this.manuscript.set(manuscript);
       this.chapters.set(page.items);
       this.nextCursor.set(page.nextCursor);
       this.pageState.set('ready');

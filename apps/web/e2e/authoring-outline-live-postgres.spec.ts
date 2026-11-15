@@ -94,16 +94,44 @@ test('private chapter outline reads and creates metadata through the real API an
       response.request().method() === 'GET' &&
       new URL(response.url()).pathname === `/api/v1/authoring/manuscripts/${workId}/chapters`,
   );
+  const detailNavigation = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'GET' &&
+      new URL(response.url()).pathname === `/api/v1/authoring/manuscripts/${workId}`,
+  );
   await page.getByRole('link', { name: 'Mở dàn ý chương của Live E2E Novel Two' }).click();
-  await outlineNavigation;
+  await Promise.all([outlineNavigation, detailNavigation]);
 
+  const detailResponsePromise = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'GET' &&
+      new URL(response.url()).pathname === `/api/v1/authoring/manuscripts/${workId}`,
+  );
   const listResponsePromise = page.waitForResponse(
     (response) =>
       response.request().method() === 'GET' &&
       new URL(response.url()).pathname === `/api/v1/authoring/manuscripts/${workId}/chapters`,
   );
   await page.goto(`${baseUrl}/app/authoring/${workId}/chapters`);
-  const listResponse = await listResponsePromise;
+  const [detailResponse, listResponse] = await Promise.all([
+    detailResponsePromise,
+    listResponsePromise,
+  ]);
+  expect(detailResponse.status()).toBe(200);
+  expect(detailResponse.headers()['cache-control']).toContain('no-store');
+  const detailText = await detailResponse.text();
+  expect(JSON.parse(detailText)).toMatchObject({
+    id: workId,
+    title: 'Live E2E Novel Two',
+    author: 'E2E Author',
+    language: 'en',
+    visibility: 'private',
+    publicationState: 'draft',
+    chapterCount: 26,
+  });
+  expect(detailText).not.toMatch(
+    /"(?:ownerUserId|sourceHash|normalizedContent|sourceText|segments|content)"\s*:/i,
+  );
   expect(listResponse.status()).toBe(200);
   const listText = await listResponse.text();
   const firstPage = JSON.parse(listText) as {
@@ -116,7 +144,8 @@ test('private chapter outline reads and creates metadata through the real API an
   expect(firstPage.nextCursor).toMatch(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
   expect(listResponse.headers()['cache-control']).toContain('no-store');
   expect(listText).not.toMatch(/"(?:sourceText|normalizedContent|segments|content)"\s*:/i);
-  await expect(page.getByRole('heading', { name: 'Dàn ý bản thảo' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Live E2E Novel Two' })).toBeVisible();
+  await expect(page.getByText('E2E Author · Ngôn ngữ en · 26 chương')).toBeVisible();
   await expect(page.getByText('Live Translation Chapter', { exact: true })).toBeVisible();
   await expect(page.getByText('Live Outline Seed 25', { exact: true })).toBeVisible();
   await expect(page.getByText('Có nội dung đọc được', { exact: true })).toBeVisible();
@@ -203,6 +232,7 @@ test('private chapter outline reads and creates metadata through the real API an
   });
   expect(created.id).toMatch(/^[0-9a-f-]{36}$/i);
   await expect(page.getByRole('status').filter({ hasText: 'Đã thêm Chương 27' })).toBeVisible();
+  await expect(page.locator('.authoring-outline-manuscript-meta')).toContainText('27 chương');
   const createdRow = page.getByRole('listitem').filter({ hasText: newChapterTitle });
   await expect(createdRow.getByText(newChapterTitle, { exact: true })).toBeVisible();
   await expect(createdRow.getByText('Chưa có nội dung', { exact: true })).toBeVisible();

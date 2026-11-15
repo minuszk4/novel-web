@@ -1,4 +1,4 @@
-import { TestBed } from '@angular/core/testing';
+import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { ActivatedRoute, convertToParamMap, provideRouter } from '@angular/router';
 import { signal } from '@angular/core';
 import { of } from 'rxjs';
@@ -9,6 +9,7 @@ import {
   CreatedPrivateChapter,
   PrivateChapterOutlineItem,
   PrivateChapterOutlinePage,
+  PrivateManuscriptDetails,
 } from '../core/authoring-api.service';
 import { PolicyOnboardingService } from '../core/policy-onboarding.service';
 import { AuthoringOutlinePageComponent } from './authoring-outline-page.component';
@@ -54,8 +55,22 @@ function page(
   return { items, nextCursor };
 }
 
+function manuscript(): PrivateManuscriptDetails {
+  return {
+    id: workId,
+    title: 'Hành trình tu luyện',
+    author: 'Bút danh',
+    language: 'vi',
+    visibility: 'private',
+    publicationState: 'draft',
+    chapterCount: 0,
+    createdAt: timestamp,
+  };
+}
+
 describe('AuthoringOutlinePageComponent', () => {
   let api: {
+    getPrivateManuscript: ReturnType<typeof vi.fn>;
     listPrivateChapters: ReturnType<typeof vi.fn>;
     createPrivateChapter: ReturnType<typeof vi.fn>;
   };
@@ -63,6 +78,7 @@ describe('AuthoringOutlinePageComponent', () => {
 
   beforeEach(() => {
     api = {
+      getPrivateManuscript: vi.fn().mockResolvedValue(manuscript()),
       listPrivateChapters: vi.fn().mockResolvedValue(page()),
       createPrivateChapter: vi.fn().mockResolvedValue(createdChapter()),
     };
@@ -84,10 +100,13 @@ describe('AuthoringOutlinePageComponent', () => {
   it('loads and renders only chapter metadata and a private empty state', async () => {
     const fixture = TestBed.createComponent(AuthoringOutlinePageComponent);
     fixture.detectChanges();
-    await fixture.whenStable();
+    await settle(fixture);
     fixture.detectChanges();
 
     expect(api.listPrivateChapters).toHaveBeenCalledWith(workId, undefined, 25);
+    expect(api.getPrivateManuscript).toHaveBeenCalledWith(workId);
+    expect(fixture.nativeElement.querySelector('h1')?.textContent).toContain('Hành trình tu luyện');
+    expect(fixture.nativeElement.textContent).toContain('Bút danh · Ngôn ngữ vi · 0 chương');
     expect(fixture.nativeElement.textContent).toContain('Chỉ bạn có thể xem mục lục này');
     expect(fixture.nativeElement.textContent).toContain('Chưa có chương nào');
     expect(fixture.nativeElement.querySelector('input')).toBeNull();
@@ -100,7 +119,7 @@ describe('AuthoringOutlinePageComponent', () => {
     );
     const fixture = TestBed.createComponent(AuthoringOutlinePageComponent);
     fixture.detectChanges();
-    await fixture.whenStable();
+    await settle(fixture);
     fixture.detectChanges();
 
     expect(fixture.nativeElement.textContent).toContain('Mở đầu đã có nội dung');
@@ -118,7 +137,7 @@ describe('AuthoringOutlinePageComponent', () => {
     );
     const fixture = TestBed.createComponent(AuthoringOutlinePageComponent);
     fixture.detectChanges();
-    await fixture.whenStable();
+    await settle(fixture);
     fixture.detectChanges();
 
     const draftLink = fixture.nativeElement.querySelector(
@@ -134,7 +153,7 @@ describe('AuthoringOutlinePageComponent', () => {
   it('moves keyboard focus into the title field when the add form opens', async () => {
     const fixture = TestBed.createComponent(AuthoringOutlinePageComponent);
     fixture.detectChanges();
-    await fixture.whenStable();
+    await settle(fixture);
     fixture.componentInstance.openAddForm();
     fixture.detectChanges();
 
@@ -144,7 +163,7 @@ describe('AuthoringOutlinePageComponent', () => {
 
     fixture.componentInstance.closeAddForm();
     fixture.detectChanges();
-    await fixture.whenStable();
+    await settle(fixture);
     expect(document.activeElement).toBe(
       fixture.nativeElement.querySelector('.authoring-outline-list-heading button'),
     );
@@ -154,7 +173,7 @@ describe('AuthoringOutlinePageComponent', () => {
     policyStatus.set('demo');
     const fixture = TestBed.createComponent(AuthoringOutlinePageComponent);
     fixture.detectChanges();
-    await fixture.whenStable();
+    await settle(fixture);
     fixture.detectChanges();
 
     expect(fixture.nativeElement.textContent).toContain('Đăng nhập để mở dàn ý');
@@ -162,18 +181,19 @@ describe('AuthoringOutlinePageComponent', () => {
       `/sign-in?returnTo=%2Fapp%2Fauthoring%2F${workId}%2Fchapters`,
     );
     expect(api.listPrivateChapters).not.toHaveBeenCalled();
+    expect(api.getPrivateManuscript).not.toHaveBeenCalled();
     expect(api.createPrivateChapter).not.toHaveBeenCalled();
   });
 
   it('validates an empty title before posting a chapter', async () => {
     const fixture = TestBed.createComponent(AuthoringOutlinePageComponent);
     fixture.detectChanges();
-    await fixture.whenStable();
+    await settle(fixture);
     fixture.componentInstance.openAddForm();
     fixture.componentInstance.updateChapterTitle(inputEvent('   '));
     await fixture.componentInstance.addChapter(submitEvent());
     fixture.detectChanges();
-    await fixture.whenStable();
+    await settle(fixture);
 
     expect(api.createPrivateChapter).not.toHaveBeenCalled();
     expect(fixture.nativeElement.textContent).toContain('Tên chương cần có từ 1 đến 300 ký tự.');
@@ -185,7 +205,7 @@ describe('AuthoringOutlinePageComponent', () => {
   it('counts Unicode code points so 300 emoji fit the title limit', async () => {
     const fixture = TestBed.createComponent(AuthoringOutlinePageComponent);
     fixture.detectChanges();
-    await fixture.whenStable();
+    await settle(fixture);
     fixture.componentInstance.openAddForm();
     fixture.componentInstance.updateChapterTitle(inputEvent('😀'.repeat(301)));
     fixture.detectChanges();
@@ -200,9 +220,10 @@ describe('AuthoringOutlinePageComponent', () => {
 
   it('creates a private blank chapter and announces that no content was created', async () => {
     api.listPrivateChapters.mockResolvedValue(page([chapter()]));
+    api.getPrivateManuscript.mockResolvedValue({ ...manuscript(), chapterCount: 1 });
     const fixture = TestBed.createComponent(AuthoringOutlinePageComponent);
     fixture.detectChanges();
-    await fixture.whenStable();
+    await settle(fixture);
     fixture.componentInstance.openAddForm();
     fixture.componentInstance.updateChapterTitle(inputEvent(' Đêm đầu tiên ở Thanh Vân Tông '));
 
@@ -218,6 +239,7 @@ describe('AuthoringOutlinePageComponent', () => {
     expect(fixture.nativeElement.textContent).toContain('Đã thêm Chương 2');
     expect(fixture.nativeElement.textContent).toContain('Đêm đầu tiên ở Thanh Vân Tông');
     expect(fixture.nativeElement.textContent).toContain('Chưa có nội dung');
+    expect(fixture.nativeElement.textContent).toContain('2 chương');
     expect(fixture.nativeElement.querySelector('input')).toBeNull();
     expect(document.activeElement).toBe(
       fixture.nativeElement.querySelector('.authoring-outline-list-heading button'),
@@ -230,7 +252,7 @@ describe('AuthoringOutlinePageComponent', () => {
       .mockResolvedValueOnce(createdChapter());
     const fixture = TestBed.createComponent(AuthoringOutlinePageComponent);
     fixture.detectChanges();
-    await fixture.whenStable();
+    await settle(fixture);
     fixture.componentInstance.openAddForm();
     fixture.componentInstance.updateChapterTitle(inputEvent('Chương hai'));
 
@@ -254,7 +276,7 @@ describe('AuthoringOutlinePageComponent', () => {
       .mockResolvedValueOnce(page([chapter(), chapter(secondChapterId, 2, 'Chương hai')]));
     const fixture = TestBed.createComponent(AuthoringOutlinePageComponent);
     fixture.detectChanges();
-    await fixture.whenStable();
+    await settle(fixture);
 
     await fixture.componentInstance.loadMore();
     fixture.detectChanges();
@@ -271,4 +293,14 @@ function inputEvent(value: string): Event {
 
 function submitEvent(): Event {
   return { preventDefault: vi.fn() } as unknown as Event;
+}
+
+async function settle(fixture: ComponentFixture<AuthoringOutlinePageComponent>): Promise<void> {
+  await vi.waitFor(async () => {
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(
+      fixture.nativeElement.querySelector('.authoring-outline-status')?.textContent ?? '',
+    ).not.toContain('Đang tải dàn ý riêng tư');
+  });
 }

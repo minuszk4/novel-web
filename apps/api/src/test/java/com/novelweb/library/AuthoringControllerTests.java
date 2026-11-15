@@ -196,6 +196,63 @@ class AuthoringControllerTests {
   }
 
   @Test
+  void manuscriptDetailReturnsSafePrivateMetadataForTheOwner() throws Exception {
+    when(policyService.requiredAcceptance(actorId))
+        .thenReturn(PolicyService.RequiredAcceptance.COMPLETE);
+    UUID workId = UUID.randomUUID();
+    Instant createdAt = Instant.parse("2026-11-15T12:34:56Z");
+    when(libraryService.getPrivateAuthoredWorkDetails(actorId, workId))
+        .thenReturn(
+            new LibraryRepository.PrivateAuthoredWorkDetails(
+                workId, "My Novel", "Pen Name", "vi", 3, createdAt));
+
+    var response =
+        mockMvc
+            .perform(
+                get("/api/v1/authoring/manuscripts/{workId}", workId).principal(authentication()))
+            .andReturn()
+            .getResponse();
+
+    assertEquals(200, response.getStatus());
+    assertTrue(response.getHeader("Cache-Control").contains("no-store"));
+    String body = response.getContentAsString();
+    assertTrue(body.contains(workId.toString()));
+    assertTrue(body.contains("\"publicationState\":\"draft\""));
+    assertTrue(body.contains("\"visibility\":\"private\""));
+    assertTrue(body.contains("\"chapterCount\":3"));
+    assertTrue(body.contains("My Novel"));
+    assertTrue(body.contains("Pen Name"));
+    assertTrue(!body.contains("ownerUserId"));
+    assertTrue(!body.contains("sourceHash"));
+    assertTrue(!body.contains(actorId.toString()));
+    verify(libraryService).getPrivateAuthoredWorkDetails(actorId, workId);
+  }
+
+  @Test
+  void manuscriptDetailRequiresSessionAndCurrentPolicy() throws Exception {
+    UUID workId = UUID.randomUUID();
+    var anonymous =
+        mockMvc
+            .perform(get("/api/v1/authoring/manuscripts/{workId}", workId))
+            .andReturn()
+            .getResponse();
+    assertEquals(401, anonymous.getStatus());
+    verifyNoInteractions(libraryService, policyService);
+
+    when(policyService.requiredAcceptance(actorId))
+        .thenReturn(PolicyService.RequiredAcceptance.REQUIRED);
+    var blocked =
+        mockMvc
+            .perform(
+                get("/api/v1/authoring/manuscripts/{workId}", workId).principal(authentication()))
+            .andReturn()
+            .getResponse();
+    assertEquals(403, blocked.getStatus());
+    assertTrue(blocked.getContentAsString().contains("POLICY_ACCEPTANCE_REQUIRED"));
+    verifyNoInteractions(libraryService);
+  }
+
+  @Test
   void missingIdempotencyKeyIsRejectedByTheServiceContract() throws Exception {
     when(policyService.requiredAcceptance(actorId))
         .thenReturn(PolicyService.RequiredAcceptance.COMPLETE);

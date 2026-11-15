@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 6.30.0
+  version: 6.31.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -1497,6 +1497,52 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/authoring/manuscripts/{workId}:
+    get:
+      operationId: getPrivateAuthoredManuscript
+      tags: [Authoring]
+      x-implementation-status: implemented-postgres-profile
+      summary: Get one private authored manuscript owned by the actor
+      description: >-
+        Returns safe metadata for one active private authored manuscript in the actor's personal private library.
+        The session actor and current Terms and Privacy acceptance are required. Foreign, imported, public, archived,
+        deleted and workspace-backed works are hidden as 404. No chapter body, revision IDs, source hashes, owner IDs
+        or idempotency receipts are returned. This read-only operation does not make draft chapters readable in Reader.
+      security:
+        - appSession: []
+      parameters:
+        - name: workId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Safe metadata for the owner's private draft.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthoringManuscriptListItem'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
         '503':
           $ref: '#/components/responses/Problem'
   /api/v1/authoring/manuscripts/{workId}/chapters:

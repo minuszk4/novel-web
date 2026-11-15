@@ -147,6 +147,75 @@ describe('AuthoringApiService', () => {
     });
   });
 
+  it('reads one strict no-store private manuscript detail bound to the requested ID', async () => {
+    const pending = api.getPrivateManuscript(workId);
+    const request = http.expectOne(`/api/v1/authoring/manuscripts/${workId}`);
+    expect(request.request.method).toBe('GET');
+    request.flush(
+      { ...createdDraft, chapterCount: 2 },
+      {
+        status: 200,
+        statusText: 'OK',
+        headers: new HttpHeaders({ 'Cache-Control': 'no-store' }),
+      },
+    );
+
+    await expect(pending).resolves.toMatchObject({
+      id: workId,
+      title: 'Hành trình tu luyện',
+      chapterCount: 2,
+      visibility: 'private',
+      publicationState: 'draft',
+    });
+  });
+
+  it('rejects manuscript details with an unexpected body field, wrong ID or cacheable response', async () => {
+    const unexpected = api.getPrivateManuscript(workId);
+    http.expectOne(`/api/v1/authoring/manuscripts/${workId}`).flush(
+      { ...createdDraft, chapterCount: 0, normalizedContent: 'must not be present' },
+      {
+        status: 200,
+        statusText: 'OK',
+        headers: new HttpHeaders({ 'Cache-Control': 'no-store' }),
+      },
+    );
+    await expect(unexpected).rejects.toMatchObject({
+      status: 502,
+      code: 'INVALID_AUTHORING_MANUSCRIPT_RESPONSE',
+    });
+
+    const wrongId = api.getPrivateManuscript(workId);
+    http.expectOne(`/api/v1/authoring/manuscripts/${workId}`).flush(
+      { ...createdDraft, id: '22222222-2222-4222-8222-222222222222', chapterCount: 0 },
+      {
+        status: 200,
+        statusText: 'OK',
+        headers: new HttpHeaders({ 'Cache-Control': 'no-store' }),
+      },
+    );
+    await expect(wrongId).rejects.toMatchObject({
+      status: 502,
+      code: 'INVALID_AUTHORING_MANUSCRIPT_RESPONSE',
+    });
+
+    const cacheable = api.getPrivateManuscript(workId);
+    http
+      .expectOne(`/api/v1/authoring/manuscripts/${workId}`)
+      .flush({ ...createdDraft, chapterCount: 0 }, { status: 200, statusText: 'OK' });
+    await expect(cacheable).rejects.toMatchObject({
+      status: 502,
+      code: 'INVALID_AUTHORING_MANUSCRIPT_RESPONSE',
+    });
+  });
+
+  it('rejects malformed manuscript detail IDs before networking', async () => {
+    await expect(api.getPrivateManuscript('not-a-uuid')).rejects.toMatchObject({
+      status: 400,
+      code: 'INVALID_AUTHORING_QUERY',
+    });
+    http.expectNone((request) => request.url.includes('/authoring/manuscripts/'));
+  });
+
   it('rejects malformed manuscript list entries and non-no-store responses', async () => {
     const invalidBody = api.listPrivateManuscripts();
     http.expectOne('/api/v1/authoring/manuscripts?limit=25').flush(

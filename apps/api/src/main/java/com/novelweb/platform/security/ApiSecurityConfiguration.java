@@ -139,6 +139,7 @@ public class ApiSecurityConfiguration {
                     .requestMatchers(
                         HttpMethod.GET,
                         "/api/v1/authoring/manuscripts",
+                        "/api/v1/authoring/manuscripts/*",
                         "/api/v1/authoring/manuscripts/*/chapters",
                         "/api/v1/authoring/manuscripts/*/chapters/*/draft")
                     .permitAll();

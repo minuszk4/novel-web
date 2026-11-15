@@ -21,6 +21,14 @@
   outline-offset: 4px;
 }
 
+.authoring-outline-manuscript-meta {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
 .authoring-outline-heading > p:last-child {
   max-width: 680px;
   margin-top: 8px;
