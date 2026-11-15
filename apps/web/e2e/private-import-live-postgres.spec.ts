@@ -78,6 +78,65 @@ test('private import commit refreshes Library, Work Detail and PostgreSQL Reader
   expect(createResponse, 'expected an unmocked import-create response').toBeDefined();
   const createdImport = (await createResponse!.json()) as { job: { id: string } };
   const importId = createdImport.job.id;
+
+  const ownerImportStatus = await page.request.get(`${baseUrl}/api/v1/imports/${importId}`);
+  expect(ownerImportStatus.status()).toBe(200);
+  expect(ownerImportStatus.headers()['cache-control']).toContain('no-store');
+  expect(await ownerImportStatus.json()).toMatchObject({ id: importId });
+
+  const ownerImportPreview = await page.request.get(
+    `${baseUrl}/api/v1/imports/${importId}/preview`,
+  );
+  expect(ownerImportPreview.status()).toBe(200);
+  expect(ownerImportPreview.headers()['cache-control']).toContain('no-store');
+  expect((await ownerImportPreview.text()).length).toBeGreaterThan(0);
+
+  const otherSessionToken = process.env['MOMO_COMMERCE_LIVE_TEST_OTHER_SESSION_TOKEN'];
+  if (otherSessionToken) {
+    expect(otherSessionToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    await page.context().clearCookies();
+    await page.context().addCookies([
+      {
+        name: '__Host-novel_session',
+        value: otherSessionToken,
+        domain: 'localhost',
+        path: '/',
+        httpOnly: true,
+        secure: true,
+        sameSite: 'Lax',
+      },
+    ]);
+
+    const foreignImportStatus = await page.request.get(`${baseUrl}/api/v1/imports/${importId}`);
+    expect(foreignImportStatus.status()).toBe(404);
+    expect(foreignImportStatus.headers()['cache-control']).toContain('no-store');
+    const foreignImportStatusBody = await foreignImportStatus.text();
+    expect(foreignImportStatusBody).toContain('IMPORT_NOT_FOUND');
+    expect(foreignImportStatusBody).not.toContain(sourceText);
+
+    const foreignImportPreview = await page.request.get(
+      `${baseUrl}/api/v1/imports/${importId}/preview`,
+    );
+    expect(foreignImportPreview.status()).toBe(404);
+    expect(foreignImportPreview.headers()['cache-control']).toContain('no-store');
+    const foreignImportPreviewBody = await foreignImportPreview.text();
+    expect(foreignImportPreviewBody).toContain('IMPORT_NOT_FOUND');
+    expect(foreignImportPreviewBody).not.toContain(sourceText);
+
+    await page.context().clearCookies();
+    await page.context().addCookies([
+      {
+        name: '__Host-novel_session',
+        value: sessionToken!,
+        domain: 'localhost',
+        path: '/',
+        httpOnly: true,
+        secure: true,
+        sameSite: 'Lax',
+      },
+    ]);
+  }
+
   await page.getByLabel('Tên tác phẩm').fill(workTitle);
   await page.getByRole('button', { name: 'Lưu thay đổi' }).click();
   await expect(page.getByRole('button', { name: 'Lưu thay đổi' })).toBeDisabled();
