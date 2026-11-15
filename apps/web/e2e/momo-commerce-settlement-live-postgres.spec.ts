@@ -366,6 +366,7 @@ test('synthetic signed settlement grants credits once and unlocks a public chapt
     `http://localhost:4300/api/v1/authoring/manuscripts/${privateWorkId}`,
   );
   expect(foreignPrivateManuscript.status()).toBe(404);
+  expect(foreignPrivateManuscript.headers()['cache-control']).toContain('no-store');
   const foreignPrivateManuscriptBody = await foreignPrivateManuscript.text();
   expect(foreignPrivateManuscriptBody).toContain('MANUSCRIPT_NOT_FOUND');
   expect(foreignPrivateManuscriptBody).not.toContain(expectedPrivateWorkTitle);
@@ -374,12 +375,18 @@ test('synthetic signed settlement grants credits once and unlocks a public chapt
     `http://localhost:4300/api/v1/authoring/manuscripts/${privateWorkId}/chapters`,
   );
   expect(foreignPrivateOutline.status()).toBe(404);
-  expect(await foreignPrivateOutline.text()).toContain('MANUSCRIPT_NOT_FOUND');
+  expect(foreignPrivateOutline.headers()['cache-control']).toContain('no-store');
+  const foreignPrivateOutlineBody = await foreignPrivateOutline.text();
+  expect(foreignPrivateOutlineBody).toContain('MANUSCRIPT_NOT_FOUND');
+  expect(foreignPrivateOutlineBody).not.toContain(expectedPrivateWorkTitle);
+  expect(foreignPrivateOutlineBody).not.toContain('Live Translation Chapter');
+  expect(foreignPrivateOutlineBody).not.toContain('ownerUserId');
 
   const foreignPrivateChapterContent = await page.request.get(
     `http://localhost:4300/api/v1/chapters/${privateChapterId}/content`,
   );
   expect(foreignPrivateChapterContent.status()).toBe(404);
+  expect(foreignPrivateChapterContent.headers()['cache-control']).toContain('no-store');
   const foreignPrivateChapterBody = await foreignPrivateChapterContent.text();
   expect(foreignPrivateChapterBody).toContain('NOT_FOUND');
   expect(foreignPrivateChapterBody).not.toContain(
