@@ -102,6 +102,17 @@ const viewports = [
   { name: 'desktop 1280×900', width: 1280, height: 900 },
 ] as const;
 
+const paymentOrderStateLabels = [
+  { status: 'CREATED', label: 'Đã tạo lệnh' },
+  { status: 'INITIATING', label: 'Đang kết nối MoMo' },
+  { status: 'PENDING', label: 'Đang chờ xác nhận' },
+  { status: 'UNKNOWN', label: 'Đang đối soát' },
+  { status: 'SUCCEEDED', label: 'Thành công' },
+  { status: 'FAILED', label: 'Thất bại' },
+  { status: 'CANCELLED', label: 'Đã hủy' },
+  { status: 'EXPIRED', label: 'Hết hạn' },
+] as const;
+
 for (const viewport of viewports) {
   test(`commerce history keeps the three lists distinct at ${viewport.name}`, async ({
     page,
@@ -220,6 +231,52 @@ for (const viewport of viewports) {
     await expectNoAxeViolations(page);
   });
 }
+
+test('labels all MoMo payment-order lifecycle states in text at mobile width', async ({
+  page,
+}, testInfo) => {
+  await page.setViewportSize({ width: 360, height: 800 });
+  await installAccountRoutes(page);
+  const lifecycleOrders = paymentOrderStateLabels.map(({ status }, index) => ({
+    ...order,
+    id: `${String(index + 1).padStart(8, '0')}-1111-4111-8111-000000000001`,
+    status,
+    paidCreditsGranted: status === 'SUCCEEDED' ? order.paidCreditsPurchased : 0,
+    bonusCreditsGranted: 0,
+  }));
+  await page.unroute('**/api/v1/me/credits/balance');
+  await page.route('**/api/v1/me/credits/balance', (route) =>
+    json(route, {
+      paidCredits: 110,
+      bonusCredits: 0,
+      totalCredits: 110,
+      asOf: '2026-11-15T10:00:00Z',
+    }),
+  );
+  await page.route('**/api/v1/me/payment-orders**', (route) =>
+    json(route, { items: lifecycleOrders, nextCursor: null }),
+  );
+  await page.route('**/api/v1/me/credits/transactions**', (route) =>
+    json(route, { items: [], nextCursor: null }),
+  );
+  await page.route('**/api/v1/me/purchases**', (route) =>
+    json(route, { items: [], nextCursor: null }),
+  );
+
+  await page.goto('/app/purchases');
+  const orderList = page.getByRole('list', { name: 'Các lệnh nạp credit' });
+  for (const { label } of paymentOrderStateLabels) {
+    await expect(orderList.getByText(label, { exact: true })).toBeVisible();
+  }
+  await expectNoAxeViolations(page);
+  await expect
+    .poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth))
+    .toBe(true);
+  await page.screenshot({
+    path: testInfo.outputPath('momo-order-states-360x800.png'),
+    fullPage: true,
+  });
+});
 
 test('commerce history retries a failed first page and reflows at 200% zoom', async ({ page }) => {
   await page.setViewportSize({ width: 720, height: 900 });
