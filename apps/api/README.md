@@ -142,6 +142,16 @@ Every unsafe import request also needs the actor session and session-bound `X-CS
 
 The status response exposes API version, deployment environment and feature availability only. Provider and commerce integrations remain disabled by default. The default profile allows only the status and health GET routes. The PostgreSQL profile also allows the rate-limited Google bootstrap GET, credential POST, session-bound `GET /api/v1/auth/csrf`, active-session `GET /api/v1/auth/me`, idempotent `POST /api/v1/auth/logout`, the CSRF-protected logout-all confirmation/revocation routes, policy-gated library/work listing, source-only Reader manifest/content, personal library-state, import-rights, create-import and local staging routes below. The credential path is the only route exempted from app-session CSRF because it validates Google's double-submit token and a configured browser Origin itself. Other unsafe methods with a usable session cookie require a valid session-bound `X-CSRF-Token`; logout with no usable session may only clear the cookie. CORS allows credentialed requests only from exact origins in `novel.web.cors.allowed-origins`, and permits the CSRF, one-time upload-token and `If-Match` headers; actuator CORS stays non-credentialed. Denied requests use a safe `application/problem+json` response with a server-generated `X-Correlation-Id`; internal exception details are not returned to clients.
 
+### Optional local API metrics
+
+The default API profile continues to expose health only. For local diagnostics, start with the additional `observability` Spring profile. It serves Actuator health and Micrometer metrics on the separate `127.0.0.1:9090` management listener (or the local-only `MANAGEMENT_PORT` from `.env`), not on the public API listener. For PostgreSQL pool metrics, combine it with the `postgres` profile:
+
+```powershell
+.\mvnw.cmd -Ppostgres spring-boot:run '-Dspring-boot.run.profiles=postgres,observability'
+```
+
+From the same machine, inspect `http://127.0.0.1:9090/actuator/metrics`, `http://127.0.0.1:9090/actuator/metrics/http.server.requests`, or `http://127.0.0.1:9090/actuator/metrics/hikaricp.connections.active`. The metrics route is not included in the OpenAPI contract, is unavailable on the application port, and has no browser CORS permission. Keep the management listener on loopback; do not reverse-proxy or publish its port. HTTP timing and Hikari pool gauges are framework-provided; queue depth/age, provider latency, reconciliation backlog and actionable alert policies still need implementation and operator review.
+
 Library catalog reads and personal reading controls are available only with the PostgreSQL profile and a current Terms/Privacy acceptance:
 
 - `GET /api/v1/libraries` returns personal libraries and libraries in workspaces where the caller is an active member. Actor identity comes from the session; response DTOs omit owner and workspace identifiers.

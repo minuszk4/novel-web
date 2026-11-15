@@ -63,6 +63,9 @@ public class ApiSecurityConfiguration {
                       "/actuator/health",
                       "/actuator/health/**")
                   .permitAll();
+              authorize
+                  .requestMatchers(HttpMethod.GET, "/actuator/metrics", "/actuator/metrics/**")
+                  .permitAll();
               if (environment.acceptsProfiles(Profiles.of("postgres"))) {
                 authorize.requestMatchers(HttpMethod.POST, MomoTestIpnController.PATH).permitAll();
                 authorize
@@ -304,7 +307,8 @@ public class ApiSecurityConfiguration {
 
     UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
     source.registerCorsConfiguration("/api/**", apiConfiguration);
-    source.registerCorsConfiguration("/actuator/**", actuatorConfiguration);
+    source.registerCorsConfiguration("/actuator/health", actuatorConfiguration);
+    source.registerCorsConfiguration("/actuator/health/**", actuatorConfiguration);
     return source;
   }
 }

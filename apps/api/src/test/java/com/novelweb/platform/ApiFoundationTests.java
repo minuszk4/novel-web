@@ -79,6 +79,13 @@ class ApiFoundationTests {
   }
 
   @Test
+  void actuatorMetricsAreNotExposedByTheDefaultApiProfile() throws Exception {
+    var response = mockMvc.perform(get("/actuator/metrics")).andReturn().getResponse();
+
+    assertTrue(response.getStatus() >= 400);
+  }
+
+  @Test
   void nonAllowlistedRouteIsDeniedWithSafeProblemAndCorrelationId() throws Exception {
     mockMvc
         .perform(get("/api/v1/private"))
