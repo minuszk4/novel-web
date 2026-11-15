@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 6.32.0
+  version: 6.33.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -1758,6 +1758,66 @@ paths:
           $ref: '#/components/responses/Problem'
         '409':
           description: Idempotency-Key was already used with a different normalized title.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/authoring/manuscripts/{workId}/chapters/{chapterId}:
+    delete:
+      operationId: deletePrivateEmptyAuthoredChapter
+      tags: [Authoring]
+      x-implementation-status: implemented-postgres-profile
+      summary: Remove an empty private draft chapter from the outline
+      description: >-
+        Soft-deletes only an owner-visible authored draft in the actor's personal private library when the chapter
+        has no current source revision and no chapter revision history. Requires an active session, current
+        Terms/Privacy acceptance and session-bound CSRF. The transaction fences a concurrent first revision save;
+        whichever operation commits first determines whether deletion succeeds or returns 409. A repeated request
+        for the same already-deleted chapter returns 204. Saved content is never removed. Foreign, imported, public,
+        archived, deleted-work and workspace-backed resources are hidden as 404. No ordinal is reused or renumbered.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - name: workId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: chapterId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Empty draft chapter was soft-deleted or was already deleted.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          description: Session CSRF or current Terms/Privacy acceptance is missing.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: Chapter is not in the actor's active private authored manuscript scope.
+          $ref: '#/components/responses/Problem'
+        '409':
+          description: A saved draft revision exists; the operation did not remove chapter content.
           content:
             application/problem+json:
               schema:
@@ -4396,7 +4456,7 @@ components:
     AuthoringChapterOutlineItem:
       type: object
       additionalProperties: false
-      required: [id, ordinal, title, language, status, contentAvailable, createdAt]
+      required: [id, ordinal, title, language, status, contentAvailable, hasSavedDraftContent, createdAt]
       properties:
         id:
           type: string
@@ -4418,6 +4478,9 @@ components:
         contentAvailable:
           type: boolean
           description: True only when a ready chapter has a current source revision; authored drafts can have saved revisions and remain false.
+        hasSavedDraftContent:
+          type: boolean
+          description: True when this draft has a saved revision; only a never-saved empty draft can be removed from the outline.
         createdAt:
           type: string
           format: date-time

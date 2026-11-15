@@ -151,6 +151,10 @@ public class ApiSecurityConfiguration {
                         "/api/v1/authoring/manuscripts/*/chapters/*/revisions")
                     .permitAll();
                 authorize
+                    .requestMatchers(
+                        HttpMethod.DELETE, "/api/v1/authoring/manuscripts/*/chapters/*")
+                    .permitAll();
+                authorize
                     .requestMatchers(HttpMethod.PUT, "/api/v1/authoring/manuscripts/*")
                     .permitAll();
                 authorize.requestMatchers(HttpMethod.PUT, "/api/v1/imports/*/content").permitAll();

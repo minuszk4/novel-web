@@ -54,6 +54,7 @@ export interface PrivateChapterOutlineItem {
   language: string;
   status: AuthoringChapterStatus;
   contentAvailable: boolean;
+  hasSavedDraftContent: boolean;
   createdAt: string;
 }
 
@@ -360,6 +361,34 @@ export class AuthoringApiService {
     }
   }
 
+  async deletePrivateEmptyChapter(workId: string, chapterId: string): Promise<void> {
+    if (!isUuid(workId) || !isUuid(chapterId)) {
+      throw new AuthoringApiError(400, 'INVALID_CHAPTER');
+    }
+
+    try {
+      const headers = await this.csrfHeaders();
+      const response = await firstValueFrom(
+        this.http
+          .delete<unknown>(`${manuscriptsUrl}/${workId}/chapters/${chapterId}`, {
+            headers,
+            observe: 'response',
+          })
+          .pipe(timeout(requestTimeoutMs)),
+      );
+      if (
+        response.status !== 204 ||
+        response.headers.get('Cache-Control') !== 'no-store' ||
+        response.headers.get('Pragma') !== 'no-cache' ||
+        response.body !== null
+      ) {
+        throw invalidChapterDeleteResponse();
+      }
+    } catch (error) {
+      throw toAuthoringApiError(error);
+    }
+  }
+
   async getPrivateChapterDraft(
     workId: string,
     chapterId: string,
@@ -596,6 +625,7 @@ function parseOutlineItem(value: unknown): PrivateChapterOutlineItem {
       'language',
       'status',
       'contentAvailable',
+      'hasSavedDraftContent',
       'createdAt',
     ]) ||
     !isUuid(value['id']) ||
@@ -606,6 +636,8 @@ function parseOutlineItem(value: unknown): PrivateChapterOutlineItem {
     !isAuthoringChapterStatus(value['status']) ||
     typeof value['contentAvailable'] !== 'boolean' ||
     (value['contentAvailable'] && value['status'] !== 'ready') ||
+    typeof value['hasSavedDraftContent'] !== 'boolean' ||
+    (value['hasSavedDraftContent'] && value['status'] !== 'draft') ||
     !isInstant(value['createdAt'])
   ) {
     throw invalidOutlineResponse();
@@ -847,6 +879,10 @@ function invalidManuscriptDetailResponse(): AuthoringApiError {
 
 function invalidChapterResponse(): AuthoringApiError {
   return new AuthoringApiError(502, 'INVALID_CHAPTER_RESPONSE');
+}
+
+function invalidChapterDeleteResponse(): AuthoringApiError {
+  return new AuthoringApiError(502, 'INVALID_CHAPTER_DELETE_RESPONSE');
 }
 
 function invalidDraftResponse(): AuthoringApiError {

@@ -243,6 +243,14 @@
         {{ createAnnouncement() }}
       </p>
     }
+    @if (chapterDeleteAnnouncement()) {
+      <p class="authoring-outline-announcement" role="status" aria-live="polite">
+        {{ chapterDeleteAnnouncement() }}
+      </p>
+    }
+    @if (chapterDeleteNotice(); as notice) {
+      <p class="authoring-outline-error" role="alert">{{ notice }}</p>
+    }
 
     <section class="authoring-outline-panel" aria-labelledby="outline-list-title">
       <div class="authoring-outline-list-heading">
@@ -340,7 +348,11 @@
         </p>
         <ol class="authoring-outline-list">
           @for (chapter of chapters(); track chapter.id) {
-            <li class="authoring-outline-row">
+            <li
+              class="authoring-outline-row"
+              [id]="'authoring-chapter-row-' + chapter.id"
+              tabindex="-1"
+            >
               <span class="authoring-outline-ordinal">Chương {{ chapter.ordinal }}</span>
               <span class="authoring-outline-chapter-title">{{ chapter.title }}</span>
               <span class="authoring-outline-language">{{ chapter.language }}</span>
@@ -353,10 +365,81 @@
               @if (chapter.status === 'draft') {
                 <a
                   class="button button-outline authoring-outline-edit"
+                  [id]="'authoring-edit-chapter-' + chapter.id"
                   [routerLink]="['/app/authoring', requestedWorkIdView(), 'chapters', chapter.id]"
                 >
                   {{ chapter.contentAvailable ? 'Tiếp tục viết' : 'Viết chương' }}
                 </a>
+                @if (!chapter.hasSavedDraftContent) {
+                  @if (deleteConfirmationChapterId() === chapter.id) {
+                    <div
+                      class="authoring-outline-delete-confirm"
+                      role="group"
+                      [attr.aria-labelledby]="'authoring-delete-confirm-title-' + chapter.id"
+                    >
+                      <p [id]="'authoring-delete-confirm-title-' + chapter.id">
+                        Chương này chưa từng được lưu. Khi xác nhận, chương sẽ bị gỡ khỏi dàn ý và
+                        không thể khôi phục. Nếu nội dung đã được lưu ở nơi khác, hệ thống sẽ giữ
+                        nguyên và từ chối thao tác. Bạn có muốn tiếp tục?
+                      </p>
+                      @if (chapterDeleteError(); as error) {
+                        <div class="authoring-outline-error" role="alert">
+                          <p>{{ error }}</p>
+                          @if (recoveryUrl; as url) {
+                            <a [routerLink]="url" [queryParams]="recoveryQueryParams">
+                              {{ recoveryLabel }}
+                            </a>
+                          }
+                        </div>
+                      }
+                      @if (deletingChapterId() === chapter.id) {
+                        <p class="authoring-outline-save-status" role="status" aria-live="polite">
+                          Đang xóa chương trống…
+                        </p>
+                      }
+                      <div class="authoring-outline-form-actions">
+                        <button
+                          class="button button-outline"
+                          type="button"
+                          [disabled]="deletingChapterId() === chapter.id"
+                          (click)="cancelDeleteEmptyChapter(chapter.id)"
+                        >
+                          Giữ lại
+                        </button>
+                        <button
+                          class="button button-danger"
+                          type="button"
+                          [id]="'authoring-confirm-delete-chapter-' + chapter.id"
+                          [disabled]="deletingChapterId() === chapter.id"
+                          (click)="confirmDeleteEmptyChapter(chapter)"
+                        >
+                          {{
+                            deletingChapterId() === chapter.id
+                              ? 'Đang xóa…'
+                              : chapterDeleteFailure() &&
+                                  (chapterDeleteFailure()?.status === 0 ||
+                                    (chapterDeleteFailure()?.status ?? 0) >= 500)
+                                ? 'Thử xác nhận lại'
+                                : 'Xác nhận xóa'
+                          }}
+                        </button>
+                      </div>
+                    </div>
+                  } @else {
+                    <button
+                      class="text-button authoring-outline-delete-trigger"
+                      type="button"
+                      [id]="'authoring-delete-chapter-' + chapter.id"
+                      [attr.aria-label]="
+                        'Xóa chương trống Chương ' + chapter.ordinal + ': ' + chapter.title
+                      "
+                      [disabled]="!!deletingChapterId()"
+                      (click)="requestDeleteEmptyChapter(chapter)"
+                    >
+                      Xóa chương trống
+                    </button>
+                  }
+                }
               }
             </li>
           }

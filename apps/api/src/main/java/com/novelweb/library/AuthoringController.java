@@ -17,6 +17,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -334,13 +335,34 @@ public class AuthoringController {
                         chapter.title(),
                         chapter.language(),
                         chapter.status(),
-                        "ready".equals(chapter.status()) && chapter.sourceRevisionId() != null,
+                        chapter.contentAvailable(),
+                        chapter.hasSavedDraftContent(),
                         chapter.createdAt()))
             .toList();
     return ResponseEntity.ok()
         .cacheControl(CacheControl.noStore())
         .header(HttpHeaders.PRAGMA, "no-cache")
         .body(new ChapterOutlineResponse(items, nextCursor));
+  }
+
+  @DeleteMapping("/{workId}/chapters/{chapterId}")
+  public ResponseEntity<?> deleteEmptyDraftChapter(
+      Authentication authentication,
+      @PathVariable UUID workId,
+      @PathVariable UUID chapterId,
+      HttpServletRequest request) {
+    Optional<UUID> actor = actorUserId(authentication);
+    if (actor.isEmpty())
+      return problem(
+          HttpStatus.UNAUTHORIZED, "UNAUTHENTICATED", "Sign in to remove this chapter.", request);
+    ResponseEntity<?> policyGate = policyGate(actor.orElseThrow(), request);
+    if (policyGate != null) return policyGate;
+
+    libraryService.deletePrivateEmptyAuthoredChapter(actor.orElseThrow(), workId, chapterId);
+    return ResponseEntity.noContent()
+        .cacheControl(CacheControl.noStore())
+        .header(HttpHeaders.PRAGMA, "no-cache")
+        .build();
   }
 
   @GetMapping("/{workId}/chapters/{chapterId}/draft")
@@ -501,6 +523,15 @@ public class AuthoringController {
         HttpStatus.NOT_FOUND,
         "DRAFT_CHAPTER_NOT_FOUND",
         "The private authored draft chapter is not available.",
+        request);
+  }
+
+  @ExceptionHandler(LibraryRepository.ChapterHasSavedContentException.class)
+  public ResponseEntity<ProblemDetail> chapterHasSavedContent(HttpServletRequest request) {
+    return problem(
+        HttpStatus.CONFLICT,
+        "DRAFT_CHAPTER_HAS_CONTENT",
+        "This chapter has a saved draft and cannot be removed from the outline.",
         request);
   }
 
@@ -893,6 +924,7 @@ public class AuthoringController {
       String language,
       String status,
       boolean contentAvailable,
+      boolean hasSavedDraftContent,
       Instant createdAt) {}
 
   public record ChapterOutlineResponse(List<ChapterOutlineItem> items, String nextCursor) {

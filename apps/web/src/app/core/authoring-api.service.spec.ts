@@ -389,6 +389,7 @@ describe('AuthoringApiService', () => {
           language: 'vi',
           status: 'draft',
           contentAvailable: false,
+          hasSavedDraftContent: false,
           createdAt: chapterCreatedAt,
         },
       ],
@@ -424,6 +425,7 @@ describe('AuthoringApiService', () => {
           language: 'vi',
           status: 'draft',
           contentAvailable: false,
+          hasSavedDraftContent: false,
           createdAt: chapterCreatedAt,
           sourceText: 'private content must not be in this DTO',
         },
@@ -478,6 +480,33 @@ describe('AuthoringApiService', () => {
       code: 'INVALID_CHAPTER',
     });
     http.expectNone((request) => request.url.includes('/chapters'));
+  });
+
+  it('deletes an empty private chapter with session CSRF and validates the no-store 204', async () => {
+    const pending = api.deletePrivateEmptyChapter(workId, chapterId);
+    await flushCsrf(http);
+    const request = http.expectOne(`/api/v1/authoring/manuscripts/${workId}/chapters/${chapterId}`);
+    expect(request.request.method).toBe('DELETE');
+    expect(request.request.headers.get('X-CSRF-Token')).toBe(csrfToken);
+    expect(request.request.body).toBeNull();
+    request.flush(null, {
+      status: 204,
+      statusText: 'No Content',
+      headers: new HttpHeaders({ 'Cache-Control': 'no-store', Pragma: 'no-cache' }),
+    });
+    await expect(pending).resolves.toBeUndefined();
+  });
+
+  it('rejects invalid empty-chapter delete identifiers before networking', async () => {
+    await expect(api.deletePrivateEmptyChapter('not-a-uuid', chapterId)).rejects.toMatchObject({
+      status: 400,
+      code: 'INVALID_CHAPTER',
+    });
+    await expect(api.deletePrivateEmptyChapter(workId, 'not-a-uuid')).rejects.toMatchObject({
+      status: 400,
+      code: 'INVALID_CHAPTER',
+    });
+    http.expectNone((request) => request.url.includes('/chapters/'));
   });
 
   it('counts chapter title limits in Unicode code points', async () => {

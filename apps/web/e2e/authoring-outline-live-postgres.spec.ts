@@ -137,11 +137,12 @@ test('private chapter outline reads and creates metadata through the real API an
   expect(listResponse.status()).toBe(200);
   const listText = await listResponse.text();
   const firstPage = JSON.parse(listText) as {
-    items: Array<{ id: string; ordinal: number }>;
+    items: Array<{ id: string; ordinal: number; hasSavedDraftContent: boolean }>;
     nextCursor: string | null;
   };
   expect(firstPage.items).toHaveLength(25);
   expect(firstPage.items[0].ordinal).toBe(1);
+  expect(firstPage.items.every((item) => item.hasSavedDraftContent)).toBe(false);
   expect(firstPage.items[24].ordinal).toBe(25);
   expect(firstPage.nextCursor).toMatch(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
   expect(listResponse.headers()['cache-control']).toContain('no-store');
@@ -237,9 +238,19 @@ test('private chapter outline reads and creates metadata through the real API an
   await expect(page.locator('.authoring-outline-manuscript-meta')).toContainText('27 chương');
   const createdRow = page.getByRole('listitem').filter({ hasText: newChapterTitle });
   await expect(createdRow.getByText(newChapterTitle, { exact: true })).toBeVisible();
-  await expect(createdRow.getByText('Chưa có nội dung', { exact: true })).toBeVisible();
+  await expect(createdRow.getByText('Chưa lưu nội dung', { exact: true })).toBeVisible();
   await expect(page.getByRole('listitem')).toHaveCount(27);
   await expect(page.getByRole('button', { name: 'Thêm chương' })).toBeFocused();
+
+  const deleteTrigger = page.getByRole('button', {
+    name: `Xóa chương trống Chương 27: ${newChapterTitle}`,
+  });
+  await deleteTrigger.click();
+  await expect(page.getByText(/không thể khôi phục/)).toBeVisible();
+  await expectNoAxeViolations(page);
+  await page.getByRole('button', { name: 'Giữ lại' }).click();
+  await expect(deleteTrigger).toBeFocused();
+  await expect(page.getByText(/không thể khôi phục/)).toHaveCount(0);
 
   const replay = await page.request.post(
     `${baseUrl}/api/v1/authoring/manuscripts/${workId}/chapters`,
@@ -296,14 +307,17 @@ test('private chapter outline reads and creates metadata through the real API an
   );
   await expect(page.getByRole('button', { name: 'Sửa thông tin' })).toBeFocused();
 
-  const competingUpdate = await page.request.put(`${baseUrl}/api/v1/authoring/manuscripts/${workId}`, {
-    headers: {
-      Cookie: `__Host-novel_session=${sessionToken}`,
-      'X-CSRF-Token': metadataCsrfToken,
-      'If-Match': '"manuscript-metadata-2"',
+  const competingUpdate = await page.request.put(
+    `${baseUrl}/api/v1/authoring/manuscripts/${workId}`,
+    {
+      headers: {
+        Cookie: `__Host-novel_session=${sessionToken}`,
+        'X-CSRF-Token': metadataCsrfToken,
+        'If-Match': '"manuscript-metadata-2"',
+      },
+      data: { title: 'Server competing title', author: 'Server pen', language: 'en' },
     },
-    data: { title: 'Server competing title', author: 'Server pen', language: 'en' },
-  });
+  );
   expect(competingUpdate.status()).toBe(200);
   expect(competingUpdate.headers().etag).toBe('"manuscript-metadata-3"');
 
@@ -392,4 +406,49 @@ test('private chapter outline reads and creates metadata through the real API an
     await expect(page.getByLabel('Tên chương')).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Thêm chương', exact: true })).toBeFocused();
   }
+
+  await page.setViewportSize({ width: 360, height: 800 });
+  await page
+    .getByRole('button', {
+      name: `Xóa chương trống Chương 27: ${newChapterTitle}`,
+    })
+    .click();
+  await expect(page.getByText(/không thể khôi phục/)).toBeVisible();
+  await expectNoAxeViolations(page);
+  await page.screenshot({
+    path: screenshotPath!.replace(
+      /authoring-outline-live\.png$/,
+      'authoring-empty-chapter-delete-confirm-live.png',
+    ),
+    fullPage: true,
+  });
+  const deleteCsrfPromise = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'GET' &&
+      new URL(response.url()).pathname === '/api/v1/auth/csrf',
+  );
+  const deletePromise = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'DELETE' &&
+      new URL(response.url()).pathname ===
+        `/api/v1/authoring/manuscripts/${workId}/chapters/${created.id}`,
+  );
+  await page.getByRole('button', { name: 'Xác nhận xóa' }).click();
+  const [deleteCsrf, deletion] = await Promise.all([deleteCsrfPromise, deletePromise]);
+  const deleteToken = ((await deleteCsrf.json()) as { token: string }).token;
+  expect(deletion.status()).toBe(204);
+  expect(deletion.request().headers()['x-csrf-token']).toBe(deleteToken);
+  expect(deletion.headers()['cache-control']).toContain('no-store');
+  await expect(page.getByText(newChapterTitle, { exact: true })).toHaveCount(0);
+  await expect(page.locator('.authoring-outline-manuscript-meta')).toContainText('26 chương');
+  await expect(page.getByRole('status').filter({ hasText: 'Đã xóa chương trống' })).toBeVisible();
+  await expect(page.locator('#authoring-chapter-row-' + secondPage.items[0].id)).toBeFocused();
+  await expectNoAxeViolations(page);
+  await page.screenshot({
+    path: screenshotPath!.replace(
+      /authoring-outline-live\.png$/,
+      'authoring-empty-chapter-delete-live.png',
+    ),
+    fullPage: true,
+  });
 });

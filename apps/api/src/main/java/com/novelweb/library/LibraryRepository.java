@@ -745,12 +745,16 @@ public class LibraryRepository {
           }
         }
 
-        List<ChapterRecord> chapters = new ArrayList<>(limit + 1);
+        List<ChapterOutlineRecord> chapters = new ArrayList<>(limit + 1);
         try (PreparedStatement select =
             connection.prepareStatement(
                 """
                     SELECT id, work_id, volume_id, ordinal, title, source_language,
-                           source_revision_id, status, created_at
+                           source_revision_id, status, created_at,
+                           (status = 'draft' AND EXISTS (
+                             SELECT 1 FROM chapter_revisions revision
+                             WHERE revision.chapter_id = chapters.id
+                           )) AS has_saved_draft_content
                     FROM chapters
                     WHERE work_id = ? AND ordinal > ? AND deleted_at IS NULL
                     ORDER BY ordinal ASC
@@ -760,12 +764,12 @@ public class LibraryRepository {
           select.setInt(2, afterOrdinal);
           select.setInt(3, limit + 1);
           try (ResultSet rows = select.executeQuery()) {
-            while (rows.next()) chapters.add(chapter(rows));
+            while (rows.next()) chapters.add(chapterOutline(rows));
           }
         }
 
         boolean hasMore = chapters.size() > limit;
-        List<ChapterRecord> items =
+        List<ChapterOutlineRecord> items =
             hasMore ? List.copyOf(chapters.subList(0, limit)) : List.copyOf(chapters);
         Integer lastOrdinal = items.isEmpty() ? null : items.get(items.size() - 1).ordinal();
         connection.commit();
@@ -778,6 +782,92 @@ public class LibraryRepository {
       throw exception;
     } catch (SQLException exception) {
       throw new IllegalStateException("Unable to list private authored chapters", exception);
+    }
+  }
+
+  public void deletePrivateEmptyAuthoredChapter(UUID ownerUserId, UUID workId, UUID chapterId) {
+    Objects.requireNonNull(ownerUserId, "owner user id is required");
+    Objects.requireNonNull(workId, "work id is required");
+    Objects.requireNonNull(chapterId, "chapter id is required");
+    try (Connection connection = dataSource.getConnection()) {
+      connection.setAutoCommit(false);
+      try {
+        try (PreparedStatement actor =
+            connection.prepareStatement(
+                "SELECT id FROM users WHERE id = ? AND status = 'active' FOR UPDATE")) {
+          actor.setObject(1, ownerUserId);
+          try (ResultSet row = actor.executeQuery()) {
+            if (!row.next()) throw new ChapterNotFoundException();
+          }
+        }
+
+        String status;
+        UUID currentRevisionId;
+        boolean hasRevision;
+        try (PreparedStatement lock =
+            connection.prepareStatement(
+                """
+                    SELECT c.status, c.source_revision_id,
+                           EXISTS (
+                             SELECT 1 FROM chapter_revisions revision
+                             WHERE revision.chapter_id = c.id
+                           ) AS has_revision
+                    FROM chapters c
+                    JOIN works w ON w.id = c.work_id
+                    JOIN libraries l ON l.id = w.library_id
+                    WHERE c.id = ? AND c.work_id = ? AND w.owner_user_id = ?
+                      AND w.source_kind = 'authored' AND w.visibility = 'private'
+                      AND w.status = 'active' AND w.deleted_at IS NULL
+                      AND l.owner_user_id = w.owner_user_id AND l.workspace_id IS NULL
+                      AND l.visibility = 'private' AND l.deleted_at IS NULL
+                    FOR UPDATE OF c, w, l
+                    """)) {
+          lock.setObject(1, chapterId);
+          lock.setObject(2, workId);
+          lock.setObject(3, ownerUserId);
+          try (ResultSet row = lock.executeQuery()) {
+            if (!row.next()) throw new ChapterNotFoundException();
+            status = row.getString("status");
+            currentRevisionId = row.getObject("source_revision_id", UUID.class);
+            hasRevision = row.getBoolean("has_revision");
+          }
+        }
+
+        if ("deleted".equals(status)) {
+          connection.commit();
+          return;
+        }
+        if (!"draft".equals(status) || currentRevisionId != null || hasRevision) {
+          throw new ChapterHasSavedContentException();
+        }
+
+        try (PreparedStatement delete =
+            connection.prepareStatement(
+                """
+                    UPDATE chapters
+                    SET status = 'deleted', deleted_at = clock_timestamp(),
+                        updated_at = clock_timestamp()
+                    WHERE id = ? AND work_id = ? AND status = 'draft'
+                      AND source_revision_id IS NULL AND deleted_at IS NULL
+                      AND NOT EXISTS (
+                        SELECT 1 FROM chapter_revisions revision
+                        WHERE revision.chapter_id = chapters.id
+                      )
+                    """)) {
+          delete.setObject(1, chapterId);
+          delete.setObject(2, workId);
+          if (delete.executeUpdate() != 1) throw new ChapterHasSavedContentException();
+        }
+        connection.commit();
+      } catch (SQLException | RuntimeException exception) {
+        connection.rollback();
+        throw exception;
+      }
+    } catch (ChapterNotFoundException | ChapterHasSavedContentException exception) {
+      throw exception;
+    } catch (SQLException exception) {
+      throw new IllegalStateException(
+          "Unable to remove an empty private authored chapter", exception);
     }
   }
 
@@ -1759,6 +1849,20 @@ public class LibraryRepository {
         instant(row, "created_at"));
   }
 
+  private static ChapterOutlineRecord chapterOutline(ResultSet row) throws SQLException {
+    String status = row.getString("status");
+    UUID sourceRevisionId = row.getObject("source_revision_id", UUID.class);
+    return new ChapterOutlineRecord(
+        row.getObject("id", UUID.class),
+        row.getInt("ordinal"),
+        row.getString("title"),
+        row.getString("source_language"),
+        status,
+        "ready".equals(status) && sourceRevisionId != null,
+        row.getBoolean("has_saved_draft_content"),
+        instant(row, "created_at"));
+  }
+
   private static RevisionRecord revision(ResultSet row) throws SQLException {
     return new RevisionRecord(
         row.getObject("id", UUID.class),
@@ -1853,8 +1957,18 @@ public class LibraryRepository {
       String status,
       Instant createdAt) {}
 
+  public record ChapterOutlineRecord(
+      UUID id,
+      int ordinal,
+      String title,
+      String language,
+      String status,
+      boolean contentAvailable,
+      boolean hasSavedDraftContent,
+      Instant createdAt) {}
+
   public record ChapterOutlinePage(
-      List<ChapterRecord> items, boolean hasMore, Integer lastOrdinal) {
+      List<ChapterOutlineRecord> items, boolean hasMore, Integer lastOrdinal) {
     public ChapterOutlinePage {
       items = List.copyOf(items);
     }
@@ -1957,6 +2071,8 @@ public class LibraryRepository {
   public static class WorkNotFoundException extends LibraryRepositoryException {}
 
   public static class ChapterNotFoundException extends LibraryRepositoryException {}
+
+  public static class ChapterHasSavedContentException extends LibraryRepositoryException {}
 
   public static class OrderConflictException extends LibraryRepositoryException {}
 

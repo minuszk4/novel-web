@@ -8115,6 +8115,284 @@ class PostgresSchemaIntegrationTests {
   }
 
   @Test
+  void authoringEmptyDraftChapterDeleteIsPrivateIdempotentAndPreservesSavedContent()
+      throws Exception {
+    UUID ownerId = createSessionTestUser("Empty Chapter Delete Owner");
+    UUID otherOwnerId = createSessionTestUser("Other Empty Chapter Delete Owner");
+    UUID workId = null;
+    UUID foreignWorkId = null;
+    try {
+      LibraryRepository.WorkRecord work =
+          libraryService.createPrivateAuthoredWork(
+              ownerId, "Delete Empty Chapter", "Pen Name", "vi", "delete-empty-work-00001");
+      workId = work.id();
+      LibraryRepository.ChapterRecord emptyChapter =
+          libraryService.createPrivateAuthoredChapter(
+              ownerId, workId, "Never saved", "delete-empty-chapter-00001");
+      LibraryRepository.ChapterRecord savedChapter =
+          libraryService.createPrivateAuthoredChapter(
+              ownerId, workId, "Saved draft", "delete-saved-chapter-00001");
+      libraryService.savePrivateAuthoredDraftRevision(
+          ownerId,
+          workId,
+          savedChapter.id(),
+          0,
+          "delete-saved-revision-0001",
+          "plain_text",
+          "Private saved text.",
+          List.of(new LibraryService.NewSegment(1, "paragraph", "Private saved text.", "p1")));
+
+      LibraryRepository.WorkRecord foreignWork =
+          libraryService.createPrivateAuthoredWork(
+              otherOwnerId, "Foreign Delete Work", "Other Pen", "en", "delete-foreign-work-0001");
+      foreignWorkId = foreignWork.id();
+      LibraryRepository.ChapterRecord foreignChapter =
+          libraryService.createPrivateAuthoredChapter(
+              otherOwnerId, foreignWorkId, "Foreign empty", "delete-foreign-chapter-01");
+
+      SessionService.IssuedSession ownerSession = sessionService.create(ownerId).orElseThrow();
+      jakarta.servlet.http.Cookie ownerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", ownerSession.cookieValue());
+      String ownerCsrf = csrfTokenService.tokenFor(ownerSession.cookieValue());
+      String route = "/api/v1/authoring/manuscripts/{workId}/chapters/{chapterId}";
+
+      MvcResult anonymous = mockMvc.perform(delete(route, workId, emptyChapter.id())).andReturn();
+      assertEquals(403, anonymous.getResponse().getStatus());
+      assertTrue(anonymous.getResponse().getContentAsString().contains("CSRF_FAILED"));
+
+      MvcResult missingCsrf =
+          mockMvc.perform(delete(route, workId, emptyChapter.id()).cookie(ownerCookie)).andReturn();
+      assertEquals(403, missingCsrf.getResponse().getStatus());
+      assertTrue(missingCsrf.getResponse().getContentAsString().contains("CSRF_FAILED"));
+
+      MvcResult missingPolicy =
+          mockMvc
+              .perform(
+                  delete(route, workId, emptyChapter.id())
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(403, missingPolicy.getResponse().getStatus());
+      assertTrue(
+          missingPolicy.getResponse().getContentAsString().contains("POLICY_ACCEPTANCE_REQUIRED"));
+      addCurrentPolicyAcceptances(ownerId);
+      addCurrentPolicyAcceptances(otherOwnerId);
+
+      MvcResult ownerDelete =
+          mockMvc
+              .perform(
+                  delete(route, workId, emptyChapter.id())
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(204, ownerDelete.getResponse().getStatus());
+      assertTrue(
+          ownerDelete.getResponse().getHeader(HttpHeaders.CACHE_CONTROL).contains("no-store"));
+      assertEquals("no-cache", ownerDelete.getResponse().getHeader(HttpHeaders.PRAGMA));
+
+      MvcResult uncertainRetry =
+          mockMvc
+              .perform(
+                  delete(route, workId, emptyChapter.id())
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(204, uncertainRetry.getResponse().getStatus());
+
+      MvcResult foreignChapterRequest =
+          mockMvc
+              .perform(
+                  delete(route, workId, foreignChapter.id())
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(404, foreignChapterRequest.getResponse().getStatus());
+      assertTrue(
+          foreignChapterRequest
+              .getResponse()
+              .getContentAsString()
+              .contains("DRAFT_CHAPTER_NOT_FOUND"));
+
+      MvcResult foreignWorkRequest =
+          mockMvc
+              .perform(
+                  delete(route, foreignWorkId, foreignChapter.id())
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(404, foreignWorkRequest.getResponse().getStatus());
+
+      MvcResult savedConflict =
+          mockMvc
+              .perform(
+                  delete(route, workId, savedChapter.id())
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(409, savedConflict.getResponse().getStatus());
+      assertTrue(
+          savedConflict.getResponse().getContentAsString().contains("DRAFT_CHAPTER_HAS_CONTENT"));
+      assertFalse(savedConflict.getResponse().getContentAsString().contains("Private saved text."));
+
+      MvcResult deletedDraftRead =
+          mockMvc
+              .perform(
+                  get(
+                          "/api/v1/authoring/manuscripts/{workId}/chapters/{chapterId}/draft",
+                          workId,
+                          emptyChapter.id())
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(404, deletedDraftRead.getResponse().getStatus());
+      MvcResult savedDraftRead =
+          mockMvc
+              .perform(
+                  get(
+                          "/api/v1/authoring/manuscripts/{workId}/chapters/{chapterId}/draft",
+                          workId,
+                          savedChapter.id())
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(200, savedDraftRead.getResponse().getStatus());
+      assertTrue(savedDraftRead.getResponse().getContentAsString().contains("Private saved text."));
+      MvcResult readerRead =
+          mockMvc
+              .perform(
+                  get("/api/v1/chapters/{chapterId}/content", emptyChapter.id())
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(404, readerRead.getResponse().getStatus());
+
+      MvcResult outline =
+          mockMvc
+              .perform(
+                  get("/api/v1/authoring/manuscripts/{workId}/chapters", workId)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(200, outline.getResponse().getStatus());
+      JsonNode outlineItems =
+          objectMapper.readTree(outline.getResponse().getContentAsString()).path("items");
+      assertEquals(1, outlineItems.size());
+      assertEquals(savedChapter.id().toString(), outlineItems.get(0).path("id").asText());
+      assertTrue(outlineItems.get(0).path("hasSavedDraftContent").asBoolean());
+      assertTrue(outline.getResponse().getContentAsString().contains("Saved draft"));
+      assertFalse(outline.getResponse().getContentAsString().contains("Private saved text."));
+
+      MvcResult detail =
+          mockMvc
+              .perform(get("/api/v1/authoring/manuscripts/{workId}", workId).cookie(ownerCookie))
+              .andReturn();
+      assertEquals(
+          1,
+          objectMapper
+              .readTree(detail.getResponse().getContentAsString())
+              .path("chapterCount")
+              .asInt());
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement select =
+              connection.prepareStatement(
+                  "SELECT status, deleted_at FROM chapters WHERE id = ? AND work_id = ?")) {
+        select.setObject(1, emptyChapter.id());
+        select.setObject(2, workId);
+        try (ResultSet row = select.executeQuery()) {
+          assertTrue(row.next());
+          assertEquals("deleted", row.getString("status"));
+          assertNotNull(row.getObject("deleted_at"));
+        }
+      }
+    } finally {
+      if (workId != null) deleteLibraryUserData(ownerId, workId);
+      if (foreignWorkId != null) deleteLibraryUserData(otherOwnerId, foreignWorkId);
+      deleteSessionTestUser(ownerId);
+      deleteSessionTestUser(otherOwnerId);
+    }
+  }
+
+  @Test
+  void authoringEmptyDraftDeleteAndFirstSaveHaveOneTransactionalWinner() throws Exception {
+    UUID ownerId = createSessionTestUser("Chapter Delete Race Owner");
+    UUID workId = null;
+    ExecutorService executor = Executors.newFixedThreadPool(2);
+    try {
+      LibraryRepository.WorkRecord work =
+          libraryService.createPrivateAuthoredWork(
+              ownerId, "Delete Race Work", "Pen Name", "vi", "delete-race-work-000001");
+      workId = work.id();
+      LibraryRepository.ChapterRecord chapter =
+          libraryService.createPrivateAuthoredChapter(
+              ownerId, workId, "Race chapter", "delete-race-chapter-00001");
+      CountDownLatch ready = new CountDownLatch(2);
+      CountDownLatch start = new CountDownLatch(1);
+      UUID finalWorkId = workId;
+
+      Future<String> deletion =
+          executor.submit(
+              () -> {
+                ready.countDown();
+                assertTrue(start.await(5, TimeUnit.SECONDS));
+                try {
+                  libraryService.deletePrivateEmptyAuthoredChapter(
+                      ownerId, finalWorkId, chapter.id());
+                  return "deleted";
+                } catch (LibraryRepository.ChapterHasSavedContentException exception) {
+                  return "delete-conflict";
+                }
+              });
+      Future<String> firstSave =
+          executor.submit(
+              () -> {
+                ready.countDown();
+                assertTrue(start.await(5, TimeUnit.SECONDS));
+                try {
+                  libraryService.savePrivateAuthoredDraftRevision(
+                      ownerId,
+                      finalWorkId,
+                      chapter.id(),
+                      0,
+                      "delete-race-save-000001",
+                      "plain_text",
+                      "Winner is saved.",
+                      List.of(
+                          new LibraryService.NewSegment(1, "paragraph", "Winner is saved.", "p1")));
+                  return "saved";
+                } catch (LibraryRepository.ChapterNotFoundException exception) {
+                  return "save-conflict";
+                }
+              });
+      assertTrue(ready.await(5, TimeUnit.SECONDS));
+      start.countDown();
+      String deletionResult = deletion.get(15, TimeUnit.SECONDS);
+      String saveResult = firstSave.get(15, TimeUnit.SECONDS);
+      assertTrue(
+          ("deleted".equals(deletionResult) && "save-conflict".equals(saveResult))
+              || ("delete-conflict".equals(deletionResult) && "saved".equals(saveResult)));
+
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement select =
+              connection.prepareStatement(
+                  "SELECT status, deleted_at, source_revision_id FROM chapters WHERE id = ?")) {
+        select.setObject(1, chapter.id());
+        try (ResultSet row = select.executeQuery()) {
+          assertTrue(row.next());
+          if ("deleted".equals(deletionResult)) {
+            assertEquals("deleted", row.getString("status"));
+            assertNotNull(row.getObject("deleted_at"));
+            assertNull(row.getObject("source_revision_id"));
+          } else {
+            assertEquals("draft", row.getString("status"));
+            assertNull(row.getObject("deleted_at"));
+            assertNotNull(row.getObject("source_revision_id"));
+          }
+        }
+      }
+    } finally {
+      executor.shutdownNow();
+      if (workId != null) deleteLibraryUserData(ownerId, workId);
+      deleteSessionTestUser(ownerId);
+    }
+  }
+
+  @Test
   void authoringManuscriptListIsOwnerScopedPrivatePagedAndMetadataOnly() throws Exception {
     UUID ownerId = createSessionTestUser("Authoring List Owner");
     UUID otherOwnerId = createSessionTestUser("Other Authoring List Owner");

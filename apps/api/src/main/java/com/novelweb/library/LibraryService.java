@@ -137,6 +137,13 @@ public class LibraryService {
     return repository.listPrivateAuthoredChapters(ownerUserId, workId, afterOrdinal, limit);
   }
 
+  public void deletePrivateEmptyAuthoredChapter(UUID ownerUserId, UUID workId, UUID chapterId) {
+    Objects.requireNonNull(ownerUserId, "owner user id is required");
+    Objects.requireNonNull(workId, "work id is required");
+    Objects.requireNonNull(chapterId, "chapter id is required");
+    repository.deletePrivateEmptyAuthoredChapter(ownerUserId, workId, chapterId);
+  }
+
   public LibraryRepository.AuthoredWorkPage listPrivateAuthoredWorks(
       UUID ownerUserId, Instant beforeCreatedAt, UUID beforeWorkId, int limit) {
     Objects.requireNonNull(ownerUserId, "owner user id is required");

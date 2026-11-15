@@ -1,10 +1,13 @@
 package com.novelweb.library;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
@@ -522,15 +525,14 @@ class AuthoringControllerTests {
         .thenReturn(
             new LibraryRepository.ChapterOutlinePage(
                 List.of(
-                    new LibraryRepository.ChapterRecord(
+                    new LibraryRepository.ChapterOutlineRecord(
                         chapterId,
-                        workId,
-                        null,
                         2,
                         "Second Chapter",
                         "vi",
-                        null,
                         "draft",
+                        false,
+                        false,
                         Instant.EPOCH)),
                 true,
                 2));
@@ -553,10 +555,66 @@ class AuthoringControllerTests {
     assertTrue(body.contains("\"ordinal\":2"));
     assertTrue(body.contains("\"status\":\"draft\""));
     assertTrue(body.contains("\"contentAvailable\":false"));
+    assertTrue(body.contains("\"hasSavedDraftContent\":false"));
     assertTrue(body.contains("\"nextCursor\":\"next-cursor\""));
     assertTrue(!body.contains("sourceRevisionId"));
     assertTrue(!body.contains("ownerUserId"));
     verify(libraryService).listPrivateAuthoredChapters(actorId, workId, 1, 1);
+  }
+
+  @Test
+  void emptyDraftDeleteRequiresSessionAndCurrentPolicy() throws Exception {
+    UUID workId = UUID.randomUUID();
+    UUID chapterId = UUID.randomUUID();
+    var anonymous =
+        mockMvc
+            .perform(
+                delete(
+                    "/api/v1/authoring/manuscripts/{workId}/chapters/{chapterId}",
+                    workId,
+                    chapterId))
+            .andReturn();
+    assertEquals(401, anonymous.getResponse().getStatus());
+
+    when(policyService.requiredAcceptance(actorId))
+        .thenReturn(PolicyService.RequiredAcceptance.REQUIRED);
+    var blocked =
+        mockMvc
+            .perform(
+                delete(
+                        "/api/v1/authoring/manuscripts/{workId}/chapters/{chapterId}",
+                        workId,
+                        chapterId)
+                    .principal(authentication()))
+            .andReturn();
+    assertEquals(403, blocked.getResponse().getStatus());
+    assertTrue(blocked.getResponse().getContentAsString().contains("POLICY_ACCEPTANCE_REQUIRED"));
+    verifyNoInteractions(libraryService);
+  }
+
+  @Test
+  void emptyDraftDeleteIsNoStoreAndSavedContentConflictDoesNotRevealContent() throws Exception {
+    when(policyService.requiredAcceptance(actorId))
+        .thenReturn(PolicyService.RequiredAcceptance.COMPLETE);
+    UUID workId = UUID.randomUUID();
+    UUID chapterId = UUID.randomUUID();
+    String route = "/api/v1/authoring/manuscripts/{workId}/chapters/{chapterId}";
+
+    var deleted =
+        mockMvc.perform(delete(route, workId, chapterId).principal(authentication())).andReturn();
+    assertEquals(204, deleted.getResponse().getStatus());
+    assertTrue(deleted.getResponse().getHeader("Cache-Control").contains("no-store"));
+    assertEquals("no-cache", deleted.getResponse().getHeader("Pragma"));
+    verify(libraryService).deletePrivateEmptyAuthoredChapter(actorId, workId, chapterId);
+
+    doThrow(new LibraryRepository.ChapterHasSavedContentException())
+        .when(libraryService)
+        .deletePrivateEmptyAuthoredChapter(actorId, workId, chapterId);
+    var conflict =
+        mockMvc.perform(delete(route, workId, chapterId).principal(authentication())).andReturn();
+    assertEquals(409, conflict.getResponse().getStatus());
+    assertTrue(conflict.getResponse().getContentAsString().contains("DRAFT_CHAPTER_HAS_CONTENT"));
+    assertFalse(conflict.getResponse().getContentAsString().contains("sourceText"));
   }
 
   @Test

@@ -32,6 +32,7 @@ function chapter(
     language: 'vi',
     status,
     contentAvailable: status === 'ready',
+    hasSavedDraftContent: false,
     createdAt: timestamp,
   };
 }
@@ -76,6 +77,7 @@ describe('AuthoringOutlinePageComponent', () => {
     updatePrivateManuscript: ReturnType<typeof vi.fn>;
     listPrivateChapters: ReturnType<typeof vi.fn>;
     createPrivateChapter: ReturnType<typeof vi.fn>;
+    deletePrivateEmptyChapter: ReturnType<typeof vi.fn>;
   };
   let policyStatus: ReturnType<typeof signal>;
 
@@ -92,6 +94,7 @@ describe('AuthoringOutlinePageComponent', () => {
       ),
       listPrivateChapters: vi.fn().mockResolvedValue(page()),
       createPrivateChapter: vi.fn().mockResolvedValue(createdChapter()),
+      deletePrivateEmptyChapter: vi.fn().mockResolvedValue(undefined),
     };
     policyStatus = signal('accepted');
     TestBed.configureTestingModule({
@@ -482,7 +485,7 @@ describe('AuthoringOutlinePageComponent', () => {
     expect(api.createPrivateChapter.mock.calls[0][2]).toMatch(/^[A-Za-z0-9._~-]{16,128}$/);
     expect(fixture.nativeElement.textContent).toContain('Đã thêm Chương 2');
     expect(fixture.nativeElement.textContent).toContain('Đêm đầu tiên ở Thanh Vân Tông');
-    expect(fixture.nativeElement.textContent).toContain('Chưa có nội dung');
+    expect(fixture.nativeElement.textContent).toContain('Chưa lưu nội dung');
     expect(fixture.nativeElement.textContent).toContain('2 chương');
     expect(fixture.nativeElement.querySelector('input')).toBeNull();
     expect(document.activeElement).toBe(
@@ -511,6 +514,192 @@ describe('AuthoringOutlinePageComponent', () => {
     expect(api.createPrivateChapter).toHaveBeenCalledTimes(2);
     expect(api.createPrivateChapter.mock.calls[1]).toEqual(api.createPrivateChapter.mock.calls[0]);
     expect(fixture.nativeElement.textContent).toContain('Đã thêm Chương 2');
+  });
+
+  it('requires explicit confirmation, supports keeping an empty chapter, and restores focus', async () => {
+    api.listPrivateChapters.mockResolvedValue(page([chapter()]));
+    const fixture = TestBed.createComponent(AuthoringOutlinePageComponent);
+    fixture.detectChanges();
+    await settle(fixture);
+
+    const trigger = fixture.nativeElement.querySelector(
+      `#authoring-delete-chapter-${firstChapterId}`,
+    );
+    trigger.click();
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(fixture.nativeElement.textContent).toContain('không thể khôi phục');
+    expect(document.activeElement).toBe(
+      fixture.nativeElement.querySelector(`#authoring-confirm-delete-chapter-${firstChapterId}`),
+    );
+    expect(api.deletePrivateEmptyChapter).not.toHaveBeenCalled();
+
+    fixture.nativeElement.querySelector('.authoring-outline-form-actions .button-outline').click();
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(document.activeElement).toBe(
+      fixture.nativeElement.querySelector(`#authoring-delete-chapter-${firstChapterId}`),
+    );
+    expect(api.deletePrivateEmptyChapter).not.toHaveBeenCalled();
+  });
+
+  it('removes an empty chapter only after confirmation and updates count with a polite status', async () => {
+    api.listPrivateChapters.mockResolvedValue(page([chapter()]));
+    api.getPrivateManuscript.mockResolvedValue({ ...manuscript(), chapterCount: 1 });
+    const fixture = TestBed.createComponent(AuthoringOutlinePageComponent);
+    fixture.detectChanges();
+    await settle(fixture);
+    fixture.componentInstance.requestDeleteEmptyChapter(chapter());
+    fixture.detectChanges();
+    await fixture.whenStable();
+    await fixture.componentInstance.confirmDeleteEmptyChapter(chapter());
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    expect(api.deletePrivateEmptyChapter).toHaveBeenCalledExactlyOnceWith(workId, firstChapterId);
+    expect(fixture.nativeElement.querySelectorAll('.authoring-outline-row')).toHaveLength(0);
+    expect(fixture.nativeElement.textContent).toContain('Đã xóa chương trống “Mở đầu”');
+    expect(
+      fixture.nativeElement.querySelector('.authoring-outline-manuscript-meta')?.textContent,
+    ).toContain('0 chương');
+    expect(document.activeElement).toBe(
+      fixture.nativeElement.querySelector('.authoring-outline-list-heading button'),
+    );
+  });
+
+  it('keeps a concurrently saved chapter and hides its delete action after a 409', async () => {
+    api.listPrivateChapters.mockResolvedValue(page([chapter()]));
+    api.deletePrivateEmptyChapter.mockRejectedValue(
+      new AuthoringApiError(409, 'DRAFT_CHAPTER_HAS_CONTENT'),
+    );
+    const fixture = TestBed.createComponent(AuthoringOutlinePageComponent);
+    fixture.detectChanges();
+    await settle(fixture);
+    fixture.componentInstance.requestDeleteEmptyChapter(chapter());
+    fixture.detectChanges();
+    await fixture.whenStable();
+    await fixture.componentInstance.confirmDeleteEmptyChapter(chapter());
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    expect(fixture.nativeElement.textContent).toContain('Nội dung vẫn được giữ nguyên');
+    expect(fixture.nativeElement.textContent).toContain('Có bản nháp đã lưu');
+    expect(
+      fixture.nativeElement.querySelector(`#authoring-delete-chapter-${firstChapterId}`),
+    ).toBeNull();
+    expect(
+      fixture.nativeElement.querySelector(`#authoring-edit-chapter-${firstChapterId}`),
+    ).not.toBeNull();
+    expect(document.activeElement).toBe(
+      fixture.nativeElement.querySelector(`#authoring-edit-chapter-${firstChapterId}`),
+    );
+  });
+
+  it.each([
+    [
+      401,
+      '',
+      'Phiên đăng nhập hết hạn',
+      'Đăng nhập lại',
+      `/sign-in?returnTo=%2Fapp%2Fauthoring%2F${workId}%2Fchapters`,
+    ],
+    [
+      403,
+      'POLICY_ACCEPTANCE_REQUIRED',
+      'Hãy xác nhận chính sách hiện hành',
+      'Xem chính sách tài khoản',
+      `/app/setup?returnUrl=%2Fapp%2Fauthoring%2F${workId}%2Fchapters`,
+    ],
+    [404, '', 'Dàn ý không khả dụng', 'Về thư viện', '/app/library'],
+  ] as const)(
+    'keeps the empty chapter and offers safe recovery for delete status %i',
+    async (status, code, message, label, href) => {
+      api.listPrivateChapters.mockResolvedValue(page([chapter()]));
+      api.deletePrivateEmptyChapter.mockRejectedValue(new AuthoringApiError(status, code));
+      const fixture = TestBed.createComponent(AuthoringOutlinePageComponent);
+      fixture.detectChanges();
+      await settle(fixture);
+
+      fixture.componentInstance.requestDeleteEmptyChapter(chapter());
+      fixture.detectChanges();
+      await fixture.whenStable();
+      await fixture.componentInstance.confirmDeleteEmptyChapter(chapter());
+      fixture.detectChanges();
+      await fixture.whenStable();
+      fixture.detectChanges();
+
+      expect(fixture.nativeElement.querySelectorAll('.authoring-outline-row')).toHaveLength(1);
+      expect(fixture.nativeElement.textContent).toContain(message);
+      const recoveryLink = fixture.nativeElement.querySelector(
+        '.authoring-outline-delete-confirm a',
+      );
+      expect(recoveryLink?.textContent).toContain(label);
+      expect(recoveryLink?.getAttribute('href')).toBe(href);
+    },
+  );
+
+  it('offers an exact safe retry when deletion outcome is uncertain', async () => {
+    api.listPrivateChapters.mockResolvedValue(page([chapter()]));
+    api.deletePrivateEmptyChapter
+      .mockRejectedValueOnce(new AuthoringApiError(503, 'TEMPORARY_FAILURE'))
+      .mockResolvedValueOnce(undefined);
+    const fixture = TestBed.createComponent(AuthoringOutlinePageComponent);
+    fixture.detectChanges();
+    await settle(fixture);
+
+    fixture.componentInstance.requestDeleteEmptyChapter(chapter());
+    fixture.detectChanges();
+    await fixture.whenStable();
+    await fixture.componentInstance.confirmDeleteEmptyChapter(chapter());
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(fixture.nativeElement.textContent).toContain('Thử xác nhận lại');
+    expect(fixture.nativeElement.querySelectorAll('.authoring-outline-row')).toHaveLength(1);
+
+    await fixture.componentInstance.confirmDeleteEmptyChapter(chapter());
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(api.deletePrivateEmptyChapter).toHaveBeenCalledTimes(2);
+    expect(fixture.nativeElement.querySelectorAll('.authoring-outline-row')).toHaveLength(0);
+    expect(fixture.nativeElement.textContent).toContain('Đã xóa chương trống');
+  });
+
+  it('suppresses duplicate delete activation while the request is pending', async () => {
+    api.listPrivateChapters.mockResolvedValue(page([chapter()]));
+    let finishDelete!: () => void;
+    api.deletePrivateEmptyChapter.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        finishDelete = resolve;
+      }),
+    );
+    const fixture = TestBed.createComponent(AuthoringOutlinePageComponent);
+    fixture.detectChanges();
+    await settle(fixture);
+    fixture.componentInstance.requestDeleteEmptyChapter(chapter());
+    fixture.detectChanges();
+    await fixture.whenStable();
+
+    const firstAttempt = fixture.componentInstance.confirmDeleteEmptyChapter(chapter());
+    fixture.detectChanges();
+    const confirmButton = fixture.nativeElement.querySelector(
+      `#authoring-confirm-delete-chapter-${firstChapterId}`,
+    ) as HTMLButtonElement;
+    expect(confirmButton.disabled).toBe(true);
+    await fixture.componentInstance.confirmDeleteEmptyChapter(chapter());
+    expect(api.deletePrivateEmptyChapter).toHaveBeenCalledExactlyOnceWith(workId, firstChapterId);
+
+    finishDelete();
+    await firstAttempt;
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelectorAll('.authoring-outline-row')).toHaveLength(0);
   });
 
   it('loads another cursor page and deduplicates chapter rows by id', async () => {

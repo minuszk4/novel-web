@@ -66,6 +66,12 @@ export class AuthoringOutlinePageComponent {
   protected readonly createAnnouncement = signal('');
   protected readonly isCreating = signal(false);
   protected readonly isCreateUncertain = signal(false);
+  protected readonly deleteConfirmationChapterId = signal<string | null>(null);
+  protected readonly deletingChapterId = signal<string | null>(null);
+  protected readonly chapterDeleteError = signal<string | null>(null);
+  protected readonly chapterDeleteFailure = signal<AuthoringApiError | null>(null);
+  protected readonly chapterDeleteAnnouncement = signal('');
+  protected readonly chapterDeleteNotice = signal<string | null>(null);
   protected readonly requestedWorkIdView = signal<string | null>(null);
 
   private readonly route = inject(ActivatedRoute);
@@ -123,6 +129,12 @@ export class AuthoringOutlinePageComponent {
       this.createError.set(null);
       this.createApiFailure.set(null);
       this.createAnnouncement.set('');
+      this.deleteConfirmationChapterId.set(null);
+      this.deletingChapterId.set(null);
+      this.chapterDeleteError.set(null);
+      this.chapterDeleteFailure.set(null);
+      this.chapterDeleteAnnouncement.set('');
+      this.chapterDeleteNotice.set(null);
       this.pendingCreateAttempt = null;
       void this.loadFirstPage(++this.loadToken);
     });
@@ -149,7 +161,8 @@ export class AuthoringOutlinePageComponent {
       this.pageError()?.status ??
       this.moreError()?.status ??
       this.createApiError()?.status ??
-      this.metadataApiFailure()?.status
+      this.metadataApiFailure()?.status ??
+      this.chapterDeleteFailure()?.status
     ) {
       case 401:
         return '/sign-in';
@@ -435,7 +448,9 @@ export class AuthoringOutlinePageComponent {
       this.isAddFormOpen.set(false);
       this.chapterTitle.set('');
       this.chapters.set(
-        mergeChapterPages(this.chapters(), [{ ...chapter, contentAvailable: false }]),
+        mergeChapterPages(this.chapters(), [
+          { ...chapter, contentAvailable: false, hasSavedDraftContent: false },
+        ]),
       );
       const manuscript = this.manuscript();
       if (manuscript) {
@@ -469,8 +484,113 @@ export class AuthoringOutlinePageComponent {
 
   protected chapterAvailability(chapter: PrivateChapterOutlineItem): string {
     if (chapter.contentAvailable) return 'Có nội dung đọc được';
-    if (chapter.status === 'draft') return 'Chưa có nội dung';
+    if (chapter.status === 'draft') {
+      return chapter.hasSavedDraftContent ? 'Có bản nháp đã lưu' : 'Chưa lưu nội dung';
+    }
     return 'Chưa khả dụng';
+  }
+
+  requestDeleteEmptyChapter(chapter: PrivateChapterOutlineItem): void {
+    if (
+      this.policy.status() !== 'accepted' ||
+      this.pageState() !== 'ready' ||
+      chapter.status !== 'draft' ||
+      chapter.hasSavedDraftContent ||
+      this.deletingChapterId()
+    ) {
+      return;
+    }
+    this.chapterDeleteFailure.set(null);
+    this.chapterDeleteError.set(null);
+    this.chapterDeleteNotice.set(null);
+    this.deleteConfirmationChapterId.set(chapter.id);
+    afterNextRender(
+      () =>
+        document.getElementById(deleteConfirmButtonId(chapter.id))?.focus({ preventScroll: true }),
+      { injector: this.injector },
+    );
+  }
+
+  cancelDeleteEmptyChapter(chapterId: string): void {
+    if (this.deletingChapterId() === chapterId) return;
+    this.deleteConfirmationChapterId.set(null);
+    this.chapterDeleteError.set(null);
+    this.chapterDeleteFailure.set(null);
+    afterNextRender(
+      () =>
+        document.getElementById(deleteTriggerButtonId(chapterId))?.focus({ preventScroll: true }),
+      { injector: this.injector },
+    );
+  }
+
+  async confirmDeleteEmptyChapter(chapter: PrivateChapterOutlineItem): Promise<void> {
+    const workId = this.requestedWorkId;
+    if (
+      !workId ||
+      this.policy.status() !== 'accepted' ||
+      this.deleteConfirmationChapterId() !== chapter.id ||
+      this.deletingChapterId()
+    ) {
+      return;
+    }
+    const token = this.loadToken;
+    const current = this.chapters();
+    const index = current.findIndex((item) => item.id === chapter.id);
+    const focusAfterDeleteId = current[index + 1]?.id ?? current[index - 1]?.id ?? null;
+    this.deletingChapterId.set(chapter.id);
+    this.chapterDeleteFailure.set(null);
+    this.chapterDeleteError.set(null);
+    this.chapterDeleteAnnouncement.set('');
+    try {
+      await this.api.deletePrivateEmptyChapter(workId, chapter.id);
+      if (token !== this.loadToken) return;
+      this.deleteConfirmationChapterId.set(null);
+      this.chapters.set(this.chapters().filter((item) => item.id !== chapter.id));
+      const previousCount = this.manuscript()?.chapterCount ?? 1;
+      const chapterCount = Math.max(0, previousCount - 1);
+      const manuscript = this.manuscript();
+      if (manuscript) this.manuscript.set({ ...manuscript, chapterCount });
+      this.chapterDeleteFailure.set(null);
+      this.chapterDeleteAnnouncement.set(
+        `Đã xóa chương trống “${chapter.title}”. Dàn ý còn ${chapterCount} chương.`,
+      );
+      afterNextRender(
+        () => {
+          const nextRow = focusAfterDeleteId
+            ? document.getElementById(chapterRowId(focusAfterDeleteId))
+            : null;
+          if (nextRow instanceof HTMLElement) nextRow.focus({ preventScroll: true });
+          else this.addChapterButton?.nativeElement.focus({ preventScroll: true });
+        },
+        { injector: this.injector },
+      );
+    } catch (error) {
+      if (token !== this.loadToken) return;
+      const mapped = toAuthoringError(error);
+      this.chapterDeleteFailure.set(mapped);
+      if (mapped.status === 409 && mapped.code === 'DRAFT_CHAPTER_HAS_CONTENT') {
+        this.deleteConfirmationChapterId.set(null);
+        this.chapters.set(
+          this.chapters().map((item) =>
+            item.id === chapter.id ? { ...item, hasSavedDraftContent: true } : item,
+          ),
+        );
+        this.chapterDeleteNotice.set(
+          'Chương đã có bản nháp được lưu ở nơi khác. Nội dung vẫn được giữ nguyên; hãy mở chương để tiếp tục.',
+        );
+        afterNextRender(
+          () =>
+            document
+              .getElementById(chapterEditorLinkId(chapter.id))
+              ?.focus({ preventScroll: true }),
+          { injector: this.injector },
+        );
+      } else {
+        this.chapterDeleteError.set(deleteChapterErrorMessage(mapped));
+      }
+    } finally {
+      if (token === this.loadToken) this.deletingChapterId.set(null);
+    }
   }
 
   protected pageErrorMessage(error: AuthoringApiError | null): string {
@@ -663,6 +783,35 @@ function createChapterErrorMessage(error: AuthoringApiError): string {
     return 'Chưa xác nhận được thao tác. Có thể thử lại bằng cùng mã an toàn.';
   }
   return 'Không thể thêm chương lúc này. Hãy thử lại sau.';
+}
+
+function deleteChapterErrorMessage(error: AuthoringApiError): string {
+  if (error.status === 401) return 'Phiên đăng nhập hết hạn. Hãy đăng nhập lại để tiếp tục.';
+  if (error.code === 'POLICY_ACCEPTANCE_REQUIRED') {
+    return 'Hãy xác nhận chính sách hiện hành trước khi xóa chương trống.';
+  }
+  if (error.status === 403) return 'Tài khoản hiện không thể xóa chương này.';
+  if (error.status === 404) return 'Dàn ý không khả dụng. Hãy quay lại thư viện.';
+  if (isUncertainOutcome(error)) {
+    return 'Chưa xác nhận được kết quả. Có thể thử lại an toàn; nếu lần trước đã xóa thành công, chương vẫn được gỡ khỏi dàn ý.';
+  }
+  return 'Chưa xóa được chương trống. Hãy kiểm tra trạng thái rồi thử lại.';
+}
+
+function deleteTriggerButtonId(chapterId: string): string {
+  return `authoring-delete-chapter-${chapterId}`;
+}
+
+function deleteConfirmButtonId(chapterId: string): string {
+  return `authoring-confirm-delete-chapter-${chapterId}`;
+}
+
+function chapterEditorLinkId(chapterId: string): string {
+  return `authoring-edit-chapter-${chapterId}`;
+}
+
+function chapterRowId(chapterId: string): string {
+  return `authoring-chapter-row-${chapterId}`;
 }
 
 function metadataErrorMessage(error: AuthoringApiError): string {

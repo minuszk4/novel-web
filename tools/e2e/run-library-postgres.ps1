@@ -4,7 +4,8 @@ param(
     [switch]$IncludeTranslationPreview,
     [switch]$IncludeAuthoringOutline,
     [switch]$IncludeAuthoringChapterEditor,
-    [switch]$IncludeAuthoringDraftApi
+    [switch]$IncludeAuthoringDraftApi,
+    [switch]$IncludeAuthoringEmptyChapterDelete
 )
 
 $ErrorActionPreference = 'Stop'
@@ -131,6 +132,9 @@ try {
     if ($IncludeAuthoringChapterEditor -and -not $IncludeAuthoringOutline) {
         throw '-IncludeAuthoringChapterEditor requires -IncludeAuthoringOutline to provide the authored-work fixture.'
     }
+    if ($IncludeAuthoringEmptyChapterDelete -and -not $IncludeAuthoringOutline) {
+        throw '-IncludeAuthoringEmptyChapterDelete requires -IncludeAuthoringOutline to provide the authored-work fixture.'
+    }
 
     $env:POSTGRES_PORT = [string]$hostPort
     $env:POSTGRES_PASSWORD = $postgresPassword
@@ -224,6 +228,20 @@ try {
         if ($draftApiTestExit -ne 0) {
             Get-Content -LiteralPath $draftApiTestLog -Tail 80
             throw "Private authoring draft API integration test failed (exit $draftApiTestExit)."
+        }
+    }
+
+    if ($IncludeAuthoringEmptyChapterDelete) {
+        $deleteApiTestLog = Join-Path $evidenceDirectory 'authoring-empty-chapter-delete-api-test.log'
+        Push-Location $apiDirectory
+        try {
+            & .\mvnw.cmd -B -ntp -Ppostgres '-Dpostgres.integration=true' `
+                '-Dtest=PostgresSchemaIntegrationTests#authoringEmptyDraftChapterDeleteIsPrivateIdempotentAndPreservesSavedContent+authoringEmptyDraftDeleteAndFirstSaveHaveOneTransactionalWinner' test *> $deleteApiTestLog
+            $deleteApiTestExit = $LASTEXITCODE
+        } finally { Pop-Location }
+        if ($deleteApiTestExit -ne 0) {
+            Get-Content -LiteralPath $deleteApiTestLog -Tail 80
+            throw "PostgreSQL empty chapter deletion integration tests failed (exit $deleteApiTestExit)."
         }
     }
 
@@ -376,7 +394,7 @@ COMMIT;
         }
     }
     if ($IncludeAuthoringOutline) {
-        $authoringOutlineSummary = & $docker @composeArguments exec -T postgres psql -v ON_ERROR_STOP=1 -tA -U novelweb -d novelweb -c "SELECT COUNT(*)::text || '|' || COALESCE(bool_and(w.source_kind = 'authored' AND w.visibility = 'private' AND w.status = 'active' AND ch.ordinal = 27 AND ch.volume_id IS NULL AND ch.status = 'draft' AND ch.source_revision_id IS NULL), FALSE)::text || '|' || COALESCE(SUM((SELECT COUNT(*) FROM chapter_revisions r WHERE r.chapter_id = ch.id)), 0)::text || '|' || COALESCE(SUM((SELECT COUNT(*) FROM authoring_chapter_creations c WHERE c.actor_user_id = '$userId' AND c.work_id = w.id AND c.chapter_id = ch.id)), 0)::text || '|' || COALESCE(bool_and(w.title = 'My explicit title' AND w.author = 'E2E Edited Pen' AND w.source_language = 'ja' AND w.authoring_metadata_version = 4), FALSE)::text FROM chapters ch JOIN works w ON w.id = ch.work_id WHERE w.id = '$secondWorkId' AND ch.title = '$authoringOutlineTitle';"
+        $authoringOutlineSummary = & $docker @composeArguments exec -T postgres psql -v ON_ERROR_STOP=1 -tA -U novelweb -d novelweb -c "SELECT COUNT(*)::text || '|' || COALESCE(bool_and(w.source_kind = 'authored' AND w.visibility = 'private' AND w.status = 'active' AND ch.ordinal = 27 AND ch.volume_id IS NULL AND ch.status = 'deleted' AND ch.deleted_at IS NOT NULL AND ch.source_revision_id IS NULL), FALSE)::text || '|' || COALESCE(SUM((SELECT COUNT(*) FROM chapter_revisions r WHERE r.chapter_id = ch.id)), 0)::text || '|' || COALESCE(SUM((SELECT COUNT(*) FROM authoring_chapter_creations c WHERE c.actor_user_id = '$userId' AND c.work_id = w.id AND c.chapter_id = ch.id)), 0)::text || '|' || COALESCE(bool_and(w.title = 'My explicit title' AND w.author = 'E2E Edited Pen' AND w.source_language = 'ja' AND w.authoring_metadata_version = 4), FALSE)::text FROM chapters ch JOIN works w ON w.id = ch.work_id WHERE w.id = '$secondWorkId' AND ch.title = '$authoringOutlineTitle';"
         if ($LASTEXITCODE -ne 0) { throw 'Could not verify the authored metadata and blank chapter in disposable PostgreSQL.' }
         $authoringOutlineParts = ([string]$authoringOutlineSummary).Trim() -split '\|'
         if ($authoringOutlineParts.Count -ne 5 -or $authoringOutlineParts[0] -ne '1' -or $authoringOutlineParts[1] -notin @('t', 'true') -or $authoringOutlineParts[2] -ne '0' -or $authoringOutlineParts[3] -ne '1' -or $authoringOutlineParts[4] -notin @('t', 'true')) {
@@ -440,13 +458,15 @@ COMMIT;
         '- Browser: Playwright Chromium, Angular dev-server proxy to the real API'
         '- Authoring: real authenticated metadata create, same-key replay, changed-payload 409, private authored work persisted, one idempotency receipt, zero volumes/chapters'
         $(if ($IncludeAuthoringDraftApi) { '- Authoring draft API integration: 1/1 PostgreSQL-backed test passed for policy/CSRF/owner gates, draft ETags, immutable revisions, exact replay, key collision, stale-version response, transactional row counts, and Reader/publication isolation' } else { '- Authoring draft API integration: not requested' })
+        $(if ($IncludeAuthoringEmptyChapterDelete) { '- Empty chapter deletion API integration: 2/2 PostgreSQL-backed tests passed for owner/policy/CSRF gates, soft delete, idempotent replay, saved-content conflict, privacy, Reader isolation, and concurrent delete/save winner' } else { '- Empty chapter deletion API integration: not requested' })
         "- Browser journey: session cookie/policy → rights receipt → upload/parse/preview/private commit → refreshed Library → Work Detail → Reader source/bookmark, then opt-in → server-timed Reader session → XP award → private profile/activity → glossary import/draft edit/revision preview$(if ($IncludeTranslationPreview) { ' → fake-local Reader translation → redacted job status → unpublished PostgreSQL candidate' } else { '' })$(if ($IncludeAuthoringOutline) { ' → private authoring chapter outline → CSRF/idempotent blank-chapter creation' } else { '' })$(if ($IncludeAuthoringChapterEditor) { ' → private chapter editor → immutable save → competing writer → explicit conflict resolution' } else { '' })"
         $(if ($IncludeAuthoringDraftApi) { '- Separate PostgreSQL authoring draft API test: 1/1 passed for owner/policy/CSRF gates, ETags, immutable writes, exact replay, stale-version response, outline/Reader isolation, and persisted row counts; see authoring-draft-api-test.log' } else { '- Separate PostgreSQL authoring draft API test: not requested' })
+        $(if ($IncludeAuthoringEmptyChapterDelete) { '- Separate PostgreSQL empty chapter deletion API tests: 2/2 passed for soft delete/replay/security and transactional save/delete race; see authoring-empty-chapter-delete-api-test.log' } else { '- Separate PostgreSQL empty chapter deletion API tests: not requested' })
         '- Cultivation feature flag: enabled only in this random disposable API process; prior process value restored during cleanup'
         $(if ($IncludeTranslationPreview) { '- Translation feature/provider/API/worker flags: fake-local only, enabled only in this random disposable API process; no external NMT provider was configured or called; prior process values restored during cleanup' } else { '- Translation fake-local flags: forced false for this disposable API process; prior process values restored during cleanup' })
         "- PostgreSQL cultivation ledger: $cultivationLedgerXp XP across $cultivationLedgerEntries entries for the synthetic user"
         $(if ($glossaryParts.Count -eq 8) { "- PostgreSQL glossary import/editor after revision preview: version $($glossaryParts[0]), active revision $($glossaryParts[1]), latest draft $($glossaryParts[2]), $($glossaryParts[3]) immutable term rows, $($glossaryParts[4]) aliases, one idempotency receipt and one apply row; preview did not create a revision or change the active pointer" } else { '- PostgreSQL glossary import/editor: not verified' })
-        $(if ($authoringOutlineParts.Count -eq 5) { "- PostgreSQL authoring outline and metadata: one private authored blank chapter at ordinal 27, zero content revisions, one idempotency receipt after replay, and persisted title/byline/language at metadata version 4 after explicit stale-conflict recovery" } else { '- PostgreSQL authoring outline and metadata: not requested' })
+        $(if ($authoringOutlineParts.Count -eq 5) { "- PostgreSQL authoring outline and metadata: blank chapter at ordinal 27 soft-deleted after UI confirmation, zero content revisions, one idempotency receipt after create replay, and persisted title/byline/language at metadata version 4 after explicit stale-conflict recovery" } else { '- PostgreSQL authoring outline and metadata: not requested' })
         $(if ($authoringEditorParts.Count -eq 6) { '- PostgreSQL authoring editor: three immutable revisions, three idempotency receipts, explicit local-version conflict resolution, latest revision pointer matches the saved content and chapter remains draft/unpublished' } else { '- PostgreSQL authoring editor: not requested' })
         $(if ($translationParts.Count -eq 4) { "- PostgreSQL fake-local translation: $($translationParts[0]) job, $($translationParts[2]) successful attempt and $($translationParts[3]) unpublished candidate segment verified with the fake marker" } else { '- PostgreSQL fake-local translation: not requested' })
         '- API route mocks: none'
@@ -454,7 +474,7 @@ COMMIT;
         "- Cleanup: $cleanup"
         "- Staging cleanup: $stagingCleanup"
         "- Screenshots: $([System.IO.Path]::GetFileName($screenshotPath)), $([System.IO.Path]::GetFileName($workDetailScreenshotPath)), $([System.IO.Path]::GetFileName($readerScreenshotPath)), $([System.IO.Path]::GetFileName($glossaryImportScreenshotPath)), $([System.IO.Path]::GetFileName($glossaryEditorScreenshotPath)), $([System.IO.Path]::GetFileName($authoringScreenshotPath))$(if ($IncludeAuthoringOutline) { ', authoring-outline-live.png' } else { '' })$(if ($IncludeAuthoringChapterEditor) { ', authoring-chapter-editor-live.png' } else { '' })$(if ($IncludeTranslationPreview) { ', translation-job-live.png' } else { '' }), private-import-commit-live.png, private-import-detail-live.png, private-import-reader-live.png, private-import-html-commit-live.png, private-import-html-detail-live.png, private-import-html-reader-live.png, private-import-markdown-commit-live.png, private-import-markdown-detail-live.png, private-import-markdown-reader-live.png, private-import-epub-commit-live.png, private-import-epub-detail-live.png, private-import-epub-reader-live.png"
-        "- Logs: api-build.log, api-stdout.log, api-stderr.log, playwright.log$(if ($IncludeAuthoringDraftApi) { ', authoring-draft-api-test.log' } else { '' })"
+        "- Logs: api-build.log, api-stdout.log, api-stderr.log, playwright.log$(if ($IncludeAuthoringDraftApi) { ', authoring-draft-api-test.log' } else { '' })$(if ($IncludeAuthoringEmptyChapterDelete) { ', authoring-empty-chapter-delete-api-test.log' } else { '' })"
         $(if ($failure) { "- Failure: $failure" } else { '- Failure: none' })
         ''
         'The synthetic user, accepted test-only policy rows, session hash, library and works existed only in this randomly named disposable PostgreSQL project. The persistent novel-web-local project was not targeted.'
