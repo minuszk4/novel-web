@@ -182,6 +182,8 @@ test('synthetic signed settlement grants credits once and unlocks a public chapt
   );
   expect(ownerPrivateManuscript.status()).toBe(200);
   expect(ownerPrivateManuscript.headers()['cache-control']).toContain('no-store');
+  const ownerPrivateManuscriptEtag = ownerPrivateManuscript.headers().etag;
+  expect(ownerPrivateManuscriptEtag).toMatch(/^"manuscript-metadata-[1-9][0-9]*"$/);
   expect(await ownerPrivateManuscript.json()).toMatchObject({
     id: privateWorkId,
     title: 'Live E2E Novel Two',
@@ -348,6 +350,23 @@ test('synthetic signed settlement grants credits once and unlocks a public chapt
   expect(foreignProgressCsrf.status()).toBe(200);
   const foreignProgressCsrfToken = ((await foreignProgressCsrf.json()) as { token: string }).token;
 
+  const foreignManuscriptUpdate = await page.request.put(
+    `http://localhost:4300/api/v1/authoring/manuscripts/${privateWorkId}`,
+    {
+      headers: {
+        'X-CSRF-Token': foreignProgressCsrfToken,
+        'If-Match': ownerPrivateManuscriptEtag,
+      },
+      data: { title: 'Outsider overwrite', author: 'Outsider', language: 'vi' },
+    },
+  );
+  expect(foreignManuscriptUpdate.status()).toBe(404);
+  expect(foreignManuscriptUpdate.headers()['cache-control']).toContain('no-store');
+  const foreignManuscriptUpdateBody = await foreignManuscriptUpdate.text();
+  expect(foreignManuscriptUpdateBody).toContain('MANUSCRIPT_NOT_FOUND');
+  expect(foreignManuscriptUpdateBody).not.toContain('Live E2E Novel Two');
+  expect(foreignManuscriptUpdateBody).not.toContain('Outsider overwrite');
+
   const foreignAnnotations = await page.request.get(
     `http://localhost:4300/api/v1/works/${privateWorkId}/annotations?chapterId=${privateChapterId}`,
   );
@@ -472,6 +491,19 @@ test('synthetic signed settlement grants credits once and unlocks a public chapt
       sameSite: 'Lax',
     },
   ]);
+  const unchangedOwnerPrivateManuscript = await page.request.get(
+    `http://localhost:4300/api/v1/authoring/manuscripts/${privateWorkId}`,
+  );
+  expect(unchangedOwnerPrivateManuscript.status()).toBe(200);
+  expect(unchangedOwnerPrivateManuscript.headers().etag).toBe(ownerPrivateManuscriptEtag);
+  expect(await unchangedOwnerPrivateManuscript.json()).toMatchObject({
+    id: privateWorkId,
+    title: 'Live E2E Novel Two',
+    author: 'E2E Author',
+    language: 'en',
+    visibility: 'private',
+    metadataVersion: 1,
+  });
   const unchangedOwnerProgress = await page.request.get(
     `http://localhost:4300/api/v1/works/${privateWorkId}/progress`,
   );
