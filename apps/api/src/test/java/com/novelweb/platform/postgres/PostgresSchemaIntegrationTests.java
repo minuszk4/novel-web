@@ -289,7 +289,7 @@ class PostgresSchemaIntegrationTests {
             connection.prepareStatement("SELECT COUNT(*) FROM databasechangelog");
         ResultSet changesets = changesetCount.executeQuery()) {
       changesets.next();
-      assertEquals(106, changesets.getInt(1), "unexpected number of applied changesets");
+      assertEquals(107, changesets.getInt(1), "unexpected number of applied changesets");
     }
 
     Set<String> actualTables = new HashSet<>();
@@ -7221,6 +7221,8 @@ class PostgresSchemaIntegrationTests {
       assertEquals("private", body.path("visibility").asText());
       assertEquals("draft", body.path("publicationState").asText());
       assertEquals(1, body.path("chapterCount").asInt());
+      assertEquals(1, body.path("metadataVersion").asLong());
+      assertEquals("\"manuscript-metadata-1\"", ownerRead.getResponse().getHeader("ETag"));
       assertFalse(body.has("ownerUserId"));
       assertFalse(body.has("sourceHash"));
       assertFalse(body.has("normalizedContent"));
@@ -7236,6 +7238,203 @@ class PostgresSchemaIntegrationTests {
     } finally {
       deleteLibraryUserData(ownerId, ownerWorkId);
       deleteLibraryUserData(outsiderId, outsiderWorkId);
+      deleteSessionTestUser(ownerId);
+      deleteSessionTestUser(outsiderId);
+    }
+  }
+
+  @Test
+  void authoringMetadataUpdateIsPrivateCsrfProtectedVersionedAndRetrySafe() throws Exception {
+    UUID ownerId = createSessionTestUser("Authoring Metadata Owner");
+    UUID outsiderId = createSessionTestUser("Authoring Metadata Outsider");
+    UUID workId = null;
+    UUID foreignWorkId = null;
+    try {
+      addCurrentPolicyAcceptances(ownerId);
+      addCurrentPolicyAcceptances(outsiderId);
+      workId =
+          libraryService
+              .createPrivateAuthoredWork(
+                  ownerId, "Original Title", "Original Pen", "vi", "metadata-owner-create-001")
+              .id();
+      foreignWorkId =
+          libraryService
+              .createPrivateAuthoredWork(
+                  outsiderId, "Foreign Title", "Foreign Pen", "en", "metadata-outsider-create-01")
+              .id();
+      SessionService.IssuedSession ownerSession = sessionService.create(ownerId).orElseThrow();
+      SessionService.IssuedSession outsiderSession =
+          sessionService.create(outsiderId).orElseThrow();
+      jakarta.servlet.http.Cookie ownerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", ownerSession.cookieValue());
+      jakarta.servlet.http.Cookie outsiderCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", outsiderSession.cookieValue());
+      String ownerCsrf = csrfTokenService.tokenFor(ownerSession.cookieValue());
+      String outsiderCsrf = csrfTokenService.tokenFor(outsiderSession.cookieValue());
+      String route = "/api/v1/authoring/manuscripts/{workId}";
+      String requestBody =
+          "{\"title\":\"Edited 🐉 Title\",\"author\":\"New Pen\",\"language\":\"ja\"}";
+
+      MvcResult initial = mockMvc.perform(get(route, workId).cookie(ownerCookie)).andReturn();
+      assertEquals(200, initial.getResponse().getStatus());
+      assertEquals("\"manuscript-metadata-1\"", initial.getResponse().getHeader("ETag"));
+
+      MvcResult missingCsrf =
+          mockMvc
+              .perform(
+                  put(route, workId)
+                      .header("If-Match", "\"manuscript-metadata-1\"")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(requestBody)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(403, missingCsrf.getResponse().getStatus());
+      assertTrue(missingCsrf.getResponse().getContentAsString().contains("CSRF_FAILED"));
+
+      MvcResult missingPrecondition =
+          mockMvc
+              .perform(
+                  put(route, workId)
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(requestBody)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(428, missingPrecondition.getResponse().getStatus());
+
+      MvcResult overlongTitle =
+          mockMvc
+              .perform(
+                  put(route, workId)
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .header("If-Match", "\"manuscript-metadata-1\"")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          objectMapper.writeValueAsString(
+                              Map.of("title", "😀".repeat(301), "author", "Pen", "language", "vi")))
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(400, overlongTitle.getResponse().getStatus());
+
+      MvcResult updated =
+          mockMvc
+              .perform(
+                  put(route, workId)
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .header("If-Match", "\"manuscript-metadata-1\"")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(requestBody)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(200, updated.getResponse().getStatus());
+      assertEquals("\"manuscript-metadata-2\"", updated.getResponse().getHeader("ETag"));
+      assertTrue(updated.getResponse().getHeader("Cache-Control").contains("no-store"));
+      JsonNode updatedBody = objectMapper.readTree(updated.getResponse().getContentAsString());
+      assertEquals("Edited 🐉 Title", updatedBody.path("title").asText());
+      assertEquals("New Pen", updatedBody.path("author").asText());
+      assertEquals("ja", updatedBody.path("language").asText());
+      assertEquals("private", updatedBody.path("visibility").asText());
+      assertEquals("draft", updatedBody.path("publicationState").asText());
+      assertEquals(2, updatedBody.path("metadataVersion").asLong());
+
+      MvcResult exactStateRetry =
+          mockMvc
+              .perform(
+                  put(route, workId)
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .header("If-Match", "\"manuscript-metadata-1\"")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(requestBody)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(200, exactStateRetry.getResponse().getStatus());
+      assertEquals("\"manuscript-metadata-2\"", exactStateRetry.getResponse().getHeader("ETag"));
+
+      MvcResult staleDifferentState =
+          mockMvc
+              .perform(
+                  put(route, workId)
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .header("If-Match", "\"manuscript-metadata-1\"")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          "{\"title\":\"Stale Private Title\",\"author\":\"Pen\",\"language\":\"vi\"}")
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(412, staleDifferentState.getResponse().getStatus());
+      assertEquals(
+          "\"manuscript-metadata-2\"", staleDifferentState.getResponse().getHeader("ETag"));
+      assertTrue(
+          staleDifferentState
+              .getResponse()
+              .getContentAsString()
+              .contains("MANUSCRIPT_METADATA_STALE"));
+      assertFalse(
+          staleDifferentState.getResponse().getContentAsString().contains("Stale Private Title"));
+
+      MvcResult foreignWrite =
+          mockMvc
+              .perform(
+                  put(route, workId)
+                      .header("X-CSRF-Token", outsiderCsrf)
+                      .header("If-Match", "\"manuscript-metadata-1\"")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(requestBody)
+                      .cookie(outsiderCookie))
+              .andReturn();
+      assertEquals(404, foreignWrite.getResponse().getStatus());
+
+      MvcResult finalRead = mockMvc.perform(get(route, workId).cookie(ownerCookie)).andReturn();
+      assertEquals(200, finalRead.getResponse().getStatus());
+      assertEquals(
+          "Edited 🐉 Title",
+          objectMapper
+              .readTree(finalRead.getResponse().getContentAsString())
+              .path("title")
+              .asText());
+      assertEquals("\"manuscript-metadata-2\"", finalRead.getResponse().getHeader("ETag"));
+
+      UUID concurrentWorkId = workId;
+      ExecutorService editors = Executors.newFixedThreadPool(2);
+      try {
+        CountDownLatch startConcurrentEdits = new CountDownLatch(1);
+        Future<Boolean> firstEditor =
+            editors.submit(
+                () -> {
+                  startConcurrentEdits.await();
+                  try {
+                    return libraryService
+                            .updatePrivateAuthoredWorkDetails(
+                                ownerId, concurrentWorkId, 2, "Concurrent A", "New Pen", "ja")
+                            .metadataVersion()
+                        == 3;
+                  } catch (LibraryRepository.ManuscriptMetadataConflictException conflict) {
+                    return false;
+                  }
+                });
+        Future<Boolean> secondEditor =
+            editors.submit(
+                () -> {
+                  startConcurrentEdits.await();
+                  try {
+                    return libraryService
+                            .updatePrivateAuthoredWorkDetails(
+                                ownerId, concurrentWorkId, 2, "Concurrent B", "New Pen", "ja")
+                            .metadataVersion()
+                        == 3;
+                  } catch (LibraryRepository.ManuscriptMetadataConflictException conflict) {
+                    return false;
+                  }
+                });
+        startConcurrentEdits.countDown();
+        assertNotEquals(
+            firstEditor.get(10, TimeUnit.SECONDS), secondEditor.get(10, TimeUnit.SECONDS));
+      } finally {
+        editors.shutdownNow();
+      }
+    } finally {
+      deleteLibraryUserData(ownerId, workId);
+      deleteLibraryUserData(outsiderId, foreignWorkId);
       deleteSessionTestUser(ownerId);
       deleteSessionTestUser(outsiderId);
     }

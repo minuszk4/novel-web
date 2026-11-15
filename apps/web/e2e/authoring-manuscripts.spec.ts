@@ -10,7 +10,7 @@ async function json(route: Route, body: unknown, status = 200): Promise<void> {
 async function installDemo(page: Page): Promise<void> {
   await page.route('**/api/v1/system/status', (route) =>
     json(route, {
-      apiVersion: '6.31.0',
+      apiVersion: '6.32.0',
       environment: 'test',
       integrations: {
         googleOidcEnabled: false,
@@ -31,7 +31,7 @@ async function installDemo(page: Page): Promise<void> {
 async function installAccount(page: Page): Promise<void> {
   await page.route('**/api/v1/system/status', (route) =>
     json(route, {
-      apiVersion: '6.31.0',
+      apiVersion: '6.32.0',
       environment: 'test',
       integrations: {
         googleOidcEnabled: false,

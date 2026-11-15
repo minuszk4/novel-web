@@ -8,23 +8,31 @@ test('account library renders data from the real API and PostgreSQL session', as
   const workIds = (process.env['LIBRARY_LIVE_TEST_WORK_IDS'] ?? '').split(',').filter(Boolean);
   const screenshotPath = process.env['LIBRARY_LIVE_TEST_SCREENSHOT'];
   const authoredDraftTitle = process.env['AUTHORING_LIVE_TEST_TITLE'];
+  const expectedSecondWorkTitle =
+    process.env['AUTHORING_OUTLINE_LIVE_TEST_EXPECTED_TITLE'] ?? 'Live E2E Novel Two';
 
-  test.skip(!sessionToken || !libraryId || workIds.length !== 2 || !screenshotPath,
-    'run tools/e2e/run-library-postgres.ps1 to supply an isolated real API/database fixture');
-  expect(sessionToken, 'run with the disposable PostgreSQL fixture harness').toMatch(/^[A-Za-z0-9_-]{43}$/);
+  test.skip(
+    !sessionToken || !libraryId || workIds.length !== 2 || !screenshotPath,
+    'run tools/e2e/run-library-postgres.ps1 to supply an isolated real API/database fixture',
+  );
+  expect(sessionToken, 'run with the disposable PostgreSQL fixture harness').toMatch(
+    /^[A-Za-z0-9_-]{43}$/,
+  );
   expect(libraryId).toMatch(/^[0-9a-f-]{36}$/i);
   expect(workIds).toHaveLength(2);
   expect(screenshotPath).toBeTruthy();
 
-  await page.context().addCookies([{
-    name: '__Host-novel_session',
-    value: sessionToken!,
-    domain: 'localhost',
-    path: '/',
-    httpOnly: true,
-    secure: true,
-    sameSite: 'Lax',
-  }]);
+  await page.context().addCookies([
+    {
+      name: '__Host-novel_session',
+      value: sessionToken!,
+      domain: 'localhost',
+      path: '/',
+      httpOnly: true,
+      secure: true,
+      sameSite: 'Lax',
+    },
+  ]);
 
   const apiResponses: import('@playwright/test').Response[] = [];
   page.on('response', (response) => {
@@ -39,16 +47,21 @@ test('account library renders data from the real API and PostgreSQL session', as
   await expect(page.locator('.topbar-avatar')).toHaveText('L');
   await expect(page.getByText('Thư viện tài khoản được tải qua API')).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Live E2E Novel One' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Live E2E Novel Two' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: expectedSecondWorkTitle })).toBeVisible();
   await expect(page.getByText('RIÊNG TƯ · TÀI KHOẢN')).toHaveCount(authoredDraftTitle ? 3 : 2);
   if (authoredDraftTitle) {
     await expect(page.getByRole('heading', { name: authoredDraftTitle })).toBeVisible();
   }
   await expect(page.getByLabel('Trạng thái đọc: Live E2E Novel One')).toHaveValue('want-to-read');
-  await expect(page.getByLabel('Trạng thái đọc: Live E2E Novel Two')).toHaveValue('want-to-read');
+  await expect(page.getByLabel(`Trạng thái đọc: ${expectedSecondWorkTitle}`)).toHaveValue(
+    'want-to-read',
+  );
 
-  const responseFor = (path: string) => apiResponses.find((response) =>
-    response.request().method() === 'GET' && new URL(response.url()).pathname === path);
+  const responseFor = (path: string) =>
+    apiResponses.find(
+      (response) =>
+        response.request().method() === 'GET' && new URL(response.url()).pathname === path,
+    );
   const requiredPaths = [
     '/api/v1/auth/me',
     '/api/v1/auth/policies/current',
@@ -66,17 +79,21 @@ test('account library renders data from the real API and PostgreSQL session', as
   }
 
   const librariesResponse = responseFor('/api/v1/libraries')!;
-  const librariesBody = await librariesResponse.json() as { items: Array<{ id: string; name: string }> };
-  expect(librariesBody.items).toEqual(expect.arrayContaining([
-    expect.objectContaining({ id: libraryId, name: 'Live E2E Library' }),
-  ]));
+  const librariesBody = (await librariesResponse.json()) as {
+    items: Array<{ id: string; name: string }>;
+  };
+  expect(librariesBody.items).toEqual(
+    expect.arrayContaining([expect.objectContaining({ id: libraryId, name: 'Live E2E Library' })]),
+  );
 
   const worksResponse = responseFor('/api/v1/works')!;
-  const worksBody = await worksResponse.json() as { items: Array<{ id: string; title: string }> };
-  expect(worksBody.items).toEqual(expect.arrayContaining([
-    expect.objectContaining({ id: workIds[0], title: 'Live E2E Novel One' }),
-    expect.objectContaining({ id: workIds[1], title: 'Live E2E Novel Two' }),
-  ]));
+  const worksBody = (await worksResponse.json()) as { items: Array<{ id: string; title: string }> };
+  expect(worksBody.items).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ id: workIds[0], title: 'Live E2E Novel One' }),
+      expect.objectContaining({ id: workIds[1], title: expectedSecondWorkTitle }),
+    ]),
+  );
 
   await page.screenshot({ path: screenshotPath!, fullPage: true });
 });

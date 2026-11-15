@@ -29,6 +29,17 @@
   overflow-wrap: anywhere;
 }
 
+.authoring-outline-manuscript-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 16px;
+}
+
+.authoring-outline-metadata-trigger {
+  min-height: 44px;
+}
+
 .authoring-outline-heading > p:last-child {
   max-width: 680px;
   margin-top: 8px;
@@ -291,6 +302,27 @@
   line-height: 1.5;
 }
 
+.authoring-outline-save-status {
+  margin: 0;
+  color: var(--primary-dark);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.authoring-outline-conflict {
+  margin-bottom: 16px;
+  padding: 14px;
+  border: 1px solid #e7d6a5;
+  border-radius: 8px;
+  background: #fffaf0;
+}
+
+.authoring-outline-conflict > p {
+  margin: 0 0 12px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
 .authoring-outline-error {
   margin-top: 12px;
   padding: 12px;
@@ -416,6 +448,10 @@
   .authoring-outline-add-heading > p {
     max-width: none;
   }
+
+  .authoring-outline-manuscript-summary {
+    align-items: flex-start;
+  }
 }
 
 @media (max-width: 520px) {
@@ -425,6 +461,7 @@
   }
 
   .authoring-outline-list-heading > .button,
+  .authoring-outline-metadata-trigger,
   .authoring-outline-form-actions,
   .authoring-outline-form-actions .button,
   .authoring-outline-empty > .button,

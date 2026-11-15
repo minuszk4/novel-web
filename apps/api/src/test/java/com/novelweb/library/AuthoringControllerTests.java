@@ -7,6 +7,7 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 
 import com.novelweb.identity.auth.PolicyService;
 import com.novelweb.identity.session.SessionService;
@@ -204,7 +205,7 @@ class AuthoringControllerTests {
     when(libraryService.getPrivateAuthoredWorkDetails(actorId, workId))
         .thenReturn(
             new LibraryRepository.PrivateAuthoredWorkDetails(
-                workId, "My Novel", "Pen Name", "vi", 3, createdAt));
+                workId, "My Novel", "Pen Name", "vi", 3, createdAt, 7));
 
     var response =
         mockMvc
@@ -215,17 +216,136 @@ class AuthoringControllerTests {
 
     assertEquals(200, response.getStatus());
     assertTrue(response.getHeader("Cache-Control").contains("no-store"));
+    assertEquals("\"manuscript-metadata-7\"", response.getHeader("ETag"));
     String body = response.getContentAsString();
     assertTrue(body.contains(workId.toString()));
     assertTrue(body.contains("\"publicationState\":\"draft\""));
     assertTrue(body.contains("\"visibility\":\"private\""));
     assertTrue(body.contains("\"chapterCount\":3"));
+    assertTrue(body.contains("\"metadataVersion\":7"));
     assertTrue(body.contains("My Novel"));
     assertTrue(body.contains("Pen Name"));
     assertTrue(!body.contains("ownerUserId"));
     assertTrue(!body.contains("sourceHash"));
     assertTrue(!body.contains(actorId.toString()));
     verify(libraryService).getPrivateAuthoredWorkDetails(actorId, workId);
+  }
+
+  @Test
+  void manuscriptMetadataUpdateRequiresSessionPolicyAndStrongPrecondition() throws Exception {
+    UUID workId = UUID.randomUUID();
+    String path = "/api/v1/authoring/manuscripts/{workId}";
+    String body = "{\"title\":\"Edited Novel\",\"author\":\"New Pen\",\"language\":\"ja\"}";
+    var anonymous =
+        mockMvc
+            .perform(
+                put(path, workId)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(body)
+                    .header("If-Match", "\"manuscript-metadata-1\""))
+            .andReturn()
+            .getResponse();
+    assertEquals(401, anonymous.getStatus());
+    verifyNoInteractions(libraryService, policyService);
+
+    when(policyService.requiredAcceptance(actorId))
+        .thenReturn(PolicyService.RequiredAcceptance.REQUIRED);
+    var blocked =
+        mockMvc
+            .perform(
+                put(path, workId)
+                    .principal(authentication())
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(body)
+                    .header("If-Match", "\"manuscript-metadata-1\""))
+            .andReturn()
+            .getResponse();
+    assertEquals(403, blocked.getStatus());
+    verifyNoInteractions(libraryService);
+  }
+
+  @Test
+  void manuscriptMetadataUpdateValidatesIfMatchAndReturnsNewVersion() throws Exception {
+    when(policyService.requiredAcceptance(actorId))
+        .thenReturn(PolicyService.RequiredAcceptance.COMPLETE);
+    UUID workId = UUID.randomUUID();
+    String path = "/api/v1/authoring/manuscripts/{workId}";
+    String body = "{\"title\":\"Edited Novel\",\"author\":\"New Pen\",\"language\":\"ja\"}";
+
+    var missing =
+        mockMvc
+            .perform(
+                put(path, workId)
+                    .principal(authentication())
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(body))
+            .andReturn()
+            .getResponse();
+    assertEquals(428, missing.getStatus());
+    assertTrue(missing.getContentAsString().contains("MANUSCRIPT_METADATA_PRECONDITION_REQUIRED"));
+
+    var malformed =
+        mockMvc
+            .perform(
+                put(path, workId)
+                    .principal(authentication())
+                    .header("If-Match", "W/\"manuscript-metadata-1\"")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(body))
+            .andReturn()
+            .getResponse();
+    assertEquals(400, malformed.getStatus());
+    assertTrue(malformed.getContentAsString().contains("INVALID_MANUSCRIPT_METADATA_ETAG"));
+    verifyNoInteractions(libraryService);
+
+    Instant createdAt = Instant.parse("2026-11-15T12:34:56Z");
+    when(libraryService.updatePrivateAuthoredWorkDetails(
+            actorId, workId, 3, "Edited Novel", "New Pen", "ja"))
+        .thenReturn(
+            new LibraryRepository.PrivateAuthoredWorkDetails(
+                workId, "Edited Novel", "New Pen", "ja", 3, createdAt, 4));
+    var updated =
+        mockMvc
+            .perform(
+                put(path, workId)
+                    .principal(authentication())
+                    .header("If-Match", "\"manuscript-metadata-3\"")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(body))
+            .andReturn()
+            .getResponse();
+    assertEquals(200, updated.getStatus());
+    assertEquals("\"manuscript-metadata-4\"", updated.getHeader("ETag"));
+    assertTrue(updated.getHeader("Cache-Control").contains("no-store"));
+    assertTrue(updated.getContentAsString().contains("\"metadataVersion\":4"));
+    verify(libraryService)
+        .updatePrivateAuthoredWorkDetails(actorId, workId, 3, "Edited Novel", "New Pen", "ja");
+  }
+
+  @Test
+  void manuscriptMetadataStaleWriteReturnsCurrentEtagWithoutSubmittedValues() throws Exception {
+    when(policyService.requiredAcceptance(actorId))
+        .thenReturn(PolicyService.RequiredAcceptance.COMPLETE);
+    UUID workId = UUID.randomUUID();
+    when(libraryService.updatePrivateAuthoredWorkDetails(
+            actorId, workId, 1, "Private Submitted Title", "Pen", "vi"))
+        .thenThrow(new LibraryRepository.ManuscriptMetadataConflictException(2));
+
+    var response =
+        mockMvc
+            .perform(
+                put("/api/v1/authoring/manuscripts/{workId}", workId)
+                    .principal(authentication())
+                    .header("If-Match", "\"manuscript-metadata-1\"")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(
+                        "{\"title\":\"Private Submitted Title\",\"author\":\"Pen\",\"language\":\"vi\"}"))
+            .andReturn()
+            .getResponse();
+    assertEquals(412, response.getStatus());
+    assertEquals("\"manuscript-metadata-2\"", response.getHeader("ETag"));
+    assertTrue(response.getContentAsString().contains("MANUSCRIPT_METADATA_STALE"));
+    assertTrue(!response.getContentAsString().contains("Private Submitted Title"));
   }
 
   @Test

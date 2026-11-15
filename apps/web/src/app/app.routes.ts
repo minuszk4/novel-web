@@ -3,6 +3,7 @@ import { AppShellComponent } from './shared/app-shell.component';
 import { policyConsentGuard } from './core/policy-consent.guard';
 import { glossaryEditorUnsavedGuard } from './pages/glossary-editor-unsaved.guard';
 import { authoringChapterEditorUnsavedGuard } from './pages/authoring-chapter-editor-unsaved.guard';
+import { authoringOutlineUnsavedGuard } from './pages/authoring-outline-unsaved.guard';
 import { translationCandidateEditUnsavedGuard } from './pages/translation-candidate-edit-unsaved.guard';
 
 export const routes: Routes = [
@@ -79,6 +80,7 @@ export const routes: Routes = [
           import('./pages/authoring-outline-page.component').then(
             (page) => page.AuthoringOutlinePageComponent,
           ),
+        canDeactivate: [authoringOutlineUnsavedGuard],
         title: 'Dàn ý bản thảo — Novel',
       },
       {

@@ -3,10 +3,21 @@
     <p class="eyebrow">AUTHOR STUDIO · BẢN THỬ</p>
     <h1 #pageHeading tabindex="-1">{{ manuscript()?.title ?? 'Dàn ý bản thảo' }}</h1>
     @if (manuscript(); as details) {
-      <p class="authoring-outline-manuscript-meta">
-        {{ details.author || 'Chưa có bút danh' }} · Ngôn ngữ {{ details.language }} ·
-        {{ details.chapterCount }} chương
-      </p>
+      <div class="authoring-outline-manuscript-summary">
+        <p class="authoring-outline-manuscript-meta">
+          {{ details.author || 'Chưa có bút danh' }} · Ngôn ngữ {{ details.language }} ·
+          {{ details.chapterCount }} chương
+        </p>
+        <button
+          #editMetadataButton
+          class="button button-outline authoring-outline-metadata-trigger"
+          type="button"
+          [disabled]="isMetadataFormOpen() || isAddFormOpen() || isSavingMetadata()"
+          (click)="openMetadataForm()"
+        >
+          Sửa thông tin
+        </button>
+      </div>
     }
     <p>Thêm tên chương và sắp xếp theo thứ tự. Chương mới hiện chưa có nội dung.</p>
   </header>
@@ -52,6 +63,173 @@
       }
     </section>
   } @else {
+    @if (metadataAnnouncement()) {
+      <p class="authoring-outline-announcement" role="status" aria-live="polite">
+        {{ metadataAnnouncement() }}
+      </p>
+    }
+
+    @if (isMetadataFormOpen()) {
+      <section class="authoring-outline-add" aria-labelledby="authoring-metadata-edit-title">
+        <div class="authoring-outline-add-heading">
+          <div>
+            <p class="eyebrow">THÔNG TIN RIÊNG TƯ</p>
+            <h2 id="authoring-metadata-edit-title">Sửa thông tin bản thảo</h2>
+          </div>
+          <p>Chỉ tiêu đề, bút danh và ngôn ngữ được thay đổi. Bản thảo vẫn ở chế độ riêng tư.</p>
+        </div>
+
+        @if (metadataConflict(); as latest) {
+          <div class="authoring-outline-conflict" role="alert">
+            <p>
+              Một phiên bản mới đã được lưu. Bản máy chủ hiện ghi “{{ latest.title }}” ·
+              {{ latest.author || 'Chưa có bút danh' }} · {{ latest.language }}. Hãy chọn rõ phiên
+              bản muốn giữ.
+            </p>
+            <div class="authoring-outline-form-actions">
+              <button class="button button-outline" type="button" (click)="useServerMetadata()">
+                Dùng thông tin trên máy chủ
+              </button>
+              <button class="button button-primary" type="button" (click)="saveMetadataOnLatest()">
+                Lưu thông tin của tôi
+              </button>
+            </div>
+          </div>
+        } @else if (metadataApiFailure()?.status === 412) {
+          <div class="authoring-outline-error" role="alert">
+            <p>{{ metadataError() }}</p>
+            <button class="text-button" type="button" (click)="reloadMetadataConflict()">
+              Tải phiên bản mới nhất
+            </button>
+          </div>
+        }
+
+        <form novalidate (submit)="saveMetadata($event)">
+          <label for="authoring-metadata-title">
+            <span>Tên bản thảo <span aria-hidden="true">*</span></span>
+            <input
+              #metadataTitleInput
+              id="authoring-metadata-title"
+              type="text"
+              autocomplete="off"
+              required
+              [value]="metadataDraft()?.title ?? ''"
+              [disabled]="isSavingMetadata() || isMetadataUncertain() || !!metadataConflict()"
+              [attr.aria-invalid]="metadataFieldErrors().title ? 'true' : null"
+              [attr.aria-describedby]="
+                metadataFieldErrors().title
+                  ? 'authoring-metadata-title-help authoring-metadata-title-error'
+                  : 'authoring-metadata-title-help'
+              "
+              (input)="updateMetadataField('title', $event)"
+            />
+            <span id="authoring-metadata-title-help" class="authoring-outline-help">
+              {{ metadataTitleLength }} / 300 ký tự
+            </span>
+            @if (metadataFieldErrors().title; as error) {
+              <span id="authoring-metadata-title-error" class="authoring-outline-field-error">{{
+                error
+              }}</span>
+            }
+          </label>
+          <label for="authoring-metadata-author">
+            <span>Bút danh</span>
+            <input
+              id="authoring-metadata-author"
+              type="text"
+              autocomplete="nickname"
+              [value]="metadataDraft()?.author ?? ''"
+              [disabled]="isSavingMetadata() || isMetadataUncertain() || !!metadataConflict()"
+              [attr.aria-invalid]="metadataFieldErrors().author ? 'true' : null"
+              [attr.aria-describedby]="
+                metadataFieldErrors().author
+                  ? 'authoring-metadata-author-help authoring-metadata-author-error'
+                  : 'authoring-metadata-author-help'
+              "
+              (input)="updateMetadataField('author', $event)"
+            />
+            <span id="authoring-metadata-author-help" class="authoring-outline-help">
+              {{ metadataAuthorLength }} / 200 ký tự · Để trống nếu chưa chọn bút danh.
+            </span>
+            @if (metadataFieldErrors().author; as error) {
+              <span id="authoring-metadata-author-error" class="authoring-outline-field-error">{{
+                error
+              }}</span>
+            }
+          </label>
+          <label for="authoring-metadata-language">
+            <span>Ngôn ngữ bản thảo <span aria-hidden="true">*</span></span>
+            <input
+              id="authoring-metadata-language"
+              type="text"
+              autocomplete="language"
+              required
+              [value]="metadataDraft()?.language ?? ''"
+              [disabled]="isSavingMetadata() || isMetadataUncertain() || !!metadataConflict()"
+              [attr.aria-invalid]="metadataFieldErrors().language ? 'true' : null"
+              [attr.aria-describedby]="
+                metadataFieldErrors().language
+                  ? 'authoring-metadata-language-help authoring-metadata-language-error'
+                  : 'authoring-metadata-language-help'
+              "
+              (input)="updateMetadataField('language', $event)"
+            />
+            <span id="authoring-metadata-language-help" class="authoring-outline-help">
+              Mã ngôn ngữ gồm 2–35 ký tự, ví dụ vi, en hoặc zh-Hans.
+            </span>
+            @if (metadataFieldErrors().language; as error) {
+              <span id="authoring-metadata-language-error" class="authoring-outline-field-error">{{
+                error
+              }}</span>
+            }
+          </label>
+
+          @if (metadataError(); as error) {
+            <div class="authoring-outline-error" role="alert" aria-live="assertive">
+              <p>{{ error }}</p>
+              @if (recoveryUrl; as url) {
+                <a [routerLink]="url" [queryParams]="recoveryQueryParams">{{ recoveryLabel }}</a>
+              }
+            </div>
+          }
+          @if (isMetadataUncertain()) {
+            <p class="authoring-outline-retry-note" role="status" aria-live="polite">
+              Thử lại sẽ gửi cùng ETag và đúng các giá trị đã gửi trước đó.
+            </p>
+          }
+          @if (isSavingMetadata()) {
+            <p class="authoring-outline-save-status" role="status" aria-live="polite">
+              Đang lưu thông tin bản thảo…
+            </p>
+          }
+
+          <div class="authoring-outline-form-actions">
+            <button
+              class="button button-outline"
+              type="button"
+              [disabled]="isSavingMetadata() || isMetadataUncertain() || !!metadataConflict()"
+              (click)="cancelMetadataEdit()"
+            >
+              Hủy
+            </button>
+            <button
+              class="button button-primary"
+              type="submit"
+              [disabled]="isSavingMetadata() || !!metadataConflict()"
+            >
+              {{
+                isSavingMetadata()
+                  ? 'Đang lưu…'
+                  : isMetadataUncertain()
+                    ? 'Thử xác nhận lại'
+                    : 'Lưu thông tin'
+              }}
+            </button>
+          </div>
+        </form>
+      </section>
+    }
+
     <aside class="authoring-outline-privacy" aria-label="Thông tin về phạm vi dàn ý">
       <span aria-hidden="true">▣</span>
       <div>

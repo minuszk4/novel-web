@@ -29,7 +29,16 @@ export interface PrivateManuscriptListItem {
   createdAt: string;
 }
 
-export type PrivateManuscriptDetails = PrivateManuscriptListItem;
+export interface PrivateManuscriptDetails extends PrivateManuscriptListItem {
+  metadataVersion: number;
+  etag: string;
+}
+
+export interface UpdatePrivateManuscriptInput {
+  title: string;
+  author: string;
+  language: string;
+}
 
 export interface PrivateManuscriptListPage {
   items: PrivateManuscriptListItem[];
@@ -217,14 +226,69 @@ export class AuthoringApiService {
       if (response.status !== 200 || response.headers.get('Cache-Control') !== 'no-store') {
         throw invalidManuscriptDetailResponse();
       }
-      let details: PrivateManuscriptListItem;
+      let details: Omit<PrivateManuscriptDetails, 'etag'>;
       try {
-        details = parseManuscriptListItem(response.body);
+        details = parseManuscriptDetails(response.body);
       } catch {
         throw invalidManuscriptDetailResponse();
       }
-      if (details.id !== workId) throw invalidManuscriptDetailResponse();
-      return details;
+      const etag = response.headers.get('ETag');
+      if (
+        details.id !== workId ||
+        !isManuscriptMetadataEtag(etag) ||
+        etag !== manuscriptMetadataEtag(details.metadataVersion)
+      ) {
+        throw invalidManuscriptDetailResponse();
+      }
+      return { ...details, etag };
+    } catch (error) {
+      throw toAuthoringApiError(error);
+    }
+  }
+
+  async updatePrivateManuscript(
+    workId: string,
+    input: UpdatePrivateManuscriptInput,
+    etag: string,
+  ): Promise<PrivateManuscriptDetails> {
+    if (
+      !isUuid(workId) ||
+      !isManuscriptMetadataEtag(etag) ||
+      !isBoundedString(input.title, 1, 300) ||
+      !isBoundedString(input.author, 0, 200) ||
+      !isBoundedString(input.language, 2, 35)
+    ) {
+      throw new AuthoringApiError(400, 'INVALID_AUTHORING_MANUSCRIPT');
+    }
+
+    try {
+      const headers = (await this.csrfHeaders()).set('If-Match', etag);
+      const response = await firstValueFrom(
+        this.http
+          .put<unknown>(`${manuscriptsUrl}/${workId}`, input, {
+            observe: 'response',
+            headers,
+          })
+          .pipe(timeout(requestTimeoutMs)),
+      );
+      if (response.status !== 200 || response.headers.get('Cache-Control') !== 'no-store') {
+        throw invalidManuscriptDetailResponse();
+      }
+      let details: Omit<PrivateManuscriptDetails, 'etag'>;
+      try {
+        details = parseManuscriptDetails(response.body);
+      } catch {
+        throw invalidManuscriptDetailResponse();
+      }
+      const responseEtag = response.headers.get('ETag');
+      if (
+        details.id !== workId ||
+        !isManuscriptMetadataEtag(responseEtag) ||
+        responseEtag !== manuscriptMetadataEtag(details.metadataVersion)
+      ) {
+        throw invalidManuscriptDetailResponse();
+      }
+      return { ...details, etag: responseEtag };
     } catch (error) {
       throw toAuthoringApiError(error);
     }
@@ -494,6 +558,32 @@ function parseManuscriptListItem(value: unknown): PrivateManuscriptListItem {
     throw invalidManuscriptListResponse();
   }
   return value as unknown as PrivateManuscriptListItem;
+}
+
+function parseManuscriptDetails(value: unknown): Omit<PrivateManuscriptDetails, 'etag'> {
+  if (
+    !isRecord(value) ||
+    hasUnexpectedFields(value, [
+      'id',
+      'title',
+      'author',
+      'language',
+      'visibility',
+      'publicationState',
+      'chapterCount',
+      'createdAt',
+      'metadataVersion',
+    ]) ||
+    !Number.isSafeInteger(value['metadataVersion']) ||
+    (value['metadataVersion'] as number) < 1
+  ) {
+    throw invalidManuscriptDetailResponse();
+  }
+  const { metadataVersion, ...item } = value;
+  return {
+    ...parseManuscriptListItem(item),
+    metadataVersion: metadataVersion as number,
+  };
 }
 
 function parseOutlineItem(value: unknown): PrivateChapterOutlineItem {
@@ -777,6 +867,16 @@ function isUuid(value: unknown): value is string {
 
 function isBoundedString(value: unknown, min: number, max: number): value is string {
   return typeof value === 'string' && [...value].length >= min && [...value].length <= max;
+}
+
+function isManuscriptMetadataEtag(value: string | null): value is string {
+  if (!value || !/^"manuscript-metadata-[1-9][0-9]*"$/.test(value)) return false;
+  const version = Number(value.slice(21, -1));
+  return Number.isSafeInteger(version) && version > 0;
+}
+
+function manuscriptMetadataEtag(version: number): string {
+  return `"manuscript-metadata-${version}"`;
 }
 
 function isInstant(value: unknown): value is string {

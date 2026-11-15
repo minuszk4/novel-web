@@ -152,11 +152,14 @@ describe('AuthoringApiService', () => {
     const request = http.expectOne(`/api/v1/authoring/manuscripts/${workId}`);
     expect(request.request.method).toBe('GET');
     request.flush(
-      { ...createdDraft, chapterCount: 2 },
+      { ...createdDraft, chapterCount: 2, metadataVersion: 1 },
       {
         status: 200,
         statusText: 'OK',
-        headers: new HttpHeaders({ 'Cache-Control': 'no-store' }),
+        headers: new HttpHeaders({
+          'Cache-Control': 'no-store',
+          ETag: '"manuscript-metadata-1"',
+        }),
       },
     );
 
@@ -166,17 +169,116 @@ describe('AuthoringApiService', () => {
       chapterCount: 2,
       visibility: 'private',
       publicationState: 'draft',
+      metadataVersion: 1,
+      etag: '"manuscript-metadata-1"',
+    });
+  });
+
+  it('updates only strict private manuscript metadata with the current ETag and CSRF', async () => {
+    const input = { title: 'Updated Novel', author: 'New Pen', language: 'ja' };
+    const pending = api.updatePrivateManuscript(workId, input, '"manuscript-metadata-1"');
+    await flushCsrf(http);
+    const request = http.expectOne(`/api/v1/authoring/manuscripts/${workId}`);
+    expect(request.request.method).toBe('PUT');
+    expect(request.request.headers.get('If-Match')).toBe('"manuscript-metadata-1"');
+    expect(request.request.headers.get('X-CSRF-Token')).toBe(csrfToken);
+    expect(request.request.body).toEqual(input);
+    request.flush(
+      { ...createdDraft, ...input, chapterCount: 3, metadataVersion: 2 },
+      {
+        status: 200,
+        statusText: 'OK',
+        headers: new HttpHeaders({
+          'Cache-Control': 'no-store',
+          ETag: '"manuscript-metadata-2"',
+        }),
+      },
+    );
+    await expect(pending).resolves.toMatchObject({
+      id: workId,
+      title: input.title,
+      author: input.author,
+      language: input.language,
+      metadataVersion: 2,
+      etag: '"manuscript-metadata-2"',
+    });
+  });
+
+  it('rejects malformed metadata ETags, input bounds, body fields and version headers', async () => {
+    await expect(
+      api.updatePrivateManuscript(
+        workId,
+        { title: 'Title', author: '', language: 'vi' },
+        'W/"manuscript-metadata-1"',
+      ),
+    ).rejects.toMatchObject({ status: 400, code: 'INVALID_AUTHORING_MANUSCRIPT' });
+    await expect(
+      api.updatePrivateManuscript(
+        workId,
+        { title: '😀'.repeat(301), author: '', language: 'vi' },
+        '"manuscript-metadata-1"',
+      ),
+    ).rejects.toMatchObject({ status: 400, code: 'INVALID_AUTHORING_MANUSCRIPT' });
+    http.expectNone((request) => request.url.includes('/authoring/manuscripts/'));
+
+    const unexpectedField = api.updatePrivateManuscript(
+      workId,
+      { title: 'Title', author: '', language: 'vi' },
+      '"manuscript-metadata-1"',
+    );
+    await flushCsrf(http);
+    http.expectOne(`/api/v1/authoring/manuscripts/${workId}`).flush(
+      { ...createdDraft, chapterCount: 0, metadataVersion: 2, ownerUserId: 'private' },
+      {
+        status: 200,
+        statusText: 'OK',
+        headers: new HttpHeaders({
+          'Cache-Control': 'no-store',
+          ETag: '"manuscript-metadata-2"',
+        }),
+      },
+    );
+    await expect(unexpectedField).rejects.toMatchObject({
+      status: 502,
+      code: 'INVALID_AUTHORING_MANUSCRIPT_RESPONSE',
+    });
+
+    const mismatch = api.updatePrivateManuscript(
+      workId,
+      { title: 'Title', author: '', language: 'vi' },
+      '"manuscript-metadata-1"',
+    );
+    await flushCsrf(http);
+    http.expectOne(`/api/v1/authoring/manuscripts/${workId}`).flush(
+      { ...createdDraft, chapterCount: 0, metadataVersion: 2 },
+      {
+        status: 200,
+        statusText: 'OK',
+        headers: new HttpHeaders({
+          'Cache-Control': 'no-store',
+          ETag: '"manuscript-metadata-3"',
+        }),
+      },
+    );
+    await expect(mismatch).rejects.toMatchObject({
+      status: 502,
+      code: 'INVALID_AUTHORING_MANUSCRIPT_RESPONSE',
     });
   });
 
   it('rejects manuscript details with an unexpected body field, wrong ID or cacheable response', async () => {
     const unexpected = api.getPrivateManuscript(workId);
     http.expectOne(`/api/v1/authoring/manuscripts/${workId}`).flush(
-      { ...createdDraft, chapterCount: 0, normalizedContent: 'must not be present' },
+      {
+        ...createdDraft,
+        chapterCount: 0,
+        metadataVersion: 1,
+        normalizedContent: 'must not be present',
+      },
       {
         status: 200,
         statusText: 'OK',
-        headers: new HttpHeaders({ 'Cache-Control': 'no-store' }),
+        headers: new HttpHeaders({ 'Cache-Control': 'no-store', ETag: '"manuscript-metadata-1"' }),
       },
     );
     await expect(unexpected).rejects.toMatchObject({
@@ -186,11 +288,16 @@ describe('AuthoringApiService', () => {
 
     const wrongId = api.getPrivateManuscript(workId);
     http.expectOne(`/api/v1/authoring/manuscripts/${workId}`).flush(
-      { ...createdDraft, id: '22222222-2222-4222-8222-222222222222', chapterCount: 0 },
+      {
+        ...createdDraft,
+        id: '22222222-2222-4222-8222-222222222222',
+        chapterCount: 0,
+        metadataVersion: 1,
+      },
       {
         status: 200,
         statusText: 'OK',
-        headers: new HttpHeaders({ 'Cache-Control': 'no-store' }),
+        headers: new HttpHeaders({ 'Cache-Control': 'no-store', ETag: '"manuscript-metadata-1"' }),
       },
     );
     await expect(wrongId).rejects.toMatchObject({
@@ -199,9 +306,14 @@ describe('AuthoringApiService', () => {
     });
 
     const cacheable = api.getPrivateManuscript(workId);
-    http
-      .expectOne(`/api/v1/authoring/manuscripts/${workId}`)
-      .flush({ ...createdDraft, chapterCount: 0 }, { status: 200, statusText: 'OK' });
+    http.expectOne(`/api/v1/authoring/manuscripts/${workId}`).flush(
+      { ...createdDraft, chapterCount: 0, metadataVersion: 1 },
+      {
+        status: 200,
+        statusText: 'OK',
+        headers: new HttpHeaders({ ETag: '"manuscript-metadata-1"' }),
+      },
+    );
     await expect(cacheable).rejects.toMatchObject({
       status: 502,
       code: 'INVALID_AUTHORING_MANUSCRIPT_RESPONSE',

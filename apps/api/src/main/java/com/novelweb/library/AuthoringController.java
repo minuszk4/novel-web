@@ -21,6 +21,7 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -122,9 +123,59 @@ public class AuthoringController {
 
     LibraryRepository.PrivateAuthoredWorkDetails details =
         libraryService.getPrivateAuthoredWorkDetails(actor.orElseThrow(), workId);
+    return manuscriptDetailsResponse(details);
+  }
+
+  @PutMapping("/{workId}")
+  public ResponseEntity<?> updateManuscript(
+      Authentication authentication,
+      @PathVariable UUID workId,
+      @RequestBody UpdateManuscriptRequest body,
+      @RequestHeader(value = HttpHeaders.IF_MATCH, required = false) String ifMatch,
+      HttpServletRequest request) {
+    Optional<UUID> actor = actorUserId(authentication);
+    if (actor.isEmpty())
+      return problem(
+          HttpStatus.UNAUTHORIZED, "UNAUTHENTICATED", "Sign in to edit this manuscript.", request);
+    ResponseEntity<?> policyGate = policyGate(actor.orElseThrow(), request);
+    if (policyGate != null) return policyGate;
+    if (body == null || body.hasUnknownFields())
+      return problem(
+          HttpStatus.BAD_REQUEST,
+          "INVALID_MANUSCRIPT",
+          "Request body is missing or contains unsupported fields.",
+          request);
+    if (ifMatch == null)
+      return problem(
+          HttpStatus.PRECONDITION_REQUIRED,
+          "MANUSCRIPT_METADATA_PRECONDITION_REQUIRED",
+          "Read the current manuscript metadata and provide its ETag in If-Match before saving.",
+          request);
+    Long expectedVersion = parseManuscriptMetadataEtag(ifMatch);
+    if (expectedVersion == null)
+      return problem(
+          HttpStatus.BAD_REQUEST,
+          "INVALID_MANUSCRIPT_METADATA_ETAG",
+          "If-Match must be the strong manuscript metadata ETag returned by the detail route.",
+          request);
+
+    LibraryRepository.PrivateAuthoredWorkDetails details =
+        libraryService.updatePrivateAuthoredWorkDetails(
+            actor.orElseThrow(),
+            workId,
+            expectedVersion,
+            body.title(),
+            body.author(),
+            body.language());
+    return manuscriptDetailsResponse(details);
+  }
+
+  private static ResponseEntity<PrivateManuscriptDetailsResponse> manuscriptDetailsResponse(
+      LibraryRepository.PrivateAuthoredWorkDetails details) {
     return ResponseEntity.ok()
         .cacheControl(CacheControl.noStore())
         .header(HttpHeaders.PRAGMA, "no-cache")
+        .header(HttpHeaders.ETAG, manuscriptMetadataEtag(details.metadataVersion()))
         .body(
             new PrivateManuscriptDetailsResponse(
                 details.id(),
@@ -134,7 +185,8 @@ public class AuthoringController {
                 "private",
                 "draft",
                 details.chapterCount(),
-                details.createdAt()));
+                details.createdAt(),
+                details.metadataVersion()));
   }
 
   @PostMapping
@@ -470,6 +522,25 @@ public class AuthoringController {
         .body(body);
   }
 
+  @ExceptionHandler(LibraryRepository.ManuscriptMetadataConflictException.class)
+  public ResponseEntity<ProblemDetail> staleManuscriptMetadata(
+      LibraryRepository.ManuscriptMetadataConflictException exception, HttpServletRequest request) {
+    ProblemDetail body =
+        ProblemDetail.forStatusAndDetail(
+            HttpStatus.PRECONDITION_FAILED,
+            "The manuscript metadata changed after it was read. Review the latest version before saving.");
+    body.setTitle(HttpStatus.PRECONDITION_FAILED.getReasonPhrase());
+    body.setProperty("code", "MANUSCRIPT_METADATA_STALE");
+    body.setProperty("currentEtag", manuscriptMetadataEtag(exception.currentVersion()));
+    Object value = request.getAttribute(CorrelationIdFilter.REQUEST_ATTRIBUTE);
+    body.setProperty("correlationId", value instanceof String id ? id : "unavailable");
+    return ResponseEntity.status(HttpStatus.PRECONDITION_FAILED)
+        .cacheControl(CacheControl.noStore())
+        .header(HttpHeaders.PRAGMA, "no-cache")
+        .header(HttpHeaders.ETAG, manuscriptMetadataEtag(exception.currentVersion()))
+        .body(body);
+  }
+
   @ExceptionHandler(LibraryRepository.DuplicateRevisionException.class)
   public ResponseEntity<ProblemDetail> duplicateDraftRevision(HttpServletRequest request) {
     return problem(
@@ -542,6 +613,19 @@ public class AuthoringController {
 
   private static String draftEtag(int revisionNo) {
     return "\"draft-" + revisionNo + "\"";
+  }
+
+  private static String manuscriptMetadataEtag(long version) {
+    return "\"manuscript-metadata-" + version + "\"";
+  }
+
+  private static Long parseManuscriptMetadataEtag(String value) {
+    if (value == null || !value.matches("\\\"manuscript-metadata-[1-9][0-9]*\\\"")) return null;
+    try {
+      return Long.parseLong(value.substring(21, value.length() - 1));
+    } catch (NumberFormatException exception) {
+      return null;
+    }
   }
 
   private static Integer parseDraftEtag(String value) {
@@ -620,6 +704,46 @@ public class AuthoringController {
 
     public void setTitle(String title) {
       this.title = title;
+    }
+
+    @JsonAnySetter
+    public void captureUnknownField(String name, Object ignoredValue) {
+      unknownFields = true;
+    }
+  }
+
+  public static final class UpdateManuscriptRequest {
+    private String title;
+    private String author;
+    private String language;
+    private boolean unknownFields;
+
+    public String title() {
+      return title;
+    }
+
+    public String author() {
+      return author;
+    }
+
+    public String language() {
+      return language;
+    }
+
+    boolean hasUnknownFields() {
+      return unknownFields;
+    }
+
+    public void setTitle(String title) {
+      this.title = title;
+    }
+
+    public void setAuthor(String author) {
+      this.author = author;
+    }
+
+    public void setLanguage(String language) {
+      this.language = language;
     }
 
     @JsonAnySetter
@@ -750,7 +874,8 @@ public class AuthoringController {
       String visibility,
       String publicationState,
       int chapterCount,
-      Instant createdAt) {}
+      Instant createdAt,
+      long metadataVersion) {}
 
   public record CreatedDraftChapterResponse(
       UUID id,

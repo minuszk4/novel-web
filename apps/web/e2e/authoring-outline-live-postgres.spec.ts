@@ -119,6 +119,7 @@ test('private chapter outline reads and creates metadata through the real API an
   ]);
   expect(detailResponse.status()).toBe(200);
   expect(detailResponse.headers()['cache-control']).toContain('no-store');
+  expect(detailResponse.headers().etag).toBe('"manuscript-metadata-1"');
   const detailText = await detailResponse.text();
   expect(JSON.parse(detailText)).toMatchObject({
     id: workId,
@@ -128,6 +129,7 @@ test('private chapter outline reads and creates metadata through the real API an
     visibility: 'private',
     publicationState: 'draft',
     chapterCount: 26,
+    metadataVersion: 1,
   });
   expect(detailText).not.toMatch(
     /"(?:ownerUserId|sourceHash|normalizedContent|sourceText|segments|content)"\s*:/i,
@@ -254,6 +256,117 @@ test('private chapter outline reads and creates metadata through the real API an
     title: newChapterTitle,
     status: 'draft',
   });
+
+  await page.getByRole('button', { name: 'Sửa thông tin' }).click();
+  const titleInput = page.locator('#authoring-metadata-title');
+  await expect(titleInput).toBeFocused();
+  await titleInput.fill('Live E2E Edited Novel');
+  await page.locator('#authoring-metadata-author').fill('E2E Edited Pen');
+  await page.locator('#authoring-metadata-language').fill('ja');
+  await expectNoAxeViolations(page);
+  const firstMetadataCsrfPromise = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'GET' &&
+      new URL(response.url()).pathname === '/api/v1/auth/csrf',
+  );
+  const firstMetadataUpdatePromise = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'PUT' &&
+      new URL(response.url()).pathname === `/api/v1/authoring/manuscripts/${workId}`,
+  );
+  await page.getByRole('button', { name: 'Lưu thông tin' }).click();
+  const [firstMetadataCsrf, firstMetadataUpdate] = await Promise.all([
+    firstMetadataCsrfPromise,
+    firstMetadataUpdatePromise,
+  ]);
+  const metadataCsrfToken = ((await firstMetadataCsrf.json()) as { token: string }).token;
+  expect(firstMetadataUpdate.status()).toBe(200);
+  expect(firstMetadataUpdate.request().headers()['x-csrf-token']).toBe(metadataCsrfToken);
+  expect(firstMetadataUpdate.request().headers()['if-match']).toBe('"manuscript-metadata-1"');
+  expect(firstMetadataUpdate.request().postDataJSON()).toEqual({
+    title: 'Live E2E Edited Novel',
+    author: 'E2E Edited Pen',
+    language: 'ja',
+  });
+  expect(firstMetadataUpdate.headers().etag).toBe('"manuscript-metadata-2"');
+  expect(firstMetadataUpdate.headers()['cache-control']).toContain('no-store');
+  await expect(page.getByRole('heading', { name: 'Live E2E Edited Novel' })).toBeVisible();
+  await expect(page.locator('.authoring-outline-manuscript-meta')).toContainText(
+    'E2E Edited Pen · Ngôn ngữ ja · 27 chương',
+  );
+  await expect(page.getByRole('button', { name: 'Sửa thông tin' })).toBeFocused();
+
+  const competingUpdate = await page.request.put(`${baseUrl}/api/v1/authoring/manuscripts/${workId}`, {
+    headers: {
+      Cookie: `__Host-novel_session=${sessionToken}`,
+      'X-CSRF-Token': metadataCsrfToken,
+      'If-Match': '"manuscript-metadata-2"',
+    },
+    data: { title: 'Server competing title', author: 'Server pen', language: 'en' },
+  });
+  expect(competingUpdate.status()).toBe(200);
+  expect(competingUpdate.headers().etag).toBe('"manuscript-metadata-3"');
+
+  await page.getByRole('button', { name: 'Sửa thông tin' }).click();
+  await page.locator('#authoring-metadata-title').fill('My explicit title');
+  const staleCsrfPromise = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'GET' &&
+      new URL(response.url()).pathname === '/api/v1/auth/csrf',
+  );
+  const staleWritePromise = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'PUT' &&
+      new URL(response.url()).pathname === `/api/v1/authoring/manuscripts/${workId}`,
+  );
+  const conflictReloadPromise = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'GET' &&
+      new URL(response.url()).pathname === `/api/v1/authoring/manuscripts/${workId}`,
+  );
+  await page.getByRole('button', { name: 'Lưu thông tin' }).click();
+  const [, staleWrite, conflictReload] = await Promise.all([
+    staleCsrfPromise,
+    staleWritePromise,
+    conflictReloadPromise,
+  ]);
+  expect(staleWrite.status()).toBe(412);
+  expect(staleWrite.headers().etag).toBe('"manuscript-metadata-3"');
+  expect(await staleWrite.text()).not.toContain('My explicit title');
+  expect(conflictReload.status()).toBe(200);
+  await expect(page.getByRole('button', { name: 'Dùng thông tin trên máy chủ' })).toBeVisible();
+  await expect(page.locator('#authoring-metadata-title')).toHaveValue('My explicit title');
+  await expect(page.getByText(/Server competing title/)).toBeVisible();
+  await expectNoAxeViolations(page);
+
+  const retryCsrfPromise = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'GET' &&
+      new URL(response.url()).pathname === '/api/v1/auth/csrf',
+  );
+  const retryWritePromise = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'PUT' &&
+      new URL(response.url()).pathname === `/api/v1/authoring/manuscripts/${workId}`,
+  );
+  await page.getByRole('button', { name: 'Lưu thông tin của tôi' }).click();
+  const [, retryWrite] = await Promise.all([retryCsrfPromise, retryWritePromise]);
+  expect(retryWrite.status()).toBe(200);
+  expect(retryWrite.request().headers()['if-match']).toBe('"manuscript-metadata-3"');
+  expect(retryWrite.headers().etag).toBe('"manuscript-metadata-4"');
+  expect(retryWrite.request().postDataJSON()).toEqual({
+    title: 'My explicit title',
+    author: 'E2E Edited Pen',
+    language: 'ja',
+  });
+  await expect(page.getByRole('heading', { name: 'My explicit title' })).toBeVisible();
+  await expect(page.locator('.authoring-outline-manuscript-meta')).toContainText('27 chương');
+  const metadataStorage = await page.evaluate(() => ({
+    local: Object.values(localStorage),
+    session: Object.values(sessionStorage),
+  }));
+  expect(JSON.stringify(metadataStorage)).not.toContain('My explicit title');
+  await expectNoAxeViolations(page);
 
   const widths = await page.evaluate(() => ({
     client: document.documentElement.clientWidth,

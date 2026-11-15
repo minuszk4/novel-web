@@ -54,6 +54,7 @@ $environmentNames = @(
     'NOVEL_IMPORT_STAGING_ROOT', 'LIBRARY_LIVE_TEST_WORK_IDS', 'LIBRARY_LIVE_TEST_SCREENSHOT', 'READER_LIVE_TEST_WORK_ID',
     'AUTHORING_LIVE_TEST_TITLE', 'AUTHORING_LIVE_TEST_SCREENSHOT',
     'AUTHORING_OUTLINE_LIVE_TEST_WORK_ID', 'AUTHORING_OUTLINE_LIVE_TEST_SCREENSHOT',
+    'AUTHORING_OUTLINE_LIVE_TEST_EXPECTED_TITLE',
     'AUTHORING_EDITOR_LIVE_TEST_WORK_ID', 'AUTHORING_EDITOR_LIVE_TEST_CHAPTER_ID',
     'AUTHORING_EDITOR_LIVE_TEST_SCREENSHOT',
     'TRANSLATION_LIVE_TEST_WORK_ID', 'TRANSLATION_LIVE_TEST_CHAPTER_ID', 'TRANSLATION_LIVE_TEST_SCREENSHOT',
@@ -311,6 +312,7 @@ COMMIT;
     if ($IncludeAuthoringOutline) {
         $env:AUTHORING_OUTLINE_LIVE_TEST_WORK_ID = [string]$secondWorkId
         $env:AUTHORING_OUTLINE_LIVE_TEST_SCREENSHOT = $authoringOutlineScreenshotPath
+        $env:AUTHORING_OUTLINE_LIVE_TEST_EXPECTED_TITLE = 'My explicit title'
     }
     if ($IncludeAuthoringChapterEditor) {
         $env:AUTHORING_EDITOR_LIVE_TEST_WORK_ID = [string]$secondWorkId
@@ -374,11 +376,11 @@ COMMIT;
         }
     }
     if ($IncludeAuthoringOutline) {
-        $authoringOutlineSummary = & $docker @composeArguments exec -T postgres psql -v ON_ERROR_STOP=1 -tA -U novelweb -d novelweb -c "SELECT COUNT(*)::text || '|' || COALESCE(bool_and(w.source_kind = 'authored' AND w.visibility = 'private' AND w.status = 'active' AND ch.ordinal = 27 AND ch.volume_id IS NULL AND ch.status = 'draft' AND ch.source_revision_id IS NULL), FALSE)::text || '|' || COALESCE(SUM((SELECT COUNT(*) FROM chapter_revisions r WHERE r.chapter_id = ch.id)), 0)::text || '|' || COALESCE(SUM((SELECT COUNT(*) FROM authoring_chapter_creations c WHERE c.actor_user_id = '$userId' AND c.work_id = w.id AND c.chapter_id = ch.id)), 0)::text FROM chapters ch JOIN works w ON w.id = ch.work_id WHERE w.id = '$secondWorkId' AND ch.title = '$authoringOutlineTitle';"
-        if ($LASTEXITCODE -ne 0) { throw 'Could not verify the blank authored chapter in disposable PostgreSQL.' }
+        $authoringOutlineSummary = & $docker @composeArguments exec -T postgres psql -v ON_ERROR_STOP=1 -tA -U novelweb -d novelweb -c "SELECT COUNT(*)::text || '|' || COALESCE(bool_and(w.source_kind = 'authored' AND w.visibility = 'private' AND w.status = 'active' AND ch.ordinal = 27 AND ch.volume_id IS NULL AND ch.status = 'draft' AND ch.source_revision_id IS NULL), FALSE)::text || '|' || COALESCE(SUM((SELECT COUNT(*) FROM chapter_revisions r WHERE r.chapter_id = ch.id)), 0)::text || '|' || COALESCE(SUM((SELECT COUNT(*) FROM authoring_chapter_creations c WHERE c.actor_user_id = '$userId' AND c.work_id = w.id AND c.chapter_id = ch.id)), 0)::text || '|' || COALESCE(bool_and(w.title = 'My explicit title' AND w.author = 'E2E Edited Pen' AND w.source_language = 'ja' AND w.authoring_metadata_version = 4), FALSE)::text FROM chapters ch JOIN works w ON w.id = ch.work_id WHERE w.id = '$secondWorkId' AND ch.title = '$authoringOutlineTitle';"
+        if ($LASTEXITCODE -ne 0) { throw 'Could not verify the authored metadata and blank chapter in disposable PostgreSQL.' }
         $authoringOutlineParts = ([string]$authoringOutlineSummary).Trim() -split '\|'
-        if ($authoringOutlineParts.Count -ne 4 -or $authoringOutlineParts[0] -ne '1' -or $authoringOutlineParts[1] -notin @('t', 'true') -or $authoringOutlineParts[2] -ne '0' -or $authoringOutlineParts[3] -ne '1') {
-            throw "PostgreSQL authoring outline invariants failed after browser journey: $authoringOutlineSummary"
+        if ($authoringOutlineParts.Count -ne 5 -or $authoringOutlineParts[0] -ne '1' -or $authoringOutlineParts[1] -notin @('t', 'true') -or $authoringOutlineParts[2] -ne '0' -or $authoringOutlineParts[3] -ne '1' -or $authoringOutlineParts[4] -notin @('t', 'true')) {
+            throw "PostgreSQL authoring outline/metadata invariants failed after browser journey: $authoringOutlineSummary"
         }
     }
     if ($IncludeAuthoringChapterEditor) {
@@ -444,7 +446,7 @@ COMMIT;
         $(if ($IncludeTranslationPreview) { '- Translation feature/provider/API/worker flags: fake-local only, enabled only in this random disposable API process; no external NMT provider was configured or called; prior process values restored during cleanup' } else { '- Translation fake-local flags: forced false for this disposable API process; prior process values restored during cleanup' })
         "- PostgreSQL cultivation ledger: $cultivationLedgerXp XP across $cultivationLedgerEntries entries for the synthetic user"
         $(if ($glossaryParts.Count -eq 8) { "- PostgreSQL glossary import/editor after revision preview: version $($glossaryParts[0]), active revision $($glossaryParts[1]), latest draft $($glossaryParts[2]), $($glossaryParts[3]) immutable term rows, $($glossaryParts[4]) aliases, one idempotency receipt and one apply row; preview did not create a revision or change the active pointer" } else { '- PostgreSQL glossary import/editor: not verified' })
-        $(if ($authoringOutlineParts.Count -eq 4) { "- PostgreSQL authoring outline: one private authored blank chapter at ordinal 27, zero content revisions and one idempotency receipt after replay" } else { '- PostgreSQL authoring outline: not requested' })
+        $(if ($authoringOutlineParts.Count -eq 5) { "- PostgreSQL authoring outline and metadata: one private authored blank chapter at ordinal 27, zero content revisions, one idempotency receipt after replay, and persisted title/byline/language at metadata version 4 after explicit stale-conflict recovery" } else { '- PostgreSQL authoring outline and metadata: not requested' })
         $(if ($authoringEditorParts.Count -eq 6) { '- PostgreSQL authoring editor: three immutable revisions, three idempotency receipts, explicit local-version conflict resolution, latest revision pointer matches the saved content and chapter remains draft/unpublished' } else { '- PostgreSQL authoring editor: not requested' })
         $(if ($translationParts.Count -eq 4) { "- PostgreSQL fake-local translation: $($translationParts[0]) job, $($translationParts[2]) successful attempt and $($translationParts[3]) unpublished candidate segment verified with the fake marker" } else { '- PostgreSQL fake-local translation: not requested' })
         '- API route mocks: none'

@@ -65,12 +65,15 @@ function manuscript(): PrivateManuscriptDetails {
     publicationState: 'draft',
     chapterCount: 0,
     createdAt: timestamp,
+    metadataVersion: 1,
+    etag: '"manuscript-metadata-1"',
   };
 }
 
 describe('AuthoringOutlinePageComponent', () => {
   let api: {
     getPrivateManuscript: ReturnType<typeof vi.fn>;
+    updatePrivateManuscript: ReturnType<typeof vi.fn>;
     listPrivateChapters: ReturnType<typeof vi.fn>;
     createPrivateChapter: ReturnType<typeof vi.fn>;
   };
@@ -79,6 +82,14 @@ describe('AuthoringOutlinePageComponent', () => {
   beforeEach(() => {
     api = {
       getPrivateManuscript: vi.fn().mockResolvedValue(manuscript()),
+      updatePrivateManuscript: vi.fn().mockImplementation((_workId, values) =>
+        Promise.resolve({
+          ...manuscript(),
+          ...values,
+          metadataVersion: 2,
+          etag: '"manuscript-metadata-2"',
+        }),
+      ),
       listPrivateChapters: vi.fn().mockResolvedValue(page()),
       createPrivateChapter: vi.fn().mockResolvedValue(createdChapter()),
     };
@@ -111,6 +122,239 @@ describe('AuthoringOutlinePageComponent', () => {
     expect(fixture.nativeElement.textContent).toContain('Chưa có chương nào');
     expect(fixture.nativeElement.querySelector('input')).toBeNull();
     expect(fixture.nativeElement.querySelector('a[href*="/reader/"]')).toBeNull();
+  });
+
+  it('edits only private manuscript metadata and returns focus after a confirmed save', async () => {
+    const fixture = TestBed.createComponent(AuthoringOutlinePageComponent);
+    fixture.detectChanges();
+    await settle(fixture);
+    fixture.detectChanges();
+    fixture.componentInstance.openMetadataForm();
+    fixture.detectChanges();
+
+    const title = fixture.nativeElement.querySelector(
+      '#authoring-metadata-title',
+    ) as HTMLInputElement;
+    expect(title).toBeTruthy();
+    expect(document.activeElement).toBe(title);
+    expect(fixture.nativeElement.textContent).toContain('Bản thảo vẫn ở chế độ riêng tư');
+    fixture.componentInstance.updateMetadataField('title', inputEvent('  Tên mới  '));
+    fixture.componentInstance.updateMetadataField('author', inputEvent(' Bút danh mới '));
+    fixture.componentInstance.updateMetadataField('language', inputEvent(' ja '));
+
+    await fixture.componentInstance.saveMetadata(submitEvent());
+    fixture.detectChanges();
+
+    expect(api.updatePrivateManuscript).toHaveBeenCalledWith(
+      workId,
+      { title: 'Tên mới', author: 'Bút danh mới', language: 'ja' },
+      '"manuscript-metadata-1"',
+    );
+    expect(fixture.nativeElement.querySelector('h1')?.textContent).toContain('Tên mới');
+    expect(fixture.nativeElement.textContent).toContain('Bút danh mới · Ngôn ngữ ja · 0 chương');
+    expect(fixture.nativeElement.textContent).toContain('Đã lưu thông tin bản thảo.');
+    await vi.waitFor(() => {
+      expect(document.activeElement).toBe(
+        fixture.nativeElement.querySelector('.authoring-outline-metadata-trigger'),
+      );
+    });
+  });
+
+  it('marks each invalid metadata field and focuses the first one without calling the API', async () => {
+    const fixture = TestBed.createComponent(AuthoringOutlinePageComponent);
+    fixture.detectChanges();
+    await settle(fixture);
+    fixture.componentInstance.openMetadataForm();
+    fixture.detectChanges();
+    fixture.componentInstance.updateMetadataField('title', inputEvent('😀'.repeat(301)));
+    fixture.componentInstance.updateMetadataField('author', inputEvent('a'.repeat(201)));
+    fixture.componentInstance.updateMetadataField('language', inputEvent('x'));
+
+    await fixture.componentInstance.saveMetadata(submitEvent());
+    fixture.detectChanges();
+
+    expect(api.updatePrivateManuscript).not.toHaveBeenCalled();
+    for (const field of ['title', 'author', 'language']) {
+      const input = fixture.nativeElement.querySelector(
+        `#authoring-metadata-${field}`,
+      ) as HTMLInputElement;
+      expect(input.getAttribute('aria-invalid')).toBe('true');
+      expect(input.getAttribute('aria-describedby')).toContain(`authoring-metadata-${field}-error`);
+      expect(
+        fixture.nativeElement.querySelector(`#authoring-metadata-${field}-error`),
+      ).toBeTruthy();
+    }
+    expect(document.activeElement).toBe(
+      fixture.nativeElement.querySelector('#authoring-metadata-title'),
+    );
+  });
+
+  it('keeps local metadata after a stale response and applies it only after explicit choice', async () => {
+    const latest = {
+      ...manuscript(),
+      title: 'Server title',
+      metadataVersion: 2,
+      etag: '"manuscript-metadata-2"',
+    };
+    api.updatePrivateManuscript.mockRejectedValueOnce(
+      new AuthoringApiError(412, 'MANUSCRIPT_METADATA_STALE'),
+    );
+    api.getPrivateManuscript.mockResolvedValueOnce(manuscript()).mockResolvedValueOnce(latest);
+    const fixture = TestBed.createComponent(AuthoringOutlinePageComponent);
+    fixture.detectChanges();
+    await settle(fixture);
+    fixture.componentInstance.openMetadataForm();
+    fixture.componentInstance.updateMetadataField('title', inputEvent('My local title'));
+
+    await fixture.componentInstance.saveMetadata(submitEvent());
+    fixture.detectChanges();
+    await settle(fixture);
+
+    expect(fixture.nativeElement.textContent).toContain('Server title');
+    expect(
+      (fixture.nativeElement.querySelector('#authoring-metadata-title') as HTMLInputElement).value,
+    ).toBe('My local title');
+    expect(fixture.nativeElement.textContent).toContain('Dùng thông tin trên máy chủ');
+
+    await fixture.componentInstance.saveMetadataOnLatest();
+    fixture.detectChanges();
+    expect(api.updatePrivateManuscript).toHaveBeenNthCalledWith(
+      2,
+      workId,
+      { title: 'My local title', author: 'Bút danh', language: 'vi' },
+      latest.etag,
+    );
+  });
+
+  it('lets the author explicitly discard local metadata and use the server version', async () => {
+    const latest = {
+      ...manuscript(),
+      title: 'Latest server title',
+      author: 'Latest pen',
+      metadataVersion: 2,
+      etag: '"manuscript-metadata-2"',
+    };
+    api.updatePrivateManuscript.mockRejectedValueOnce(
+      new AuthoringApiError(412, 'MANUSCRIPT_METADATA_STALE'),
+    );
+    api.getPrivateManuscript.mockResolvedValueOnce(manuscript()).mockResolvedValueOnce(latest);
+    const fixture = TestBed.createComponent(AuthoringOutlinePageComponent);
+    fixture.detectChanges();
+    await settle(fixture);
+    fixture.componentInstance.openMetadataForm();
+    fixture.componentInstance.updateMetadataField('title', inputEvent('Local unsaved title'));
+    await fixture.componentInstance.saveMetadata(submitEvent());
+    fixture.detectChanges();
+    await settle(fixture);
+
+    const confirmation = vi.fn().mockReturnValue(false);
+    const previousDescriptor = Object.getOwnPropertyDescriptor(window, 'confirm');
+    Object.defineProperty(window, 'confirm', {
+      configurable: true,
+      writable: true,
+      value: confirmation,
+    });
+    try {
+      fixture.componentInstance.useServerMetadata();
+      fixture.detectChanges();
+      expect(fixture.nativeElement.querySelector('#authoring-metadata-title')).toBeTruthy();
+      expect(
+        (fixture.nativeElement.querySelector('#authoring-metadata-title') as HTMLInputElement)
+          .value,
+      ).toBe('Local unsaved title');
+      expect(confirmation).toHaveBeenCalledOnce();
+
+      confirmation.mockReturnValue(true);
+      fixture.componentInstance.useServerMetadata();
+      fixture.detectChanges();
+      expect(fixture.nativeElement.querySelector('h1')?.textContent).toContain(
+        'Latest server title',
+      );
+      expect(fixture.nativeElement.querySelector('#authoring-metadata-title')).toBeNull();
+      expect(fixture.nativeElement.textContent).not.toContain('Local unsaved title');
+      expect(fixture.nativeElement.textContent).toContain('Đã dùng thông tin bản thảo mới nhất');
+    } finally {
+      if (previousDescriptor) {
+        Object.defineProperty(window, 'confirm', previousDescriptor);
+      } else {
+        Reflect.deleteProperty(window, 'confirm');
+      }
+    }
+  });
+
+  it('asks before leaving dirty metadata and blocks departure while a save is in flight', async () => {
+    const fixture = TestBed.createComponent(AuthoringOutlinePageComponent);
+    fixture.detectChanges();
+    await settle(fixture);
+    fixture.componentInstance.openMetadataForm();
+    fixture.componentInstance.updateMetadataField('title', inputEvent('Unsaved title'));
+    const confirmation = vi.fn().mockReturnValue(false);
+    const previousDescriptor = Object.getOwnPropertyDescriptor(window, 'confirm');
+    Object.defineProperty(window, 'confirm', {
+      configurable: true,
+      writable: true,
+      value: confirmation,
+    });
+    try {
+      expect(fixture.componentInstance.canDeactivate()).toBe(false);
+      expect(confirmation).toHaveBeenCalledOnce();
+      confirmation.mockReturnValue(true);
+      expect(fixture.componentInstance.canDeactivate()).toBe(true);
+    } finally {
+      if (previousDescriptor) {
+        Object.defineProperty(window, 'confirm', previousDescriptor);
+      } else {
+        Reflect.deleteProperty(window, 'confirm');
+      }
+    }
+
+    let resolveUpdate!: (value: PrivateManuscriptDetails) => void;
+    api.updatePrivateManuscript.mockReturnValueOnce(
+      new Promise<PrivateManuscriptDetails>((resolve) => {
+        resolveUpdate = resolve;
+      }),
+    );
+    const save = fixture.componentInstance.saveMetadata(submitEvent());
+    fixture.detectChanges();
+    expect(fixture.componentInstance.canDeactivate()).toBe(false);
+    expect(
+      fixture.nativeElement.querySelector('.authoring-outline-save-status')?.textContent,
+    ).toContain('Đang lưu thông tin bản thảo');
+    expect(
+      (fixture.nativeElement.querySelector('#authoring-metadata-title') as HTMLInputElement)
+        .disabled,
+    ).toBe(true);
+    resolveUpdate({
+      ...manuscript(),
+      title: 'Unsaved title',
+      metadataVersion: 2,
+      etag: '"manuscript-metadata-2"',
+    });
+    await save;
+  });
+
+  it('retries an uncertain metadata save with the exact values and same ETag', async () => {
+    api.updatePrivateManuscript
+      .mockRejectedValueOnce(new AuthoringApiError(503, 'TEMPORARY_FAILURE'))
+      .mockResolvedValueOnce({ ...manuscript(), title: 'Recovered title', metadataVersion: 2 });
+    const fixture = TestBed.createComponent(AuthoringOutlinePageComponent);
+    fixture.detectChanges();
+    await settle(fixture);
+    fixture.componentInstance.openMetadataForm();
+    fixture.componentInstance.updateMetadataField('title', inputEvent('Recovered title'));
+
+    await fixture.componentInstance.saveMetadata(submitEvent());
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('#authoring-metadata-title')?.disabled).toBe(true);
+    expect(fixture.nativeElement.textContent).toContain('Thử xác nhận lại');
+
+    await fixture.componentInstance.saveMetadata(submitEvent());
+    fixture.detectChanges();
+    expect(api.updatePrivateManuscript).toHaveBeenCalledTimes(2);
+    expect(api.updatePrivateManuscript.mock.calls[1]).toEqual(
+      api.updatePrivateManuscript.mock.calls[0],
+    );
+    expect(fixture.nativeElement.querySelector('h1')?.textContent).toContain('Recovered title');
   });
 
   it('shows existing chapter status and does not offer chapter-content editing', async () => {

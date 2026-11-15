@@ -150,6 +150,25 @@ public class LibraryService {
     return repository.getPrivateAuthoredWorkDetails(ownerUserId, workId);
   }
 
+  public LibraryRepository.PrivateAuthoredWorkDetails updatePrivateAuthoredWorkDetails(
+      UUID ownerUserId,
+      UUID workId,
+      long expectedVersion,
+      String requestedTitle,
+      String requestedAuthor,
+      String requestedLanguage) {
+    Objects.requireNonNull(ownerUserId, "owner user id is required");
+    Objects.requireNonNull(workId, "work id is required");
+    String title = requiredCodePointText(requestedTitle, "title", 300);
+    String author = optionalCodePointText(requestedAuthor, "author", 200);
+    String language = requiredCodePointText(requestedLanguage, "language", 35);
+    if (language.codePointCount(0, language.length()) < 2) {
+      throw new IllegalArgumentException("language must contain at least 2 characters");
+    }
+    return repository.updatePrivateAuthoredWorkDetails(
+        ownerUserId, workId, expectedVersion, title, author, language);
+  }
+
   private static byte[] authoredWorkRequestHash(String title, String author, String language) {
     try {
       MessageDigest digest = MessageDigest.getInstance("SHA-256");
@@ -497,6 +516,24 @@ public class LibraryService {
   private static String optionalText(String value, String field, int maxLength) {
     String normalized = value == null ? "" : value.trim();
     if (normalized.length() > maxLength) {
+      throw new IllegalArgumentException(field + " must not exceed " + maxLength + " characters");
+    }
+    return normalized;
+  }
+
+  private static String requiredCodePointText(String value, String field, int maxLength) {
+    String normalized = value == null ? "" : value.trim();
+    int length = normalized.codePointCount(0, normalized.length());
+    if (length < 1 || length > maxLength) {
+      throw new IllegalArgumentException(
+          field + " is required and must contain at most " + maxLength + " characters");
+    }
+    return normalized;
+  }
+
+  private static String optionalCodePointText(String value, String field, int maxLength) {
+    String normalized = value == null ? "" : value.trim();
+    if (normalized.codePointCount(0, normalized.length()) > maxLength) {
       throw new IllegalArgumentException(field + " must not exceed " + maxLength + " characters");
     }
     return normalized;

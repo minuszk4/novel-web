@@ -556,6 +556,18 @@ public class LibraryRepository {
 
   public static class IdempotencyKeyReusedException extends RuntimeException {}
 
+  public static final class ManuscriptMetadataConflictException extends RuntimeException {
+    private final long currentVersion;
+
+    public ManuscriptMetadataConflictException(long currentVersion) {
+      this.currentVersion = currentVersion;
+    }
+
+    public long currentVersion() {
+      return currentVersion;
+    }
+  }
+
   public ChapterRecord createPrivateAuthoredChapter(
       UUID ownerUserId, UUID workId, String title, String idempotencyKey, byte[] requestHash) {
     Objects.requireNonNull(ownerUserId, "owner user id is required");
@@ -862,6 +874,7 @@ public class LibraryRepository {
         String query =
             """
                 SELECT w.id, w.title, w.author, w.source_language, w.created_at,
+                       w.authoring_metadata_version,
                        count(c.id) FILTER (WHERE c.deleted_at IS NULL) AS chapter_count
                 FROM works w
                 JOIN libraries l ON l.id = w.library_id
@@ -885,7 +898,8 @@ public class LibraryRepository {
                     row.getString("author"),
                     row.getString("source_language"),
                     row.getInt("chapter_count"),
-                    instant(row, "created_at"));
+                    instant(row, "created_at"),
+                    row.getLong("authoring_metadata_version"));
           }
         }
         connection.commit();
@@ -898,6 +912,112 @@ public class LibraryRepository {
       throw exception;
     } catch (SQLException exception) {
       throw new IllegalStateException("Unable to load private authored manuscript", exception);
+    }
+  }
+
+  public PrivateAuthoredWorkDetails updatePrivateAuthoredWorkDetails(
+      UUID ownerUserId,
+      UUID workId,
+      long expectedVersion,
+      String title,
+      String author,
+      String language) {
+    Objects.requireNonNull(ownerUserId, "owner user id is required");
+    Objects.requireNonNull(workId, "work id is required");
+    if (expectedVersion < 1)
+      throw new IllegalArgumentException("metadata version must be positive");
+    try (Connection connection = dataSource.getConnection()) {
+      connection.setAutoCommit(false);
+      try {
+        try (PreparedStatement actor =
+            connection.prepareStatement(
+                "SELECT id FROM users WHERE id = ? AND status = 'active' FOR SHARE")) {
+          actor.setObject(1, ownerUserId);
+          try (ResultSet row = actor.executeQuery()) {
+            if (!row.next()) throw new WorkNotFoundException();
+          }
+        }
+
+        PrivateAuthoredWorkDetails current;
+        try (PreparedStatement select =
+            connection.prepareStatement(
+                """
+                    SELECT w.id, w.title, w.author, w.source_language, w.created_at,
+                           w.authoring_metadata_version,
+                           (SELECT count(*) FROM chapters c
+                            WHERE c.work_id = w.id AND c.deleted_at IS NULL) AS chapter_count
+                    FROM works w
+                    JOIN libraries l ON l.id = w.library_id
+                    WHERE w.id = ? AND w.owner_user_id = ? AND w.source_kind = 'authored'
+                      AND w.visibility = 'private' AND w.status = 'active'
+                      AND w.deleted_at IS NULL AND l.owner_user_id = w.owner_user_id
+                      AND l.workspace_id IS NULL AND l.visibility = 'private' AND l.deleted_at IS NULL
+                    FOR UPDATE OF w
+                    """)) {
+          select.setObject(1, workId);
+          select.setObject(2, ownerUserId);
+          try (ResultSet row = select.executeQuery()) {
+            if (!row.next()) throw new WorkNotFoundException();
+            current =
+                new PrivateAuthoredWorkDetails(
+                    row.getObject("id", UUID.class),
+                    row.getString("title"),
+                    row.getString("author"),
+                    row.getString("source_language"),
+                    row.getInt("chapter_count"),
+                    instant(row, "created_at"),
+                    row.getLong("authoring_metadata_version"));
+          }
+        }
+
+        boolean sameValues =
+            current.title().equals(title)
+                && current.author().equals(author)
+                && current.language().equals(language);
+        if (current.metadataVersion() != expectedVersion && !sameValues) {
+          throw new ManuscriptMetadataConflictException(current.metadataVersion());
+        }
+        if (sameValues) {
+          connection.commit();
+          return current;
+        }
+
+        try (PreparedStatement update =
+            connection.prepareStatement(
+                """
+                    UPDATE works
+                    SET title = ?, author = ?, source_language = ?,
+                        authoring_metadata_version = authoring_metadata_version + 1,
+                        updated_at = clock_timestamp()
+                    WHERE id = ? AND owner_user_id = ? AND authoring_metadata_version = ?
+                    """)) {
+          update.setString(1, title);
+          update.setString(2, author);
+          update.setString(3, language);
+          update.setObject(4, workId);
+          update.setObject(5, ownerUserId);
+          update.setLong(6, expectedVersion);
+          if (update.executeUpdate() != 1) {
+            throw new ManuscriptMetadataConflictException(current.metadataVersion());
+          }
+        }
+        connection.commit();
+        return new PrivateAuthoredWorkDetails(
+            current.id(),
+            title,
+            author,
+            language,
+            current.chapterCount(),
+            current.createdAt(),
+            current.metadataVersion() + 1);
+      } catch (SQLException | RuntimeException exception) {
+        connection.rollback();
+        throw exception;
+      }
+    } catch (WorkNotFoundException | ManuscriptMetadataConflictException exception) {
+      throw exception;
+    } catch (SQLException exception) {
+      throw new IllegalStateException("Unable to update private authored manuscript", exception);
     }
   }
 
@@ -1712,7 +1832,13 @@ public class LibraryRepository {
   }
 
   public record PrivateAuthoredWorkDetails(
-      UUID id, String title, String author, String language, int chapterCount, Instant createdAt) {}
+      UUID id,
+      String title,
+      String author,
+      String language,
+      int chapterCount,
+      Instant createdAt,
+      long metadataVersion) {}
 
   public record VolumeRecord(UUID id, UUID workId, int ordinal, String title, Instant createdAt) {}
 
