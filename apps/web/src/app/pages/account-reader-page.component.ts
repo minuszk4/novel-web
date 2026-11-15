@@ -836,7 +836,10 @@ export class AccountReaderPageComponent {
     const element = Array.from(document.querySelectorAll<HTMLElement>('[data-source-anchor]')).find(
       (item) => item.dataset['sourceAnchor'] === annotation.startAnchor,
     );
-    element?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    const behavior = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      ? 'auto'
+      : 'smooth';
+    element?.scrollIntoView({ block: 'center', behavior });
     this.closePanel(false);
   }
 

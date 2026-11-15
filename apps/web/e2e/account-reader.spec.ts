@@ -1942,6 +1942,71 @@ test('account Reader discards a cached text selection after chapter navigation',
   await expect(panel.locator('blockquote')).toHaveCount(0);
 });
 
+for (const motion of [
+  { name: 'reduced motion', preference: 'reduce' as const, expectedBehavior: 'auto' },
+  { name: 'standard motion', preference: 'no-preference' as const, expectedBehavior: 'smooth' },
+]) {
+  test(`account Reader uses ${motion.expectedBehavior} scrolling for saved annotations with ${motion.name}`, async ({
+    page,
+  }) => {
+    await page.emulateMedia({ reducedMotion: motion.preference });
+    await page.addInitScript(() => {
+      const captureWindow = window as Window & {
+        __readerScrollOptions: Array<boolean | ScrollIntoViewOptions>;
+      };
+      captureWindow.__readerScrollOptions = [];
+      HTMLElement.prototype.scrollIntoView = function (options?: boolean | ScrollIntoViewOptions) {
+        captureWindow.__readerScrollOptions.push(options ?? {});
+      };
+    });
+    const annotation: MockReaderAnnotation = {
+      id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      workId,
+      chapterId: chapterIds[0],
+      chapterRevisionId: revisionId,
+      startAnchor: 'ch1-p1',
+      startOffset: 0,
+      endAnchor: 'ch1-p1',
+      endOffset: 8,
+      quoteSnapshot: 'Một đoạn',
+      note: 'Ghi chú riêng tư',
+      color: 'amber',
+      version: 1,
+      createdAt: '2026-11-14T10:00:00Z',
+      updatedAt: '2026-11-14T10:00:00Z',
+      chapterOrdinal: 1,
+      chapterTitle: 'Cánh cửa mở',
+      anchorState: 'CURRENT',
+    };
+    await installReaderRoutes(
+      page,
+      200,
+      false,
+      200,
+      false,
+      undefined,
+      undefined,
+      false,
+      [],
+      [annotation],
+    );
+    await page.goto(`/app/reader/${workId}`);
+    await page.getByRole('button', { name: 'Mở ghi chú và đoạn đánh dấu' }).click();
+    const panel = page.getByRole('dialog', { name: 'Ghi chú & đoạn đánh dấu' });
+    await expect(panel.getByRole('button', { name: /Chương 1/ })).toBeVisible();
+    await panel.getByRole('button', { name: /Chương 1/ }).click();
+
+    const options = await page.evaluate(() =>
+      (
+        window as Window & {
+          __readerScrollOptions: Array<boolean | ScrollIntoViewOptions>;
+        }
+      ).__readerScrollOptions.at(-1),
+    );
+    expect(options).toMatchObject({ block: 'center', behavior: motion.expectedBehavior });
+  });
+}
+
 test('account Reader saves a Unicode source highlight and synchronizes private notes', async ({
   page,
 }) => {
