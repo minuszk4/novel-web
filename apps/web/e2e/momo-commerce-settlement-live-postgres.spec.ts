@@ -208,6 +208,43 @@ test('synthetic signed settlement grants credits once and unlocks a public chapt
     'Live fake-local source segment from PostgreSQL.',
   );
 
+  const ownerInitialProgress = await page.request.get(
+    `http://localhost:4300/api/v1/works/${privateWorkId}/progress`,
+  );
+  expect(ownerInitialProgress.status()).toBe(200);
+  expect(ownerInitialProgress.headers()['cache-control']).toContain('no-store');
+  expect(await ownerInitialProgress.json()).toMatchObject({
+    workId: privateWorkId,
+    chapterId: null,
+    segmentAnchor: null,
+    scrollRatio: 0,
+    version: 0,
+  });
+
+  const ownerProgressCsrf = await page.request.get('http://localhost:4300/api/v1/auth/csrf');
+  expect(ownerProgressCsrf.status()).toBe(200);
+  const ownerProgressCsrfToken = ((await ownerProgressCsrf.json()) as { token: string }).token;
+  const savedOwnerProgress = await page.request.put(
+    `http://localhost:4300/api/v1/works/${privateWorkId}/progress`,
+    {
+      headers: { 'X-CSRF-Token': ownerProgressCsrfToken },
+      data: {
+        expectedVersion: 0,
+        chapterId: privateChapterId,
+        segmentAnchor: 'live-translation-p1',
+        scrollRatio: 0.42,
+      },
+    },
+  );
+  expect(savedOwnerProgress.status()).toBe(200);
+  expect(await savedOwnerProgress.json()).toMatchObject({
+    workId: privateWorkId,
+    chapterId: privateChapterId,
+    segmentAnchor: 'live-translation-p1',
+    scrollRatio: 0.42,
+    version: 1,
+  });
+
   await page.context().clearCookies();
   await page.context().addCookies([
     {
@@ -250,6 +287,34 @@ test('synthetic signed settlement grants credits once and unlocks a public chapt
   expect(foreignPrivateChapterBody).not.toContain(
     'Live fake-local source segment from PostgreSQL.',
   );
+
+  const foreignPrivateProgress = await page.request.get(
+    `http://localhost:4300/api/v1/works/${privateWorkId}/progress`,
+  );
+  expect(foreignPrivateProgress.status()).toBe(404);
+  expect(foreignPrivateProgress.headers()['cache-control']).toContain('no-store');
+  const foreignPrivateProgressBody = await foreignPrivateProgress.text();
+  expect(foreignPrivateProgressBody).toContain('NOT_FOUND');
+  expect(foreignPrivateProgressBody).not.toContain('live-translation-p1');
+
+  const foreignProgressCsrf = await page.request.get('http://localhost:4300/api/v1/auth/csrf');
+  expect(foreignProgressCsrf.status()).toBe(200);
+  const foreignProgressCsrfToken = ((await foreignProgressCsrf.json()) as { token: string }).token;
+  const foreignProgressWrite = await page.request.put(
+    `http://localhost:4300/api/v1/works/${privateWorkId}/progress`,
+    {
+      headers: { 'X-CSRF-Token': foreignProgressCsrfToken },
+      data: {
+        expectedVersion: 0,
+        chapterId: null,
+        segmentAnchor: null,
+        scrollRatio: 0,
+      },
+    },
+  );
+  expect(foreignProgressWrite.status()).toBe(404);
+  expect(foreignProgressWrite.headers()['cache-control']).toContain('no-store');
+  expect(await foreignProgressWrite.text()).toContain('NOT_FOUND');
 
   const foreignPaymentOrders = await page.request.get(
     'http://localhost:4300/api/v1/me/payment-orders',
@@ -315,4 +380,28 @@ test('synthetic signed settlement grants credits once and unlocks a public chapt
   await expect(page.getByRole('button', { name: 'Xem lại điều kiện' })).toHaveCount(0);
   await expect(page.getByRole('link', { name: 'Nạp credit MoMo TEST' })).toBeVisible();
   expect(chapterContentRequests).toEqual([]);
+
+  await page.context().clearCookies();
+  await page.context().addCookies([
+    {
+      name: '__Host-novel_session',
+      value: sessionToken!,
+      domain: 'localhost',
+      path: '/',
+      httpOnly: true,
+      secure: true,
+      sameSite: 'Lax',
+    },
+  ]);
+  const unchangedOwnerProgress = await page.request.get(
+    `http://localhost:4300/api/v1/works/${privateWorkId}/progress`,
+  );
+  expect(unchangedOwnerProgress.status()).toBe(200);
+  expect(await unchangedOwnerProgress.json()).toMatchObject({
+    workId: privateWorkId,
+    chapterId: privateChapterId,
+    segmentAnchor: 'live-translation-p1',
+    scrollRatio: 0.42,
+    version: 1,
+  });
 });
