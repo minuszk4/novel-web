@@ -269,6 +269,35 @@ test('synthetic signed settlement grants credits once and unlocks a public chapt
     items: [expect.objectContaining({ id: ownerAnnotationId, note: 'Owner-only live note' })],
   });
 
+  const ownerBookmark = await page.request.post(
+    `http://localhost:4300/api/v1/works/${privateWorkId}/bookmarks`,
+    {
+      headers: {
+        'X-CSRF-Token': ownerAnnotationCsrfToken,
+        'Idempotency-Key': `live-bookmark-${privateWorkId}`,
+      },
+      data: {
+        chapterId: privateChapterId,
+        segmentAnchor: 'live-translation-p1',
+        label: 'Owner-only live bookmark',
+      },
+    },
+  );
+  expect(ownerBookmark.status()).toBe(201);
+  expect(ownerBookmark.headers()['cache-control']).toContain('no-store');
+  const ownerBookmarkBody = (await ownerBookmark.json()) as { id: string; label: string };
+  expect(ownerBookmarkBody.label).toBe('Owner-only live bookmark');
+  const ownerBookmarkId = ownerBookmarkBody.id;
+  expect(ownerBookmarkId).toMatch(/^[0-9a-f-]{36}$/i);
+  const ownerBookmarks = await page.request.get(
+    `http://localhost:4300/api/v1/works/${privateWorkId}/bookmarks?limit=100`,
+  );
+  expect(ownerBookmarks.status()).toBe(200);
+  expect(ownerBookmarks.headers()['cache-control']).toContain('no-store');
+  expect(await ownerBookmarks.json()).toMatchObject({
+    items: [expect.objectContaining({ id: ownerBookmarkId, label: 'Owner-only live bookmark' })],
+  });
+
   const ownerInitialProgress = await page.request.get(
     `http://localhost:4300/api/v1/works/${privateWorkId}/progress`,
   );
@@ -361,6 +390,16 @@ test('synthetic signed settlement grants credits once and unlocks a public chapt
   const foreignProgressCsrf = await page.request.get('http://localhost:4300/api/v1/auth/csrf');
   expect(foreignProgressCsrf.status()).toBe(200);
   const foreignProgressCsrfToken = ((await foreignProgressCsrf.json()) as { token: string }).token;
+
+  const foreignBookmarkDelete = await page.request.delete(
+    `http://localhost:4300/api/v1/bookmarks/${ownerBookmarkId}`,
+    { headers: { 'X-CSRF-Token': foreignProgressCsrfToken } },
+  );
+  expect(foreignBookmarkDelete.status()).toBe(404);
+  expect(foreignBookmarkDelete.headers()['cache-control']).toContain('no-store');
+  const foreignBookmarkDeleteBody = await foreignBookmarkDelete.text();
+  expect(foreignBookmarkDeleteBody).toContain('NOT_FOUND');
+  expect(foreignBookmarkDeleteBody).not.toContain('Owner-only live bookmark');
 
   const foreignManuscriptUpdate = await page.request.put(
     `http://localhost:4300/api/v1/authoring/manuscripts/${privateWorkId}`,
@@ -516,6 +555,24 @@ test('synthetic signed settlement grants credits once and unlocks a public chapt
     visibility: ownerPrivateManuscriptSnapshot.visibility,
     metadataVersion: ownerPrivateManuscriptSnapshot.metadataVersion,
   });
+  const retainedOwnerBookmarks = await page.request.get(
+    `http://localhost:4300/api/v1/works/${privateWorkId}/bookmarks?limit=100`,
+  );
+  expect(retainedOwnerBookmarks.status()).toBe(200);
+  expect(await retainedOwnerBookmarks.json()).toMatchObject({
+    items: [expect.objectContaining({ id: ownerBookmarkId, label: 'Owner-only live bookmark' })],
+  });
+  const ownerBookmarkDelete = await page.request.delete(
+    `http://localhost:4300/api/v1/bookmarks/${ownerBookmarkId}`,
+    { headers: { 'X-CSRF-Token': ownerProgressCsrfToken } },
+  );
+  expect(ownerBookmarkDelete.status()).toBe(204);
+  expect(ownerBookmarkDelete.headers()['cache-control']).toContain('no-store');
+  const ownerBookmarksAfterDelete = await page.request.get(
+    `http://localhost:4300/api/v1/works/${privateWorkId}/bookmarks?limit=100`,
+  );
+  expect(ownerBookmarksAfterDelete.status()).toBe(200);
+  expect(await ownerBookmarksAfterDelete.json()).toMatchObject({ items: [], nextCursor: null });
   const unchangedOwnerProgress = await page.request.get(
     `http://localhost:4300/api/v1/works/${privateWorkId}/progress`,
   );
