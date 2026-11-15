@@ -4380,7 +4380,7 @@ button.reader-chapter-nav {
 .reader-panel-backdrop {
   position: fixed;
   z-index: 19;
-  inset: 64px 0 75px;
+  inset: 0;
   border: 0;
   background: rgb(21 24 34 / 13%);
   cursor: default;
