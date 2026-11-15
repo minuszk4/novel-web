@@ -135,6 +135,19 @@ test('glossary import saves one real PostgreSQL draft without publishing it', as
   expect(ownerLatestExport.headers()['content-disposition']).toContain('-r3.json');
   expect(await ownerLatestExport.text()).toContain('丹田');
 
+  const ownerLatestRevision = await page.request.get(
+    `${baseUrl}/api/v1/glossaries/${glossaryId}/latest-revision`,
+  );
+  expect(ownerLatestRevision.status()).toBe(200);
+  expect(ownerLatestRevision.headers()['cache-control']).toContain('no-store');
+  expect(ownerLatestRevision.headers()['etag']).toBe('"v5"');
+  const latestDraft = (await ownerLatestRevision.json()) as {
+    revisionId: string;
+    revisionNumber: number;
+  };
+  expect(latestDraft).toMatchObject({ revisionNumber: 3 });
+  expect(latestDraft.revisionId).toMatch(/^[0-9a-f-]{36}$/i);
+
   const otherSessionToken = process.env['MOMO_COMMERCE_LIVE_TEST_OTHER_SESSION_TOKEN'];
   if (otherSessionToken) {
     expect(otherSessionToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
@@ -163,6 +176,22 @@ test('glossary import saves one real PostgreSQL draft without publishing it', as
       expect(foreignExportBody).not.toContain('丹田');
       expect(foreignExportBody).not.toContain('Kim Đan');
     }
+
+    const outsiderCsrfResponse = await page.request.get(`${baseUrl}/api/v1/auth/csrf`);
+    expect(outsiderCsrfResponse.status()).toBe(200);
+    const outsiderCsrf = (await outsiderCsrfResponse.json()) as { token: string };
+    expect(outsiderCsrf.token).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    const foreignPublish = await page.request.post(
+      `${baseUrl}/api/v1/glossaries/${glossaryId}/revisions/${latestDraft.revisionId}/publish`,
+      { headers: { 'X-CSRF-Token': outsiderCsrf.token, 'If-Match': '"v5"' } },
+    );
+    expect(foreignPublish.status()).toBe(404);
+    expect(foreignPublish.headers()['cache-control']).toContain('no-store');
+    const foreignPublishBody = await foreignPublish.text();
+    expect(foreignPublishBody).toContain('NOT_FOUND');
+    expect(foreignPublishBody).not.toContain('金丹');
+    expect(foreignPublishBody).not.toContain('丹田');
+    expect(foreignPublishBody).not.toContain('Kim Đan');
 
     await page.context().clearCookies();
     await page.context().addCookies([
