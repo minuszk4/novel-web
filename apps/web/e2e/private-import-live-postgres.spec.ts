@@ -89,6 +89,7 @@ test('private import commit refreshes Library, Work Detail and PostgreSQL Reader
   );
   expect(ownerImportPreview.status()).toBe(200);
   expect(ownerImportPreview.headers()['cache-control']).toContain('no-store');
+  expect(ownerImportPreview.headers().etag).toBeTruthy();
   expect((await ownerImportPreview.text()).length).toBeGreaterThan(0);
 
   const otherSessionToken = process.env['MOMO_COMMERCE_LIVE_TEST_OTHER_SESSION_TOKEN'];
@@ -135,6 +136,24 @@ test('private import commit refreshes Library, Work Detail and PostgreSQL Reader
     const foreignImportCancelBody = await foreignImportCancel.text();
     expect(foreignImportCancelBody).toContain('IMPORT_NOT_FOUND');
     expect(foreignImportCancelBody).not.toContain(sourceText);
+
+    const foreignImportCommit = await page.request.post(
+      `${baseUrl}/api/v1/imports/${importId}/commit`,
+      {
+        headers: {
+          'X-CSRF-Token': foreignCsrfToken,
+          'If-Match': ownerImportPreview.headers().etag!,
+          'Idempotency-Key': 'foreign-import-commit-0001',
+        },
+        data: {},
+      },
+    );
+    expect(foreignImportCommit.status()).toBe(404);
+    expect(foreignImportCommit.headers()['cache-control']).toContain('no-store');
+    const foreignImportCommitBody = await foreignImportCommit.text();
+    expect(foreignImportCommitBody).toContain('IMPORT_NOT_FOUND');
+    expect(foreignImportCommitBody).not.toContain(sourceText);
+    expect(foreignImportCommitBody).not.toContain(workTitle);
 
     await page.context().clearCookies();
     await page.context().addCookies([
