@@ -1,5 +1,6 @@
 package com.novelweb.translation.provider;
 
+import com.novelweb.platform.ProviderCallMetrics;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -30,6 +31,7 @@ public final class TranslationProviderExecutionGate implements AutoCloseable {
 
   private final TranslationProvider provider;
   private final TranslationProviderExecutionPolicy policy;
+  private final ProviderCallMetrics providerCallMetrics;
   private final Clock clock;
   private final ThreadPoolExecutor calls;
   private final Deque<Instant> callTimes = new ArrayDeque<>();
@@ -40,16 +42,33 @@ public final class TranslationProviderExecutionGate implements AutoCloseable {
 
   public TranslationProviderExecutionGate(
       TranslationProvider provider, TranslationProviderExecutionPolicy policy) {
-    this(provider, policy, Clock.systemUTC());
+    this(provider, policy, Clock.systemUTC(), ProviderCallMetrics.noop());
   }
 
   TranslationProviderExecutionGate(
       TranslationProvider provider, TranslationProviderExecutionPolicy policy, Clock clock) {
-    if (provider == null || policy == null || clock == null) {
-      throw new IllegalArgumentException("Provider, execution policy and clock are required");
+    this(provider, policy, clock, ProviderCallMetrics.noop());
+  }
+
+  public TranslationProviderExecutionGate(
+      TranslationProvider provider,
+      TranslationProviderExecutionPolicy policy,
+      ProviderCallMetrics providerCallMetrics) {
+    this(provider, policy, Clock.systemUTC(), providerCallMetrics);
+  }
+
+  private TranslationProviderExecutionGate(
+      TranslationProvider provider,
+      TranslationProviderExecutionPolicy policy,
+      Clock clock,
+      ProviderCallMetrics providerCallMetrics) {
+    if (provider == null || policy == null || clock == null || providerCallMetrics == null) {
+      throw new IllegalArgumentException(
+          "Provider, execution policy, clock and metrics are required");
     }
     this.provider = provider;
     this.policy = policy;
+    this.providerCallMetrics = providerCallMetrics;
     this.clock = clock;
     TranslationProviderCapabilities capabilities = provider.capabilities();
     this.effectiveRequestsPerMinute =
@@ -85,11 +104,22 @@ public final class TranslationProviderExecutionGate implements AutoCloseable {
     while (true) {
       attempts++;
       admitProviderCall();
+      long providerCallStartedNanos = System.nanoTime();
       try {
         TranslationResponse response = call(() -> provider.translate(request));
         validateResponse(request, estimate, response);
+        providerCallMetrics.record(
+            ProviderCallMetrics.Provider.forTranslationProvider(provider.id()),
+            ProviderCallMetrics.Operation.TRANSLATE,
+            ProviderCallMetrics.Outcome.SUCCESS,
+            System.nanoTime() - providerCallStartedNanos);
         return new TranslationExecutionResult(estimate, response, attempts);
       } catch (TranslationProviderException failure) {
+        providerCallMetrics.record(
+            ProviderCallMetrics.Provider.forTranslationProvider(provider.id()),
+            ProviderCallMetrics.Operation.TRANSLATE,
+            ProviderCallMetrics.fromTranslationFailure(failure.failure()),
+            System.nanoTime() - providerCallStartedNanos);
         if (failure.failure() != TranslationProviderFailure.RATE_LIMITED
             || attempts > policy.maxRateLimitRetries()) {
           throw failure;
@@ -97,6 +127,13 @@ public final class TranslationProviderExecutionGate implements AutoCloseable {
         Duration delay = retryDelay(attempts, failure.retryAfter());
         if (delay == null) throw failure;
         pause(delay);
+      } catch (RuntimeException failure) {
+        providerCallMetrics.record(
+            ProviderCallMetrics.Provider.forTranslationProvider(provider.id()),
+            ProviderCallMetrics.Operation.TRANSLATE,
+            ProviderCallMetrics.Outcome.ADAPTER_FAILURE,
+            System.nanoTime() - providerCallStartedNanos);
+        throw failure;
       }
     }
   }

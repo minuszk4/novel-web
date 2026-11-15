@@ -4,9 +4,11 @@ import com.novelweb.payment.credit.CreditLedgerService;
 import com.novelweb.payment.credit.CreditPackCatalog;
 import com.novelweb.payment.credit.CreditTopUpCheckoutService;
 import com.novelweb.payment.credit.CreditTopUpOrderService;
+import com.novelweb.platform.ProviderCallMetrics;
 import java.util.Map;
 import java.util.Objects;
 import javax.sql.DataSource;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
@@ -61,8 +63,11 @@ public class MomoTestGatewayConfiguration {
   MomoTestGatewayClient momoTestGatewayClient(
       MomoTestGatewaySettings settings,
       ObjectMapper objectMapper,
-      MomoTestHttpTransport transport) {
-    return new MomoTestGatewayClient(settings, objectMapper, transport);
+      MomoTestHttpTransport transport,
+      ObjectProvider<ProviderCallMetrics> metricsProvider) {
+    ProviderCallMetrics metrics = metricsProvider.getIfAvailable();
+    return new MomoTestGatewayClient(
+        settings, objectMapper, transport, metrics == null ? ProviderCallMetrics.noop() : metrics);
   }
 
   @Bean

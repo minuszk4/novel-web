@@ -1,5 +1,6 @@
 package com.novelweb.payment.momo;
 
+import com.novelweb.platform.ProviderCallMetrics;
 import java.io.IOException;
 import java.net.URI;
 import java.time.Duration;
@@ -26,14 +27,25 @@ public final class MomoTestGatewayClient {
   private final MomoTestGatewaySettings settings;
   private final ObjectMapper objectMapper;
   private final MomoTestHttpTransport transport;
+  private final ProviderCallMetrics providerCallMetrics;
 
   public MomoTestGatewayClient(
       MomoTestGatewaySettings settings,
       ObjectMapper objectMapper,
       MomoTestHttpTransport transport) {
+    this(settings, objectMapper, transport, ProviderCallMetrics.noop());
+  }
+
+  public MomoTestGatewayClient(
+      MomoTestGatewaySettings settings,
+      ObjectMapper objectMapper,
+      MomoTestHttpTransport transport,
+      ProviderCallMetrics providerCallMetrics) {
     this.settings = Objects.requireNonNull(settings, "validated MoMo TEST settings are required");
     this.objectMapper = Objects.requireNonNull(objectMapper, "JSON mapper is required");
     this.transport = Objects.requireNonNull(transport, "HTTP transport is required");
+    this.providerCallMetrics =
+        Objects.requireNonNull(providerCallMetrics, "provider metrics are required");
   }
 
   /** Builds a fixed, non-PII top-up request from an immutable server-side order snapshot. */
@@ -58,6 +70,26 @@ public final class MomoTestGatewayClient {
    */
   public CreateResult createWallet(MomoSignatureCodec.CreateWalletRequest request) {
     validateCreateRequest(request);
+    long startedNanos = System.nanoTime();
+    try {
+      CreateResult result = createValidatedWallet(request);
+      providerCallMetrics.record(
+          ProviderCallMetrics.Provider.MOMO_TEST,
+          ProviderCallMetrics.Operation.CREATE_ORDER,
+          outcome(result),
+          System.nanoTime() - startedNanos);
+      return result;
+    } catch (RuntimeException exception) {
+      providerCallMetrics.record(
+          ProviderCallMetrics.Provider.MOMO_TEST,
+          ProviderCallMetrics.Operation.CREATE_ORDER,
+          ProviderCallMetrics.Outcome.ADAPTER_FAILURE,
+          System.nanoTime() - startedNanos);
+      throw exception;
+    }
+  }
+
+  private CreateResult createValidatedWallet(MomoSignatureCodec.CreateWalletRequest request) {
     String signature =
         MomoSignatureCodec.signCreateWallet(request, settings.accessKey(), settings.secretKey());
     byte[] body =
@@ -113,6 +145,27 @@ public final class MomoTestGatewayClient {
    */
   public QueryResult queryOrder(MomoSignatureCodec.QueryOrderRequest request, long savedAmountVnd) {
     validateQueryRequest(request, savedAmountVnd);
+    long startedNanos = System.nanoTime();
+    try {
+      QueryResult result = queryValidatedOrder(request, savedAmountVnd);
+      providerCallMetrics.record(
+          ProviderCallMetrics.Provider.MOMO_TEST,
+          ProviderCallMetrics.Operation.QUERY_ORDER,
+          outcome(result),
+          System.nanoTime() - startedNanos);
+      return result;
+    } catch (RuntimeException exception) {
+      providerCallMetrics.record(
+          ProviderCallMetrics.Provider.MOMO_TEST,
+          ProviderCallMetrics.Operation.QUERY_ORDER,
+          ProviderCallMetrics.Outcome.ADAPTER_FAILURE,
+          System.nanoTime() - startedNanos);
+      throw exception;
+    }
+  }
+
+  private QueryResult queryValidatedOrder(
+      MomoSignatureCodec.QueryOrderRequest request, long savedAmountVnd) {
     byte[] body =
         writeJson(
             fields(
@@ -164,6 +217,36 @@ public final class MomoTestGatewayClient {
     } catch (JacksonException exception) {
       throw new IllegalStateException("Unable to encode MoMo TEST request", exception);
     }
+  }
+
+  private static ProviderCallMetrics.Outcome outcome(CreateResult result) {
+    if (result.state() == CreateState.READY) return ProviderCallMetrics.Outcome.SUCCESS;
+    return switch (result.failureCode()) {
+      case TRANSPORT -> ProviderCallMetrics.Outcome.TRANSPORT_ERROR;
+      case HTTP_STATUS -> ProviderCallMetrics.Outcome.HTTP_ERROR;
+      case RESPONSE_TOO_LARGE, INVALID_RESPONSE, UNVERIFIED_RESPONSE, ORDER_MISMATCH ->
+          ProviderCallMetrics.Outcome.INVALID_RESPONSE;
+      case NONE -> ProviderCallMetrics.Outcome.UNKNOWN;
+    };
+  }
+
+  private static ProviderCallMetrics.Outcome outcome(QueryResult result) {
+    if (result.failureCode() != FailureCode.NONE) {
+      return switch (result.failureCode()) {
+        case TRANSPORT -> ProviderCallMetrics.Outcome.TRANSPORT_ERROR;
+        case HTTP_STATUS -> ProviderCallMetrics.Outcome.HTTP_ERROR;
+        case RESPONSE_TOO_LARGE, INVALID_RESPONSE, UNVERIFIED_RESPONSE, ORDER_MISMATCH ->
+            ProviderCallMetrics.Outcome.INVALID_RESPONSE;
+        case NONE -> ProviderCallMetrics.Outcome.UNKNOWN;
+      };
+    }
+    return switch (result.outcome()) {
+      case SUCCEEDED -> ProviderCallMetrics.Outcome.SUCCESS;
+      case PENDING -> ProviderCallMetrics.Outcome.PENDING;
+      case FAILED -> ProviderCallMetrics.Outcome.DECLINED;
+      case UNKNOWN -> ProviderCallMetrics.Outcome.UNKNOWN;
+      case INVALID_RESPONSE -> ProviderCallMetrics.Outcome.INVALID_RESPONSE;
+    };
   }
 
   private MomoSignatureCodec.CreateWalletResponse parseCreateResponse(byte[] body) {

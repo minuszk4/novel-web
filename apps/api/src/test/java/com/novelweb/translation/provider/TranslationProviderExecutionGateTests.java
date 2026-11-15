@@ -5,6 +5,8 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.novelweb.platform.ProviderCallMetrics;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Duration;
@@ -178,6 +180,74 @@ class TranslationProviderExecutionGateTests {
       assertFalse(failure.getMessage().contains("private source"));
       assertEquals(1, translateCalls.get());
     }
+  }
+
+  @Test
+  void recordsTranslationSuccessAndTimeoutWithOnlyBoundedProviderTags() {
+    SimpleMeterRegistry registry = new SimpleMeterRegistry();
+    ProviderCallMetrics metrics = new ProviderCallMetrics(registry);
+    FakeTranslationProvider successfulProvider = new FakeTranslationProvider();
+
+    try (TranslationProviderExecutionGate gate =
+        new TranslationProviderExecutionGate(successfulProvider, policy("0.01", 0, 100), metrics)) {
+      gate.execute(request("private translation source"));
+    } catch (TranslationProviderException exception) {
+      throw new AssertionError("The fake translation should succeed", exception);
+    }
+
+    TranslationProvider timeoutProvider =
+        provider(
+            BigDecimal.ZERO,
+            request -> {
+              LockSupport.parkNanos(Duration.ofMillis(300).toNanos());
+              return response(request, "translated", request.sourceCodePoints());
+            });
+    TranslationProviderExecutionPolicy base = policy("0.01", 0, 100);
+    TranslationProviderExecutionPolicy shortTimeout =
+        new TranslationProviderExecutionPolicy(
+            base.maxSegmentsPerAttempt(),
+            base.maxCodePointsPerAttempt(),
+            base.maxEstimatedCost(),
+            base.currency(),
+            base.maxRequestsPerMinute(),
+            base.maxConcurrentCalls(),
+            Duration.ofMillis(20),
+            base.maxRateLimitRetries(),
+            base.retryBaseDelay(),
+            base.maxRetryDelay());
+    try (TranslationProviderExecutionGate gate =
+        new TranslationProviderExecutionGate(timeoutProvider, shortTimeout, metrics)) {
+      TranslationProviderException failure =
+          assertThrows(
+              TranslationProviderException.class,
+              () -> gate.execute(request("another private source")));
+      assertEquals(TranslationProviderFailure.TIMEOUT, failure.failure());
+    }
+
+    assertEquals(
+        1,
+        registry
+            .get("novel.provider.request.duration")
+            .tags("provider", "translation_fake", "operation", "translate", "outcome", "success")
+            .timer()
+            .count());
+    assertEquals(
+        1,
+        registry
+            .get("novel.provider.request.duration")
+            .tags("provider", "other", "operation", "translate", "outcome", "timeout")
+            .timer()
+            .count());
+    assertTrue(
+        registry.getMeters().stream()
+            .allMatch(
+                meter ->
+                    meter.getId().getTags().stream()
+                        .allMatch(
+                            tag ->
+                                Set.of("provider", "operation", "outcome")
+                                    .contains(tag.getKey()))));
+    assertFalse(registry.getMeters().toString().contains("private translation source"));
   }
 
   @Test

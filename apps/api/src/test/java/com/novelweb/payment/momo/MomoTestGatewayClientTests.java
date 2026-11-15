@@ -2,7 +2,10 @@ package com.novelweb.payment.momo;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
+import com.novelweb.platform.ProviderCallMetrics;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.io.IOException;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
@@ -10,6 +13,7 @@ import java.security.GeneralSecurityException;
 import java.time.Duration;
 import java.util.HexFormat;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -38,6 +42,8 @@ class MomoTestGatewayClientTests {
     AtomicReference<JsonNode> postedBody = new AtomicReference<>();
     AtomicReference<Duration> timeout = new AtomicReference<>();
     AtomicInteger sends = new AtomicInteger();
+    SimpleMeterRegistry registry = new SimpleMeterRegistry();
+    ProviderCallMetrics metrics = new ProviderCallMetrics(registry);
     MomoTestHttpTransport transport =
         (uri, body, requestTimeout) -> {
           sends.incrementAndGet();
@@ -68,7 +74,7 @@ class MomoTestGatewayClientTests {
                       response.signature())));
         };
 
-    MomoTestGatewayClient client = client(transport);
+    MomoTestGatewayClient client = new MomoTestGatewayClient(settings(), JSON, transport, metrics);
     MomoTestGatewayClient.CreateResult result = client.createWallet(createRequest());
 
     assertThat(result.state()).isEqualTo(MomoTestGatewayClient.CreateState.READY);
@@ -85,6 +91,13 @@ class MomoTestGatewayClientTests {
         .isEqualTo(MomoSignatureCodec.signCreateWallet(createRequest(), ACCESS_KEY, SECRET_KEY));
     assertThat(JSON.writeValueAsString(postedBody.get()))
         .doesNotContain(ACCESS_KEY, SECRET_KEY, "accessKey");
+    assertEquals(
+        1,
+        registry
+            .get("novel.provider.request.duration")
+            .tags("provider", "momo_test", "operation", "create_order", "outcome", "success")
+            .timer()
+            .count());
   }
 
   @Test
@@ -159,6 +172,39 @@ class MomoTestGatewayClientTests {
   }
 
   @Test
+  void recordsMomoTestTransportTimeoutAsCoarseFailureWithoutSensitiveTags() {
+    SimpleMeterRegistry registry = new SimpleMeterRegistry();
+    ProviderCallMetrics metrics = new ProviderCallMetrics(registry);
+    MomoTestHttpTransport timeoutTransport =
+        (endpoint, body, timeout) -> {
+          throw new java.net.http.HttpTimeoutException("synthetic private timeout detail");
+        };
+    MomoTestGatewayClient client =
+        new MomoTestGatewayClient(settings(), JSON, timeoutTransport, metrics);
+
+    MomoTestGatewayClient.CreateResult result = client.createWallet(createRequest());
+
+    assertThat(result.state()).isEqualTo(MomoTestGatewayClient.CreateState.UNKNOWN);
+    assertThat(result.failureCode()).isEqualTo(MomoTestGatewayClient.FailureCode.TRANSPORT);
+    assertEquals(
+        1,
+        registry
+            .get("novel.provider.request.duration")
+            .tags(
+                "provider", "momo_test", "operation", "create_order", "outcome", "transport_error")
+            .timer()
+            .count());
+    assertThat(registry.getMeters().toString())
+        .doesNotContain(ACCESS_KEY, SECRET_KEY, "request-1", "order-1", IPN_URL, PAY_URL);
+    assertThat(registry.getMeters().stream())
+        .allMatch(
+            meter ->
+                meter.getId().getTags().stream()
+                    .allMatch(
+                        tag -> Set.of("provider", "operation", "outcome").contains(tag.getKey())));
+  }
+
+  @Test
   void refusesMismatchedOrUnsignedCreateResponseWithoutReturningItsUrl() throws Exception {
     var response =
         signedCreateResponse(PARTNER_CODE, "other-request", "order-1", 1_000L, 0, PAY_URL);
@@ -176,6 +222,8 @@ class MomoTestGatewayClientTests {
 
   @Test
   void sendsSignedQueryAndClassifiesOnlyTheMatchingSnapshot() throws Exception {
+    SimpleMeterRegistry registry = new SimpleMeterRegistry();
+    ProviderCallMetrics metrics = new ProviderCallMetrics(registry);
     AtomicReference<URI> endpoint = new AtomicReference<>();
     AtomicReference<JsonNode> postedBody = new AtomicReference<>();
     MomoTestHttpTransport transport =
@@ -192,7 +240,8 @@ class MomoTestGatewayClientTests {
         };
     var request = new MomoSignatureCodec.QueryOrderRequest(PARTNER_CODE, "query-1", "order-1");
 
-    MomoTestGatewayClient.QueryResult result = client(transport).queryOrder(request, 1_000L);
+    MomoTestGatewayClient.QueryResult result =
+        new MomoTestGatewayClient(settings(), JSON, transport, metrics).queryOrder(request, 1_000L);
 
     assertThat(result.outcome()).isEqualTo(MomoQueryResponseValidator.Outcome.SUCCEEDED);
     assertThat(result.transactionId()).isEqualTo(987_654L);
@@ -202,6 +251,13 @@ class MomoTestGatewayClientTests {
         .isEqualTo(MomoSignatureCodec.signQueryOrder(request, ACCESS_KEY, SECRET_KEY));
     assertThat(postedBody.get().has("amount")).isFalse();
     assertThat(postedBody.get().has("accessKey")).isFalse();
+    assertEquals(
+        1,
+        registry
+            .get("novel.provider.request.duration")
+            .tags("provider", "momo_test", "operation", "query_order", "outcome", "success")
+            .timer()
+            .count());
   }
 
   @Test

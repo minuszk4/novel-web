@@ -1,7 +1,9 @@
 package com.novelweb.translation.provider;
 
+import com.novelweb.platform.ProviderCallMetrics;
 import java.math.BigDecimal;
 import java.time.Duration;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -15,7 +17,7 @@ public class FakeTranslationExecutionConfiguration {
 
   @Bean(destroyMethod = "close")
   TranslationProviderExecutionGate fakeTranslationProviderExecutionGate(
-      FakeTranslationProvider provider) {
+      FakeTranslationProvider provider, ObjectProvider<ProviderCallMetrics> metricsProvider) {
     TranslationProviderExecutionPolicy policy =
         new TranslationProviderExecutionPolicy(
             100,
@@ -28,6 +30,8 @@ public class FakeTranslationExecutionConfiguration {
             0,
             Duration.ofMillis(100),
             Duration.ofSeconds(1));
-    return new TranslationProviderExecutionGate(provider, policy);
+    ProviderCallMetrics metrics = metricsProvider.getIfAvailable();
+    return new TranslationProviderExecutionGate(
+        provider, policy, metrics == null ? ProviderCallMetrics.noop() : metrics);
   }
 }
