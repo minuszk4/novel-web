@@ -30,6 +30,8 @@ import org.springframework.test.web.servlet.MockMvc;
 class ApiFoundationTests {
 
   private static final String ALLOWED_ORIGIN = "http://localhost:4200";
+  private static final String API_CONTENT_SECURITY_POLICY =
+      "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'";
 
   @Autowired private MockMvc mockMvc;
 
@@ -48,6 +50,10 @@ class ApiFoundationTests {
                     "X-Correlation-Id",
                     matchesPattern(
                         "[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")))
+        .andExpect(header().string("Content-Security-Policy", API_CONTENT_SECURITY_POLICY))
+        .andExpect(header().string("X-Frame-Options", "DENY"))
+        .andExpect(header().string("X-Content-Type-Options", "nosniff"))
+        .andExpect(header().string("Referrer-Policy", "no-referrer"))
         .andExpect(jsonPath("$.apiVersion").value("v1"))
         .andExpect(jsonPath("$.environment").value("local"))
         .andExpect(jsonPath("$.integrations.googleOidcEnabled").value(false))
@@ -67,6 +73,8 @@ class ApiFoundationTests {
     mockMvc
         .perform(get("/actuator/health").accept(MediaType.APPLICATION_JSON))
         .andExpect(status().isOk())
+        .andExpect(header().string("Content-Security-Policy", API_CONTENT_SECURITY_POLICY))
+        .andExpect(header().string("X-Frame-Options", "DENY"))
         .andExpect(jsonPath("$.status").value("UP"));
   }
 
@@ -76,6 +84,9 @@ class ApiFoundationTests {
         .perform(get("/api/v1/private"))
         .andExpect(status().isForbidden())
         .andExpect(content().contentTypeCompatibleWith("application/problem+json"))
+        .andExpect(header().string("Content-Security-Policy", API_CONTENT_SECURITY_POLICY))
+        .andExpect(header().string("X-Content-Type-Options", "nosniff"))
+        .andExpect(header().string("Referrer-Policy", "no-referrer"))
         .andExpect(header().exists("X-Correlation-Id"))
         .andExpect(jsonPath("$.status").value(403))
         .andExpect(jsonPath("$.code").value("FORBIDDEN"))

@@ -17,12 +17,16 @@ import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.AnonymousAuthenticationFilter;
+import org.springframework.security.web.header.writers.ReferrerPolicyHeaderWriter.ReferrerPolicy;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
 @Configuration(proxyBeanMethods = false)
 public class ApiSecurityConfiguration {
+
+  private static final String API_CONTENT_SECURITY_POLICY =
+      "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'";
 
   @Bean
   SecurityFilterChain apiSecurityFilterChain(
@@ -32,6 +36,16 @@ public class ApiSecurityConfiguration {
       ObjectProvider<SessionAuthenticationFilter> sessionAuthenticationFilter,
       ObjectProvider<SessionBoundCsrfFilter> sessionBoundCsrfFilter)
       throws Exception {
+    http.headers(
+        headers ->
+            headers
+                .contentSecurityPolicy(
+                    contentSecurityPolicy ->
+                        contentSecurityPolicy.policyDirectives(API_CONTENT_SECURITY_POLICY))
+                .frameOptions(frameOptions -> frameOptions.deny())
+                .contentTypeOptions(Customizer.withDefaults())
+                .referrerPolicy(
+                    referrerPolicy -> referrerPolicy.policy(ReferrerPolicy.NO_REFERRER)));
     http.cors(Customizer.withDefaults());
     if (environment.acceptsProfiles(Profiles.of("postgres"))) {
       http.csrf(AbstractHttpConfigurer::disable);
