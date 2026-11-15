@@ -6,6 +6,7 @@ import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
+import java.util.UUID;
 import java.util.regex.Pattern;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.JsonNode;
@@ -33,6 +34,22 @@ public final class MomoTestGatewayClient {
     this.settings = Objects.requireNonNull(settings, "validated MoMo TEST settings are required");
     this.objectMapper = Objects.requireNonNull(objectMapper, "JSON mapper is required");
     this.transport = Objects.requireNonNull(transport, "HTTP transport is required");
+  }
+
+  /** Builds a fixed, non-PII top-up request from an immutable server-side order snapshot. */
+  public CreateResult createCreditTopUp(long amountVnd, UUID orderId, UUID requestId) {
+    Objects.requireNonNull(orderId, "order id is required");
+    Objects.requireNonNull(requestId, "request id is required");
+    return createWallet(
+        new MomoSignatureCodec.CreateWalletRequest(
+            amountVnd,
+            "",
+            settings.ipnUri().toString(),
+            orderId.toString(),
+            "Novel Web credit top-up",
+            settings.partnerCode(),
+            settings.redirectUri().toString(),
+            requestId.toString()));
   }
 
   /**
@@ -253,6 +270,15 @@ public final class MomoTestGatewayClient {
   public record CreateResult(CreateState state, String payUrl, FailureCode failureCode) {
     private static CreateResult unknown(FailureCode failure) {
       return new CreateResult(CreateState.UNKNOWN, null, failure);
+    }
+
+    @Override
+    public String toString() {
+      return "CreateResult[state="
+          + state
+          + ", payUrl=[REDACTED], failureCode="
+          + failureCode
+          + "]";
     }
   }
 

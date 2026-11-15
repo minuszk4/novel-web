@@ -39,7 +39,9 @@ class CreditHistoryCursorCodecTests {
         () -> codec.decode(UUID.randomUUID(), token));
     assertThrows(
         CreditHistoryCursorCodec.InvalidCursorException.class,
-        () -> codec.decode(actor, token.substring(0, token.length() - 1) + "A"));
+        () ->
+            codec.decode(
+                actor, token.substring(0, token.length() - 1) + (token.endsWith("A") ? "B" : "A")));
     assertThrows(
         CreditHistoryCursorCodec.InvalidCursorException.class,
         () -> codec.decode(actor, "bad.cursor"));

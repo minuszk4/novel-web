@@ -10,6 +10,7 @@ import java.security.GeneralSecurityException;
 import java.time.Duration;
 import java.util.HexFormat;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import javax.crypto.Mac;
@@ -72,6 +73,7 @@ class MomoTestGatewayClientTests {
 
     assertThat(result.state()).isEqualTo(MomoTestGatewayClient.CreateState.READY);
     assertThat(result.payUrl()).isEqualTo(PAY_URL);
+    assertThat(result.toString()).doesNotContain(PAY_URL);
     assertThat(result.failureCode()).isEqualTo(MomoTestGatewayClient.FailureCode.NONE);
     assertThat(endpoint.get())
         .isEqualTo(URI.create("https://test-payment.momo.vn/v2/gateway/api/create"));
@@ -83,6 +85,58 @@ class MomoTestGatewayClientTests {
         .isEqualTo(MomoSignatureCodec.signCreateWallet(createRequest(), ACCESS_KEY, SECRET_KEY));
     assertThat(JSON.writeValueAsString(postedBody.get()))
         .doesNotContain(ACCESS_KEY, SECRET_KEY, "accessKey");
+  }
+
+  @Test
+  void buildsTopUpCreateRequestOnlyFromSavedAmountAndOpaqueOrderIds() throws Exception {
+    UUID orderId = UUID.randomUUID();
+    UUID requestId = UUID.randomUUID();
+    AtomicReference<JsonNode> postedBody = new AtomicReference<>();
+    MomoTestHttpTransport transport =
+        (endpoint, body, timeout) -> {
+          JsonNode request = JSON.readTree(body);
+          postedBody.set(request);
+          MomoSignatureCodec.CreateWalletResponse response;
+          try {
+            response =
+                signedCreateResponse(
+                    request.path("partnerCode").stringValue(),
+                    request.path("requestId").stringValue(),
+                    request.path("orderId").stringValue(),
+                    request.path("amount").longValue(),
+                    0,
+                    PAY_URL);
+          } catch (GeneralSecurityException exception) {
+            throw new IOException(exception);
+          }
+          return new MomoTestHttpTransport.Response(
+              200,
+              JSON.writeValueAsBytes(
+                  Map.of(
+                      "partnerCode", response.partnerCode(),
+                      "requestId", response.requestId(),
+                      "orderId", response.orderId(),
+                      "amount", response.amountVnd(),
+                      "message", response.message(),
+                      "responseTime", response.responseTime(),
+                      "resultCode", response.resultCode(),
+                      "payUrl", response.payUrl(),
+                      "signature", response.signature())));
+        };
+
+    MomoTestGatewayClient.CreateResult result =
+        client(transport).createCreditTopUp(1_000, orderId, requestId);
+
+    assertThat(result.state()).isEqualTo(MomoTestGatewayClient.CreateState.READY);
+    assertThat(result.payUrl()).isEqualTo(PAY_URL);
+    assertThat(postedBody.get().path("amount").longValue()).isEqualTo(1_000);
+    assertThat(postedBody.get().path("orderId").stringValue()).isEqualTo(orderId.toString());
+    assertThat(postedBody.get().path("requestId").stringValue()).isEqualTo(requestId.toString());
+    assertThat(postedBody.get().path("orderInfo").stringValue())
+        .isEqualTo("Novel Web credit top-up");
+    assertThat(postedBody.get().path("extraData").stringValue()).isEmpty();
+    assertThat(postedBody.get().path("ipnUrl").stringValue()).isEqualTo(IPN_URL);
+    assertThat(postedBody.get().path("redirectUrl").stringValue()).isEqualTo(REDIRECT_URL);
   }
 
   @Test

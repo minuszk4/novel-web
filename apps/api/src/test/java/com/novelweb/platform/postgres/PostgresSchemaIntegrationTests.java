@@ -42,7 +42,9 @@ import com.novelweb.payment.credit.CreditHistoryRepository;
 import com.novelweb.payment.credit.CreditHistoryService;
 import com.novelweb.payment.credit.CreditLedgerService;
 import com.novelweb.payment.credit.CreditPackCatalog;
+import com.novelweb.payment.credit.CreditTopUpCheckoutService;
 import com.novelweb.payment.credit.CreditTopUpOrderService;
+import com.novelweb.payment.momo.MomoTestGatewayClient;
 import com.novelweb.progression.cultivation.CultivationRepository;
 import com.novelweb.progression.cultivation.CultivationService;
 import com.novelweb.translation.glossary.GlossaryCatalogController;
@@ -90,6 +92,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.zip.CRC32;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -382,7 +385,7 @@ class PostgresSchemaIntegrationTests {
             connection.prepareStatement("SELECT COUNT(*) FROM databasechangelog");
         ResultSet changesets = changesetCount.executeQuery()) {
       changesets.next();
-      assertEquals(113, changesets.getInt(1), "unexpected number of applied changesets");
+      assertEquals(114, changesets.getInt(1), "unexpected number of applied changesets");
     }
 
     Set<String> actualTables = new HashSet<>();
@@ -12978,6 +12981,185 @@ class PostgresSchemaIntegrationTests {
   }
 
   @Test
+  void creditTopUpCheckoutPersistsOnlyValidatedTestUrlAndSameKeyReplayDoesNotCreateAgain()
+      throws Exception {
+    UUID userId = createSessionTestUser("Top-up Checkout Owner");
+    String idempotencyKey = "credit-top-up-checkout-owner-01";
+    String payUrl =
+        "HTTPS://TEST-PAYMENT.MOMO.VN:443/v2/gateway/pay?t=synthetic-ticket&s=synthetic-signature";
+    AtomicInteger providerCalls = new AtomicInteger();
+    CreditTopUpCheckoutService checkout =
+        new CreditTopUpCheckoutService(
+            creditTopUpOrderService,
+            (amountVnd, orderId, requestId) -> {
+              assertEquals(1_000, amountVnd);
+              assertNotNull(orderId);
+              assertNotNull(requestId);
+              providerCalls.incrementAndGet();
+              return new MomoTestGatewayClient.CreateResult(
+                  MomoTestGatewayClient.CreateState.READY,
+                  payUrl,
+                  MomoTestGatewayClient.FailureCode.NONE);
+            });
+    try {
+      CreditTopUpCheckoutService.CheckoutResult created =
+          checkout.createOrReplay(
+              userId, idempotencyKey, CreditPackCatalog.momoTestFixture(), "momo-test-credits-100");
+      assertEquals(CreditTopUpOrderService.Outcome.CREATED, created.creationOutcome());
+      assertEquals(CreditTopUpOrderService.CheckoutOutcome.READY, created.checkoutOutcome());
+      assertEquals(CreditTopUpOrderService.OrderStatus.PENDING, created.order().status());
+      assertEquals(payUrl, created.checkoutUrl());
+      assertFalse(created.toString().contains(payUrl));
+
+      CreditTopUpCheckoutService.CheckoutResult replay =
+          checkout.createOrReplay(
+              userId, idempotencyKey, CreditPackCatalog.momoTestFixture(), "momo-test-credits-100");
+      assertEquals(CreditTopUpOrderService.Outcome.REPLAYED, replay.creationOutcome());
+      assertEquals(CreditTopUpOrderService.CheckoutOutcome.READY, replay.checkoutOutcome());
+      assertEquals(created.order().id(), replay.order().id());
+      assertEquals(payUrl, replay.checkoutUrl());
+      assertEquals(1, providerCalls.get());
+      assertEquals(0, creditSourceEntryCount("PAYMENT_ORDER", created.order().id()));
+      assertEquals(payUrl, storedTopUpCheckoutUrl(userId, created.order().id()));
+    } finally {
+      deleteSessionTestUser(userId);
+    }
+  }
+
+  @Test
+  void ambiguousCreditTopUpCreateIsNotRetriedAndForeignActorCannotReadOrderState()
+      throws Exception {
+    UUID userId = createSessionTestUser("Unknown Top-up Checkout Owner");
+    UUID otherUserId = createSessionTestUser("Foreign Top-up Checkout Owner");
+    String idempotencyKey = "credit-top-up-checkout-unknown-01";
+    AtomicInteger providerCalls = new AtomicInteger();
+    CreditTopUpCheckoutService checkout =
+        new CreditTopUpCheckoutService(
+            creditTopUpOrderService,
+            (amountVnd, orderId, requestId) -> {
+              providerCalls.incrementAndGet();
+              return new MomoTestGatewayClient.CreateResult(
+                  MomoTestGatewayClient.CreateState.UNKNOWN,
+                  null,
+                  MomoTestGatewayClient.FailureCode.TRANSPORT);
+            });
+    try {
+      CreditTopUpCheckoutService.CheckoutResult first =
+          checkout.createOrReplay(
+              userId, idempotencyKey, CreditPackCatalog.momoTestFixture(), "momo-test-credits-100");
+      assertEquals(
+          CreditTopUpOrderService.CheckoutOutcome.PROVIDER_RESULT_UNKNOWN, first.checkoutOutcome());
+      assertEquals(CreditTopUpOrderService.OrderStatus.UNKNOWN, first.order().status());
+      assertNull(first.checkoutUrl());
+
+      CreditTopUpOrderService.CheckoutClaim foreign =
+          creditTopUpOrderService.claimProviderCreate(otherUserId, first.order().id());
+      assertEquals(CreditTopUpOrderService.CheckoutOutcome.ORDER_NOT_FOUND, foreign.outcome());
+
+      CreditTopUpCheckoutService.CheckoutResult replay =
+          checkout.createOrReplay(
+              userId, idempotencyKey, CreditPackCatalog.momoTestFixture(), "momo-test-credits-100");
+      assertEquals(CreditTopUpOrderService.Outcome.REPLAYED, replay.creationOutcome());
+      assertEquals(
+          CreditTopUpOrderService.CheckoutOutcome.PROVIDER_RESULT_UNKNOWN,
+          replay.checkoutOutcome());
+      assertEquals(1, providerCalls.get());
+      assertEquals(0, creditSourceEntryCount("PAYMENT_ORDER", first.order().id()));
+    } finally {
+      deleteSessionTestUser(userId);
+      deleteSessionTestUser(otherUserId);
+    }
+  }
+
+  @Test
+  void concurrentSameKeyCheckoutClaimsOnlyOneProviderCreateAttempt() throws Exception {
+    UUID userId = createSessionTestUser("Concurrent Checkout Owner");
+    String idempotencyKey = "credit-top-up-checkout-race-01";
+    AtomicInteger providerCalls = new AtomicInteger();
+    CountDownLatch providerStarted = new CountDownLatch(1);
+    CountDownLatch finishProvider = new CountDownLatch(1);
+    CreditTopUpCheckoutService checkout =
+        new CreditTopUpCheckoutService(
+            creditTopUpOrderService,
+            (amountVnd, orderId, requestId) -> {
+              providerCalls.incrementAndGet();
+              providerStarted.countDown();
+              try {
+                if (!finishProvider.await(10, TimeUnit.SECONDS)) {
+                  throw new IllegalStateException("synthetic provider response was not released");
+                }
+              } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(
+                    "synthetic provider call was interrupted", exception);
+              }
+              return new MomoTestGatewayClient.CreateResult(
+                  MomoTestGatewayClient.CreateState.READY,
+                  "https://test-payment.momo.vn/v2/gateway/pay?t=race&s=synthetic",
+                  MomoTestGatewayClient.FailureCode.NONE);
+            });
+    ExecutorService executor = Executors.newFixedThreadPool(2);
+    try {
+      Future<CreditTopUpCheckoutService.CheckoutResult> first =
+          executor.submit(
+              () ->
+                  checkout.createOrReplay(
+                      userId,
+                      idempotencyKey,
+                      CreditPackCatalog.momoTestFixture(),
+                      "momo-test-credits-100"));
+      assertTrue(providerStarted.await(10, TimeUnit.SECONDS));
+
+      CreditTopUpCheckoutService.CheckoutResult concurrentReplay =
+          checkout.createOrReplay(
+              userId, idempotencyKey, CreditPackCatalog.momoTestFixture(), "momo-test-credits-100");
+      assertEquals(
+          CreditTopUpOrderService.CheckoutOutcome.PROVIDER_CREATE_IN_PROGRESS,
+          concurrentReplay.checkoutOutcome());
+      assertNull(concurrentReplay.checkoutUrl());
+
+      finishProvider.countDown();
+      CreditTopUpCheckoutService.CheckoutResult completed = first.get(15, TimeUnit.SECONDS);
+      assertEquals(CreditTopUpOrderService.CheckoutOutcome.READY, completed.checkoutOutcome());
+      assertEquals(concurrentReplay.order().id(), completed.order().id());
+      assertEquals(1, providerCalls.get());
+    } finally {
+      finishProvider.countDown();
+      executor.shutdownNow();
+      deleteSessionTestUser(userId);
+    }
+  }
+
+  @Test
+  void lateProviderCreateResponseCannotOverwriteAnAlreadyTerminalOrder() throws Exception {
+    UUID userId = createSessionTestUser("Late Checkout Response Owner");
+    CreditTopUpCheckoutService checkout =
+        new CreditTopUpCheckoutService(
+            creditTopUpOrderService,
+            (amountVnd, orderId, requestId) -> {
+              markTopUpOrderFailed(userId, orderId);
+              return new MomoTestGatewayClient.CreateResult(
+                  MomoTestGatewayClient.CreateState.READY,
+                  "https://test-payment.momo.vn/v2/gateway/pay?t=late&s=synthetic",
+                  MomoTestGatewayClient.FailureCode.NONE);
+            });
+    try {
+      CreditTopUpCheckoutService.CheckoutResult result =
+          checkout.createOrReplay(
+              userId,
+              "credit-top-up-checkout-late-01",
+              CreditPackCatalog.momoTestFixture(),
+              "momo-test-credits-100");
+      assertEquals(CreditTopUpOrderService.CheckoutOutcome.TERMINAL, result.checkoutOutcome());
+      assertEquals(CreditTopUpOrderService.OrderStatus.FAILED, result.order().status());
+      assertNull(result.checkoutUrl());
+      assertNull(storedTopUpCheckoutUrl(userId, result.order().id()));
+    } finally {
+      deleteSessionTestUser(userId);
+    }
+  }
+
+  @Test
   void creditTopUpOrderSerializesConcurrentRequestsWithTheSameActorKey() throws Exception {
     UUID userId = createSessionTestUser("Concurrent Top-up Order Owner");
     String idempotencyKey = "credit-top-up-order-race-0001";
@@ -13119,6 +13301,37 @@ class PostgresSchemaIntegrationTests {
         assertTrue(row.next());
         return row.getLong(1);
       }
+    }
+  }
+
+  private String storedTopUpCheckoutUrl(UUID userId, UUID orderId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT checkout_url FROM credit_top_up_orders WHERE user_id = ? AND id = ?")) {
+      select.setObject(1, userId);
+      select.setObject(2, orderId);
+      try (ResultSet row = select.executeQuery()) {
+        return row.next() ? row.getString("checkout_url") : null;
+      }
+    }
+  }
+
+  private void markTopUpOrderFailed(UUID userId, UUID orderId) {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement update =
+            connection.prepareStatement(
+                """
+                    UPDATE credit_top_up_orders
+                    SET status = 'FAILED', checkout_url = NULL, updated_at = clock_timestamp()
+                    WHERE user_id = ? AND id = ? AND status = 'INITIATING'
+                    """)) {
+      update.setObject(1, userId);
+      update.setObject(2, orderId);
+      assertEquals(1, update.executeUpdate());
+    } catch (SQLException exception) {
+      throw new IllegalStateException(
+          "Unable to mark synthetic terminal checkout state", exception);
     }
   }
 

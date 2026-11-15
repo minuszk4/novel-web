@@ -112,7 +112,8 @@ public class CreditTopUpOrderService {
             """
                 SELECT id, user_id, request_id, pack_id, pack_version, provider, environment,
                        currency, amount_vnd, paid_credits, bonus_credits,
-                       paid_credit_expires_at, bonus_credit_expires_at, status, created_at
+                       paid_credit_expires_at, bonus_credit_expires_at, status, checkout_url,
+                       created_at
                 FROM credit_top_up_orders
                 WHERE user_id = ? AND idempotency_key = ?
                 FOR UPDATE
@@ -123,6 +124,152 @@ public class CreditTopUpOrderService {
         return row.next() ? Optional.of(orderFromRow(row)) : Optional.empty();
       }
     }
+  }
+
+  /** Claims the sole provider-create attempt for this actor-owned order. */
+  public CheckoutClaim claimProviderCreate(UUID userId, UUID orderId) {
+    Objects.requireNonNull(userId, "user id is required");
+    Objects.requireNonNull(orderId, "order id is required");
+    try (Connection connection = dataSource.getConnection()) {
+      connection.setAutoCommit(false);
+      try {
+        AccountState account = lockAccount(connection, userId);
+        if (account != AccountState.ACTIVE) {
+          connection.commit();
+          return CheckoutClaim.outcome(account.checkoutOutcome());
+        }
+
+        Optional<StoredOrder> stored = findById(connection, userId, orderId);
+        if (stored.isEmpty()) {
+          connection.commit();
+          return CheckoutClaim.outcome(CheckoutOutcome.ORDER_NOT_FOUND);
+        }
+        StoredOrder current = stored.orElseThrow();
+        if (current.order().status() != OrderStatus.CREATED) {
+          connection.commit();
+          return checkoutClaimFor(current);
+        }
+
+        try (PreparedStatement update =
+            connection.prepareStatement(
+                """
+                    UPDATE credit_top_up_orders
+                    SET status = 'INITIATING', updated_at = clock_timestamp()
+                    WHERE id = ? AND user_id = ? AND status = 'CREATED'
+                    """)) {
+          update.setObject(1, orderId);
+          update.setObject(2, userId);
+          if (update.executeUpdate() != 1) {
+            throw new SQLException("Top-up provider-create claim was lost");
+          }
+        }
+        connection.commit();
+        return CheckoutClaim.claimed(withStatus(current.order(), OrderStatus.INITIATING));
+      } catch (SQLException | RuntimeException exception) {
+        rollback(connection, exception);
+        throw exception;
+      }
+    } catch (SQLException exception) {
+      throw new IllegalStateException(
+          "Unable to claim the top-up provider-create attempt", exception);
+    }
+  }
+
+  /**
+   * Persists a verified MoMo Test pay URL, or an unresolved result when the provider call is
+   * ambiguous. The compare-and-set protects a later IPN/query terminal result from being replaced.
+   */
+  public CheckoutClaim finishProviderCreate(UUID userId, UUID orderId, String validatedPayUrl) {
+    Objects.requireNonNull(userId, "user id is required");
+    Objects.requireNonNull(orderId, "order id is required");
+    String safePayUrl =
+        com.novelweb.payment.momo.MomoTestCheckoutUrlPolicy.allows(validatedPayUrl)
+            ? validatedPayUrl
+            : null;
+    OrderStatus nextStatus = safePayUrl == null ? OrderStatus.UNKNOWN : OrderStatus.PENDING;
+    try (Connection connection = dataSource.getConnection()) {
+      connection.setAutoCommit(false);
+      try {
+        try (PreparedStatement update =
+            connection.prepareStatement(
+                """
+                    UPDATE credit_top_up_orders
+                    SET status = ?, checkout_url = ?, updated_at = clock_timestamp()
+                    WHERE id = ? AND user_id = ? AND status = 'INITIATING'
+                    """)) {
+          update.setString(1, nextStatus.name());
+          update.setString(2, safePayUrl);
+          update.setObject(3, orderId);
+          update.setObject(4, userId);
+          if (update.executeUpdate() == 1) {
+            Optional<StoredOrder> updated = findById(connection, userId, orderId);
+            connection.commit();
+            if (updated.isEmpty()) return CheckoutClaim.outcome(CheckoutOutcome.ORDER_NOT_FOUND);
+            return checkoutClaimFor(updated.orElseThrow());
+          }
+        }
+
+        Optional<StoredOrder> current = findById(connection, userId, orderId);
+        connection.commit();
+        return current.isPresent()
+            ? checkoutClaimFor(current.orElseThrow())
+            : CheckoutClaim.outcome(CheckoutOutcome.ORDER_NOT_FOUND);
+      } catch (SQLException | RuntimeException exception) {
+        rollback(connection, exception);
+        throw exception;
+      }
+    } catch (SQLException exception) {
+      throw new IllegalStateException("Unable to persist the top-up provider result", exception);
+    }
+  }
+
+  private static Optional<StoredOrder> findById(Connection connection, UUID userId, UUID orderId)
+      throws SQLException {
+    try (PreparedStatement select =
+        connection.prepareStatement(
+            """
+                SELECT id, user_id, request_id, pack_id, pack_version, provider, environment,
+                       currency, amount_vnd, paid_credits, bonus_credits,
+                       paid_credit_expires_at, bonus_credit_expires_at, status, checkout_url,
+                       created_at
+                FROM credit_top_up_orders
+                WHERE user_id = ? AND id = ?
+                FOR UPDATE
+                """)) {
+      select.setObject(1, userId);
+      select.setObject(2, orderId);
+      try (ResultSet row = select.executeQuery()) {
+        return row.next()
+            ? Optional.of(new StoredOrder(orderFromRow(row), row.getString("checkout_url")))
+            : Optional.empty();
+      }
+    }
+  }
+
+  private static CheckoutClaim checkoutClaimFor(StoredOrder stored) {
+    TopUpOrder order = stored.order();
+    return switch (order.status()) {
+      case PENDING ->
+          stored.checkoutUrl() == null
+              ? CheckoutClaim.waiting(order)
+              : CheckoutClaim.ready(order, stored.checkoutUrl());
+      case INITIATING -> CheckoutClaim.outcome(CheckoutOutcome.PROVIDER_CREATE_IN_PROGRESS, order);
+      case UNKNOWN -> CheckoutClaim.outcome(CheckoutOutcome.PROVIDER_RESULT_UNKNOWN, order);
+      case CREATED -> CheckoutClaim.outcome(CheckoutOutcome.NOT_STARTED, order);
+      case SUCCEEDED, FAILED, CANCELLED, EXPIRED ->
+          CheckoutClaim.outcome(CheckoutOutcome.TERMINAL, order);
+    };
+  }
+
+  private static TopUpOrder withStatus(TopUpOrder order, OrderStatus status) {
+    return new TopUpOrder(
+        order.id(),
+        order.userId(),
+        order.requestId(),
+        order.provider(),
+        order.quote(),
+        status,
+        order.createdAt());
   }
 
   private static TopUpOrder insertOrder(
@@ -191,6 +338,8 @@ public class CreditTopUpOrderService {
         row.getObject("created_at", OffsetDateTime.class).toInstant());
   }
 
+  private record StoredOrder(TopUpOrder order, String checkoutUrl) {}
+
   private static void setInstant(PreparedStatement statement, int index, Instant instant)
       throws SQLException {
     statement.setTimestamp(
@@ -214,6 +363,14 @@ public class CreditTopUpOrderService {
       return switch (this) {
         case INACTIVE -> Outcome.ACCOUNT_INACTIVE;
         case NOT_FOUND -> Outcome.ACCOUNT_NOT_FOUND;
+        case ACTIVE -> throw new IllegalStateException("active accounts have no error outcome");
+      };
+    }
+
+    private CheckoutOutcome checkoutOutcome() {
+      return switch (this) {
+        case INACTIVE -> CheckoutOutcome.ACCOUNT_INACTIVE;
+        case NOT_FOUND -> CheckoutOutcome.ACCOUNT_NOT_FOUND;
         case ACTIVE -> throw new IllegalStateException("active accounts have no error outcome");
       };
     }
@@ -242,6 +399,46 @@ public class CreditTopUpOrderService {
     FAILED,
     CANCELLED,
     EXPIRED
+  }
+
+  public enum CheckoutOutcome {
+    CLAIMED,
+    READY,
+    WAITING_FOR_PROVIDER,
+    PROVIDER_CREATE_IN_PROGRESS,
+    PROVIDER_RESULT_UNKNOWN,
+    NOT_STARTED,
+    TERMINAL,
+    ORDER_NOT_FOUND,
+    ACCOUNT_NOT_FOUND,
+    ACCOUNT_INACTIVE
+  }
+
+  public record CheckoutClaim(CheckoutOutcome outcome, TopUpOrder order, String checkoutUrl) {
+    private static CheckoutClaim outcome(CheckoutOutcome outcome) {
+      return new CheckoutClaim(outcome, null, null);
+    }
+
+    private static CheckoutClaim outcome(CheckoutOutcome outcome, TopUpOrder order) {
+      return new CheckoutClaim(outcome, order, null);
+    }
+
+    private static CheckoutClaim claimed(TopUpOrder order) {
+      return new CheckoutClaim(CheckoutOutcome.CLAIMED, order, null);
+    }
+
+    private static CheckoutClaim ready(TopUpOrder order, String url) {
+      return new CheckoutClaim(CheckoutOutcome.READY, order, url);
+    }
+
+    private static CheckoutClaim waiting(TopUpOrder order) {
+      return new CheckoutClaim(CheckoutOutcome.WAITING_FOR_PROVIDER, order, null);
+    }
+
+    @Override
+    public String toString() {
+      return "CheckoutClaim[outcome=" + outcome + ", order=" + order + ", checkoutUrl=[REDACTED]]";
+    }
   }
 
   public record TopUpOrder(

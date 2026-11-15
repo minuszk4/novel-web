@@ -1,12 +1,15 @@
 package com.novelweb.payment.momo;
 
 import com.novelweb.payment.credit.CreditPackCatalog;
+import com.novelweb.payment.credit.CreditTopUpCheckoutService;
+import com.novelweb.payment.credit.CreditTopUpOrderService;
 import java.util.Map;
 import java.util.Objects;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Profile;
 import tools.jackson.databind.ObjectMapper;
 
 /** Installs MoMo TEST adapter beans only after an explicit environment opt-in. */
@@ -55,5 +58,12 @@ public class MomoTestGatewayConfiguration {
       ObjectMapper objectMapper,
       MomoTestHttpTransport transport) {
     return new MomoTestGatewayClient(settings, objectMapper, transport);
+  }
+
+  @Bean
+  @Profile("postgres")
+  CreditTopUpCheckoutService creditTopUpCheckoutService(
+      CreditTopUpOrderService orders, MomoTestGatewayClient gatewayClient) {
+    return new CreditTopUpCheckoutService(orders, gatewayClient::createCreditTopUp);
   }
 }
