@@ -5,12 +5,15 @@ const baseUrl = 'http://localhost:4300';
 const sourceText = 'Live fake-local source segment from PostgreSQL.';
 
 test('fake-local Reader preview reaches a private candidate through real API and PostgreSQL', async ({
+  browser,
   page,
 }) => {
   const sessionToken = process.env['LIBRARY_LIVE_TEST_SESSION_TOKEN'];
   const workId = process.env['TRANSLATION_LIVE_TEST_WORK_ID'];
   const chapterId = process.env['TRANSLATION_LIVE_TEST_CHAPTER_ID'];
   const screenshotPath = process.env['TRANSLATION_LIVE_TEST_SCREENSHOT'];
+  const auditScreenshot = (state: string): string =>
+    screenshotPath!.replace(/\.png$/i, `-${state}.png`);
 
   test.skip(
     !sessionToken || !workId || !chapterId || !screenshotPath,
@@ -219,6 +222,7 @@ test('fake-local Reader preview reaches a private candidate through real API and
   await expect(page.getByRole('button', { name: 'Phần trước' })).toBeDisabled();
   await expect(page.getByRole('button', { name: 'Phần tiếp' })).toBeDisabled();
   await expectNoAxeViolations(page);
+  await page.screenshot({ path: auditScreenshot('candidate-360x800') });
 
   const editText = 'Writer correction persisted through the private edit API.';
   const editResponsePromise = page.waitForResponse(
@@ -236,6 +240,7 @@ test('fake-local Reader preview reaches a private candidate through real API and
   const candidateEditor = page.getByRole('textbox', { name: 'Bản nháp chỉnh sửa cho phần 1' });
   await expect(candidateEditor).toBeFocused();
   await candidateEditor.fill(editText);
+  await page.screenshot({ path: auditScreenshot('candidate-editing-360x800') });
   await page.getByRole('button', { name: 'Lưu chỉnh sửa' }).click();
   const editResponse = await editResponsePromise;
   expect(editResponse.status()).toBe(201);
@@ -418,4 +423,42 @@ test('fake-local Reader preview reaches a private candidate through real API and
     fullPage: true,
   });
   await page.screenshot({ path: screenshotPath!, fullPage: true });
+  await page.screenshot({ path: auditScreenshot('translation-desk-360x800') });
+
+  const narrowContext = await browser.newContext({
+    viewport: { width: 180, height: 400 },
+    deviceScaleFactor: 2,
+  });
+  try {
+    const narrowPage = await narrowContext.newPage();
+    await narrowPage.context().addCookies([
+      {
+        name: '__Host-novel_session',
+        value: sessionToken!,
+        domain: 'localhost',
+        path: '/',
+        httpOnly: true,
+        secure: true,
+        sameSite: 'Lax',
+      },
+    ]);
+    await narrowPage.goto(`${baseUrl}/app/translation/jobs/${enqueueBody.jobId}/candidate`);
+    await expect(narrowPage.getByRole('heading', { name: 'Đối chiếu candidate' })).toBeVisible();
+    await expectNoAxeViolations(narrowPage);
+    const narrowDimensions = await narrowPage.evaluate(() => ({
+      cssWidth: window.innerWidth,
+      devicePixelRatio: window.devicePixelRatio,
+      documentWidth: document.documentElement.scrollWidth,
+      bodyWidth: document.body.scrollWidth,
+    }));
+    expect(narrowDimensions).toEqual({
+      cssWidth: 180,
+      devicePixelRatio: 2,
+      documentWidth: 180,
+      bodyWidth: 180,
+    });
+    await narrowPage.screenshot({ path: auditScreenshot('candidate-effective-200-180x400-dpr2') });
+  } finally {
+    await narrowContext.close();
+  }
 });

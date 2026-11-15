@@ -5383,6 +5383,11 @@ button.reader-chapter-nav {
     transform: scale(0.9);
   }
 }
+@media (max-width: 200px) {
+  .mobile-nav.mobile-nav-seven {
+    padding-inline: 0;
+  }
+}
 @media (max-width: 650px) {
   .glossary-heading {
     align-items: flex-start;
