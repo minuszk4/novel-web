@@ -356,6 +356,30 @@ test('synthetic signed settlement grants credits once and unlocks a public chapt
     },
   ]);
 
+  const foreignHistoryCsrfResponse = await page.request.get(
+    'http://localhost:4300/api/v1/auth/csrf',
+  );
+  expect(foreignHistoryCsrfResponse.status()).toBe(200);
+  const foreignHistoryCsrfToken = ((await foreignHistoryCsrfResponse.json()) as { token: string })
+    .token;
+  const foreignHistoryClear = await page.request.delete(
+    'http://localhost:4300/api/v1/me/reading-history',
+    { headers: { 'X-CSRF-Token': foreignHistoryCsrfToken } },
+  );
+  expect(foreignHistoryClear.status()).toBe(204);
+  expect(foreignHistoryClear.headers()['cache-control']).toContain('no-store');
+  const foreignHistoryAfterClear = await page.request.get(
+    'http://localhost:4300/api/v1/me/reading-history',
+  );
+  expect(foreignHistoryAfterClear.status()).toBe(200);
+  expect(foreignHistoryAfterClear.headers()['cache-control']).toContain('no-store');
+  const foreignHistoryAfterClearBody = (await foreignHistoryAfterClear.json()) as {
+    items: Array<{ work: { id: string } }>;
+  };
+  expect(foreignHistoryAfterClearBody.items).not.toContainEqual(
+    expect.objectContaining({ work: expect.objectContaining({ id: privateWorkId }) }),
+  );
+
   const foreignOrderResponse = await page.request.get(
     `http://localhost:4300/api/v1/payment-orders/${orderId}`,
   );
