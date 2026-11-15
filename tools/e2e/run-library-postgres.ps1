@@ -63,6 +63,7 @@ $environmentNames = @(
     'MOMO_COMMERCE_LIVE_TEST_SESSION_TOKEN', 'MOMO_COMMERCE_LIVE_TEST_OTHER_SESSION_TOKEN',
     'MOMO_COMMERCE_LIVE_TEST_ORDER_ID',
     'MOMO_COMMERCE_LIVE_TEST_REQUEST_ID', 'MOMO_COMMERCE_LIVE_TEST_WORK_ID',
+    'MOMO_COMMERCE_LIVE_TEST_PRIVATE_WORK_ID', 'MOMO_COMMERCE_LIVE_TEST_PRIVATE_CHAPTER_ID',
     'MOMO_COMMERCE_LIVE_TEST_CHAPTER_ID', 'MOMO_COMMERCE_LIVE_TEST_SUCCESS_SCREENSHOT',
     'MOMO_COMMERCE_LIVE_TEST_UNLOCK_SCREENSHOT',
     'NOVEL_IMPORT_STAGING_ROOT', 'LIBRARY_LIVE_TEST_WORK_IDS', 'LIBRARY_LIVE_TEST_SCREENSHOT', 'READER_LIVE_TEST_WORK_ID',
@@ -135,7 +136,7 @@ $glossaryTermId = [guid]::NewGuid()
 $authoringTitle = "Live E2E Authored Draft $userId"
 $authoringOutlineTitle = 'Live E2E Blank Outline Chapter'
 $authoringEditorScreenshotPath = Join-Path $evidenceDirectory 'authoring-chapter-editor-live.png'
-$secondWorkSourceKind = if ($IncludeTranslationPreview -or $IncludeAuthoringOutline) { 'authored' } else { 'imported' }
+$secondWorkSourceKind = if ($IncludeTranslationPreview -or $IncludeAuthoringOutline -or $IncludeCommerceSettlement) { 'authored' } else { 'imported' }
 $readerSourceText = 'Live E2E source text is served from PostgreSQL.'
 $readerSourceHash = [Convert]::ToHexString(
     [System.Security.Cryptography.SHA256]::HashData([System.Text.Encoding]::UTF8.GetBytes($readerSourceText))
@@ -425,6 +426,8 @@ COMMIT;
         $env:MOMO_COMMERCE_LIVE_TEST_REQUEST_ID = [string]$commerceRequestId
         $env:MOMO_COMMERCE_LIVE_TEST_WORK_ID = [string]$commerceWorkId
         $env:MOMO_COMMERCE_LIVE_TEST_CHAPTER_ID = [string]$commerceChapterId
+        $env:MOMO_COMMERCE_LIVE_TEST_PRIVATE_WORK_ID = [string]$secondWorkId
+        $env:MOMO_COMMERCE_LIVE_TEST_PRIVATE_CHAPTER_ID = [string]$translationChapterId
         $env:MOMO_COMMERCE_LIVE_TEST_SUCCESS_SCREENSHOT = $commerceSuccessScreenshotPath
         $env:MOMO_COMMERCE_LIVE_TEST_UNLOCK_SCREENSHOT = $commerceUnlockScreenshotPath
     }

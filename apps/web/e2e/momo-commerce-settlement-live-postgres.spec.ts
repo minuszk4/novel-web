@@ -10,6 +10,8 @@ test('synthetic signed settlement grants credits once and unlocks a public chapt
   const requestId = process.env['MOMO_COMMERCE_LIVE_TEST_REQUEST_ID'];
   const workId = process.env['MOMO_COMMERCE_LIVE_TEST_WORK_ID'];
   const chapterId = process.env['MOMO_COMMERCE_LIVE_TEST_CHAPTER_ID'];
+  const privateWorkId = process.env['MOMO_COMMERCE_LIVE_TEST_PRIVATE_WORK_ID'];
+  const privateChapterId = process.env['MOMO_COMMERCE_LIVE_TEST_PRIVATE_CHAPTER_ID'];
   const successScreenshot = process.env['MOMO_COMMERCE_LIVE_TEST_SUCCESS_SCREENSHOT'];
   const unlockScreenshot = process.env['MOMO_COMMERCE_LIVE_TEST_UNLOCK_SCREENSHOT'];
   const accessKey = process.env['MOMO_TEST_ACCESS_KEY'];
@@ -22,6 +24,8 @@ test('synthetic signed settlement grants credits once and unlocks a public chapt
       !requestId ||
       !workId ||
       !chapterId ||
+      !privateWorkId ||
+      !privateChapterId ||
       !successScreenshot ||
       !unlockScreenshot ||
       !accessKey ||
@@ -34,6 +38,8 @@ test('synthetic signed settlement grants credits once and unlocks a public chapt
   expect(requestId).toMatch(/^[0-9a-f-]{36}$/i);
   expect(workId).toMatch(/^[0-9a-f-]{36}$/i);
   expect(chapterId).toMatch(/^[0-9a-f-]{36}$/i);
+  expect(privateWorkId).toMatch(/^[0-9a-f-]{36}$/i);
+  expect(privateChapterId).toMatch(/^[0-9a-f-]{36}$/i);
 
   await page.context().addCookies([
     {
@@ -171,6 +177,37 @@ test('synthetic signed settlement grants credits once and unlocks a public chapt
   await expect(page.getByRole('heading', { name: 'Chương đã mở' })).toBeVisible();
   await expect(page.getByText('Live Paid Chapter')).toBeVisible();
 
+  const ownerPrivateManuscript = await page.request.get(
+    `http://localhost:4300/api/v1/authoring/manuscripts/${privateWorkId}`,
+  );
+  expect(ownerPrivateManuscript.status()).toBe(200);
+  expect(ownerPrivateManuscript.headers()['cache-control']).toContain('no-store');
+  expect(await ownerPrivateManuscript.json()).toMatchObject({
+    id: privateWorkId,
+    title: 'Live E2E Novel Two',
+    visibility: 'private',
+  });
+
+  const ownerPrivateOutline = await page.request.get(
+    `http://localhost:4300/api/v1/authoring/manuscripts/${privateWorkId}/chapters`,
+  );
+  expect(ownerPrivateOutline.status()).toBe(200);
+  const ownerPrivateOutlineBody = await ownerPrivateOutline.text();
+  expect(JSON.parse(ownerPrivateOutlineBody)).toMatchObject({
+    items: [expect.objectContaining({ id: privateChapterId, title: 'Live Translation Chapter' })],
+  });
+  expect(ownerPrivateOutlineBody).not.toMatch(
+    /"(?:sourceText|normalizedContent|segments|ownerUserId)"\s*:/i,
+  );
+
+  const ownerPrivateChapterContent = await page.request.get(
+    `http://localhost:4300/api/v1/chapters/${privateChapterId}/content`,
+  );
+  expect(ownerPrivateChapterContent.status()).toBe(200);
+  expect(await ownerPrivateChapterContent.text()).toContain(
+    'Live fake-local source segment from PostgreSQL.',
+  );
+
   await page.context().clearCookies();
   await page.context().addCookies([
     {
@@ -189,6 +226,30 @@ test('synthetic signed settlement grants credits once and unlocks a public chapt
   );
   expect(foreignOrderResponse.status()).toBe(404);
   expect(await foreignOrderResponse.text()).toContain('PAYMENT_ORDER_NOT_FOUND');
+
+  const foreignPrivateManuscript = await page.request.get(
+    `http://localhost:4300/api/v1/authoring/manuscripts/${privateWorkId}`,
+  );
+  expect(foreignPrivateManuscript.status()).toBe(404);
+  const foreignPrivateManuscriptBody = await foreignPrivateManuscript.text();
+  expect(foreignPrivateManuscriptBody).toContain('MANUSCRIPT_NOT_FOUND');
+  expect(foreignPrivateManuscriptBody).not.toContain('Live E2E Novel Two');
+
+  const foreignPrivateOutline = await page.request.get(
+    `http://localhost:4300/api/v1/authoring/manuscripts/${privateWorkId}/chapters`,
+  );
+  expect(foreignPrivateOutline.status()).toBe(404);
+  expect(await foreignPrivateOutline.text()).toContain('MANUSCRIPT_NOT_FOUND');
+
+  const foreignPrivateChapterContent = await page.request.get(
+    `http://localhost:4300/api/v1/chapters/${privateChapterId}/content`,
+  );
+  expect(foreignPrivateChapterContent.status()).toBe(404);
+  const foreignPrivateChapterBody = await foreignPrivateChapterContent.text();
+  expect(foreignPrivateChapterBody).toContain('NOT_FOUND');
+  expect(foreignPrivateChapterBody).not.toContain(
+    'Live fake-local source segment from PostgreSQL.',
+  );
 
   const foreignPaymentOrders = await page.request.get(
     'http://localhost:4300/api/v1/me/payment-orders',
