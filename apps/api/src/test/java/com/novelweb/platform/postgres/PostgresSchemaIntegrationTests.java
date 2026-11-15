@@ -37,6 +37,7 @@ import com.novelweb.library.WorkspaceService;
 import com.novelweb.library.imports.ImportParseService;
 import com.novelweb.library.imports.ImportStagingCleanupService;
 import com.novelweb.library.imports.ImportStagingRateLimiter;
+import com.novelweb.payment.credit.CreditLedgerService;
 import com.novelweb.progression.cultivation.CultivationRepository;
 import com.novelweb.progression.cultivation.CultivationService;
 import com.novelweb.translation.glossary.GlossaryCatalogController;
@@ -233,6 +234,8 @@ class PostgresSchemaIntegrationTests {
   @Autowired private LibraryUserStateService libraryUserStateService;
 
   @Autowired private CultivationRepository cultivationRepository;
+
+  @Autowired private CreditLedgerService creditLedgerService;
 
   @Autowired private GlossaryRepository glossaryRepository;
 
@@ -12563,6 +12566,288 @@ class PostgresSchemaIntegrationTests {
       assertEquals(20, creditProjectedBalance(userId, "BONUS"));
     } finally {
       deleteSessionTestUser(userId);
+    }
+  }
+
+  @Test
+  void creditLedgerServiceMakesPaidGrantsDebitsAndReversalsIdempotent() throws Exception {
+    UUID userId = createSessionTestUser("Credit Ledger Service Owner");
+    UUID otherUserId = createSessionTestUser("Credit Ledger Service Other Owner");
+    UUID paymentOrderId = UUID.randomUUID();
+    UUID unlockId = UUID.randomUUID();
+    try {
+      CreditLedgerService.OperationResult grant =
+          inCreditLedgerTransaction(
+              connection ->
+                  creditLedgerService.grantPaidTopUp(connection, userId, paymentOrderId, 100));
+      assertEquals(CreditLedgerService.Outcome.APPLIED, grant.outcome());
+      assertEquals(1, grant.ledgerEntryIds().size());
+
+      CreditLedgerService.OperationResult grantReplay =
+          inCreditLedgerTransaction(
+              connection ->
+                  creditLedgerService.grantPaidTopUp(connection, userId, paymentOrderId, 100));
+      assertEquals(CreditLedgerService.Outcome.ALREADY_APPLIED, grantReplay.outcome());
+      assertEquals(grant.ledgerEntryIds(), grantReplay.ledgerEntryIds());
+      assertEquals(
+          CreditLedgerService.Outcome.SOURCE_OPERATION_REUSED,
+          inCreditLedgerTransaction(
+                  connection ->
+                      creditLedgerService.grantPaidTopUp(connection, userId, paymentOrderId, 101))
+              .outcome());
+      assertEquals(
+          CreditLedgerService.Outcome.SOURCE_OPERATION_REUSED,
+          inCreditLedgerTransaction(
+                  connection ->
+                      creditLedgerService.grantPaidTopUp(
+                          connection, otherUserId, paymentOrderId, 100))
+              .outcome());
+
+      List<CreditLedgerService.Allocation> paidTen =
+          List.of(new CreditLedgerService.Allocation(CreditLedgerService.Bucket.PAID, 10, null));
+      assertEquals(
+          CreditLedgerService.Outcome.INSUFFICIENT_CREDITS,
+          inCreditLedgerTransaction(
+                  connection ->
+                      creditLedgerService.debitUnlock(
+                          connection,
+                          userId,
+                          unlockId,
+                          101,
+                          List.of(
+                              new CreditLedgerService.Allocation(
+                                  CreditLedgerService.Bucket.PAID, 101, null))))
+              .outcome());
+      assertEquals(0, creditSourceEntryCount("CHAPTER_UNLOCK", unlockId));
+
+      CreditLedgerService.OperationResult debit =
+          inCreditLedgerTransaction(
+              connection ->
+                  creditLedgerService.debitUnlock(connection, userId, unlockId, 10, paidTen));
+      assertEquals(CreditLedgerService.Outcome.APPLIED, debit.outcome());
+      assertEquals(-10, debit.amountDelta());
+      CreditLedgerService.OperationResult debitReplay =
+          inCreditLedgerTransaction(
+              connection ->
+                  creditLedgerService.debitUnlock(connection, userId, unlockId, 10, paidTen));
+      assertEquals(CreditLedgerService.Outcome.ALREADY_APPLIED, debitReplay.outcome());
+      assertEquals(debit.ledgerEntryIds(), debitReplay.ledgerEntryIds());
+      assertEquals(
+          CreditLedgerService.Outcome.SOURCE_OPERATION_REUSED,
+          inCreditLedgerTransaction(
+                  connection ->
+                      creditLedgerService.debitUnlock(
+                          connection,
+                          userId,
+                          unlockId,
+                          11,
+                          List.of(
+                              new CreditLedgerService.Allocation(
+                                  CreditLedgerService.Bucket.PAID, 11, null))))
+              .outcome());
+      assertEquals(90, creditProjectedBalance(userId, "PAID"));
+
+      UUID grantEntryId = grant.ledgerEntryIds().getFirst();
+      CreditLedgerService.OperationResult reversal =
+          inCreditLedgerTransaction(
+              connection -> creditLedgerService.reverseEntry(connection, userId, grantEntryId, 50));
+      assertEquals(CreditLedgerService.Outcome.APPLIED, reversal.outcome());
+      assertEquals(-50, reversal.amountDelta());
+      CreditLedgerService.OperationResult reversalReplay =
+          inCreditLedgerTransaction(
+              connection -> creditLedgerService.reverseEntry(connection, userId, grantEntryId, 50));
+      assertEquals(CreditLedgerService.Outcome.ALREADY_APPLIED, reversalReplay.outcome());
+      assertEquals(reversal.ledgerEntryIds(), reversalReplay.ledgerEntryIds());
+      assertEquals(
+          CreditLedgerService.Outcome.ENTRY_ALREADY_REVERSED,
+          inCreditLedgerTransaction(
+                  connection ->
+                      creditLedgerService.reverseEntry(connection, userId, grantEntryId, 40))
+              .outcome());
+
+      CreditLedgerService.OperationResult debitReversal =
+          inCreditLedgerTransaction(
+              connection ->
+                  creditLedgerService.reverseEntry(
+                      connection, userId, debit.ledgerEntryIds().getFirst(), 10));
+      assertEquals(CreditLedgerService.Outcome.APPLIED, debitReversal.outcome());
+      assertEquals(50, creditProjectedBalance(userId, "PAID"));
+      assertEquals(
+          CreditLedgerService.Outcome.ENTRY_NOT_FOUND,
+          inCreditLedgerTransaction(
+                  connection ->
+                      creditLedgerService.reverseEntry(connection, otherUserId, grantEntryId, 10))
+              .outcome());
+    } finally {
+      deleteSessionTestUser(userId);
+      deleteSessionTestUser(otherUserId);
+    }
+  }
+
+  @Test
+  void creditLedgerServiceRejectsExpiredAllocationsWithoutPartiallyDebiting() throws Exception {
+    UUID userId = createSessionTestUser("Credit Ledger Expiry Owner");
+    UUID paymentOrderId = UUID.randomUUID();
+    UUID liveBonusSource = UUID.randomUUID();
+    UUID expiredBonusSource = UUID.randomUUID();
+    UUID mixedUnlockId = UUID.randomUUID();
+    UUID expiredUnlockId = UUID.randomUUID();
+    try {
+      assertEquals(
+          CreditLedgerService.Outcome.APPLIED,
+          inCreditLedgerTransaction(
+                  connection ->
+                      creditLedgerService.grantPaidTopUp(connection, userId, paymentOrderId, 20))
+              .outcome());
+      Instant liveExpiry = Instant.now().plusSeconds(3600);
+      Instant expiredAt = Instant.now().minusSeconds(60);
+      insertCreditLedgerEntry(
+          userId, "BONUS_GRANT", "BONUS", 15, liveExpiry, "OPERATOR", liveBonusSource, null);
+      insertCreditLedgerEntry(
+          userId, "BONUS_GRANT", "BONUS", 5, expiredAt, "OPERATOR", expiredBonusSource, null);
+
+      List<CreditLedgerService.Allocation> allocations =
+          List.of(
+              new CreditLedgerService.Allocation(CreditLedgerService.Bucket.PAID, 10, null),
+              new CreditLedgerService.Allocation(CreditLedgerService.Bucket.BONUS, 10, liveExpiry));
+      CreditLedgerService.OperationResult mixedDebit =
+          inCreditLedgerTransaction(
+              connection ->
+                  creditLedgerService.debitUnlock(
+                      connection, userId, mixedUnlockId, 20, allocations));
+      assertEquals(CreditLedgerService.Outcome.APPLIED, mixedDebit.outcome());
+      assertEquals(10, creditProjectedBalance(userId, "PAID"));
+      assertEquals(5, creditProjectedBalance(userId, "BONUS"));
+
+      assertEquals(
+          CreditLedgerService.Outcome.INSUFFICIENT_CREDITS,
+          inCreditLedgerTransaction(
+                  connection ->
+                      creditLedgerService.debitUnlock(
+                          connection,
+                          userId,
+                          expiredUnlockId,
+                          1,
+                          List.of(
+                              new CreditLedgerService.Allocation(
+                                  CreditLedgerService.Bucket.BONUS, 1, expiredAt))))
+              .outcome());
+
+      UUID secondMixedUnlockId = UUID.randomUUID();
+      assertEquals(
+          CreditLedgerService.Outcome.INSUFFICIENT_CREDITS,
+          inCreditLedgerTransaction(
+                  connection ->
+                      creditLedgerService.debitUnlock(
+                          connection,
+                          userId,
+                          secondMixedUnlockId,
+                          11,
+                          List.of(
+                              new CreditLedgerService.Allocation(
+                                  CreditLedgerService.Bucket.PAID, 10, null),
+                              new CreditLedgerService.Allocation(
+                                  CreditLedgerService.Bucket.BONUS, 1, expiredAt))))
+              .outcome());
+      assertEquals(0, creditSourceEntryCount("CHAPTER_UNLOCK", secondMixedUnlockId));
+      assertEquals(10, creditProjectedBalance(userId, "PAID"));
+      assertEquals(5, creditProjectedBalance(userId, "BONUS"));
+    } finally {
+      deleteSessionTestUser(userId);
+    }
+  }
+
+  @Test
+  void creditLedgerServiceSerializesCompetingUnlockDebits() throws Exception {
+    UUID userId = createSessionTestUser("Credit Ledger Concurrent Owner");
+    ExecutorService executor = Executors.newFixedThreadPool(2);
+    try {
+      assertEquals(
+          CreditLedgerService.Outcome.APPLIED,
+          inCreditLedgerTransaction(
+                  connection ->
+                      creditLedgerService.grantPaidTopUp(connection, userId, UUID.randomUUID(), 10))
+              .outcome());
+
+      CountDownLatch ready = new CountDownLatch(2);
+      CountDownLatch start = new CountDownLatch(1);
+      List<Future<CreditLedgerService.Outcome>> attempts = new ArrayList<>();
+      for (int index = 0; index < 2; index++) {
+        UUID unlockId = UUID.randomUUID();
+        attempts.add(
+            executor.submit(
+                () -> {
+                  ready.countDown();
+                  if (!start.await(10, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("credit debit race did not start");
+                  }
+                  return inCreditLedgerTransaction(
+                          connection ->
+                              creditLedgerService.debitUnlock(
+                                  connection,
+                                  userId,
+                                  unlockId,
+                                  10,
+                                  List.of(
+                                      new CreditLedgerService.Allocation(
+                                          CreditLedgerService.Bucket.PAID, 10, null))))
+                      .outcome();
+                }));
+      }
+      assertTrue(ready.await(10, TimeUnit.SECONDS));
+      start.countDown();
+      List<CreditLedgerService.Outcome> outcomes =
+          List.of(
+              attempts.get(0).get(15, TimeUnit.SECONDS), attempts.get(1).get(15, TimeUnit.SECONDS));
+      assertEquals(
+          1,
+          outcomes.stream().filter(value -> value == CreditLedgerService.Outcome.APPLIED).count());
+      assertEquals(
+          1,
+          outcomes.stream()
+              .filter(value -> value == CreditLedgerService.Outcome.INSUFFICIENT_CREDITS)
+              .count());
+      assertEquals(0, creditProjectedBalance(userId, "PAID"));
+    } finally {
+      executor.shutdownNow();
+      deleteSessionTestUser(userId);
+    }
+  }
+
+  private <T> T inCreditLedgerTransaction(CreditLedgerWork<T> work) throws SQLException {
+    try (Connection connection = dataSource.getConnection()) {
+      connection.setAutoCommit(false);
+      try {
+        T result = work.apply(connection);
+        connection.commit();
+        return result;
+      } catch (SQLException | RuntimeException exception) {
+        try {
+          connection.rollback();
+        } catch (SQLException rollbackException) {
+          exception.addSuppressed(rollbackException);
+        }
+        throw exception;
+      }
+    }
+  }
+
+  @FunctionalInterface
+  private interface CreditLedgerWork<T> {
+    T apply(Connection connection) throws SQLException;
+  }
+
+  private long creditSourceEntryCount(String sourceType, UUID sourceId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT COUNT(*) FROM credit_ledger_entries WHERE source_type = ? AND source_id = ?")) {
+      select.setString(1, sourceType);
+      select.setObject(2, sourceId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getLong(1);
+      }
     }
   }
 
