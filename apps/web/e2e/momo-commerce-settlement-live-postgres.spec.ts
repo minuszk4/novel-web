@@ -449,6 +449,13 @@ test('synthetic signed settlement grants credits once and unlocks a public chapt
   expect(foreignAnnotationDelete.headers()['cache-control']).toContain('no-store');
   expect(await foreignAnnotationDelete.text()).toContain('NOT_FOUND');
 
+  const foreignAnnotationClear = await page.request.delete(
+    `http://localhost:4300/api/v1/works/${privateWorkId}/annotations`,
+    { headers: { 'X-CSRF-Token': foreignProgressCsrfToken } },
+  );
+  expect(foreignAnnotationClear.status()).toBe(204);
+  expect(foreignAnnotationClear.headers()['cache-control']).toContain('no-store');
+
   const foreignProgressWrite = await page.request.put(
     `http://localhost:4300/api/v1/works/${privateWorkId}/progress`,
     {
@@ -591,4 +598,15 @@ test('synthetic signed settlement grants credits once and unlocks a public chapt
   expect(await unchangedOwnerAnnotations.json()).toMatchObject({
     items: [expect.objectContaining({ id: ownerAnnotationId, note: 'Owner-only live note' })],
   });
+  const ownerAnnotationClear = await page.request.delete(
+    `http://localhost:4300/api/v1/works/${privateWorkId}/annotations`,
+    { headers: { 'X-CSRF-Token': ownerProgressCsrfToken } },
+  );
+  expect(ownerAnnotationClear.status()).toBe(204);
+  expect(ownerAnnotationClear.headers()['cache-control']).toContain('no-store');
+  const ownerAnnotationsAfterClear = await page.request.get(
+    `http://localhost:4300/api/v1/works/${privateWorkId}/annotations?chapterId=${privateChapterId}`,
+  );
+  expect(ownerAnnotationsAfterClear.status()).toBe(200);
+  expect(await ownerAnnotationsAfterClear.json()).toMatchObject({ items: [], nextCursor: null });
 });
