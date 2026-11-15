@@ -54,6 +54,165 @@
       </div>
     </section>
 
+    @if (catalogState() !== 'checking' && catalogState() !== 'disabled') {
+      <section class="public-catalog" aria-labelledby="public-catalog-title">
+        <div class="public-catalog-heading">
+          <p class="public-catalog-eyebrow">KHÁM PHÁ</p>
+          <h2 id="public-catalog-title">Truyện công khai</h2>
+          <p>Chỉ những tác phẩm được chủ sở hữu công khai mới xuất hiện tại đây.</p>
+        </div>
+
+        @if (catalogState() === 'loading') {
+          <p class="public-catalog-loading" role="status" aria-live="polite">
+            Đang tải danh mục truyện…
+          </p>
+        } @else if (catalogState() === 'error') {
+          <div class="public-catalog-error" role="alert">
+            <p>{{ loadError() }}</p>
+            <button class="button button-outline" type="button" (click)="retryCatalog()">
+              Thử tải lại
+            </button>
+          </div>
+        } @else {
+          <form
+            class="public-catalog-filters"
+            role="search"
+            aria-label="Tìm truyện công khai"
+            (submit)="applyFilters($event)"
+          >
+            <div class="public-catalog-field">
+              <label for="public-catalog-query">Tên truyện hoặc tác giả</label>
+              <input
+                id="public-catalog-query"
+                type="search"
+                maxlength="120"
+                autocomplete="off"
+                [value]="query()"
+                (input)="setQuery($event)"
+              />
+            </div>
+            <div class="public-catalog-field">
+              <label for="public-catalog-language">Ngôn ngữ nguồn</label>
+              <input
+                id="public-catalog-language"
+                type="text"
+                maxlength="35"
+                autocomplete="off"
+                placeholder="vi, en, ja…"
+                aria-describedby="public-catalog-language-help"
+                [value]="language()"
+                (input)="setLanguage($event)"
+              />
+              <span id="public-catalog-language-help">Mã ngôn ngữ tùy chọn, ví dụ vi hoặc en.</span>
+            </div>
+            <button class="button button-primary public-catalog-submit" type="submit">
+              Tìm truyện
+            </button>
+            @if (query() || language()) {
+              <button
+                class="button button-outline public-catalog-clear"
+                type="button"
+                (click)="clearFilters()"
+              >
+                Xóa bộ lọc
+              </button>
+            }
+          </form>
+
+          @if (filterError()) {
+            <p class="public-catalog-inline-error" role="alert">{{ filterError() }}</p>
+          }
+          @if (loadError()) {
+            <div class="public-catalog-error" role="alert">
+              <p>{{ loadError() }}</p>
+              <button class="button button-outline" type="button" (click)="retryCatalog()">
+                Thử tải lại
+              </button>
+            </div>
+          }
+
+          <p
+            class="public-catalog-announcement"
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+          >
+            {{ announcement() }}
+          </p>
+
+          @if (catalogItems().length === 0 && !loadError()) {
+            <div class="public-catalog-empty">
+              <h3>Chưa có truyện phù hợp</h3>
+              <p>Thử đổi từ khóa hoặc xóa bộ lọc để xem các tác phẩm đang công khai.</p>
+              @if (query() || language()) {
+                <button class="button button-outline" type="button" (click)="clearFilters()">
+                  Xóa bộ lọc
+                </button>
+              }
+            </div>
+          } @else if (catalogItems().length > 0) {
+            <div class="public-catalog-grid">
+              @for (work of catalogItems(); track work.id) {
+                <article class="public-catalog-card">
+                  <p class="public-catalog-card-label">TÁC PHẨM CÔNG KHAI</p>
+                  <h3>
+                    <a
+                      [routerLink]="['/sign-in']"
+                      [queryParams]="{ returnTo: readReturnPath(work.id) }"
+                    >
+                      {{ work.title }}
+                    </a>
+                  </h3>
+                  <p class="public-catalog-author">{{ work.author || 'Chưa có tên tác giả' }}</p>
+                  <dl>
+                    <div>
+                      <dt>Ngôn ngữ nguồn</dt>
+                      <dd>{{ work.sourceLanguage }}</dd>
+                    </div>
+                    <div>
+                      <dt>Chương sẵn sàng</dt>
+                      <dd>{{ work.readyChapterCount }}</dd>
+                    </div>
+                  </dl>
+                  <a
+                    class="public-catalog-read-link"
+                    [routerLink]="['/sign-in']"
+                    [queryParams]="{ returnTo: readReturnPath(work.id) }"
+                    [attr.aria-label]="'Đăng nhập để mở tác phẩm: ' + work.title"
+                  >
+                    Đăng nhập để mở tác phẩm <span aria-hidden="true">→</span>
+                  </a>
+                </article>
+              }
+            </div>
+          }
+
+          @if (pageError()) {
+            <div class="public-catalog-page-error" role="alert">
+              <p>{{ pageError() }}</p>
+              <button
+                class="button button-outline"
+                type="button"
+                [disabled]="isLoadingMore()"
+                (click)="loadMore()"
+              >
+                {{ isLoadingMore() ? 'Đang tải…' : 'Thử tải thêm lần nữa' }}
+              </button>
+            </div>
+          } @else if (nextCursor()) {
+            <button
+              class="button button-outline public-catalog-more"
+              type="button"
+              [disabled]="isLoadingMore()"
+              (click)="loadMore()"
+            >
+              {{ isLoadingMore() ? 'Đang tải truyện…' : 'Tải thêm truyện' }}
+            </button>
+          }
+        }
+      </section>
+    }
+
     <section class="intro-strip" id="how-it-works">
       <div>
         <span class="strip-index">01</span>

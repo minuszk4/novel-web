@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 7.1.0
+  version: 7.2.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -5514,7 +5514,7 @@ components:
               const: TEST
         features:
           type: object
-          required: [importProcessingEnabled, cultivationEnabled, commerceSandboxEnabled, translationFakePreviewEnabled]
+          required: [importProcessingEnabled, cultivationEnabled, commerceSandboxEnabled, publicCatalogEnabled, translationFakePreviewEnabled]
           properties:
             importProcessingEnabled:
               type: boolean
@@ -5525,6 +5525,9 @@ components:
             commerceSandboxEnabled:
               type: boolean
               const: false
+            publicCatalogEnabled:
+              type: boolean
+              description: True only when the postgres profile is active and public catalog is explicitly enabled; does not attest rights approval.
             translationFakePreviewEnabled:
               type: boolean
               description: True only when the postgres and translation-fake profiles and provider, API and worker opt-in flags are active.

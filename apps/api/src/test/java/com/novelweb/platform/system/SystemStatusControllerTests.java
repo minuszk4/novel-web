@@ -129,6 +129,17 @@ class SystemStatusControllerTests {
     assertFalse(profileMissing.features().translationFakePreviewEnabled());
   }
 
+  @Test
+  void publicCatalogRequiresPostgresProfileAndExplicitOptIn() {
+    ApiSystemStatus enabled = controllerWithCatalog(true, "postgres").status();
+    ApiSystemStatus optInMissing = controllerWithCatalog(false, "postgres").status();
+    ApiSystemStatus profileMissing = controllerWithCatalog(true).status();
+
+    assertTrue(enabled.features().publicCatalogEnabled());
+    assertFalse(optInMissing.features().publicCatalogEnabled());
+    assertFalse(profileMissing.features().publicCatalogEnabled());
+  }
+
   private static SystemStatusController controller(
       GoogleSignInConfiguration googleConfiguration,
       boolean cultivation,
@@ -152,6 +163,27 @@ class SystemStatusControllerTests {
         translationEnabled,
         translationApiEnabled,
         translationWorkerEnabled,
+        momoSettings,
+        environment);
+  }
+
+  private static SystemStatusController controllerWithCatalog(
+      boolean publicCatalogRequested, String... activeProfiles) {
+    MockEnvironment environment = new MockEnvironment();
+    environment.setActiveProfiles(activeProfiles);
+    environment.setProperty(
+        "novel.features.public-catalog-enabled", Boolean.toString(publicCatalogRequested));
+    StaticListableBeanFactory beanFactory = new StaticListableBeanFactory();
+    ObjectProvider<MomoTestGatewaySettings> momoSettings =
+        beanFactory.getBeanProvider(MomoTestGatewaySettings.class);
+    return new SystemStatusController(
+        "test",
+        new GoogleSignInConfiguration("", "", ""),
+        false,
+        false,
+        false,
+        false,
+        false,
         momoSettings,
         environment);
   }

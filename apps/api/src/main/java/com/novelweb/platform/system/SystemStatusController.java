@@ -19,6 +19,7 @@ public class SystemStatusController {
   private final boolean cultivationEnabled;
   private final boolean momoTestEnabled;
   private final boolean commerceSandboxEnabled;
+  private final boolean publicCatalogEnabled;
   private final boolean translationFakePreviewEnabled;
 
   public SystemStatusController(
@@ -37,6 +38,10 @@ public class SystemStatusController {
     boolean postgresProfile = springEnvironment.acceptsProfiles(Profiles.of("postgres"));
     this.momoTestEnabled = postgresProfile && momoSettings.getIfAvailable() != null;
     this.commerceSandboxEnabled = postgresProfile && commerceSandboxRequested && momoTestEnabled;
+    this.publicCatalogEnabled =
+        postgresProfile
+            && springEnvironment.getProperty(
+                "novel.features.public-catalog-enabled", Boolean.class, false);
     this.translationFakePreviewEnabled =
         springEnvironment.acceptsProfiles(Profiles.of("postgres & translation-fake"))
             && fakeTranslationEnabled
@@ -52,6 +57,10 @@ public class SystemStatusController {
         new ApiSystemStatus.Integrations(
             googleSignInConfiguration.isReadyForSignIn(), momoTestEnabled, "TEST"),
         new ApiSystemStatus.Features(
-            false, cultivationEnabled, commerceSandboxEnabled, translationFakePreviewEnabled));
+            false,
+            cultivationEnabled,
+            commerceSandboxEnabled,
+            publicCatalogEnabled,
+            translationFakePreviewEnabled));
   }
 }

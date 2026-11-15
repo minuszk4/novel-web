@@ -64,6 +64,8 @@ function isApiSystemStatus(value: unknown): value is ApiSystemStatus {
     typeof features?.importProcessingEnabled === 'boolean' &&
     typeof features.cultivationEnabled === 'boolean' &&
     typeof features.commerceSandboxEnabled === 'boolean' &&
+    (features.publicCatalogEnabled === undefined ||
+      typeof features.publicCatalogEnabled === 'boolean') &&
     typeof features.translationFakePreviewEnabled === 'boolean'
   );
 }
