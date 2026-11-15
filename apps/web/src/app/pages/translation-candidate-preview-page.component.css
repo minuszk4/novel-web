@@ -251,6 +251,12 @@
   flex-wrap: wrap;
 }
 
+.translation-candidate-conflict-actions:focus {
+  outline: 3px solid var(--focus-ring, #2862cc);
+  outline-offset: 4px;
+  border-radius: 8px;
+}
+
 .translation-candidate-pagination,
 .translation-candidate-actions {
   display: flex;

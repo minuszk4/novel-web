@@ -78,6 +78,12 @@ export class TranslationCandidatePreviewPageComponent {
   @ViewChildren('editButton')
   private readonly editButtons!: QueryList<ElementRef<HTMLButtonElement>>;
 
+  @ViewChildren('conflictActions')
+  private readonly conflictActions!: QueryList<ElementRef<HTMLElement>>;
+
+  @ViewChildren('saveButton')
+  private readonly saveButtons!: QueryList<ElementRef<HTMLButtonElement>>;
+
   @ViewChild('pageHeading')
   private set pageHeading(heading: ElementRef<HTMLHeadingElement> | undefined) {
     heading?.nativeElement.focus({ preventScroll: true });
@@ -278,6 +284,7 @@ export class TranslationCandidatePreviewPageComponent {
           attempt: null,
         });
         await this.loadPage(this.preview()?.pageOffset ?? 0, ++this.requestToken, false);
+        this.focusConflictActions(segmentId);
         return;
       }
       if (apiError?.code === 'TRANSLATION_SOURCE_STALE') {
@@ -364,6 +371,7 @@ export class TranslationCandidatePreviewPageComponent {
       message: null,
       attempt: null,
     });
+    this.focusSaveButton(segmentId);
   }
 
   protected async refresh(): Promise<void> {
@@ -472,6 +480,22 @@ export class TranslationCandidatePreviewPageComponent {
   private focusEditButton(segmentId: string): void {
     setTimeout(() => {
       this.editButtons
+        ?.find((button) => button.nativeElement.dataset['segmentId'] === segmentId)
+        ?.nativeElement.focus();
+    });
+  }
+
+  private focusConflictActions(segmentId: string): void {
+    setTimeout(() => {
+      this.conflictActions
+        ?.find((actions) => actions.nativeElement.dataset['segmentId'] === segmentId)
+        ?.nativeElement.focus();
+    });
+  }
+
+  private focusSaveButton(segmentId: string): void {
+    setTimeout(() => {
+      this.saveButtons
         ?.find((button) => button.nativeElement.dataset['segmentId'] === segmentId)
         ?.nativeElement.focus();
     });

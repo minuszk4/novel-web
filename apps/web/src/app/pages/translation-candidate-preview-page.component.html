@@ -194,7 +194,14 @@
                 </p>
               }
               @if (draft?.state === 'conflict') {
-                <div class="translation-candidate-conflict-actions">
+                <div
+                  #conflictActions
+                  class="translation-candidate-conflict-actions"
+                  [attr.data-segment-id]="segment.sourceSegmentId"
+                  role="group"
+                  aria-label="Xử lý xung đột chỉnh sửa"
+                  tabindex="-1"
+                >
                   <button
                     class="button button-outline"
                     type="button"
@@ -232,8 +239,10 @@
               }
               <div class="translation-candidate-edit-actions">
                 <button
+                  #saveButton
                   class="button button-primary"
                   type="button"
+                  [attr.data-segment-id]="segment.sourceSegmentId"
                   [disabled]="!canSave(segment.sourceSegmentId)"
                   (click)="saveEdit(segment.sourceSegmentId)"
                 >
