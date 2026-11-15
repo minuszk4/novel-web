@@ -37,6 +37,7 @@ import com.novelweb.library.WorkspaceService;
 import com.novelweb.library.imports.ImportParseService;
 import com.novelweb.library.imports.ImportStagingCleanupService;
 import com.novelweb.library.imports.ImportStagingRateLimiter;
+import com.novelweb.payment.credit.CreditBalanceRepository;
 import com.novelweb.payment.credit.CreditLedgerService;
 import com.novelweb.payment.credit.CreditPackCatalog;
 import com.novelweb.payment.credit.CreditTopUpOrderService;
@@ -241,6 +242,8 @@ class PostgresSchemaIntegrationTests {
 
   @Autowired private CreditLedgerService creditLedgerService;
 
+  @Autowired private CreditBalanceRepository creditBalanceRepository;
+
   @Autowired private CreditTopUpOrderService creditTopUpOrderService;
 
   @Autowired private GlossaryRepository glossaryRepository;
@@ -291,6 +294,81 @@ class PostgresSchemaIntegrationTests {
         "privacy-current-1",
         -1,
         "# Test privacy v2\n\nSynthetic test document; not legal copy.");
+  }
+
+  @Test
+  void creditBalanceIsActorScopedAndExcludesExpiredBonusTranches() throws Exception {
+    UUID userId = createSessionTestUser("Credit Balance Owner");
+    UUID otherUserId = createSessionTestUser("Other Credit Balance Owner");
+    UUID paidSourceId = UUID.randomUUID();
+    UUID currentBonusSourceId = UUID.randomUUID();
+    UUID expiredBonusSourceId = UUID.randomUUID();
+    Instant expiresAt = Instant.now().plus(1, ChronoUnit.DAYS);
+    Instant expiredAt = Instant.now().minus(1, ChronoUnit.DAYS);
+    try {
+      assertEquals(
+          401,
+          mockMvc.perform(get("/api/v1/me/credits/balance")).andReturn().getResponse().getStatus());
+      try (Connection connection = dataSource.getConnection()) {
+        insertCreditEntry(
+            connection, userId, "TOP_UP", "PAID", 100, null, "PAYMENT_ORDER", paidSourceId);
+        insertCreditEntry(
+            connection,
+            userId,
+            "BONUS_GRANT",
+            "BONUS",
+            5,
+            expiresAt,
+            "OPERATOR",
+            currentBonusSourceId);
+        insertCreditEntry(
+            connection,
+            userId,
+            "BONUS_GRANT",
+            "BONUS",
+            50,
+            expiredAt,
+            "OPERATOR",
+            expiredBonusSourceId);
+      }
+
+      CreditBalanceRepository.CreditBalance balance =
+          creditBalanceRepository.findAvailable(userId).orElseThrow();
+      CreditBalanceRepository.CreditBalance otherBalance =
+          creditBalanceRepository.findAvailable(otherUserId).orElseThrow();
+      assertEquals(new java.math.BigInteger("100"), balance.paidCredits());
+      assertEquals(new java.math.BigInteger("5"), balance.bonusCredits());
+      assertEquals(new java.math.BigInteger("105"), balance.totalCredits());
+      assertNotNull(balance.asOf());
+      assertEquals(java.math.BigInteger.ZERO, otherBalance.totalCredits());
+
+      addCurrentPolicyAcceptances(userId);
+      SessionService.IssuedSession ownerSession = sessionService.create(userId).orElseThrow();
+      SessionService.IssuedSession blockedSession =
+          sessionService.create(otherUserId).orElseThrow();
+      var ownerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", ownerSession.cookieValue());
+      var blockedCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", blockedSession.cookieValue());
+      MvcResult ownerResponse =
+          mockMvc.perform(get("/api/v1/me/credits/balance").cookie(ownerCookie)).andReturn();
+      assertEquals(200, ownerResponse.getResponse().getStatus());
+      assertTrue(
+          ownerResponse.getResponse().getHeader(HttpHeaders.CACHE_CONTROL).contains("no-store"));
+      assertTrue(ownerResponse.getResponse().getContentAsString().contains("\"totalCredits\":105"));
+      assertTrue(!ownerResponse.getResponse().getContentAsString().contains(userId.toString()));
+      MvcResult blockedResponse =
+          mockMvc.perform(get("/api/v1/me/credits/balance").cookie(blockedCookie)).andReturn();
+      assertEquals(403, blockedResponse.getResponse().getStatus());
+      assertTrue(
+          blockedResponse
+              .getResponse()
+              .getContentAsString()
+              .contains("POLICY_ACCEPTANCE_REQUIRED"));
+    } finally {
+      deleteSessionTestUser(userId);
+      deleteSessionTestUser(otherUserId);
+    }
   }
 
   @Test
@@ -12989,6 +13067,35 @@ class PostgresSchemaIntegrationTests {
         assertTrue(row.next());
         return row.getLong(1);
       }
+    }
+  }
+
+  private static void insertCreditEntry(
+      Connection connection,
+      UUID userId,
+      String entryType,
+      String bucket,
+      long amountDelta,
+      Instant expiresAt,
+      String sourceType,
+      UUID sourceId)
+      throws SQLException {
+    try (PreparedStatement insert =
+        connection.prepareStatement(
+            """
+            INSERT INTO credit_ledger_entries
+                (user_id, entry_type, bucket, amount_delta, expires_at, source_type, source_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """)) {
+      insert.setObject(1, userId);
+      insert.setString(2, entryType);
+      insert.setString(3, bucket);
+      insert.setLong(4, amountDelta);
+      insert.setTimestamp(
+          5, expiresAt == null ? null : Timestamp.from(expiresAt.truncatedTo(ChronoUnit.MICROS)));
+      insert.setString(6, sourceType);
+      insert.setObject(7, sourceId);
+      insert.executeUpdate();
     }
   }
 

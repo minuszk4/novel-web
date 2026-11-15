@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 6.33.0
+  version: 6.34.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -15,6 +15,7 @@ info:
     History is derived from the latest saved progress per accessible readable work, is visible for 365 days, and never returns chapter body text.
     Versioned cultivation catalogs, authenticated profile settings, private daily XP activity and bounded private Reader sessions with atomic XP awards are implemented in the PostgreSQL profile. The approved starting policy awards 1 XP per complete active Reader minute, capped at 120 XP per UTC day; same-day sub-minute remainder does not cross UTC midnight; top-ups and unlocks award none. Cultivation is feature-gated and off by default pending the rank-threshold pilot and release reviews.
     Scoped glossary storage, actor-scoped catalog listing/creation, active and writer-only latest-revision reads, version-checked immutable draft creation, authenticated diff/lint/match preview, lint-gated revision publication with append-only audit, strict JSON/CSV/TSV import preview and resolved atomic draft apply, and active/writer-only latest snapshot export are implemented in the PostgreSQL profile. Translation job enqueue/status/retry/cancel are available only as an explicit fake-local development preview and never call an external NMT provider. `features.translationFakePreviewEnabled` is true only when both required profiles and the provider/API/worker opt-in flags are active.
+    The authenticated PostgreSQL profile also exposes the current actor's available paid and non-expired bonus credit totals from the rebuildable balance projection; the response is no-store and does not expose another account's ledger.
 servers:
   - url: http://127.0.0.1:8080
 tags:
@@ -40,6 +41,9 @@ tags:
     x-implementation-status: local-preview
   - name: Authoring
     description: Private-first author manuscript drafts with owner-only chapter content and immutable revisions; collaboration and publication are not available.
+    x-implementation-status: partial
+  - name: Commerce
+    description: Actor-owned read-only credit balance is implemented; credit purchases, provider confirmation, credit grants and chapter unlocks remain gated or planned.
     x-implementation-status: partial
 paths:
   /api/v1/glossaries:
@@ -3288,6 +3292,32 @@ paths:
           $ref: '#/components/responses/Problem'
         '503':
           $ref: '#/components/responses/Problem'
+  /api/v1/me/credits/balance:
+    get:
+      operationId: getCurrentUserCreditBalance
+      tags: [Commerce]
+      x-implementation-status: implemented-postgres-profile
+      summary: Get the current user's available credit balance
+      description: >-
+        Returns paid credits plus bonus credits whose expiry is absent or later than the database snapshot time.
+        The actor comes only from the authenticated session; current Terms and Privacy acceptance is required.
+        A single database statement reads the actor's projection and timestamp. No ledger rows or other account
+        identifiers are returned. The response is no-store.
+      security:
+        - appSession: []
+      responses:
+        '200':
+          description: Current actor's paid, available bonus, total and database snapshot time.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreditBalance'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
   /api/v1/me/reader-preferences:
     get:
       operationId: getReaderPreferences
@@ -5948,6 +5978,27 @@ components:
         sortOrder:
           type: integer
           minimum: 0
+    CreditBalance:
+      type: object
+      additionalProperties: false
+      required: [paidCredits, bonusCredits, totalCredits, asOf]
+      properties:
+        paidCredits:
+          type: integer
+          minimum: 0
+          description: Available non-expiring paid credits.
+        bonusCredits:
+          type: integer
+          minimum: 0
+          description: Available bonus credits, excluding tranches expired at asOf.
+        totalCredits:
+          type: integer
+          minimum: 0
+          description: Sum of paidCredits and bonusCredits.
+        asOf:
+          type: string
+          format: date-time
+          description: Database snapshot time used to determine bonus-credit expiry.
     ReaderPreferences:
       type: object
       additionalProperties: false
