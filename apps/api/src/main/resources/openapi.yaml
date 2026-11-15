@@ -3509,8 +3509,10 @@ paths:
         paid-credit grant atomically with the successful order transition. The order snapshots autoCapture=true;
         result code 9000 with a positive transaction ID is settled under MoMo's one-step rule, while a two-step
         order with autoCapture=false remains pending. Invalid signatures never grant credits.
-        There is no customer checkout/order route or chapter-unlock route yet, no production payment, and the feature
-        flag remains off by default. Responds 204 within the provider callback contract; response has no body.
+        Gated customer catalog/create/status routes are available in the same PostgreSQL profile when TEST is
+        explicitly enabled; payment-order history, missing-IPN reconciliation and chapter-unlock routes remain
+        unavailable. There is no production payment and the feature flag remains off by default. Responds 204
+        within the provider callback contract; response has no body.
       security: []
       requestBody:
         required: true
