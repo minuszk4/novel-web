@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 6.35.0
+  version: 6.36.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -43,7 +43,7 @@ tags:
     description: Private-first author manuscript drafts with owner-only chapter content and immutable revisions; collaboration and publication are not available.
     x-implementation-status: partial
   - name: Commerce
-    description: Actor-owned read-only credit balance is implemented; credit purchases, provider confirmation, credit grants and chapter unlocks remain gated or planned.
+    description: Actor-owned credit balance/history and a MoMo TEST-only feature-flagged IPN settlement receiver are implemented; customer checkout routes, chapter purchases/unlocks and production payment remain unavailable.
     x-implementation-status: partial
 paths:
   /api/v1/glossaries:
@@ -3362,6 +3362,50 @@ paths:
           $ref: '#/components/responses/Problem'
         '503':
           $ref: '#/components/responses/Problem'
+  /api/v1/payments/momo/ipn:
+    post:
+      operationId: receiveMomoTestPaymentNotification
+      tags: [Commerce]
+      x-implementation-status: test-only-feature-flag
+      summary: Receive a signed MoMo TEST payment notification
+      description: >-
+        Server-to-server callback available only in the PostgreSQL profile when MoMo TEST has been explicitly
+        enabled with validated TEST credentials and HTTPS callback settings. The server verifies the HMAC signature,
+        matches the saved MoMo TEST order, request and VND amount, deduplicates the signed event, and appends the
+        paid-credit grant atomically with the successful order transition. The order snapshots autoCapture=true;
+        result code 9000 with a positive transaction ID is settled under MoMo's one-step rule, while a two-step
+        order with autoCapture=false remains pending. Invalid signatures never grant credits.
+        There is no customer checkout/order route or chapter-unlock route yet, no production payment, and the feature
+        flag remains off by default. Responds 204 within the provider callback contract; response has no body.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MomoTestPaymentNotification'
+      responses:
+        '204':
+          description: Notification accepted, processed, audited as a safe mismatch, or already received. No body.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
+        '400':
+          description: Malformed JSON or missing/invalid typed notification fields.
+        '401':
+          description: HMAC signature is invalid.
+        '413':
+          description: Request body exceeds 16 KiB.
+        '415':
+          description: Content-Type must be application/json.
+        '503':
+          description: Notification could not be committed; provider may retry.
   /api/v1/me/reader-preferences:
     get:
       operationId: getReaderPreferences
@@ -6043,6 +6087,73 @@ components:
           type: string
           format: date-time
           description: Database snapshot time used to determine bonus-credit expiry.
+    MomoTestPaymentNotification:
+      type: object
+      additionalProperties: true
+      required:
+        - amount
+        - extraData
+        - message
+        - orderId
+        - orderInfo
+        - orderType
+        - partnerCode
+        - payType
+        - requestId
+        - responseTime
+        - resultCode
+        - transId
+        - signature
+      properties:
+        amount:
+          type: integer
+          format: int64
+          minimum: 1000
+          maximum: 50000000
+        extraData:
+          type: string
+          const: ''
+        message:
+          type: string
+          maxLength: 2048
+        orderId:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: Saved credit top-up order UUID.
+        orderInfo:
+          type: string
+          const: Novel Web credit top-up
+        orderType:
+          type: string
+          const: momo_wallet
+        partnerCode:
+          type: string
+          minLength: 1
+          maxLength: 50
+        payType:
+          type: string
+          maxLength: 128
+        requestId:
+          type: string
+          minLength: 1
+          maxLength: 50
+          description: Saved unique request UUID for the payment order.
+        responseTime:
+          type: integer
+          format: int64
+          minimum: 1
+        resultCode:
+          type: integer
+          format: int32
+        transId:
+          type: integer
+          format: int64
+          minimum: 0
+        signature:
+          type: string
+          pattern: '^[0-9a-fA-F]{64}$'
+          description: Provider HMAC-SHA256 signature over MoMo's documented canonical fields.
     CreditHistoryPage:
       type: object
       additionalProperties: false

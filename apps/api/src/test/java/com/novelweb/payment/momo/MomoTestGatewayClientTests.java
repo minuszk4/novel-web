@@ -134,6 +134,7 @@ class MomoTestGatewayClientTests {
     assertThat(postedBody.get().path("requestId").stringValue()).isEqualTo(requestId.toString());
     assertThat(postedBody.get().path("orderInfo").stringValue())
         .isEqualTo("Novel Web credit top-up");
+    assertThat(postedBody.get().path("autoCapture").booleanValue()).isTrue();
     assertThat(postedBody.get().path("extraData").stringValue()).isEmpty();
     assertThat(postedBody.get().path("ipnUrl").stringValue()).isEqualTo(IPN_URL);
     assertThat(postedBody.get().path("redirectUrl").stringValue()).isEqualTo(REDIRECT_URL);

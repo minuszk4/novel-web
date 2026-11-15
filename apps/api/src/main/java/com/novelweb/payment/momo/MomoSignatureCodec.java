@@ -1,5 +1,6 @@
 package com.novelweb.payment.momo;
 
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.security.MessageDigest;
@@ -16,6 +17,7 @@ import javax.crypto.spec.SecretKeySpec;
 public final class MomoSignatureCodec {
 
   private static final String ALGORITHM = "HmacSHA256";
+  private static final String IPN_FINGERPRINT_DOMAIN = "novel-web:momo-test-ipn-event:v1";
   private static final String WALLET_REQUEST_TYPE = "captureWallet";
   private static final long MINIMUM_AMOUNT_VND = 1_000L;
   private static final long MAXIMUM_AMOUNT_VND = 50_000_000L;
@@ -56,6 +58,42 @@ public final class MomoSignatureCodec {
     byte[] expected = hmac(canonicalNotification(notification, accessKey), secretKey);
     byte[] supplied = HexFormat.of().parseHex(suppliedSignature);
     return MessageDigest.isEqual(expected, supplied);
+  }
+
+  /** Returns a stable hash of the signed notification fields without persisting the raw payload. */
+  public static String notificationFingerprint(PaymentNotification notification) {
+    if (notification == null || !notification.hasAllSignedFields()) {
+      throw new IllegalArgumentException("complete MoMo notification fields are required");
+    }
+    try {
+      MessageDigest digest = MessageDigest.getInstance("SHA-256");
+      for (String field : fingerprintFields(notification)) {
+        byte[] encoded = field.getBytes(StandardCharsets.UTF_8);
+        digest.update(ByteBuffer.allocate(Integer.BYTES).putInt(encoded.length).array());
+        digest.update(encoded);
+      }
+      return HexFormat.of().formatHex(digest.digest());
+    } catch (GeneralSecurityException exception) {
+      throw new IllegalStateException("Unable to fingerprint a MoMo notification", exception);
+    }
+  }
+
+  private static String[] fingerprintFields(PaymentNotification notification) {
+    return new String[] {
+      IPN_FINGERPRINT_DOMAIN,
+      notification.amountVnd().toString(),
+      notification.extraData(),
+      notification.message(),
+      notification.orderId(),
+      notification.orderInfo(),
+      notification.orderType(),
+      notification.partnerCode(),
+      notification.payType(),
+      notification.requestId(),
+      notification.responseTime().toString(),
+      notification.resultCode().toString(),
+      notification.transactionId().toString()
+    };
   }
 
   /** Verifies MoMo's signed one-time checkout-create response before its fields are consumed. */
@@ -229,7 +267,7 @@ public final class MomoSignatureCodec {
       Integer resultCode,
       Long transactionId) {
 
-    private boolean hasAllSignedFields() {
+    boolean hasAllSignedFields() {
       return amountVnd != null
           && extraData != null
           && message != null

@@ -14,6 +14,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.context.ApplicationContext;
 import org.springframework.core.env.Environment;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
@@ -22,7 +23,8 @@ import org.springframework.test.web.servlet.MockMvc;
     properties = {
       "novel.auth.google.web-client-id=",
       "novel.auth.google.credential-callback-uri=",
-      "novel.auth.google.rate-limit-hmac-key="
+      "novel.auth.google.rate-limit-hmac-key=",
+      "novel.payment.momo.test.enabled=false"
     })
 @AutoConfigureMockMvc
 class ApiFoundationTests {
@@ -32,6 +34,8 @@ class ApiFoundationTests {
   @Autowired private MockMvc mockMvc;
 
   @Autowired private Environment environment;
+
+  @Autowired private ApplicationContext applicationContext;
 
   @Test
   void statusIsPublicAndKeepsUnimplementedCapabilitiesDisabled() throws Exception {
@@ -52,6 +56,10 @@ class ApiFoundationTests {
         .andExpect(jsonPath("$.features.importProcessingEnabled").value(false))
         .andExpect(jsonPath("$.features.cultivationEnabled").value(false))
         .andExpect(jsonPath("$.features.commerceSandboxEnabled").value(false));
+    assertTrue(
+        applicationContext
+            .getBeansOfType(com.novelweb.payment.momo.MomoTestIpnController.class)
+            .isEmpty());
   }
 
   @Test

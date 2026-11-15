@@ -1,10 +1,12 @@
 package com.novelweb.payment.momo;
 
+import com.novelweb.payment.credit.CreditLedgerService;
 import com.novelweb.payment.credit.CreditPackCatalog;
 import com.novelweb.payment.credit.CreditTopUpCheckoutService;
 import com.novelweb.payment.credit.CreditTopUpOrderService;
 import java.util.Map;
 import java.util.Objects;
+import javax.sql.DataSource;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
@@ -65,5 +67,12 @@ public class MomoTestGatewayConfiguration {
   CreditTopUpCheckoutService creditTopUpCheckoutService(
       CreditTopUpOrderService orders, MomoTestGatewayClient gatewayClient) {
     return new CreditTopUpCheckoutService(orders, gatewayClient::createCreditTopUp);
+  }
+
+  @Bean
+  @Profile("postgres")
+  MomoTestIpnService momoTestIpnService(
+      DataSource dataSource, CreditLedgerService creditLedger, MomoTestGatewaySettings settings) {
+    return new MomoTestIpnService(dataSource, creditLedger, settings);
   }
 }

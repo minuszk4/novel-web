@@ -45,6 +45,9 @@ import com.novelweb.payment.credit.CreditPackCatalog;
 import com.novelweb.payment.credit.CreditTopUpCheckoutService;
 import com.novelweb.payment.credit.CreditTopUpOrderService;
 import com.novelweb.payment.momo.MomoTestGatewayClient;
+import com.novelweb.payment.momo.MomoTestIpnService;
+import com.novelweb.payment.momo.MomoTestIpnTestSupport;
+import com.novelweb.payment.momo.MomoTestIpnTestSupport.SignedNotification;
 import com.novelweb.progression.cultivation.CultivationRepository;
 import com.novelweb.progression.cultivation.CultivationService;
 import com.novelweb.translation.glossary.GlossaryCatalogController;
@@ -133,6 +136,14 @@ import tools.jackson.databind.ObjectMapper;
       "novel.security.csrf.hmac-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
       "novel.features.cultivation-enabled=true",
       "novel.library.cursor.hmac-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "novel.payment.momo.test.enabled=true",
+      "novel.payment.momo.test.environment=test",
+      "novel.payment.momo.test.partner-code=MOMOTEST123",
+      "novel.payment.momo.test.access-key=synthetic-ipn-access",
+      "novel.payment.momo.test.secret-key=synthetic-ipn-secret-only",
+      "novel.payment.momo.test.base-url=https://test-payment.momo.vn",
+      "novel.payment.momo.test.ipn-url=https://novel.example/api/v1/payments/momo/ipn",
+      "novel.payment.momo.test.redirect-url=https://novel.example/app/payment/result",
       "novel.imports.staging.root=${java.io.tmpdir}/novel-web-import-postgres-tests",
       "novel.imports.parser.poll-delay=PT1H",
       "novel.imports.staging.max-upload-bytes=1024",
@@ -219,7 +230,8 @@ class PostgresSchemaIntegrationTests {
           "authoring_chapter_revision_writes",
           "credit_ledger_entries",
           "credit_balance_projection",
-          "credit_top_up_orders");
+          "credit_top_up_orders",
+          "momo_test_ipn_events");
 
   @Autowired private DataSource dataSource;
 
@@ -252,6 +264,8 @@ class PostgresSchemaIntegrationTests {
   @Autowired private CreditHistoryService creditHistoryService;
 
   @Autowired private CreditTopUpOrderService creditTopUpOrderService;
+
+  @Autowired private MomoTestIpnService momoTestIpnService;
 
   @Autowired private GlossaryRepository glossaryRepository;
 
@@ -385,7 +399,7 @@ class PostgresSchemaIntegrationTests {
             connection.prepareStatement("SELECT COUNT(*) FROM databasechangelog");
         ResultSet changesets = changesetCount.executeQuery()) {
       changesets.next();
-      assertEquals(114, changesets.getInt(1), "unexpected number of applied changesets");
+      assertEquals(115, changesets.getInt(1), "unexpected number of applied changesets");
     }
 
     Set<String> actualTables = new HashSet<>();
@@ -13027,6 +13041,244 @@ class PostgresSchemaIntegrationTests {
   }
 
   @Test
+  void signedMomoTestIpnOverHttpSettlesExactlyOnceAndDoesNotRequireBrowserCsrf() throws Exception {
+    UUID userId = createSessionTestUser("MoMo IPN HTTP Owner");
+    try {
+      CreditTopUpOrderService.TopUpOrder order = createPendingMomoTestTopUp(userId);
+      SignedNotification signed =
+          MomoTestIpnTestSupport.sign(
+              order.id().toString(), order.requestId().toString(), 1_000, 0, 8_765_432_101L);
+      byte[] payload = objectMapper.writeValueAsBytes(MomoTestIpnTestSupport.payload(signed));
+
+      var firstResponse =
+          mockMvc
+              .perform(
+                  post("/api/v1/payments/momo/ipn")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(payload))
+              .andReturn()
+              .getResponse();
+      assertEquals(204, firstResponse.getStatus());
+      assertEquals("", firstResponse.getContentAsString());
+      assertTrue(firstResponse.getHeader("Cache-Control").contains("no-store"));
+
+      var replayResponse =
+          mockMvc
+              .perform(
+                  post("/api/v1/payments/momo/ipn")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(payload))
+              .andReturn()
+              .getResponse();
+      assertEquals(204, replayResponse.getStatus());
+      assertEquals(CreditTopUpOrderService.OrderStatus.SUCCEEDED, topUpOrderStatus(order.id()));
+      assertEquals(100, creditProjectedBalance(userId, "PAID"));
+      assertEquals(1, creditSourceEntryCount("PAYMENT_ORDER", order.id()));
+      assertEquals(1, momoIpnEventCountForOrder(order.id()));
+    } finally {
+      deleteSessionTestUser(userId);
+    }
+  }
+
+  @Test
+  void validSignedMomoIpnWithWrongAmountOrRequestIdIsAuditedWithoutGrantingCredits()
+      throws Exception {
+    UUID userId = createSessionTestUser("MoMo IPN Mismatch Owner");
+    try {
+      CreditTopUpOrderService.TopUpOrder amountOrder = createPendingMomoTestTopUp(userId);
+      SignedNotification wrongAmount =
+          MomoTestIpnTestSupport.sign(
+              amountOrder.id().toString(),
+              amountOrder.requestId().toString(),
+              1_001,
+              0,
+              8_765_432_102L);
+      assertEquals(
+          MomoTestIpnService.Result.ORDER_MISMATCH,
+          momoTestIpnService.process(wrongAmount.notification(), wrongAmount.signature()));
+
+      CreditTopUpOrderService.TopUpOrder requestOrder = createPendingMomoTestTopUp(userId);
+      SignedNotification wrongRequest =
+          MomoTestIpnTestSupport.sign(
+              requestOrder.id().toString(), UUID.randomUUID().toString(), 1_000, 0, 8_765_432_103L);
+      assertEquals(
+          MomoTestIpnService.Result.ORDER_MISMATCH,
+          momoTestIpnService.process(wrongRequest.notification(), wrongRequest.signature()));
+
+      assertEquals(CreditTopUpOrderService.OrderStatus.PENDING, topUpOrderStatus(amountOrder.id()));
+      assertEquals(
+          CreditTopUpOrderService.OrderStatus.PENDING, topUpOrderStatus(requestOrder.id()));
+      assertEquals(0, creditProjectedBalance(userId, "PAID"));
+      assertEquals(0, creditSourceEntryCount("PAYMENT_ORDER", amountOrder.id()));
+      assertEquals(0, creditSourceEntryCount("PAYMENT_ORDER", requestOrder.id()));
+      assertEquals(1, momoIpnEventCountForOrder(amountOrder.id()));
+      assertEquals(1, momoIpnEventCountForOrder(requestOrder.id()));
+    } finally {
+      deleteSessionTestUser(userId);
+    }
+  }
+
+  @Test
+  void momo9000ResultUsesTheSavedCaptureModeAndInvalidSignatureNeverGrantsCredits()
+      throws Exception {
+    UUID userId = createSessionTestUser("MoMo IPN Authorization Owner");
+    try {
+      CreditTopUpOrderService.TopUpOrder oneStepOrder = createPendingMomoTestTopUp(userId);
+      SignedNotification oneStepAuthorized =
+          MomoTestIpnTestSupport.sign(
+              oneStepOrder.id().toString(),
+              oneStepOrder.requestId().toString(),
+              1_000,
+              9_000,
+              8_765_432_104L);
+      assertEquals(
+          MomoTestIpnService.Result.SUCCEEDED,
+          momoTestIpnService.process(
+              oneStepAuthorized.notification(), oneStepAuthorized.signature()));
+      assertEquals(
+          CreditTopUpOrderService.OrderStatus.SUCCEEDED, topUpOrderStatus(oneStepOrder.id()));
+      assertEquals(100, creditProjectedBalance(userId, "PAID"));
+      assertEquals(1, creditSourceEntryCount("PAYMENT_ORDER", oneStepOrder.id()));
+      assertEquals(1, momoIpnEventCountForOrder(oneStepOrder.id()));
+
+      CreditTopUpOrderService.TopUpOrder twoStepOrder = createPendingMomoTestTopUp(userId);
+      setTopUpAutoCapture(twoStepOrder.id(), false);
+      SignedNotification twoStepAuthorized =
+          MomoTestIpnTestSupport.sign(
+              twoStepOrder.id().toString(),
+              twoStepOrder.requestId().toString(),
+              1_000,
+              9_000,
+              8_765_432_105L);
+      assertEquals(
+          MomoTestIpnService.Result.PENDING,
+          momoTestIpnService.process(
+              twoStepAuthorized.notification(), twoStepAuthorized.signature()));
+      assertEquals(
+          CreditTopUpOrderService.OrderStatus.PENDING, topUpOrderStatus(twoStepOrder.id()));
+      assertEquals(100, creditProjectedBalance(userId, "PAID"));
+      assertEquals(0, creditSourceEntryCount("PAYMENT_ORDER", twoStepOrder.id()));
+      assertEquals(1, momoIpnEventCountForOrder(twoStepOrder.id()));
+
+      SignedNotification invalid =
+          MomoTestIpnTestSupport.sign(
+              twoStepOrder.id().toString(),
+              twoStepOrder.requestId().toString(),
+              1_000,
+              0,
+              8_765_432_106L);
+      assertEquals(
+          MomoTestIpnService.Result.INVALID_SIGNATURE,
+          momoTestIpnService.process(invalid.notification(), "0".repeat(64)));
+      assertEquals(100, creditProjectedBalance(userId, "PAID"));
+      assertEquals(0, creditSourceEntryCount("PAYMENT_ORDER", twoStepOrder.id()));
+      assertEquals(1, momoIpnEventCountForOrder(twoStepOrder.id()));
+    } finally {
+      deleteSessionTestUser(userId);
+    }
+  }
+
+  @Test
+  void failedResultAndTransactionIdReusedByAnotherOrderNeverDoubleGrant() throws Exception {
+    UUID firstUserId = createSessionTestUser("MoMo IPN Transaction Owner");
+    UUID otherUserId = createSessionTestUser("MoMo IPN Transaction Collision");
+    try {
+      CreditTopUpOrderService.TopUpOrder firstOrder = createPendingMomoTestTopUp(firstUserId);
+      CreditTopUpOrderService.TopUpOrder otherOrder = createPendingMomoTestTopUp(otherUserId);
+      long reusedTransactionId = 8_765_432_107L;
+      SignedNotification firstSuccess =
+          MomoTestIpnTestSupport.sign(
+              firstOrder.id().toString(),
+              firstOrder.requestId().toString(),
+              1_000,
+              0,
+              reusedTransactionId);
+      assertEquals(
+          MomoTestIpnService.Result.SUCCEEDED,
+          momoTestIpnService.process(firstSuccess.notification(), firstSuccess.signature()));
+
+      SignedNotification collision =
+          MomoTestIpnTestSupport.sign(
+              otherOrder.id().toString(),
+              otherOrder.requestId().toString(),
+              1_000,
+              0,
+              reusedTransactionId);
+      assertEquals(
+          MomoTestIpnService.Result.TRANSACTION_CONFLICT,
+          momoTestIpnService.process(collision.notification(), collision.signature()));
+
+      CreditTopUpOrderService.TopUpOrder failedOrder = createPendingMomoTestTopUp(firstUserId);
+      SignedNotification failed =
+          MomoTestIpnTestSupport.sign(
+              failedOrder.id().toString(), failedOrder.requestId().toString(), 1_000, 1001, 0);
+      assertEquals(
+          MomoTestIpnService.Result.FAILED,
+          momoTestIpnService.process(failed.notification(), failed.signature()));
+
+      assertEquals(
+          CreditTopUpOrderService.OrderStatus.SUCCEEDED, topUpOrderStatus(firstOrder.id()));
+      assertEquals(CreditTopUpOrderService.OrderStatus.PENDING, topUpOrderStatus(otherOrder.id()));
+      assertEquals(CreditTopUpOrderService.OrderStatus.FAILED, topUpOrderStatus(failedOrder.id()));
+      assertEquals(100, creditProjectedBalance(firstUserId, "PAID"));
+      assertEquals(0, creditProjectedBalance(otherUserId, "PAID"));
+      assertEquals(1, creditSourceEntryCount("PAYMENT_ORDER", firstOrder.id()));
+      assertEquals(0, creditSourceEntryCount("PAYMENT_ORDER", otherOrder.id()));
+      assertEquals(0, creditSourceEntryCount("PAYMENT_ORDER", failedOrder.id()));
+      assertEquals(1, momoIpnEventCountForOrder(firstOrder.id()));
+      assertEquals(1, momoIpnEventCountForOrder(otherOrder.id()));
+      assertEquals(1, momoIpnEventCountForOrder(failedOrder.id()));
+    } finally {
+      deleteSessionTestUser(firstUserId);
+      deleteSessionTestUser(otherUserId);
+    }
+  }
+
+  @Test
+  void concurrentDuplicateMomoSuccessNotificationsAppendOneCreditGrant() throws Exception {
+    UUID userId = createSessionTestUser("Concurrent MoMo IPN Owner");
+    ExecutorService executor = Executors.newFixedThreadPool(2);
+    try {
+      CreditTopUpOrderService.TopUpOrder order = createPendingMomoTestTopUp(userId);
+      SignedNotification signed =
+          MomoTestIpnTestSupport.sign(
+              order.id().toString(), order.requestId().toString(), 1_000, 0, 8_765_432_106L);
+      CountDownLatch ready = new CountDownLatch(2);
+      CountDownLatch start = new CountDownLatch(1);
+      List<Future<MomoTestIpnService.Result>> attempts = new ArrayList<>();
+      for (int index = 0; index < 2; index++) {
+        attempts.add(
+            executor.submit(
+                () -> {
+                  ready.countDown();
+                  if (!start.await(10, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("duplicate MoMo IPN calls did not start");
+                  }
+                  return momoTestIpnService.process(signed.notification(), signed.signature());
+                }));
+      }
+      assertTrue(ready.await(10, TimeUnit.SECONDS));
+      start.countDown();
+      List<MomoTestIpnService.Result> outcomes =
+          List.of(
+              attempts.get(0).get(15, TimeUnit.SECONDS), attempts.get(1).get(15, TimeUnit.SECONDS));
+
+      assertEquals(
+          1,
+          outcomes.stream().filter(value -> value == MomoTestIpnService.Result.SUCCEEDED).count());
+      assertEquals(
+          1,
+          outcomes.stream().filter(value -> value == MomoTestIpnService.Result.DUPLICATE).count());
+      assertEquals(100, creditProjectedBalance(userId, "PAID"));
+      assertEquals(1, creditSourceEntryCount("PAYMENT_ORDER", order.id()));
+      assertEquals(1, momoIpnEventCountForOrder(order.id()));
+    } finally {
+      executor.shutdownNow();
+      deleteSessionTestUser(userId);
+    }
+  }
+
+  @Test
   void ambiguousCreditTopUpCreateIsNotRetriedAndForeignActorCannotReadOrderState()
       throws Exception {
     UUID userId = createSessionTestUser("Unknown Top-up Checkout Owner");
@@ -13304,6 +13556,70 @@ class PostgresSchemaIntegrationTests {
     }
   }
 
+  private CreditTopUpOrderService.TopUpOrder createPendingMomoTestTopUp(UUID userId)
+      throws SQLException {
+    CreditTopUpCheckoutService checkout =
+        new CreditTopUpCheckoutService(
+            creditTopUpOrderService,
+            (amountVnd, orderId, requestId) ->
+                new MomoTestGatewayClient.CreateResult(
+                    MomoTestGatewayClient.CreateState.READY,
+                    "https://test-payment.momo.vn/v2/gateway/pay?t=synthetic-ipn"
+                        + "&order="
+                        + orderId,
+                    MomoTestGatewayClient.FailureCode.NONE));
+    CreditTopUpCheckoutService.CheckoutResult result =
+        checkout.createOrReplay(
+            userId,
+            "momo-ipn-" + UUID.randomUUID(),
+            CreditPackCatalog.momoTestFixture(),
+            "momo-test-credits-100");
+    assertEquals(CreditTopUpOrderService.CheckoutOutcome.READY, result.checkoutOutcome());
+    assertEquals(CreditTopUpOrderService.OrderStatus.PENDING, result.order().status());
+    assertEquals(1_000, result.order().quote().amountVnd());
+    assertEquals(100, result.order().quote().paidCredits());
+    assertTrue(topUpAutoCapture(result.order().id()));
+    return result.order();
+  }
+
+  private boolean topUpAutoCapture(UUID orderId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT auto_capture FROM credit_top_up_orders WHERE id = ?")) {
+      select.setObject(1, orderId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getBoolean("auto_capture");
+      }
+    }
+  }
+
+  private CreditTopUpOrderService.OrderStatus topUpOrderStatus(UUID orderId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement("SELECT status FROM credit_top_up_orders WHERE id = ?")) {
+      select.setObject(1, orderId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return CreditTopUpOrderService.OrderStatus.valueOf(row.getString("status"));
+      }
+    }
+  }
+
+  private long momoIpnEventCountForOrder(UUID orderId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT COUNT(*) FROM momo_test_ipn_events WHERE credit_top_up_order_id = ?")) {
+      select.setObject(1, orderId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getLong(1);
+      }
+    }
+  }
+
   private String storedTopUpCheckoutUrl(UUID userId, UUID orderId) throws SQLException {
     try (Connection connection = dataSource.getConnection();
         PreparedStatement select =
@@ -13314,6 +13630,17 @@ class PostgresSchemaIntegrationTests {
       try (ResultSet row = select.executeQuery()) {
         return row.next() ? row.getString("checkout_url") : null;
       }
+    }
+  }
+
+  private void setTopUpAutoCapture(UUID orderId, boolean autoCapture) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement update =
+            connection.prepareStatement(
+                "UPDATE credit_top_up_orders SET auto_capture = ? WHERE id = ?")) {
+      update.setBoolean(1, autoCapture);
+      update.setObject(2, orderId);
+      assertEquals(1, update.executeUpdate());
     }
   }
 

@@ -79,6 +79,8 @@ public final class MomoTestGatewayClient {
                 request.ipnUrl(),
                 "requestType",
                 "captureWallet",
+                "autoCapture",
+                true,
                 "extraData",
                 request.extraData(),
                 "lang",

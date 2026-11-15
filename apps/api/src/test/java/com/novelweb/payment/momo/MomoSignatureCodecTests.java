@@ -84,6 +84,70 @@ class MomoSignatureCodecTests {
   }
 
   @Test
+  void fingerprintsOnlyCompleteSignedNotificationFieldsDeterministically() {
+    MomoSignatureCodec.PaymentNotification original = notification(1_000L);
+
+    assertThat(MomoSignatureCodec.notificationFingerprint(original))
+        .hasSize(64)
+        .isEqualTo(MomoSignatureCodec.notificationFingerprint(notification(1_000L)))
+        .isNotEqualTo(MomoSignatureCodec.notificationFingerprint(notification(1_001L)));
+    assertThatIllegalArgumentException()
+        .isThrownBy(
+            () ->
+                MomoSignatureCodec.notificationFingerprint(
+                    new MomoSignatureCodec.PaymentNotification(
+                        null,
+                        EXTRA_DATA,
+                        "Successful.",
+                        "order-2026-0001",
+                        "Credit top-up",
+                        "momo_wallet",
+                        "MOMOTEST123",
+                        "qr",
+                        "request-2026-0001",
+                        1_763_164_800_000L,
+                        0,
+                        1_234_567_890L)));
+  }
+
+  @Test
+  void fingerprintsUseUnambiguousFieldBoundariesEvenWhenSignedTextContainsSeparators() {
+    MomoSignatureCodec.PaymentNotification first =
+        new MomoSignatureCodec.PaymentNotification(
+            1_000L,
+            "",
+            "a&orderId=b",
+            "c",
+            "Novel Web credit top-up",
+            "momo_wallet",
+            "MOMOTEST123",
+            "qr",
+            "request-1",
+            1_763_164_800_000L,
+            0,
+            1_234_567_890L);
+    MomoSignatureCodec.PaymentNotification second =
+        new MomoSignatureCodec.PaymentNotification(
+            1_000L,
+            "",
+            "a",
+            "b&orderId=c",
+            "Novel Web credit top-up",
+            "momo_wallet",
+            "MOMOTEST123",
+            "qr",
+            "request-1",
+            1_763_164_800_000L,
+            0,
+            1_234_567_890L);
+
+    assertThat(MomoSignatureCodec.canonicalNotification(first, ACCESS_KEY))
+        .isEqualTo(MomoSignatureCodec.canonicalNotification(second, ACCESS_KEY));
+    assertThat(MomoSignatureCodec.notificationFingerprint(first))
+        .isNotEqualTo(MomoSignatureCodec.notificationFingerprint(second));
+  }
+
+  @Test
   void verifiesCreateWalletResponseUsingItsDistinctCanonicalFieldSet() {
     MomoSignatureCodec.CreateWalletResponse response =
         new MomoSignatureCodec.CreateWalletResponse(

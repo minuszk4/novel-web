@@ -3,6 +3,7 @@ package com.novelweb.platform.security;
 import com.novelweb.identity.session.SessionAuthenticationFilter;
 import com.novelweb.identity.session.SessionBoundCsrfFilter;
 import com.novelweb.identity.session.SessionCsrfTokenService;
+import com.novelweb.payment.momo.MomoTestIpnController;
 import java.time.Duration;
 import java.util.List;
 import org.springframework.beans.factory.ObjectProvider;
@@ -49,6 +50,7 @@ public class ApiSecurityConfiguration {
                       "/actuator/health/**")
                   .permitAll();
               if (environment.acceptsProfiles(Profiles.of("postgres"))) {
+                authorize.requestMatchers(HttpMethod.POST, MomoTestIpnController.PATH).permitAll();
                 authorize
                     .requestMatchers(HttpMethod.GET, "/api/v1/libraries", "/api/v1/works")
                     .permitAll();

@@ -31,7 +31,7 @@ class PostgresLegacyImportMigrationTests {
 
   private static final int LEGACY_CHANGESET_COUNT = 55;
 
-  private static final int CURRENT_CHANGESET_COUNT = 114;
+  private static final int CURRENT_CHANGESET_COUNT = 115;
 
   private static final int UPGRADE_CHANGESET_COUNT =
       CURRENT_CHANGESET_COUNT - LEGACY_CHANGESET_COUNT;
@@ -80,6 +80,7 @@ class PostgresLegacyImportMigrationTests {
         assertTrue(tableExists(fixtureConnection, "import_parse_jobs"));
         assertTrue(tableExists(fixtureConnection, "import_commits"));
         assertTrue(tableExists(fixtureConnection, "credit_top_up_orders"));
+        assertTrue(tableExists(fixtureConnection, "momo_test_ipn_events"));
         assertTrue(columnExists(fixtureConnection, "import_jobs", "staging_file_deleted_at"));
         assertImportJobRowsPreserved(fixtureConnection, jobIds);
       } finally {
