@@ -203,9 +203,9 @@ public class CultivationReadingSessionController {
       IllegalStateException exception, HttpServletRequest request) {
     Object correlationId = request.getAttribute(CorrelationIdFilter.REQUEST_ATTRIBUTE);
     LOGGER.error(
-        "Cultivation reading-session request failed (correlationId={})",
+        "Cultivation reading-session request failed (correlationId={}, exceptionType={})",
         correlationId instanceof String id ? id : "unavailable",
-        exception);
+        exception.getClass().getSimpleName());
     return problem(
         HttpStatus.SERVICE_UNAVAILABLE,
         "READING_SESSION_UNAVAILABLE",

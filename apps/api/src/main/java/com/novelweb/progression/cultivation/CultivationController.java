@@ -166,9 +166,9 @@ public class CultivationController {
       IllegalStateException exception, HttpServletRequest request) {
     Object correlationId = request.getAttribute(CorrelationIdFilter.REQUEST_ATTRIBUTE);
     LOGGER.error(
-        "Cultivation profile request failed (correlationId={})",
+        "Cultivation profile request failed (correlationId={}, exceptionType={})",
         correlationId instanceof String id ? id : "unavailable",
-        exception);
+        exception.getClass().getSimpleName());
     return problem(
         HttpStatus.SERVICE_UNAVAILABLE,
         "CULTIVATION_PROFILE_UNAVAILABLE",
