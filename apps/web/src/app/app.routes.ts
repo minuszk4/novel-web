@@ -125,6 +125,14 @@ export const routes: Routes = [
         title: 'Nạp credit TEST — Novel',
       },
       {
+        path: 'payment/result',
+        loadComponent: () =>
+          import('./pages/payment-result-page.component').then(
+            (page) => page.PaymentResultPageComponent,
+          ),
+        title: 'Trạng thái thanh toán — Novel',
+      },
+      {
         path: 'works/:workId',
         loadComponent: () =>
           import('./pages/account-work-detail-page.component').then(

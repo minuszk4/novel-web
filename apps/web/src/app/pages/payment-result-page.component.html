@@ -1,0 +1,136 @@
+<section class="page-wrap payment-result-page" aria-labelledby="payment-result-title">
+  <header class="page-heading payment-result-heading">
+    <p class="eyebrow">TÀI KHOẢN · TRẠNG THÁI GIAO DỊCH</p>
+    <h1 id="payment-result-title" tabindex="-1">Kết quả thanh toán</h1>
+    <p>Novel xác nhận trạng thái bằng lệnh đã lưu trên máy chủ.</p>
+  </header>
+
+  @if (phase() === 'invalid') {
+    <section
+      class="payment-result-card"
+      role="alert"
+      aria-labelledby="payment-result-invalid-title"
+    >
+      <h2 id="payment-result-invalid-title">Thiếu mã lệnh hợp lệ</h2>
+      <p>Không thể tra giao dịch từ đường dẫn quay về này. Mở lịch sử để xem các lệnh đã lưu.</p>
+      <a class="button button-primary" routerLink="/app/purchases">Mở lịch sử nạp</a>
+    </section>
+  } @else if (phase() === 'loading') {
+    <p class="payment-result-state" role="status" aria-live="polite">
+      Đang xác minh lệnh với máy chủ…
+    </p>
+  } @else if (phase() === 'error') {
+    <section class="payment-result-card" role="alert" aria-labelledby="payment-result-error-title">
+      <h2 id="payment-result-error-title">Chưa tải được trạng thái</h2>
+      <p>{{ statusError() }}</p>
+      @if (recovery() === 'sign-in') {
+        <a
+          class="button button-primary"
+          [routerLink]="['/sign-in']"
+          [queryParams]="{ returnTo: returnPath() }"
+          >Đăng nhập lại</a
+        >
+      } @else if (recovery() === 'settings') {
+        <a
+          class="button button-primary"
+          routerLink="/app/setup"
+          [queryParams]="{ returnUrl: returnPath() }"
+          >Xem chính sách tài khoản</a
+        >
+      } @else {
+        <button class="button button-primary" type="button" (click)="checkStatus()">Thử lại</button>
+      }
+      <a class="button button-outline" routerLink="/app/purchases">Mở lịch sử nạp</a>
+    </section>
+  } @else if (order(); as current) {
+    <section class="payment-result-card" aria-labelledby="payment-result-status-title">
+      <div class="payment-result-card-heading">
+        <div>
+          <p class="eyebrow">LỆNH NẠP TEST</p>
+          <h2 id="payment-result-status-title">
+            @if (current.status === 'SUCCEEDED') {
+              Thanh toán đã được xác nhận
+            } @else if (isUnresolved()) {
+              Chưa xác nhận thanh toán
+            } @else {
+              Lệnh thanh toán đã kết thúc
+            }
+          </h2>
+        </div>
+        <span class="payment-result-badge" [attr.data-state]="current.status">
+          {{ statusLabel(current.status) }}
+        </span>
+      </div>
+
+      <dl class="payment-result-details">
+        <div>
+          <dt>Số tiền</dt>
+          <dd>{{ amount(current.amountVnd) }} ₫</dd>
+        </div>
+        <div>
+          <dt>Credit theo gói</dt>
+          <dd>{{ amount(current.paidCredits) }} paid credit</dd>
+        </div>
+        <div>
+          <dt>Mã lệnh</dt>
+          <dd>{{ current.id }}</dd>
+        </div>
+      </dl>
+
+      <p class="payment-result-test-disclosure">
+        <strong>MoMo TEST — không dùng tiền thật.</strong>
+        Chỉ trạng thái đã lưu trên máy chủ xác nhận lệnh này.
+      </p>
+
+      @if (isUnresolved()) {
+        <p class="payment-result-explanation" role="status">
+          Việc quay về từ trang thanh toán không chứng minh giao dịch thành công. Lệnh vẫn đang chờ
+          máy chủ xác nhận; {{ amount(current.paidCredits) }} credit chưa được cộng. Đừng thanh toán
+          lại hoặc tạo lệnh khác lúc này.
+        </p>
+      } @else if (current.status === 'SUCCEEDED') {
+        <p class="payment-result-explanation" role="status">
+          Máy chủ đã xác nhận giao dịch. Chỉ trạng thái này mới ghi nhận credit vào ví.
+        </p>
+        @if (balancePhase() === 'loading') {
+          <p class="payment-result-state" role="status" aria-live="polite">
+            Đang tải số dư đã cập nhật…
+          </p>
+        } @else if (balancePhase() === 'ready') {
+          <p class="payment-result-balance">
+            Số dư hiện tại: <strong>{{ amount(totalCredits() ?? 0) }} credit</strong>
+          </p>
+        } @else if (balancePhase() === 'error') {
+          <p class="payment-result-note">
+            Giao dịch đã được xác nhận; chưa tải được số dư mới. Mở lịch sử hoặc thử tải lại sau.
+          </p>
+        }
+      } @else {
+        <p class="payment-result-explanation">
+          Trạng thái hiện tại do máy chủ lưu. Không có credit được cấp từ trang quay về này.
+        </p>
+      }
+
+      @if (statusError()) {
+        <p class="payment-result-inline-error" role="alert">{{ statusError() }}</p>
+      }
+
+      <div class="payment-result-actions">
+        @if (isUnresolved()) {
+          <button
+            class="button button-primary"
+            type="button"
+            [disabled]="checking()"
+            (click)="checkStatus()"
+          >
+            {{ checking() ? 'Đang kiểm tra…' : 'Kiểm tra trạng thái đã lưu' }}
+          </button>
+        }
+        <a class="button button-outline" routerLink="/app/purchases">Xem lịch sử giao dịch</a>
+        @if (!isUnresolved()) {
+          <a class="button button-outline" routerLink="/app/credits">Trở lại cửa hàng credit</a>
+        }
+      </div>
+    </section>
+  }
+</section>

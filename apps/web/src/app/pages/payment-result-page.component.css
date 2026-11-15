@@ -1,0 +1,137 @@
+.payment-result-page {
+  display: grid;
+  gap: 1.25rem;
+}
+
+.payment-result-heading > p:last-child {
+  max-width: 48rem;
+}
+
+.payment-result-card,
+.payment-result-state {
+  border: 1px solid var(--line, #d9d2c5);
+  border-radius: 1rem;
+  background: var(--surface, #fffdf8);
+  padding: clamp(1rem, 4vw, 1.5rem);
+}
+
+.payment-result-card {
+  display: grid;
+  gap: 1rem;
+  max-width: 54rem;
+}
+
+.payment-result-card h2,
+.payment-result-card p {
+  margin: 0;
+}
+
+.payment-result-card-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.payment-result-badge {
+  flex: 0 0 auto;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  padding: 0.35rem 0.7rem;
+  color: #6a4c10;
+  font-size: 0.875rem;
+  font-weight: 700;
+}
+
+.payment-result-badge[data-state='SUCCEEDED'] {
+  color: #176b46;
+}
+
+.payment-result-badge[data-state='FAILED'],
+.payment-result-badge[data-state='CANCELLED'],
+.payment-result-badge[data-state='EXPIRED'] {
+  color: #923a37;
+}
+
+.payment-result-details {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem 1rem;
+  margin: 0;
+}
+
+.payment-result-details div {
+  min-width: 0;
+}
+
+.payment-result-details div:last-child {
+  grid-column: 1 / -1;
+}
+
+.payment-result-details dt,
+.payment-result-note {
+  color: var(--text-muted, #655f55);
+}
+
+.payment-result-details dd {
+  margin: 0.2rem 0 0;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.payment-result-explanation {
+  border-left: 0.25rem solid #b98427;
+  padding: 0.75rem 1rem;
+  background: #fff8e8;
+  line-height: 1.6;
+}
+
+.payment-result-test-disclosure {
+  border: 1px solid #315194;
+  border-radius: 0.75rem;
+  background: #eef3ff;
+  color: #19366d;
+  padding: 0.8rem 1rem;
+  line-height: 1.5;
+}
+
+.payment-result-test-disclosure strong {
+  display: block;
+}
+
+.payment-result-balance {
+  font-size: 1.1rem;
+}
+
+.payment-result-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.payment-result-inline-error {
+  color: #8c2727;
+}
+
+@media (max-width: 480px) {
+  .payment-result-card-heading {
+    display: grid;
+  }
+
+  .payment-result-details {
+    grid-template-columns: 1fr;
+  }
+
+  .payment-result-details div:last-child {
+    grid-column: auto;
+  }
+
+  .payment-result-actions {
+    display: grid;
+  }
+
+  .payment-result-actions > * {
+    width: 100%;
+    text-align: center;
+  }
+}

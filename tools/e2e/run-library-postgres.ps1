@@ -5,7 +5,8 @@ param(
     [switch]$IncludeAuthoringOutline,
     [switch]$IncludeAuthoringChapterEditor,
     [switch]$IncludeAuthoringDraftApi,
-    [switch]$IncludeAuthoringEmptyChapterDelete
+    [switch]$IncludeAuthoringEmptyChapterDelete,
+    [switch]$IncludePaymentReturn
 )
 
 $ErrorActionPreference = 'Stop'
@@ -51,7 +52,12 @@ $environmentNames = @(
     'NOVEL_WEB_CORS_ALLOWED_ORIGINS', 'NOVEL_FEATURE_CULTIVATION_ENABLED',
     'NOVEL_TRANSLATION_FAKE_ENABLED', 'NOVEL_TRANSLATION_FAKE_API_ENABLED',
     'NOVEL_TRANSLATION_FAKE_WORKER_ENABLED',
+    'NOVEL_MOMO_TEST_ENABLED', 'NOVEL_MOMO_TEST_RECONCILIATION_ENABLED', 'MOMO_ENV',
+    'MOMO_TEST_PARTNER_CODE', 'MOMO_TEST_ACCESS_KEY', 'MOMO_TEST_SECRET_KEY',
+    'MOMO_TEST_BASE_URL', 'MOMO_TEST_IPN_URL', 'MOMO_TEST_REDIRECT_URL',
     'LIBRARY_LIVE_TEST_SESSION_TOKEN', 'LIBRARY_LIVE_TEST_LIBRARY_ID',
+    'MOMO_PAYMENT_RETURN_LIVE_TEST_SESSION_TOKEN', 'MOMO_PAYMENT_RETURN_LIVE_TEST_ORDER_ID',
+    'MOMO_PAYMENT_RETURN_LIVE_TEST_SCREENSHOT',
     'NOVEL_IMPORT_STAGING_ROOT', 'LIBRARY_LIVE_TEST_WORK_IDS', 'LIBRARY_LIVE_TEST_SCREENSHOT', 'READER_LIVE_TEST_WORK_ID',
     'AUTHORING_LIVE_TEST_TITLE', 'AUTHORING_LIVE_TEST_SCREENSHOT',
     'AUTHORING_OUTLINE_LIVE_TEST_WORK_ID', 'AUTHORING_OUTLINE_LIVE_TEST_SCREENSHOT',
@@ -100,6 +106,7 @@ $translationVolumeId = [guid]::NewGuid()
 $translationRevisionId = [guid]::NewGuid()
 $translationSegmentId = [guid]::NewGuid()
 $glossaryId = [guid]::NewGuid()
+$paymentReturnOrderId = [guid]::NewGuid()
 $glossaryActiveRevisionId = [guid]::NewGuid()
 $glossaryDraftRevisionId = [guid]::NewGuid()
 $glossaryTermId = [guid]::NewGuid()
@@ -148,10 +155,23 @@ try {
     $env:NOVEL_TRANSLATION_FAKE_ENABLED = 'false'
     $env:NOVEL_TRANSLATION_FAKE_API_ENABLED = 'false'
     $env:NOVEL_TRANSLATION_FAKE_WORKER_ENABLED = 'false'
+    $env:NOVEL_MOMO_TEST_ENABLED = 'false'
+    $env:NOVEL_MOMO_TEST_RECONCILIATION_ENABLED = 'false'
     if ($IncludeTranslationPreview) {
         $env:NOVEL_TRANSLATION_FAKE_ENABLED = 'true'
         $env:NOVEL_TRANSLATION_FAKE_API_ENABLED = 'true'
         $env:NOVEL_TRANSLATION_FAKE_WORKER_ENABLED = 'true'
+    }
+    if ($IncludePaymentReturn) {
+        # Synthetic secrets exist only for the disposable process; this journey issues no provider request.
+        $env:NOVEL_MOMO_TEST_ENABLED = 'true'
+        $env:MOMO_ENV = 'test'
+        $env:MOMO_TEST_PARTNER_CODE = 'SYNTHETIC-TEST-PARTNER'
+        $env:MOMO_TEST_ACCESS_KEY = 'synthetic-test-access-only'
+        $env:MOMO_TEST_SECRET_KEY = 'synthetic-test-secret-only'
+        $env:MOMO_TEST_BASE_URL = 'https://test-payment.momo.vn'
+        $env:MOMO_TEST_IPN_URL = 'https://localhost:4300/api/v1/payments/momo/ipn'
+        $env:MOMO_TEST_REDIRECT_URL = 'https://localhost:4300/app/payment/result'
     }
     $env:NOVEL_IMPORT_STAGING_ROOT = $importStagingRoot
     $env:NOVEL_WEB_CORS_ALLOWED_ORIGINS = 'http://localhost:4300'
@@ -251,6 +271,17 @@ try {
     } elseif ($IncludeAuthoringOutline) {
         $authoringOutlineFixtureSql = "INSERT INTO chapters (id, work_id, volume_id, ordinal, title, source_language, source_revision_id, status) SELECT gen_random_uuid(), '$secondWorkId', NULL, seed.ordinal, 'Live Outline Seed ' || seed.ordinal, 'en', NULL, 'draft' FROM generate_series(2, 26) AS seed(ordinal);"
     }
+    $paymentReturnFixtureSql = ''
+    if ($IncludePaymentReturn) {
+        $paymentReturnFixtureSql = @"
+INSERT INTO credit_top_up_orders
+    (id, user_id, request_id, idempotency_key, pack_id, pack_version, provider, environment,
+     currency, amount_vnd, paid_credits, bonus_credits, status)
+VALUES
+    ('$paymentReturnOrderId', '$userId', gen_random_uuid(), 'payment-return-$paymentReturnOrderId',
+     'momo-test-credits-100', 1, 'MOMO', 'TEST', 'VND', 1000, 100, 0, 'PENDING');
+"@
+    }
 
     $fixtureSql = @"
 BEGIN;
@@ -293,6 +324,7 @@ INSERT INTO segments (id, chapter_revision_id, ordinal, segment_type, source_tex
 VALUES
 ('$readerSegmentId', '$readerRevisionId', 1, 'paragraph', '$readerSourceText', 'live-reader-p1', decode('$readerSourceHash', 'hex')),
 ('$translationSegmentId', '$translationRevisionId', 1, 'paragraph', '$translationSourceText', 'live-translation-p1', decode('$translationSourceHash', 'hex'));
+$paymentReturnFixtureSql
 INSERT INTO glossaries (id, owner_user_id, name, scope_type, source_language, target_language, version)
 VALUES ('$glossaryId', '$userId', 'E2E Glossary Import', 'USER_GLOBAL', 'zh-Hans', 'vi', 4);
 INSERT INTO glossary_revisions (id, glossary_id, revision_no, created_by_user_id)
@@ -317,6 +349,12 @@ COMMIT;
     $env:LIBRARY_LIVE_TEST_LIBRARY_ID = [string]$libraryId
     $env:LIBRARY_LIVE_TEST_WORK_IDS = "$firstWorkId,$secondWorkId"
     $env:LIBRARY_LIVE_TEST_SCREENSHOT = $screenshotPath
+    $paymentReturnScreenshotPath = Join-Path $evidenceDirectory 'momo-payment-return-pending-live.png'
+    if ($IncludePaymentReturn) {
+        $env:MOMO_PAYMENT_RETURN_LIVE_TEST_SESSION_TOKEN = $sessionToken
+        $env:MOMO_PAYMENT_RETURN_LIVE_TEST_ORDER_ID = [string]$paymentReturnOrderId
+        $env:MOMO_PAYMENT_RETURN_LIVE_TEST_SCREENSHOT = $paymentReturnScreenshotPath
+    }
     $env:READER_LIVE_TEST_WORK_ID = [string]$firstWorkId
     $env:READER_LIVE_TEST_CHAPTER_ID = [string]$readerChapterId
     $env:READER_LIVE_TEST_SCREENSHOT = $readerScreenshotPath
@@ -358,10 +396,20 @@ COMMIT;
         if ($IncludeTranslationPreview) { $e2eSpecs += 'e2e/translation-live-postgres.spec.ts' }
         if ($IncludeAuthoringOutline) { $e2eSpecs += 'e2e/authoring-outline-live-postgres.spec.ts' }
         if ($IncludeAuthoringChapterEditor) { $e2eSpecs += 'e2e/authoring-chapter-editor-live-postgres.spec.ts' }
+        if ($IncludePaymentReturn) { $e2eSpecs += 'e2e/momo-payment-return-live-postgres.spec.ts' }
         & npm.cmd run test:e2e:postgres -- $e2eSpecs *>&1 | Tee-Object -FilePath $e2eLog
         $e2eExit = $LASTEXITCODE
     } finally { Pop-Location }
     if ($e2eExit -ne 0) { throw "Live FE/API/PostgreSQL Playwright journey failed (exit $e2eExit)." }
+
+    if ($IncludePaymentReturn) {
+        $paymentReturnSummary = & $docker @composeArguments exec -T postgres psql -v ON_ERROR_STOP=1 -tA -U novelweb -d novelweb -c "SELECT o.status || '|' || o.paid_credits::text || '|' || (SELECT COUNT(*) FROM credit_ledger_entries e WHERE e.source_type = 'PAYMENT_ORDER' AND e.source_id = o.id)::text || '|' || COALESCE((SELECT SUM(p.balance) FROM credit_balance_projection p WHERE p.user_id = o.user_id), 0)::text FROM credit_top_up_orders o WHERE o.id = '$paymentReturnOrderId' AND o.user_id = '$userId';"
+        if ($LASTEXITCODE -ne 0) { throw 'Could not verify the pending MoMo TEST order and credit ledger.' }
+        $paymentReturnParts = ([string]$paymentReturnSummary).Trim() -split '\|'
+        if ($paymentReturnParts.Count -ne 4 -or $paymentReturnParts[0] -ne 'PENDING' -or $paymentReturnParts[1] -ne '100' -or $paymentReturnParts[2] -ne '0' -or $paymentReturnParts[3] -ne '0') {
+            throw "Pending payment return unexpectedly granted credit: $paymentReturnSummary"
+        }
+    }
 
     $authoringSummary = & $docker @composeArguments exec -T postgres psql -v ON_ERROR_STOP=1 -tA -U novelweb -d novelweb -c "SELECT COUNT(*)::text || '|' || COALESCE(bool_and(w.source_kind = 'authored' AND w.visibility = 'private' AND w.status = 'active' AND w.author = 'E2E Pen Name' AND w.source_language = 'vi' AND l.owner_user_id = w.owner_user_id AND l.visibility = 'private' AND l.workspace_id IS NULL), FALSE)::text || '|' || COALESCE(SUM((SELECT COUNT(*) FROM authoring_manuscript_creations c WHERE c.actor_user_id = '$userId' AND c.work_id = w.id)), 0)::text || '|' || COALESCE(SUM((SELECT COUNT(*) FROM chapters ch WHERE ch.work_id = w.id)), 0)::text || '|' || COALESCE(SUM((SELECT COUNT(*) FROM volumes v WHERE v.work_id = w.id)), 0)::text FROM works w JOIN libraries l ON l.id = w.library_id WHERE w.owner_user_id = '$userId' AND w.title = '$authoringTitle';"
     if ($LASTEXITCODE -ne 0) { throw 'Could not verify the authored private draft in disposable PostgreSQL.' }
@@ -469,11 +517,12 @@ COMMIT;
         $(if ($authoringOutlineParts.Count -eq 5) { "- PostgreSQL authoring outline and metadata: blank chapter at ordinal 27 soft-deleted after UI confirmation, zero content revisions, one idempotency receipt after create replay, and persisted title/byline/language at metadata version 4 after explicit stale-conflict recovery" } else { '- PostgreSQL authoring outline and metadata: not requested' })
         $(if ($authoringEditorParts.Count -eq 6) { '- PostgreSQL authoring editor: three immutable revisions, three idempotency receipts, explicit local-version conflict resolution, latest revision pointer matches the saved content and chapter remains draft/unpublished' } else { '- PostgreSQL authoring editor: not requested' })
         $(if ($translationParts.Count -eq 4) { "- PostgreSQL fake-local translation: $($translationParts[0]) job, $($translationParts[2]) successful attempt and $($translationParts[3]) unpublished candidate segment verified with the fake marker" } else { '- PostgreSQL fake-local translation: not requested' })
+        $(if ($IncludePaymentReturn) { '- MoMo TEST return: resultCode=0 and synthetic signature were ignored; actor-scoped order remained PENDING after refresh; ledger and balance projection remained zero; browser made no create/IPN request; reconciliation worker was disabled; no MoMo network request was made' } else { '- MoMo TEST return: not requested' })
         '- API route mocks: none'
         "- Elapsed: $duration seconds"
         "- Cleanup: $cleanup"
         "- Staging cleanup: $stagingCleanup"
-        "- Screenshots: $([System.IO.Path]::GetFileName($screenshotPath)), $([System.IO.Path]::GetFileName($workDetailScreenshotPath)), $([System.IO.Path]::GetFileName($readerScreenshotPath)), $([System.IO.Path]::GetFileName($glossaryImportScreenshotPath)), $([System.IO.Path]::GetFileName($glossaryEditorScreenshotPath)), $([System.IO.Path]::GetFileName($authoringScreenshotPath))$(if ($IncludeAuthoringOutline) { ', authoring-outline-live.png' } else { '' })$(if ($IncludeAuthoringChapterEditor) { ', authoring-chapter-editor-live.png' } else { '' })$(if ($IncludeTranslationPreview) { ', translation-job-live.png' } else { '' }), private-import-commit-live.png, private-import-detail-live.png, private-import-reader-live.png, private-import-html-commit-live.png, private-import-html-detail-live.png, private-import-html-reader-live.png, private-import-markdown-commit-live.png, private-import-markdown-detail-live.png, private-import-markdown-reader-live.png, private-import-epub-commit-live.png, private-import-epub-detail-live.png, private-import-epub-reader-live.png"
+        "- Screenshots: $([System.IO.Path]::GetFileName($screenshotPath)), $([System.IO.Path]::GetFileName($workDetailScreenshotPath)), $([System.IO.Path]::GetFileName($readerScreenshotPath)), $([System.IO.Path]::GetFileName($glossaryImportScreenshotPath)), $([System.IO.Path]::GetFileName($glossaryEditorScreenshotPath)), $([System.IO.Path]::GetFileName($authoringScreenshotPath))$(if ($IncludeAuthoringOutline) { ', authoring-outline-live.png' } else { '' })$(if ($IncludeAuthoringChapterEditor) { ', authoring-chapter-editor-live.png' } else { '' })$(if ($IncludeTranslationPreview) { ', translation-job-live.png' } else { '' })$(if ($IncludePaymentReturn) { ', momo-payment-return-pending-live.png, momo-payment-history-zero-live.png' } else { '' }), private-import-commit-live.png, private-import-detail-live.png, private-import-reader-live.png, private-import-html-commit-live.png, private-import-html-detail-live.png, private-import-html-reader-live.png, private-import-markdown-commit-live.png, private-import-markdown-detail-live.png, private-import-markdown-reader-live.png, private-import-epub-commit-live.png, private-import-epub-detail-live.png, private-import-epub-reader-live.png"
         "- Logs: api-build.log, api-stdout.log, api-stderr.log, playwright.log$(if ($IncludeAuthoringDraftApi) { ', authoring-draft-api-test.log' } else { '' })$(if ($IncludeAuthoringEmptyChapterDelete) { ', authoring-empty-chapter-delete-api-test.log' } else { '' })"
         $(if ($failure) { "- Failure: $failure" } else { '- Failure: none' })
         ''
