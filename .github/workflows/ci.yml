@@ -133,7 +133,7 @@ jobs:
           bash ./mvnw -B -ntp -Ppostgres
           -Dpostgres.integration=true
           -Dspring.profiles.active=postgres
-          -Dtest=PostgresSchemaIntegrationTests,PostgresLegacyImportMigrationTests,PostgresTranslationJobSchemaTests,PostgresTranslationJobEnqueueTests,PostgresTranslationUnitLeaseTests verify
+          -Dtest=PostgresSchemaIntegrationTests,PostgresLegacyImportMigrationTests,PostgresTranslationJobSchemaTests,PostgresTranslationJobEnqueueTests,PostgresTranslationUnitLeaseTests,PostgresQueueMetricsIntegrationTests verify
       - uses: actions/upload-artifact@v7
         if: always()
         with:

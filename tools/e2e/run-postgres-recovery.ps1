@@ -93,7 +93,7 @@ try {
 
     Push-Location $apiDirectory
     try {
-        & .\mvnw.cmd -B -ntp -Ppostgres '-Dpostgres.integration=true' '-Dspring.profiles.active=postgres' '-Dtest=PostgresSchemaIntegrationTests,PostgresLegacyImportMigrationTests,PostgresTranslationJobSchemaTests,PostgresTranslationJobEnqueueTests,PostgresTranslationUnitLeaseTests' clean verify 2>&1 |
+        & .\mvnw.cmd -B -ntp -Ppostgres '-Dpostgres.integration=true' '-Dspring.profiles.active=postgres' '-Dtest=PostgresSchemaIntegrationTests,PostgresLegacyImportMigrationTests,PostgresTranslationJobSchemaTests,PostgresTranslationJobEnqueueTests,PostgresTranslationUnitLeaseTests,PostgresQueueMetricsIntegrationTests' clean verify 2>&1 |
             Tee-Object -FilePath (Join-Path $evidenceDirectory 'postgres-maven-verify.log') | Out-Null
         $mavenExitCode = $LASTEXITCODE
     }
@@ -101,6 +101,7 @@ try {
     if ($mavenExitCode -ne 0) { throw "PostgreSQL migration/integration verification failed with exit code $mavenExitCode." }
     $testReportPaths = @(
         (Join-Path $apiDirectory 'target\surefire-reports\com.novelweb.platform.postgres.PostgresLegacyImportMigrationTests.txt'),
+        (Join-Path $apiDirectory 'target\surefire-reports\com.novelweb.platform.postgres.PostgresQueueMetricsIntegrationTests.txt'),
         (Join-Path $apiDirectory 'target\surefire-reports\com.novelweb.platform.postgres.PostgresSchemaIntegrationTests.txt'),
         (Join-Path $apiDirectory 'target\surefire-reports\com.novelweb.platform.postgres.PostgresTranslationJobSchemaTests.txt'),
         (Join-Path $apiDirectory 'target\surefire-reports\com.novelweb.platform.postgres.PostgresTranslationJobEnqueueTests.txt'),
