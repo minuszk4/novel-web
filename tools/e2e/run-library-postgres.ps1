@@ -6,7 +6,8 @@ param(
     [switch]$IncludeAuthoringChapterEditor,
     [switch]$IncludeAuthoringDraftApi,
     [switch]$IncludeAuthoringEmptyChapterDelete,
-    [switch]$IncludePaymentReturn
+    [switch]$IncludePaymentReturn,
+    [switch]$IncludeCommerceSettlement
 )
 
 $ErrorActionPreference = 'Stop'
@@ -59,6 +60,10 @@ $environmentNames = @(
     'LIBRARY_LIVE_TEST_SESSION_TOKEN', 'LIBRARY_LIVE_TEST_LIBRARY_ID',
     'MOMO_PAYMENT_RETURN_LIVE_TEST_SESSION_TOKEN', 'MOMO_PAYMENT_RETURN_LIVE_TEST_ORDER_ID',
     'MOMO_PAYMENT_RETURN_LIVE_TEST_SCREENSHOT',
+    'MOMO_COMMERCE_LIVE_TEST_SESSION_TOKEN', 'MOMO_COMMERCE_LIVE_TEST_ORDER_ID',
+    'MOMO_COMMERCE_LIVE_TEST_REQUEST_ID', 'MOMO_COMMERCE_LIVE_TEST_WORK_ID',
+    'MOMO_COMMERCE_LIVE_TEST_CHAPTER_ID', 'MOMO_COMMERCE_LIVE_TEST_SUCCESS_SCREENSHOT',
+    'MOMO_COMMERCE_LIVE_TEST_UNLOCK_SCREENSHOT',
     'NOVEL_IMPORT_STAGING_ROOT', 'LIBRARY_LIVE_TEST_WORK_IDS', 'LIBRARY_LIVE_TEST_SCREENSHOT', 'READER_LIVE_TEST_WORK_ID',
     'AUTHORING_LIVE_TEST_TITLE', 'AUTHORING_LIVE_TEST_SCREENSHOT',
     'AUTHORING_OUTLINE_LIVE_TEST_WORK_ID', 'AUTHORING_OUTLINE_LIVE_TEST_SCREENSHOT',
@@ -108,6 +113,15 @@ $translationRevisionId = [guid]::NewGuid()
 $translationSegmentId = [guid]::NewGuid()
 $glossaryId = [guid]::NewGuid()
 $paymentReturnOrderId = [guid]::NewGuid()
+$commerceOrderId = [guid]::NewGuid()
+$commerceRequestId = [guid]::NewGuid()
+$commerceAuthorId = [guid]::NewGuid()
+$commerceLibraryId = [guid]::NewGuid()
+$commerceWorkId = [guid]::NewGuid()
+$commerceVolumeId = [guid]::NewGuid()
+$commerceChapterId = [guid]::NewGuid()
+$commerceRevisionId = [guid]::NewGuid()
+$commerceSegmentId = [guid]::NewGuid()
 $glossaryActiveRevisionId = [guid]::NewGuid()
 $glossaryDraftRevisionId = [guid]::NewGuid()
 $glossaryTermId = [guid]::NewGuid()
@@ -123,6 +137,10 @@ $translationSourceText = 'Live fake-local source segment from PostgreSQL.'
 $translationSourceHash = [Convert]::ToHexString(
     [System.Security.Cryptography.SHA256]::HashData([System.Text.Encoding]::UTF8.GetBytes($translationSourceText))
 ).ToLowerInvariant()
+$commerceSourceText = 'This paid chapter is released only after a server-confirmed credit unlock.'
+$commerceSourceHash = [Convert]::ToHexString(
+    [System.Security.Cryptography.SHA256]::HashData([System.Text.Encoding]::UTF8.GetBytes($commerceSourceText))
+).ToLowerInvariant()
 $screenshotPath = Join-Path $evidenceDirectory 'account-library-live.png'
 $readerScreenshotPath = Join-Path $evidenceDirectory 'account-reader-live.png'
 $workDetailScreenshotPath = Join-Path $evidenceDirectory 'account-work-detail-live.png'
@@ -130,6 +148,8 @@ $privateImportScreenshotPath = Join-Path $evidenceDirectory 'private-import-comm
 $glossaryImportScreenshotPath = Join-Path $evidenceDirectory 'glossary-import-live.png'
 $glossaryEditorScreenshotPath = Join-Path $evidenceDirectory 'glossary-editor-live.png'
 $authoringScreenshotPath = Join-Path $evidenceDirectory 'authoring-create-live.png'
+$commerceSuccessScreenshotPath = Join-Path $evidenceDirectory 'momo-commerce-success-live.png'
+$commerceUnlockScreenshotPath = Join-Path $evidenceDirectory 'momo-commerce-unlocked-chapter-live.png'
 $authoringOutlineScreenshotPath = Join-Path $evidenceDirectory 'authoring-outline-live.png'
 $buildLog = Join-Path $evidenceDirectory 'api-build.log'
 $apiStdout = Join-Path $evidenceDirectory 'api-stdout.log'
@@ -164,7 +184,7 @@ try {
         $env:NOVEL_TRANSLATION_FAKE_API_ENABLED = 'true'
         $env:NOVEL_TRANSLATION_FAKE_WORKER_ENABLED = 'true'
     }
-    if ($IncludePaymentReturn) {
+    if ($IncludePaymentReturn -or $IncludeCommerceSettlement) {
         # Synthetic secrets exist only for the disposable process; this journey issues no provider request.
         $env:NOVEL_MOMO_TEST_ENABLED = 'true'
         $env:NOVEL_FEATURE_COMMERCE_SANDBOX_ENABLED = 'true'
@@ -285,6 +305,31 @@ VALUES
      'momo-test-credits-100', 1, 'MOMO', 'TEST', 'VND', 1000, 100, 0, 'PENDING');
 "@
     }
+    $commerceSettlementFixtureSql = ''
+    if ($IncludeCommerceSettlement) {
+        $commerceSettlementFixtureSql = @"
+INSERT INTO users (id, display_name, contact_email, email_verified_at, status)
+VALUES ('$commerceAuthorId', 'Live Commerce Author', 'commerce-author-$commerceAuthorId@example.test', clock_timestamp(), 'active');
+INSERT INTO libraries (id, owner_user_id, name, visibility, is_default)
+VALUES ('$commerceLibraryId', '$commerceAuthorId', 'Live Public Commerce Shelf', 'private', FALSE);
+INSERT INTO works (id, library_id, owner_user_id, title, author, source_language, source_kind, visibility, status)
+VALUES ('$commerceWorkId', '$commerceLibraryId', '$commerceAuthorId', 'Live Public Commerce Story', 'Commerce Author', 'en', 'imported', 'public', 'active');
+INSERT INTO volumes (id, work_id, ordinal, title)
+VALUES ('$commerceVolumeId', '$commerceWorkId', 1, 'Live Commerce Volume');
+INSERT INTO chapters (id, work_id, volume_id, ordinal, title, source_language, source_revision_id, status)
+VALUES ('$commerceChapterId', '$commerceWorkId', '$commerceVolumeId', 1, 'Live Paid Chapter', 'en', '$commerceRevisionId', 'ready');
+INSERT INTO chapter_revisions (id, chapter_id, revision_no, source_format, normalized_content, content_hash, created_by_user_id)
+VALUES ('$commerceRevisionId', '$commerceChapterId', 1, 'plain_text', '$commerceSourceText', decode('$commerceSourceHash', 'hex'), '$commerceAuthorId');
+INSERT INTO segments (id, chapter_revision_id, ordinal, segment_type, source_text, stable_anchor, checksum)
+VALUES ('$commerceSegmentId', '$commerceRevisionId', 1, 'paragraph', '$commerceSourceText', 'live-commerce-p1', decode('$commerceSourceHash', 'hex'));
+INSERT INTO credit_top_up_orders
+    (id, user_id, request_id, idempotency_key, pack_id, pack_version, provider, environment,
+     currency, amount_vnd, paid_credits, bonus_credits, status)
+VALUES
+    ('$commerceOrderId', '$userId', '$commerceRequestId', 'commerce-settlement-$commerceOrderId',
+     'momo-test-credits-100', 1, 'MOMO', 'TEST', 'VND', 1000, 100, 0, 'PENDING');
+"@
+    }
 
     $fixtureSql = @"
 BEGIN;
@@ -328,6 +373,7 @@ VALUES
 ('$readerSegmentId', '$readerRevisionId', 1, 'paragraph', '$readerSourceText', 'live-reader-p1', decode('$readerSourceHash', 'hex')),
 ('$translationSegmentId', '$translationRevisionId', 1, 'paragraph', '$translationSourceText', 'live-translation-p1', decode('$translationSourceHash', 'hex'));
 $paymentReturnFixtureSql
+$commerceSettlementFixtureSql
 INSERT INTO glossaries (id, owner_user_id, name, scope_type, source_language, target_language, version)
 VALUES ('$glossaryId', '$userId', 'E2E Glossary Import', 'USER_GLOBAL', 'zh-Hans', 'vi', 4);
 INSERT INTO glossary_revisions (id, glossary_id, revision_no, created_by_user_id)
@@ -357,6 +403,15 @@ COMMIT;
         $env:MOMO_PAYMENT_RETURN_LIVE_TEST_SESSION_TOKEN = $sessionToken
         $env:MOMO_PAYMENT_RETURN_LIVE_TEST_ORDER_ID = [string]$paymentReturnOrderId
         $env:MOMO_PAYMENT_RETURN_LIVE_TEST_SCREENSHOT = $paymentReturnScreenshotPath
+    }
+    if ($IncludeCommerceSettlement) {
+        $env:MOMO_COMMERCE_LIVE_TEST_SESSION_TOKEN = $sessionToken
+        $env:MOMO_COMMERCE_LIVE_TEST_ORDER_ID = [string]$commerceOrderId
+        $env:MOMO_COMMERCE_LIVE_TEST_REQUEST_ID = [string]$commerceRequestId
+        $env:MOMO_COMMERCE_LIVE_TEST_WORK_ID = [string]$commerceWorkId
+        $env:MOMO_COMMERCE_LIVE_TEST_CHAPTER_ID = [string]$commerceChapterId
+        $env:MOMO_COMMERCE_LIVE_TEST_SUCCESS_SCREENSHOT = $commerceSuccessScreenshotPath
+        $env:MOMO_COMMERCE_LIVE_TEST_UNLOCK_SCREENSHOT = $commerceUnlockScreenshotPath
     }
     $env:READER_LIVE_TEST_WORK_ID = [string]$firstWorkId
     $env:READER_LIVE_TEST_CHAPTER_ID = [string]$readerChapterId
@@ -400,6 +455,7 @@ COMMIT;
         if ($IncludeAuthoringOutline) { $e2eSpecs += 'e2e/authoring-outline-live-postgres.spec.ts' }
         if ($IncludeAuthoringChapterEditor) { $e2eSpecs += 'e2e/authoring-chapter-editor-live-postgres.spec.ts' }
         if ($IncludePaymentReturn) { $e2eSpecs += 'e2e/momo-payment-return-live-postgres.spec.ts' }
+        if ($IncludeCommerceSettlement) { $e2eSpecs += 'e2e/momo-commerce-settlement-live-postgres.spec.ts' }
         & npm.cmd run test:e2e:postgres -- $e2eSpecs *>&1 | Tee-Object -FilePath $e2eLog
         $e2eExit = $LASTEXITCODE
     } finally { Pop-Location }
@@ -411,6 +467,15 @@ COMMIT;
         $paymentReturnParts = ([string]$paymentReturnSummary).Trim() -split '\|'
         if ($paymentReturnParts.Count -ne 4 -or $paymentReturnParts[0] -ne 'PENDING' -or $paymentReturnParts[1] -ne '100' -or $paymentReturnParts[2] -ne '0' -or $paymentReturnParts[3] -ne '0') {
             throw "Pending payment return unexpectedly granted credit: $paymentReturnSummary"
+        }
+    }
+
+    if ($IncludeCommerceSettlement) {
+        $commerceSummary = & $docker @composeArguments exec -T postgres psql -v ON_ERROR_STOP=1 -tA -U novelweb -d novelweb -c "SELECT o.status || '|' || COALESCE((SELECT SUM(p.balance) FROM credit_balance_projection p WHERE p.user_id = o.user_id), 0)::text || '|' || COALESCE((SELECT COUNT(*) FROM credit_ledger_entries e WHERE e.source_type = 'PAYMENT_ORDER' AND e.source_id = o.id), 0)::text || '|' || COALESCE((SELECT COUNT(*) FROM credit_ledger_entries e WHERE e.source_type = 'CHAPTER_UNLOCK' AND e.user_id = o.user_id), 0)::text || '|' || COALESCE((SELECT COUNT(*) FROM content_entitlements e WHERE e.user_id = o.user_id AND e.chapter_id = '$commerceChapterId'), 0)::text || '|' || COALESCE((SELECT SUM(e.amount_delta) FROM credit_ledger_entries e WHERE e.source_type = 'PAYMENT_ORDER' AND e.source_id = o.id), 0)::text || '|' || COALESCE((SELECT SUM(e.amount_delta) FROM credit_ledger_entries e WHERE e.source_type = 'CHAPTER_UNLOCK' AND e.user_id = o.user_id), 0)::text FROM credit_top_up_orders o WHERE o.id = '$commerceOrderId' AND o.user_id = '$userId';"
+        if ($LASTEXITCODE -ne 0) { throw 'Could not verify signed synthetic settlement, credit ledger and chapter entitlement.' }
+        $commerceParts = ([string]$commerceSummary).Trim() -split '\|'
+        if ($commerceParts.Count -ne 7 -or $commerceParts[0] -ne 'SUCCEEDED' -or $commerceParts[1] -ne '90' -or $commerceParts[2] -ne '1' -or $commerceParts[3] -ne '1' -or $commerceParts[4] -ne '1' -or $commerceParts[5] -ne '100' -or $commerceParts[6] -ne '-10') {
+            throw "Commerce settlement invariants failed in disposable PostgreSQL: $commerceSummary"
         }
     }
 
@@ -510,7 +575,7 @@ COMMIT;
         '- Authoring: real authenticated metadata create, same-key replay, changed-payload 409, private authored work persisted, one idempotency receipt, zero volumes/chapters'
         $(if ($IncludeAuthoringDraftApi) { '- Authoring draft API integration: 1/1 PostgreSQL-backed test passed for policy/CSRF/owner gates, draft ETags, immutable revisions, exact replay, key collision, stale-version response, transactional row counts, and Reader/publication isolation' } else { '- Authoring draft API integration: not requested' })
         $(if ($IncludeAuthoringEmptyChapterDelete) { '- Empty chapter deletion API integration: 2/2 PostgreSQL-backed tests passed for owner/policy/CSRF gates, soft delete, idempotent replay, saved-content conflict, privacy, Reader isolation, and concurrent delete/save winner' } else { '- Empty chapter deletion API integration: not requested' })
-        "- Browser journey: session cookie/policy → rights receipt → upload/parse/preview/private commit → refreshed Library → Work Detail → Reader source/bookmark, then opt-in → server-timed Reader session → XP award → private profile/activity → glossary import/draft edit/revision preview$(if ($IncludeTranslationPreview) { ' → fake-local Reader translation → redacted job status → unpublished PostgreSQL candidate' } else { '' })$(if ($IncludeAuthoringOutline) { ' → private authoring chapter outline → CSRF/idempotent blank-chapter creation' } else { '' })$(if ($IncludeAuthoringChapterEditor) { ' → private chapter editor → immutable save → competing writer → explicit conflict resolution' } else { '' })"
+        "- Browser journey: session cookie/policy → rights receipt → upload/parse/preview/private commit → refreshed Library → Work Detail → Reader source/bookmark, then opt-in → server-timed Reader session → XP award → private profile/activity → glossary import/draft edit/revision preview$(if ($IncludeTranslationPreview) { ' → fake-local Reader translation → redacted job status → unpublished PostgreSQL candidate' } else { '' })$(if ($IncludeAuthoringOutline) { ' → private authoring chapter outline → CSRF/idempotent blank-chapter creation' } else { '' })$(if ($IncludeAuthoringChapterEditor) { ' → private chapter editor → immutable save → competing writer → explicit conflict resolution' } else { '' })$(if ($IncludeCommerceSettlement) { ' → synthetic signed TEST settlement → paid-credit ledger/projection → explicit Reader unlock/entitlement' } else { '' })"
         $(if ($IncludeAuthoringDraftApi) { '- Separate PostgreSQL authoring draft API test: 1/1 passed for owner/policy/CSRF gates, ETags, immutable writes, exact replay, stale-version response, outline/Reader isolation, and persisted row counts; see authoring-draft-api-test.log' } else { '- Separate PostgreSQL authoring draft API test: not requested' })
         $(if ($IncludeAuthoringEmptyChapterDelete) { '- Separate PostgreSQL empty chapter deletion API tests: 2/2 passed for soft delete/replay/security and transactional save/delete race; see authoring-empty-chapter-delete-api-test.log' } else { '- Separate PostgreSQL empty chapter deletion API tests: not requested' })
         '- Cultivation feature flag: enabled only in this random disposable API process; prior process value restored during cleanup'
@@ -521,11 +586,12 @@ COMMIT;
         $(if ($authoringEditorParts.Count -eq 6) { '- PostgreSQL authoring editor: three immutable revisions, three idempotency receipts, explicit local-version conflict resolution, latest revision pointer matches the saved content and chapter remains draft/unpublished' } else { '- PostgreSQL authoring editor: not requested' })
         $(if ($translationParts.Count -eq 4) { "- PostgreSQL fake-local translation: $($translationParts[0]) job, $($translationParts[2]) successful attempt and $($translationParts[3]) unpublished candidate segment verified with the fake marker" } else { '- PostgreSQL fake-local translation: not requested' })
         $(if ($IncludePaymentReturn) { '- MoMo TEST return: resultCode=0 and synthetic signature were ignored; actor-scoped order remained PENDING after refresh; ledger and balance projection remained zero; browser made no create/IPN request; reconciliation worker was disabled; no MoMo network request was made' } else { '- MoMo TEST return: not requested' })
+        $(if ($IncludeCommerceSettlement) { '- MoMo TEST commerce: a locally signed synthetic IPN was delivered twice to the real API; actor-owned order settled once, 100 paid credits were granted once, the Reader debited exactly 10 paid credits after explicit confirmation, one entitlement unlocked the public chapter and the saved balance is 90; no MoMo network request or reconciliation query was made' } else { '- MoMo TEST commerce settlement/unlock: not requested' })
         '- API route mocks: none'
         "- Elapsed: $duration seconds"
         "- Cleanup: $cleanup"
         "- Staging cleanup: $stagingCleanup"
-        "- Screenshots: $([System.IO.Path]::GetFileName($screenshotPath)), $([System.IO.Path]::GetFileName($workDetailScreenshotPath)), $([System.IO.Path]::GetFileName($readerScreenshotPath)), $([System.IO.Path]::GetFileName($glossaryImportScreenshotPath)), $([System.IO.Path]::GetFileName($glossaryEditorScreenshotPath)), $([System.IO.Path]::GetFileName($authoringScreenshotPath))$(if ($IncludeAuthoringOutline) { ', authoring-outline-live.png' } else { '' })$(if ($IncludeAuthoringChapterEditor) { ', authoring-chapter-editor-live.png' } else { '' })$(if ($IncludeTranslationPreview) { ', translation-job-live.png' } else { '' })$(if ($IncludePaymentReturn) { ', momo-payment-return-pending-live.png, momo-payment-history-zero-live.png' } else { '' }), private-import-commit-live.png, private-import-detail-live.png, private-import-reader-live.png, private-import-html-commit-live.png, private-import-html-detail-live.png, private-import-html-reader-live.png, private-import-markdown-commit-live.png, private-import-markdown-detail-live.png, private-import-markdown-reader-live.png, private-import-epub-commit-live.png, private-import-epub-detail-live.png, private-import-epub-reader-live.png"
+        "- Screenshots: $([System.IO.Path]::GetFileName($screenshotPath)), $([System.IO.Path]::GetFileName($workDetailScreenshotPath)), $([System.IO.Path]::GetFileName($readerScreenshotPath)), $([System.IO.Path]::GetFileName($glossaryImportScreenshotPath)), $([System.IO.Path]::GetFileName($glossaryEditorScreenshotPath)), $([System.IO.Path]::GetFileName($authoringScreenshotPath))$(if ($IncludeAuthoringOutline) { ', authoring-outline-live.png' } else { '' })$(if ($IncludeAuthoringChapterEditor) { ', authoring-chapter-editor-live.png' } else { '' })$(if ($IncludeTranslationPreview) { ', translation-job-live.png' } else { '' })$(if ($IncludePaymentReturn) { ', momo-payment-return-pending-live.png, momo-payment-history-zero-live.png' } else { '' })$(if ($IncludeCommerceSettlement) { ', momo-commerce-success-live.png, momo-commerce-unlocked-chapter-live.png' } else { '' }), private-import-commit-live.png, private-import-detail-live.png, private-import-reader-live.png, private-import-html-commit-live.png, private-import-html-detail-live.png, private-import-html-reader-live.png, private-import-markdown-commit-live.png, private-import-markdown-detail-live.png, private-import-markdown-reader-live.png, private-import-epub-commit-live.png, private-import-epub-detail-live.png, private-import-epub-reader-live.png"
         "- Logs: api-build.log, api-stdout.log, api-stderr.log, playwright.log$(if ($IncludeAuthoringDraftApi) { ', authoring-draft-api-test.log' } else { '' })$(if ($IncludeAuthoringEmptyChapterDelete) { ', authoring-empty-chapter-delete-api-test.log' } else { '' })"
         $(if ($failure) { "- Failure: $failure" } else { '- Failure: none' })
         ''
