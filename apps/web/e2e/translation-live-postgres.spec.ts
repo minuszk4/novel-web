@@ -270,6 +270,85 @@ test('fake-local Reader preview reaches a private candidate through real API and
   await expect(page.getByText(`[fake en->vi] ${sourceText}`, { exact: true })).toBeVisible();
   await expectNoAxeViolations(page);
 
+  const otherSessionToken = process.env['MOMO_COMMERCE_LIVE_TEST_OTHER_SESSION_TOKEN'];
+  if (otherSessionToken) {
+    expect(otherSessionToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    await page.context().clearCookies();
+    await page.context().addCookies([
+      {
+        name: '__Host-novel_session',
+        value: otherSessionToken,
+        domain: 'localhost',
+        path: '/',
+        httpOnly: true,
+        secure: true,
+        sameSite: 'Lax',
+      },
+    ]);
+
+    const outsiderCsrfResponse = await page.request.get(`${baseUrl}/api/v1/auth/csrf`);
+    expect(outsiderCsrfResponse.status()).toBe(200);
+    const outsiderCsrf = (await outsiderCsrfResponse.json()) as { token: string };
+    expect(outsiderCsrf.token).toMatch(/^[A-Za-z0-9_-]{43}$/);
+
+    const foreignStatus = await page.request.get(`${baseUrl}${statusPath}`);
+    expect(foreignStatus.status()).toBe(404);
+    expect(foreignStatus.headers()['cache-control']).toContain('no-store');
+    const foreignStatusBody = await foreignStatus.text();
+    expect(foreignStatusBody).toContain('TRANSLATION_JOB_NOT_FOUND');
+    expect(foreignStatusBody).not.toContain(sourceText);
+    expect(foreignStatusBody).not.toContain('Live Translation Chapter');
+
+    const foreignCandidate = await page.request.get(`${baseUrl}${statusPath}/candidate`);
+    expect(foreignCandidate.status()).toBe(404);
+    expect(foreignCandidate.headers()['cache-control']).toContain('no-store');
+    const foreignCandidateBody = await foreignCandidate.text();
+    expect(foreignCandidateBody).toContain('TRANSLATION_CANDIDATE_NOT_FOUND');
+    expect(foreignCandidateBody).not.toContain(sourceText);
+    expect(foreignCandidateBody).not.toContain(`[fake en->vi] ${sourceText}`);
+    expect(foreignCandidateBody).not.toContain(editText);
+
+    const foreignEdit = await page.request.put(
+      `${baseUrl}${statusPath}/candidate/segments/${candidateBody.segments[0].sourceSegmentId}/edit`,
+      {
+        headers: {
+          'X-CSRF-Token': outsiderCsrf.token,
+          'If-Match': '"edit-1"',
+          'Idempotency-Key': 'outsider-translation-edit-0001',
+        },
+        data: { translatedText: 'Outsider must not replace this candidate.' },
+      },
+    );
+    expect(foreignEdit.status()).toBe(404);
+    expect(foreignEdit.headers()['cache-control']).toContain('no-store');
+    const foreignEditBody = await foreignEdit.text();
+    expect(foreignEditBody).toContain('TRANSLATION_CANDIDATE_NOT_FOUND');
+    expect(foreignEditBody).not.toContain('Outsider must not replace this candidate.');
+
+    await page.context().clearCookies();
+    await page.context().addCookies([
+      {
+        name: '__Host-novel_session',
+        value: sessionToken!,
+        domain: 'localhost',
+        path: '/',
+        httpOnly: true,
+        secure: true,
+        sameSite: 'Lax',
+      },
+    ]);
+    const unchangedOwnerCandidate = await page.request.get(`${baseUrl}${statusPath}/candidate`);
+    expect(unchangedOwnerCandidate.status()).toBe(200);
+    expect(unchangedOwnerCandidate.headers()['cache-control']).toContain('no-store');
+    const unchangedOwnerCandidateBody =
+      (await unchangedOwnerCandidate.json()) as typeof candidateBody;
+    expect(unchangedOwnerCandidateBody.segments[0]).toMatchObject({
+      editedText: editText,
+      editRevision: 1,
+      editEtag: '"edit-1"',
+    });
+  }
+
   const deskListPromise = page.waitForResponse(
     (response) =>
       response.request().method() === 'GET' &&
