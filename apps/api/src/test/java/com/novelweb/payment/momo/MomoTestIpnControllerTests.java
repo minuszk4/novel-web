@@ -60,7 +60,7 @@ class MomoTestIpnControllerTests {
   }
 
   @Test
-  void invalidSignatureAndDatabaseFailureHaveDistinctRetryableResponses() throws Exception {
+  void invalidSignatureIsAcknowledgedButDatabaseFailureRemainsRetryable() throws Exception {
     SignedNotification signed = sampleNotification();
     when(ipnService.process(any(), anyString()))
         .thenReturn(MomoTestIpnService.Result.INVALID_SIGNATURE)
@@ -75,7 +75,7 @@ class MomoTestIpnControllerTests {
                         objectMapper.writeValueAsBytes(MomoTestIpnTestSupport.payload(signed))))
             .andReturn()
             .getResponse();
-    assertEquals(401, invalidSignature.getStatus());
+    assertEquals(204, invalidSignature.getStatus());
     assertEquals("", invalidSignature.getContentAsString());
     assertTrue(invalidSignature.getHeader("Cache-Control").contains("no-store"));
 
@@ -91,6 +91,28 @@ class MomoTestIpnControllerTests {
     assertEquals(503, unavailable.getStatus());
     assertEquals("", unavailable.getContentAsString());
     assertTrue(!unavailable.getContentAsString().contains("database failure details"));
+  }
+
+  @Test
+  void signedNotificationWithInvalidBusinessFieldsIsAcknowledgedWithoutSettlement()
+      throws Exception {
+    SignedNotification signed = sampleNotification();
+    when(ipnService.process(any(), anyString()))
+        .thenReturn(MomoTestIpnService.Result.INVALID_NOTIFICATION);
+
+    var response =
+        mockMvc
+            .perform(
+                post(MomoTestIpnController.PATH)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(
+                        objectMapper.writeValueAsBytes(MomoTestIpnTestSupport.payload(signed))))
+            .andReturn()
+            .getResponse();
+
+    assertEquals(204, response.getStatus());
+    assertEquals("", response.getContentAsString());
+    verify(ipnService).process(signed.notification(), signed.signature());
   }
 
   @Test

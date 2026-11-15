@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 7.2.0
+  version: 8.0.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -3826,7 +3826,8 @@ paths:
         matches the saved MoMo TEST order, request and VND amount, deduplicates the signed event, and appends the
         paid-credit grant atomically with the successful order transition. The order snapshots autoCapture=true;
         result code 9000 with a positive transaction ID is settled under MoMo's one-step rule, while a two-step
-        order with autoCapture=false remains pending. Invalid signatures never grant credits.
+        order with autoCapture=false remains pending. Structurally complete callbacks are acknowledged with 204 even
+        when signature/business validation fails; those callbacks never settle an order or grant credits.
         Gated customer catalog/create/status routes are available in the same PostgreSQL profile when TEST is
         explicitly enabled; payment-order history, missing-IPN reconciliation and chapter-unlock routes remain
         unavailable. There is no production payment and the feature flag remains off by default. Responds 204
@@ -3840,7 +3841,7 @@ paths:
               $ref: '#/components/schemas/MomoTestPaymentNotification'
       responses:
         '204':
-          description: Notification accepted, processed, audited as a safe mismatch, or already received. No body.
+          description: Callback processed or acknowledged. Invalid signatures/business fields do not settle an order or grant credits. No body.
           headers:
             Cache-Control:
               schema:
@@ -3852,8 +3853,6 @@ paths:
                 const: no-cache
         '400':
           description: Malformed JSON or missing/invalid typed notification fields.
-        '401':
-          description: HMAC signature is invalid.
         '413':
           description: Request body exceeds 16 KiB.
         '415':

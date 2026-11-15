@@ -59,18 +59,13 @@ public final class MomoTestIpnController {
     }
     if (parsed == null) return empty(HttpStatus.BAD_REQUEST);
 
-    MomoTestIpnService.Result result;
     try {
-      result = ipnService.process(parsed.notification(), parsed.signature());
+      ipnService.process(parsed.notification(), parsed.signature());
     } catch (IllegalStateException exception) {
       return empty(HttpStatus.SERVICE_UNAVAILABLE);
     }
-    if (result == MomoTestIpnService.Result.INVALID_SIGNATURE) {
-      return empty(HttpStatus.UNAUTHORIZED);
-    }
-    if (result == MomoTestIpnService.Result.INVALID_NOTIFICATION) {
-      return empty(HttpStatus.BAD_REQUEST);
-    }
+    // MoMo's IPN contract requires an empty 204 acknowledgement. Validation still fails closed:
+    // invalid signatures/notifications never settle an order, but do not trigger provider retries.
     return empty(HttpStatus.NO_CONTENT);
   }
 
