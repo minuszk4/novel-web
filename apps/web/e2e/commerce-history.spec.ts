@@ -113,6 +113,35 @@ const paymentOrderStateLabels = [
   { status: 'EXPIRED', label: 'Hết hạn' },
 ] as const;
 
+async function installLifecycleOrders(page: Page): Promise<void> {
+  await installAccountRoutes(page);
+  const lifecycleOrders = paymentOrderStateLabels.map(({ status }, index) => ({
+    ...order,
+    id: `${String(index + 1).padStart(8, '0')}-1111-4111-8111-000000000001`,
+    status,
+    paidCreditsGranted: status === 'SUCCEEDED' ? order.paidCreditsPurchased : 0,
+    bonusCreditsGranted: 0,
+  }));
+  await page.unroute('**/api/v1/me/credits/balance');
+  await page.route('**/api/v1/me/credits/balance', (route) =>
+    json(route, {
+      paidCredits: 110,
+      bonusCredits: 0,
+      totalCredits: 110,
+      asOf: '2026-11-15T10:00:00Z',
+    }),
+  );
+  await page.route('**/api/v1/me/payment-orders**', (route) =>
+    json(route, { items: lifecycleOrders, nextCursor: null }),
+  );
+  await page.route('**/api/v1/me/credits/transactions**', (route) =>
+    json(route, { items: [], nextCursor: null }),
+  );
+  await page.route('**/api/v1/me/purchases**', (route) =>
+    json(route, { items: [], nextCursor: null }),
+  );
+}
+
 for (const viewport of viewports) {
   test(`commerce history keeps the three lists distinct at ${viewport.name}`, async ({
     page,
@@ -236,32 +265,7 @@ test('labels all MoMo payment-order lifecycle states in text at mobile width', a
   page,
 }, testInfo) => {
   await page.setViewportSize({ width: 360, height: 800 });
-  await installAccountRoutes(page);
-  const lifecycleOrders = paymentOrderStateLabels.map(({ status }, index) => ({
-    ...order,
-    id: `${String(index + 1).padStart(8, '0')}-1111-4111-8111-000000000001`,
-    status,
-    paidCreditsGranted: status === 'SUCCEEDED' ? order.paidCreditsPurchased : 0,
-    bonusCreditsGranted: 0,
-  }));
-  await page.unroute('**/api/v1/me/credits/balance');
-  await page.route('**/api/v1/me/credits/balance', (route) =>
-    json(route, {
-      paidCredits: 110,
-      bonusCredits: 0,
-      totalCredits: 110,
-      asOf: '2026-11-15T10:00:00Z',
-    }),
-  );
-  await page.route('**/api/v1/me/payment-orders**', (route) =>
-    json(route, { items: lifecycleOrders, nextCursor: null }),
-  );
-  await page.route('**/api/v1/me/credits/transactions**', (route) =>
-    json(route, { items: [], nextCursor: null }),
-  );
-  await page.route('**/api/v1/me/purchases**', (route) =>
-    json(route, { items: [], nextCursor: null }),
-  );
+  await installLifecycleOrders(page);
 
   await page.goto('/app/purchases');
   const orderList = page.getByRole('list', { name: 'Các lệnh nạp credit' });
@@ -275,6 +279,56 @@ test('labels all MoMo payment-order lifecycle states in text at mobile width', a
   await page.screenshot({
     path: testInfo.outputPath('momo-order-states-360x800.png'),
     fullPage: true,
+  });
+});
+
+test('keeps all MoMo order labels legible in forced-colors mode on mobile', async ({
+  page,
+}, testInfo) => {
+  await page.setViewportSize({ width: 360, height: 800 });
+  await page.emulateMedia({ forcedColors: 'active' });
+  expect(await page.evaluate(() => matchMedia('(forced-colors: active)').matches)).toBe(true);
+  await installLifecycleOrders(page);
+  await page.goto('/app/purchases');
+
+  const orderList = page.getByRole('list', { name: 'Các lệnh nạp credit' });
+  for (const { label } of paymentOrderStateLabels) {
+    await expect(orderList.getByText(label, { exact: true })).toBeVisible();
+  }
+  const forcedColors = await orderList.locator('.purchases-status').evaluateAll((badges) =>
+    badges.map((badge) => {
+      const styles = getComputedStyle(badge);
+      return {
+        text: badge.textContent?.trim(),
+        color: styles.color,
+        backgroundColor: styles.backgroundColor,
+        forcedColorAdjust: styles.forcedColorAdjust,
+      };
+    }),
+  );
+  const authoredColorPairs = new Set([
+    'rgb(119, 80, 26)|rgb(255, 243, 216)',
+    'rgb(49, 92, 66)|rgb(232, 243, 235)',
+    'rgb(125, 65, 65)|rgb(249, 233, 231)',
+  ]);
+  expect(forcedColors).toHaveLength(paymentOrderStateLabels.length);
+  expect(forcedColors.every(({ text }) => text)).toBe(true);
+  expect(forcedColors.every(({ forcedColorAdjust }) => forcedColorAdjust !== 'none')).toBe(true);
+  expect(
+    forcedColors.every(
+      ({ color, backgroundColor }) => !authoredColorPairs.has(`${color}|${backgroundColor}`),
+    ),
+  ).toBe(true);
+  await expectNoAxeViolations(page);
+  await expect
+    .poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth))
+    .toBe(true);
+  await orderList
+    .locator('.purchases-card')
+    .first()
+    .evaluate((item) => item.scrollIntoView({ block: 'start', behavior: 'instant' }));
+  await page.screenshot({
+    path: testInfo.outputPath('momo-order-status-forced-colors-visible-360x800.png'),
   });
 });
 
