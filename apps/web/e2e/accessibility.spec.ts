@@ -65,3 +65,36 @@ for (const viewport of viewports) {
     });
   }
 }
+
+test('offline and unverified MoMo states explain the restriction in text', async ({ page }) => {
+  await page.setViewportSize({ width: 360, height: 800 });
+  await page.route('**/api/v1/system/status', (route) => route.abort());
+  await page.route('**/api/v1/credit-packs', (route) => route.abort());
+
+  await page.goto('/app/credits');
+
+  const connectionStatus = page.locator('.demo-banner');
+  await expect(connectionStatus).toHaveAttribute('role', 'status');
+  await expect(connectionStatus).toContainText('API local chưa phản hồi.');
+  await expect(connectionStatus).toContainText('MoMo Test chưa được bật.');
+  await expect(connectionStatus.getByRole('button', { name: 'Thử lại' })).toBeVisible();
+
+  const shopStatus = page.locator('.credit-shop-state-card');
+  await expect(shopStatus).toHaveAttribute('role', 'alert');
+  await expect(
+    shopStatus.getByRole('heading', { name: 'Chưa kiểm tra được môi trường' }),
+  ).toBeVisible();
+  await expect(shopStatus).toContainText('danh sách gói và nút nạp đang bị khóa');
+  const retryButton = shopStatus.getByRole('button', { name: 'Kiểm tra lại' });
+  await expect(retryButton).toBeVisible();
+  await retryButton.focus();
+  const retryAndNavBounds = await page.evaluate(() => {
+    const button = document
+      .querySelector('.credit-shop-state-card button')!
+      .getBoundingClientRect();
+    const nav = document.querySelector('.mobile-nav')!.getBoundingClientRect();
+    return { buttonBottom: button.bottom, navTop: nav.top };
+  });
+  expect(retryAndNavBounds.buttonBottom).toBeLessThanOrEqual(retryAndNavBounds.navTop);
+  await expectNoAxeViolations(page);
+});
