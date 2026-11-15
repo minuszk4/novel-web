@@ -242,6 +242,68 @@ test('private chapter outline reads and creates metadata through the real API an
   await expect(page.getByRole('listitem')).toHaveCount(27);
   await expect(page.getByRole('button', { name: 'Thêm chương' })).toBeFocused();
 
+  const otherSessionToken = process.env['MOMO_COMMERCE_LIVE_TEST_OTHER_SESSION_TOKEN'];
+  if (otherSessionToken) {
+    expect(otherSessionToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    await page.context().clearCookies();
+    await page.context().addCookies([
+      {
+        name: '__Host-novel_session',
+        value: otherSessionToken,
+        domain: 'localhost',
+        path: '/',
+        httpOnly: true,
+        secure: true,
+        sameSite: 'Lax',
+      },
+    ]);
+
+    const outsiderCsrfResponse = await page.request.get(`${baseUrl}/api/v1/auth/csrf`);
+    expect(outsiderCsrfResponse.status()).toBe(200);
+    const outsiderCsrf = (await outsiderCsrfResponse.json()) as { token: string };
+    expect(outsiderCsrf.token).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    const foreignDelete = await page.request.delete(
+      `${baseUrl}/api/v1/authoring/manuscripts/${workId}/chapters/${created.id}`,
+      { headers: { 'X-CSRF-Token': outsiderCsrf.token } },
+    );
+    expect(foreignDelete.status()).toBe(404);
+    expect(foreignDelete.headers()['cache-control']).toContain('no-store');
+    const foreignDeleteBody = await foreignDelete.text();
+    expect(foreignDeleteBody).toContain('DRAFT_CHAPTER_NOT_FOUND');
+    expect(foreignDeleteBody).not.toContain(newChapterTitle);
+
+    await page.context().clearCookies();
+    await page.context().addCookies([
+      {
+        name: '__Host-novel_session',
+        value: sessionToken!,
+        domain: 'localhost',
+        path: '/',
+        httpOnly: true,
+        secure: true,
+        sameSite: 'Lax',
+      },
+    ]);
+    const ownerOutlineAfterForeignDelete = await page.request.get(
+      `${baseUrl}/api/v1/authoring/manuscripts/${workId}/chapters?limit=100`,
+    );
+    expect(ownerOutlineAfterForeignDelete.status()).toBe(200);
+    expect(ownerOutlineAfterForeignDelete.headers()['cache-control']).toContain('no-store');
+    const ownerOutlineAfterForeignDeleteBody = (await ownerOutlineAfterForeignDelete.json()) as {
+      items: Array<{ id: string; ordinal: number; title: string; status: string }>;
+      nextCursor: string | null;
+    };
+    expect(ownerOutlineAfterForeignDeleteBody.items).toContainEqual(
+      expect.objectContaining({
+        id: created.id,
+        ordinal: 27,
+        title: newChapterTitle,
+        status: 'draft',
+      }),
+    );
+    expect(ownerOutlineAfterForeignDeleteBody.nextCursor).toBeNull();
+  }
+
   const deleteTrigger = page.getByRole('button', {
     name: `Xóa chương trống Chương 27: ${newChapterTitle}`,
   });

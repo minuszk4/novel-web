@@ -460,7 +460,11 @@ COMMIT;
     Push-Location $webDirectory
     try {
         $e2eSpecs = @(
-            'e2e/authoring-create-live-postgres.spec.ts',
+            'e2e/authoring-create-live-postgres.spec.ts'
+        )
+        # The outline journey updates manuscript metadata consumed by later Library/commerce checks.
+        if ($IncludeAuthoringOutline) { $e2eSpecs += 'e2e/authoring-outline-live-postgres.spec.ts' }
+        $e2eSpecs += @(
             'e2e/library-live-postgres.spec.ts',
             'e2e/reader-live-postgres.spec.ts',
             'e2e/work-detail-live-postgres.spec.ts',
@@ -470,7 +474,6 @@ COMMIT;
             'e2e/cultivation-live-postgres.spec.ts'
         )
         if ($IncludeTranslationPreview) { $e2eSpecs += 'e2e/translation-live-postgres.spec.ts' }
-        if ($IncludeAuthoringOutline) { $e2eSpecs += 'e2e/authoring-outline-live-postgres.spec.ts' }
         if ($IncludeAuthoringChapterEditor) { $e2eSpecs += 'e2e/authoring-chapter-editor-live-postgres.spec.ts' }
         if ($IncludePaymentReturn) { $e2eSpecs += 'e2e/momo-payment-return-live-postgres.spec.ts' }
         if ($IncludeCommerceSettlement) { $e2eSpecs += 'e2e/momo-commerce-settlement-live-postgres.spec.ts' }

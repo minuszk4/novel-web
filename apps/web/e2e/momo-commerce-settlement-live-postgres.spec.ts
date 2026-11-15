@@ -12,6 +12,8 @@ test('synthetic signed settlement grants credits once and unlocks a public chapt
   const chapterId = process.env['MOMO_COMMERCE_LIVE_TEST_CHAPTER_ID'];
   const privateWorkId = process.env['MOMO_COMMERCE_LIVE_TEST_PRIVATE_WORK_ID'];
   const privateChapterId = process.env['MOMO_COMMERCE_LIVE_TEST_PRIVATE_CHAPTER_ID'];
+  const expectedPrivateWorkTitle =
+    process.env['AUTHORING_OUTLINE_LIVE_TEST_EXPECTED_TITLE'] ?? 'Live E2E Novel Two';
   const successScreenshot = process.env['MOMO_COMMERCE_LIVE_TEST_SUCCESS_SCREENSHOT'];
   const unlockScreenshot = process.env['MOMO_COMMERCE_LIVE_TEST_UNLOCK_SCREENSHOT'];
   const accessKey = process.env['MOMO_TEST_ACCESS_KEY'];
@@ -184,9 +186,17 @@ test('synthetic signed settlement grants credits once and unlocks a public chapt
   expect(ownerPrivateManuscript.headers()['cache-control']).toContain('no-store');
   const ownerPrivateManuscriptEtag = ownerPrivateManuscript.headers().etag;
   expect(ownerPrivateManuscriptEtag).toMatch(/^"manuscript-metadata-[1-9][0-9]*"$/);
-  expect(await ownerPrivateManuscript.json()).toMatchObject({
+  const ownerPrivateManuscriptSnapshot = (await ownerPrivateManuscript.json()) as {
+    id: string;
+    title: string;
+    author: string | null;
+    language: string;
+    visibility: string;
+    metadataVersion: number;
+  };
+  expect(ownerPrivateManuscriptSnapshot).toMatchObject({
     id: privateWorkId,
-    title: 'Live E2E Novel Two',
+    title: expectedPrivateWorkTitle,
     visibility: 'private',
   });
 
@@ -195,9 +205,11 @@ test('synthetic signed settlement grants credits once and unlocks a public chapt
   );
   expect(ownerPrivateOutline.status()).toBe(200);
   const ownerPrivateOutlineBody = await ownerPrivateOutline.text();
-  expect(JSON.parse(ownerPrivateOutlineBody)).toMatchObject({
-    items: [expect.objectContaining({ id: privateChapterId, title: 'Live Translation Chapter' })],
-  });
+  expect(JSON.parse(ownerPrivateOutlineBody).items).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ id: privateChapterId, title: 'Live Translation Chapter' }),
+    ]),
+  );
   expect(ownerPrivateOutlineBody).not.toMatch(
     /"(?:sourceText|normalizedContent|segments|ownerUserId)"\s*:/i,
   );
@@ -319,7 +331,7 @@ test('synthetic signed settlement grants credits once and unlocks a public chapt
   expect(foreignPrivateManuscript.status()).toBe(404);
   const foreignPrivateManuscriptBody = await foreignPrivateManuscript.text();
   expect(foreignPrivateManuscriptBody).toContain('MANUSCRIPT_NOT_FOUND');
-  expect(foreignPrivateManuscriptBody).not.toContain('Live E2E Novel Two');
+  expect(foreignPrivateManuscriptBody).not.toContain(expectedPrivateWorkTitle);
 
   const foreignPrivateOutline = await page.request.get(
     `http://localhost:4300/api/v1/authoring/manuscripts/${privateWorkId}/chapters`,
@@ -498,11 +510,11 @@ test('synthetic signed settlement grants credits once and unlocks a public chapt
   expect(unchangedOwnerPrivateManuscript.headers().etag).toBe(ownerPrivateManuscriptEtag);
   expect(await unchangedOwnerPrivateManuscript.json()).toMatchObject({
     id: privateWorkId,
-    title: 'Live E2E Novel Two',
-    author: 'E2E Author',
-    language: 'en',
-    visibility: 'private',
-    metadataVersion: 1,
+    title: ownerPrivateManuscriptSnapshot.title,
+    author: ownerPrivateManuscriptSnapshot.author,
+    language: ownerPrivateManuscriptSnapshot.language,
+    visibility: ownerPrivateManuscriptSnapshot.visibility,
+    metadataVersion: ownerPrivateManuscriptSnapshot.metadataVersion,
   });
   const unchangedOwnerProgress = await page.request.get(
     `http://localhost:4300/api/v1/works/${privateWorkId}/progress`,
