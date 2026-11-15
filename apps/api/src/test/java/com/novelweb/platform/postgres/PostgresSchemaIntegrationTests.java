@@ -38,6 +38,8 @@ import com.novelweb.library.imports.ImportParseService;
 import com.novelweb.library.imports.ImportStagingCleanupService;
 import com.novelweb.library.imports.ImportStagingRateLimiter;
 import com.novelweb.payment.credit.CreditLedgerService;
+import com.novelweb.payment.credit.CreditPackCatalog;
+import com.novelweb.payment.credit.CreditTopUpOrderService;
 import com.novelweb.progression.cultivation.CultivationRepository;
 import com.novelweb.progression.cultivation.CultivationService;
 import com.novelweb.translation.glossary.GlossaryCatalogController;
@@ -210,7 +212,8 @@ class PostgresSchemaIntegrationTests {
           "authoring_chapter_creations",
           "authoring_chapter_revision_writes",
           "credit_ledger_entries",
-          "credit_balance_projection");
+          "credit_balance_projection",
+          "credit_top_up_orders");
 
   @Autowired private DataSource dataSource;
 
@@ -237,6 +240,8 @@ class PostgresSchemaIntegrationTests {
   @Autowired private CultivationRepository cultivationRepository;
 
   @Autowired private CreditLedgerService creditLedgerService;
+
+  @Autowired private CreditTopUpOrderService creditTopUpOrderService;
 
   @Autowired private GlossaryRepository glossaryRepository;
 
@@ -295,7 +300,7 @@ class PostgresSchemaIntegrationTests {
             connection.prepareStatement("SELECT COUNT(*) FROM databasechangelog");
         ResultSet changesets = changesetCount.executeQuery()) {
       changesets.next();
-      assertEquals(112, changesets.getInt(1), "unexpected number of applied changesets");
+      assertEquals(113, changesets.getInt(1), "unexpected number of applied changesets");
     }
 
     Set<String> actualTables = new HashSet<>();
@@ -12826,6 +12831,127 @@ class PostgresSchemaIntegrationTests {
     } finally {
       executor.shutdownNow();
       deleteSessionTestUser(userId);
+    }
+  }
+
+  @Test
+  void creditTopUpOrdersPersistTheServerQuoteAndReplayOnlyForTheirActor() throws Exception {
+    UUID userId = createSessionTestUser("Top-up Order Owner");
+    UUID otherUserId = createSessionTestUser("Other Top-up Order Owner");
+    String idempotencyKey = "credit-top-up-order-owner-0001";
+    CreditPackCatalog catalog = CreditPackCatalog.momoTestFixture();
+    try {
+      CreditTopUpOrderService.CreateResult created =
+          creditTopUpOrderService.createOrReplay(
+              userId, idempotencyKey, catalog, "momo-test-credits-100");
+      assertEquals(CreditTopUpOrderService.Outcome.CREATED, created.outcome());
+      CreditTopUpOrderService.TopUpOrder order = created.order();
+      assertNotNull(order);
+      assertEquals(userId, order.userId());
+      assertEquals(CreditTopUpOrderService.Provider.MOMO, order.provider());
+      assertEquals(CreditTopUpOrderService.OrderStatus.CREATED, order.status());
+      assertEquals(1_000, order.quote().amountVnd());
+      assertEquals("VND", order.quote().currency());
+      assertEquals(CreditPackCatalog.PaymentEnvironment.TEST, order.quote().environment());
+      assertEquals(100, order.quote().paidCredits());
+      assertEquals(0, order.quote().bonusCredits());
+      assertNull(order.quote().paidExpiresAt());
+      assertNull(order.quote().bonusExpiresAt());
+
+      CreditTopUpOrderService.CreateResult replay =
+          creditTopUpOrderService.createOrReplay(
+              userId, idempotencyKey, catalog, "momo-test-credits-100");
+      assertEquals(CreditTopUpOrderService.Outcome.REPLAYED, replay.outcome());
+      assertEquals(order.id(), replay.order().id());
+      assertEquals(order.requestId(), replay.order().requestId());
+
+      assertEquals(
+          CreditTopUpOrderService.Outcome.IDEMPOTENCY_KEY_REUSED,
+          creditTopUpOrderService
+              .createOrReplay(userId, idempotencyKey, catalog, "unknown-pack")
+              .outcome());
+      assertEquals(
+          CreditTopUpOrderService.Outcome.PACK_NOT_FOUND,
+          creditTopUpOrderService
+              .createOrReplay(userId, "credit-top-up-order-unknown-0001", catalog, "unknown-pack")
+              .outcome());
+      assertEquals(
+          CreditTopUpOrderService.Outcome.INVALID_IDEMPOTENCY_KEY,
+          creditTopUpOrderService
+              .createOrReplay(userId, "short", catalog, "momo-test-credits-100")
+              .outcome());
+
+      CreditTopUpOrderService.CreateResult otherActorOrder =
+          creditTopUpOrderService.createOrReplay(
+              otherUserId, idempotencyKey, catalog, "momo-test-credits-100");
+      assertEquals(CreditTopUpOrderService.Outcome.CREATED, otherActorOrder.outcome());
+      assertNotEquals(order.id(), otherActorOrder.order().id());
+      assertEquals(1, creditTopUpOrderCount(userId));
+      assertEquals(1, creditTopUpOrderCount(otherUserId));
+      assertEquals(0, creditSourceEntryCount("PAYMENT_ORDER", order.id()));
+    } finally {
+      deleteSessionTestUser(userId);
+      deleteSessionTestUser(otherUserId);
+    }
+  }
+
+  @Test
+  void creditTopUpOrderSerializesConcurrentRequestsWithTheSameActorKey() throws Exception {
+    UUID userId = createSessionTestUser("Concurrent Top-up Order Owner");
+    String idempotencyKey = "credit-top-up-order-race-0001";
+    CreditPackCatalog catalog = CreditPackCatalog.momoTestFixture();
+    ExecutorService executor = Executors.newFixedThreadPool(2);
+    try {
+      CountDownLatch ready = new CountDownLatch(2);
+      CountDownLatch start = new CountDownLatch(1);
+      List<Future<CreditTopUpOrderService.CreateResult>> requests = new ArrayList<>();
+      for (int index = 0; index < 2; index++) {
+        requests.add(
+            executor.submit(
+                () -> {
+                  ready.countDown();
+                  if (!start.await(10, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException(
+                        "concurrent top-up order requests did not start");
+                  }
+                  return creditTopUpOrderService.createOrReplay(
+                      userId, idempotencyKey, catalog, "momo-test-credits-100");
+                }));
+      }
+      assertTrue(ready.await(10, TimeUnit.SECONDS));
+      start.countDown();
+      List<CreditTopUpOrderService.CreateResult> results =
+          List.of(
+              requests.get(0).get(15, TimeUnit.SECONDS), requests.get(1).get(15, TimeUnit.SECONDS));
+      assertEquals(
+          1,
+          results.stream()
+              .filter(result -> result.outcome() == CreditTopUpOrderService.Outcome.CREATED)
+              .count());
+      assertEquals(
+          1,
+          results.stream()
+              .filter(result -> result.outcome() == CreditTopUpOrderService.Outcome.REPLAYED)
+              .count());
+      assertEquals(results.getFirst().order().id(), results.getLast().order().id());
+      assertEquals(results.getFirst().order().requestId(), results.getLast().order().requestId());
+      assertEquals(1, creditTopUpOrderCount(userId));
+    } finally {
+      executor.shutdownNow();
+      deleteSessionTestUser(userId);
+    }
+  }
+
+  private long creditTopUpOrderCount(UUID userId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT COUNT(*) FROM credit_top_up_orders WHERE user_id = ?")) {
+      select.setObject(1, userId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getLong(1);
+      }
     }
   }
 
