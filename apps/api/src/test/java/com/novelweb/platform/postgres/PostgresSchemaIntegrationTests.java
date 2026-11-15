@@ -206,7 +206,9 @@ class PostgresSchemaIntegrationTests {
           "import_commits",
           "authoring_manuscript_creations",
           "authoring_chapter_creations",
-          "authoring_chapter_revision_writes");
+          "authoring_chapter_revision_writes",
+          "credit_ledger_entries",
+          "credit_balance_projection");
 
   @Autowired private DataSource dataSource;
 
@@ -289,7 +291,7 @@ class PostgresSchemaIntegrationTests {
             connection.prepareStatement("SELECT COUNT(*) FROM databasechangelog");
         ResultSet changesets = changesetCount.executeQuery()) {
       changesets.next();
-      assertEquals(107, changesets.getInt(1), "unexpected number of applied changesets");
+      assertEquals(112, changesets.getInt(1), "unexpected number of applied changesets");
     }
 
     Set<String> actualTables = new HashSet<>();
@@ -12473,6 +12475,168 @@ class PostgresSchemaIntegrationTests {
       assertTrue(sessionService.rotate(issued.cookieValue()).isEmpty());
     } finally {
       deleteSessionTestUser(userId);
+    }
+  }
+
+  @Test
+  void creditLedgerIsAppendOnlyAndItsBalanceProjectionCanBeRebuilt() throws Exception {
+    UUID userId = createSessionTestUser("Commerce Ledger Owner");
+    UUID paymentOrderId = UUID.randomUUID();
+    UUID unlockId = UUID.randomUUID();
+    UUID paidGrantId = null;
+    try {
+      paidGrantId =
+          insertCreditLedgerEntry(
+              userId, "TOP_UP", "PAID", 100, null, "PAYMENT_ORDER", paymentOrderId, null);
+      insertCreditLedgerEntry(
+          userId,
+          "BONUS_GRANT",
+          "BONUS",
+          20,
+          Instant.now().plusSeconds(3_600),
+          "PAYMENT_ORDER",
+          paymentOrderId,
+          null);
+      insertCreditLedgerEntry(
+          userId,
+          "BONUS_GRANT",
+          "BONUS",
+          50,
+          Instant.now().minusSeconds(60),
+          "PAYMENT_ORDER",
+          paymentOrderId,
+          null);
+
+      assertEquals(100, creditProjectedBalance(userId, "PAID"));
+      assertEquals(20, creditProjectedBalance(userId, "BONUS"));
+
+      UUID immutableGrantId = paidGrantId;
+      assertThrows(SQLException.class, () -> updateCreditLedgerEntry(immutableGrantId));
+      assertThrows(SQLException.class, () -> deleteCreditLedgerEntry(immutableGrantId));
+      assertThrows(
+          SQLException.class,
+          () ->
+              insertCreditLedgerEntry(
+                  userId, "TOP_UP", "PAID", 100, null, "PAYMENT_ORDER", paymentOrderId, null));
+
+      insertCreditLedgerEntry(
+          userId, "UNLOCK_DEBIT", "PAID", -60, null, "CHAPTER_UNLOCK", unlockId, null);
+      assertEquals(40, creditProjectedBalance(userId, "PAID"));
+      assertThrows(
+          SQLException.class,
+          () ->
+              insertCreditLedgerEntry(
+                  userId,
+                  "UNLOCK_DEBIT",
+                  "PAID",
+                  -41,
+                  null,
+                  "CHAPTER_UNLOCK",
+                  UUID.randomUUID(),
+                  null));
+      assertEquals(40, creditProjectedBalance(userId, "PAID"));
+
+      UUID reversalId = UUID.randomUUID();
+      insertCreditLedgerEntry(
+          userId, "REVERSAL", "PAID", -10, null, "REVERSAL", reversalId, paidGrantId);
+      assertEquals(30, creditProjectedBalance(userId, "PAID"));
+      assertThrows(
+          SQLException.class,
+          () ->
+              insertCreditLedgerEntry(
+                  userId,
+                  "REVERSAL",
+                  "PAID",
+                  -10,
+                  null,
+                  "REVERSAL",
+                  UUID.randomUUID(),
+                  immutableGrantId));
+
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement rebuild =
+              connection.prepareStatement("SELECT rebuild_credit_balance_projection(?)")) {
+        rebuild.setObject(1, userId);
+        rebuild.execute();
+      }
+      assertEquals(30, creditProjectedBalance(userId, "PAID"));
+      assertEquals(20, creditProjectedBalance(userId, "BONUS"));
+    } finally {
+      deleteSessionTestUser(userId);
+    }
+  }
+
+  private UUID insertCreditLedgerEntry(
+      UUID userId,
+      String entryType,
+      String bucket,
+      long amountDelta,
+      Instant expiresAt,
+      String sourceType,
+      UUID sourceId,
+      UUID reversalOfEntryId)
+      throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement insert =
+            connection.prepareStatement(
+                """
+                    INSERT INTO credit_ledger_entries (
+                        user_id, entry_type, bucket, amount_delta, expires_at,
+                        source_type, source_id, reversal_of_entry_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    RETURNING id
+                    """)) {
+      insert.setObject(1, userId);
+      insert.setString(2, entryType);
+      insert.setString(3, bucket);
+      insert.setLong(4, amountDelta);
+      if (expiresAt == null) insert.setTimestamp(5, null);
+      else insert.setTimestamp(5, Timestamp.from(expiresAt));
+      insert.setString(6, sourceType);
+      insert.setObject(7, sourceId);
+      insert.setObject(8, reversalOfEntryId);
+      try (ResultSet row = insert.executeQuery()) {
+        assertTrue(row.next());
+        return row.getObject("id", UUID.class);
+      }
+    }
+  }
+
+  private long creditProjectedBalance(UUID userId, String bucket) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                """
+                    SELECT COALESCE(SUM(balance), 0)
+                    FROM credit_balance_projection
+                    WHERE user_id = ? AND bucket = ?
+                      AND (expires_at IS NULL OR expires_at > clock_timestamp())
+                    """)) {
+      select.setObject(1, userId);
+      select.setString(2, bucket);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getLong(1);
+      }
+    }
+  }
+
+  private void updateCreditLedgerEntry(UUID entryId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement update =
+            connection.prepareStatement(
+                "UPDATE credit_ledger_entries SET amount_delta = amount_delta WHERE id = ?")) {
+      update.setObject(1, entryId);
+      update.executeUpdate();
+    }
+  }
+
+  private void deleteCreditLedgerEntry(UUID entryId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement delete =
+            connection.prepareStatement("DELETE FROM credit_ledger_entries WHERE id = ?")) {
+      delete.setObject(1, entryId);
+      delete.executeUpdate();
     }
   }
 
