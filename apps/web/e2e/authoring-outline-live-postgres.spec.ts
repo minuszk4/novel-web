@@ -9,6 +9,8 @@ test('private chapter outline reads and creates metadata through the real API an
   const sessionToken = process.env['LIBRARY_LIVE_TEST_SESSION_TOKEN'];
   const workId = process.env['AUTHORING_OUTLINE_LIVE_TEST_WORK_ID'];
   const screenshotPath = process.env['AUTHORING_OUTLINE_LIVE_TEST_SCREENSHOT'];
+  const auditScreenshot = (state: string): string =>
+    screenshotPath!.replace(/authoring-outline-live\.png$/, `authoring-audit-${state}.png`);
 
   test.skip(
     !sessionToken || !workId || !screenshotPath,
@@ -76,6 +78,7 @@ test('private chapter outline reads and creates metadata through the real API an
     fullPage: true,
   });
   for (const viewport of [
+    { width: 180, height: 400, name: 'effective-200-180x400' },
     { width: 640, height: 450 },
     { width: 1280, height: 900 },
   ]) {
@@ -86,6 +89,9 @@ test('private chapter outline reads and creates metadata through the real API an
     }));
     expect(responsiveWidths.scroll).toBeLessThanOrEqual(responsiveWidths.client);
     await expectNoAxeViolations(page);
+    if (viewport.width === 180) {
+      await page.screenshot({ path: auditScreenshot(`manuscripts-${viewport.name}`) });
+    }
   }
   await page.setViewportSize({ width: 360, height: 800 });
 
@@ -158,6 +164,7 @@ test('private chapter outline reads and creates metadata through the real API an
     page.getByRole('listitem').filter({ hasText: 'Live Translation Chapter' }).getByRole('link'),
   ).toHaveCount(0);
   await expectNoAxeViolations(page);
+  await page.screenshot({ path: auditScreenshot('outline-360x800') });
 
   const cursorRequestPromise = page.waitForResponse((response) => {
     const url = new URL(response.url());
@@ -192,6 +199,7 @@ test('private chapter outline reads and creates metadata through the real API an
   await addButton.focus();
   await page.keyboard.press('Enter');
   await expectNoAxeViolations(page);
+  await page.screenshot({ path: auditScreenshot('add-chapter-form-360x800') });
   const input = page.getByLabel('Tên chương');
   await expect(input).toBeFocused();
   await page.keyboard.type(newChapterTitle);
@@ -337,6 +345,25 @@ test('private chapter outline reads and creates metadata through the real API an
   await page.locator('#authoring-metadata-author').fill('E2E Edited Pen');
   await page.locator('#authoring-metadata-language').fill('ja');
   await expectNoAxeViolations(page);
+  await page.screenshot({ path: auditScreenshot('metadata-edit-360x800') });
+  await page.setViewportSize({ width: 180, height: 400 });
+  await expectNoAxeViolations(page);
+  const narrowMetadataWidths = await page.evaluate(() => ({
+    client: document.documentElement.clientWidth,
+    scroll: document.documentElement.scrollWidth,
+  }));
+  expect(narrowMetadataWidths.scroll).toBeLessThanOrEqual(narrowMetadataWidths.client);
+  const saveMetadataButton = page.getByRole('button', { name: 'Lưu thông tin' });
+  await saveMetadataButton.scrollIntoViewIfNeeded();
+  const narrowMetadataSave = await saveMetadataButton.boundingBox();
+  const narrowMetadataNav = await page.locator('.mobile-nav').boundingBox();
+  expect(narrowMetadataSave).not.toBeNull();
+  expect(narrowMetadataNav).not.toBeNull();
+  expect(narrowMetadataSave!.y + narrowMetadataSave!.height).toBeLessThanOrEqual(
+    narrowMetadataNav!.y,
+  );
+  await page.screenshot({ path: auditScreenshot('metadata-edit-effective-200-180x400') });
+  await page.setViewportSize({ width: 360, height: 800 });
   const firstMetadataCsrfPromise = page.waitForResponse(
     (response) =>
       response.request().method() === 'GET' &&
@@ -400,6 +427,7 @@ test('private chapter outline reads and creates metadata through the real API an
       response.request().method() === 'GET' &&
       new URL(response.url()).pathname === `/api/v1/authoring/manuscripts/${workId}`,
   );
+  await page.setViewportSize({ width: 180, height: 400 });
   await page.getByRole('button', { name: 'Lưu thông tin' }).click();
   const [, staleWrite, conflictReload] = await Promise.all([
     staleCsrfPromise,
@@ -410,10 +438,41 @@ test('private chapter outline reads and creates metadata through the real API an
   expect(staleWrite.headers().etag).toBe('"manuscript-metadata-3"');
   expect(await staleWrite.text()).not.toContain('My explicit title');
   expect(conflictReload.status()).toBe(200);
-  await expect(page.getByRole('button', { name: 'Dùng thông tin trên máy chủ' })).toBeVisible();
+  const useServerMetadata = page.getByRole('button', { name: 'Dùng thông tin trên máy chủ' });
+  await expect(useServerMetadata).toBeVisible();
+  await expect(useServerMetadata).toBeFocused();
   await expect(page.locator('#authoring-metadata-title')).toHaveValue('My explicit title');
   await expect(page.getByText(/Server competing title/)).toBeVisible();
   await expectNoAxeViolations(page);
+  const narrowConflictWidths = await page.evaluate(() => ({
+    client: document.documentElement.clientWidth,
+    scroll: document.documentElement.scrollWidth,
+  }));
+  expect(narrowConflictWidths.scroll).toBeLessThanOrEqual(narrowConflictWidths.client);
+  const narrowConflictButton = await useServerMetadata.boundingBox();
+  const narrowMobileNav = await page.locator('.mobile-nav').boundingBox();
+  expect(narrowConflictButton).not.toBeNull();
+  expect(narrowMobileNav).not.toBeNull();
+  expect(narrowConflictButton!.y + narrowConflictButton!.height).toBeLessThanOrEqual(
+    narrowMobileNav!.y,
+  );
+  await page.screenshot({ path: auditScreenshot('metadata-conflict-effective-200-180x400') });
+  const keepMyMetadata = page.getByRole('button', { name: 'Lưu thông tin của tôi' });
+  await page.keyboard.press('Tab');
+  await expect(keepMyMetadata).toBeFocused();
+  const keepMineBox = await keepMyMetadata.boundingBox();
+  expect(keepMineBox).not.toBeNull();
+  expect(keepMineBox!.y + keepMineBox!.height).toBeLessThanOrEqual(narrowMobileNav!.y);
+  await expectNoAxeViolations(page);
+  await page.screenshot({
+    path: auditScreenshot('metadata-conflict-keep-mine-effective-200-180x400'),
+  });
+  await page.keyboard.press('Shift+Tab');
+  await expect(useServerMetadata).toBeFocused();
+  await page.setViewportSize({ width: 360, height: 800 });
+  await useServerMetadata.scrollIntoViewIfNeeded();
+  await expectNoAxeViolations(page);
+  await page.screenshot({ path: auditScreenshot('metadata-conflict-360x800') });
 
   const retryCsrfPromise = page.waitForResponse(
     (response) =>

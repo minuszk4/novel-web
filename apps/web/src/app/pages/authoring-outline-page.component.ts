@@ -105,6 +105,9 @@ export class AuthoringOutlinePageComponent {
   @ViewChild('editMetadataButton')
   private editMetadataButton?: ElementRef<HTMLButtonElement>;
 
+  @ViewChild('useServerMetadataButton')
+  private useServerMetadataButton?: ElementRef<HTMLButtonElement>;
+
   constructor() {
     this.route.paramMap.pipe(takeUntilDestroyed(this.destroyRef)).subscribe((params) => {
       this.requestedWorkId = params.get('workId');
@@ -352,6 +355,7 @@ export class AuthoringOutlinePageComponent {
     try {
       this.metadataConflict.set(await this.api.getPrivateManuscript(workId));
       this.metadataError.set(null);
+      this.focusMetadataConflictChoiceAfterRender();
     } catch (error) {
       const mapped = toAuthoringError(error);
       this.metadataApiFailure.set(mapped);
@@ -736,6 +740,18 @@ export class AuthoringOutlinePageComponent {
     afterNextRender(() => this.editMetadataButton?.nativeElement.focus({ preventScroll: true }), {
       injector: this.injector,
     });
+  }
+
+  private focusMetadataConflictChoiceAfterRender(): void {
+    afterNextRender(
+      () => {
+        const button = this.useServerMetadataButton?.nativeElement;
+        if (!button) return;
+        button.focus({ preventScroll: true });
+        button.scrollIntoView({ block: 'center', behavior: 'auto' });
+      },
+      { injector: this.injector },
+    );
   }
 
   private focusMetadataField(field: keyof UpdatePrivateManuscriptInput): void {

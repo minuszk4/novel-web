@@ -87,7 +87,12 @@
               bản muốn giữ.
             </p>
             <div class="authoring-outline-form-actions">
-              <button class="button button-outline" type="button" (click)="useServerMetadata()">
+              <button
+                #useServerMetadataButton
+                class="button button-outline"
+                type="button"
+                (click)="useServerMetadata()"
+              >
                 Dùng thông tin trên máy chủ
               </button>
               <button class="button button-primary" type="button" (click)="saveMetadataOnLatest()">
