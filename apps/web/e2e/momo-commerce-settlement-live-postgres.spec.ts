@@ -334,6 +334,14 @@ test('synthetic signed settlement grants credits once and unlocks a public chapt
     scrollRatio: 0.42,
     version: 1,
   });
+  const ownerHistory = await page.request.get('http://localhost:4300/api/v1/me/reading-history');
+  expect(ownerHistory.status()).toBe(200);
+  expect(ownerHistory.headers()['cache-control']).toContain('no-store');
+  expect((await ownerHistory.json()).items).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ work: expect.objectContaining({ id: privateWorkId }) }),
+    ]),
+  );
 
   await page.context().clearCookies();
   await page.context().addCookies([
@@ -472,6 +480,13 @@ test('synthetic signed settlement grants credits once and unlocks a public chapt
   expect(foreignProgressWrite.headers()['cache-control']).toContain('no-store');
   expect(await foreignProgressWrite.text()).toContain('NOT_FOUND');
 
+  const foreignHistoryDelete = await page.request.delete(
+    `http://localhost:4300/api/v1/me/reading-history/${privateWorkId}`,
+    { headers: { 'X-CSRF-Token': foreignProgressCsrfToken } },
+  );
+  expect(foreignHistoryDelete.status()).toBe(204);
+  expect(foreignHistoryDelete.headers()['cache-control']).toContain('no-store');
+
   const foreignPaymentOrders = await page.request.get(
     'http://localhost:4300/api/v1/me/payment-orders',
   );
@@ -591,6 +606,35 @@ test('synthetic signed settlement grants credits once and unlocks a public chapt
     scrollRatio: 0.42,
     version: 1,
   });
+  const unchangedOwnerHistory = await page.request.get(
+    'http://localhost:4300/api/v1/me/reading-history',
+  );
+  expect(unchangedOwnerHistory.status()).toBe(200);
+  const unchangedOwnerHistoryBody = (await unchangedOwnerHistory.json()) as {
+    items: Array<{ work: { id: string }; progress: { version: number } }>;
+  };
+  expect(unchangedOwnerHistoryBody.items).toContainEqual(
+    expect.objectContaining({
+      work: expect.objectContaining({ id: privateWorkId }),
+      progress: expect.objectContaining({ version: 1 }),
+    }),
+  );
+  const ownerHistoryDelete = await page.request.delete(
+    `http://localhost:4300/api/v1/me/reading-history/${privateWorkId}`,
+    { headers: { 'X-CSRF-Token': ownerProgressCsrfToken } },
+  );
+  expect(ownerHistoryDelete.status()).toBe(204);
+  expect(ownerHistoryDelete.headers()['cache-control']).toContain('no-store');
+  const ownerHistoryAfterDelete = await page.request.get(
+    'http://localhost:4300/api/v1/me/reading-history',
+  );
+  expect(ownerHistoryAfterDelete.status()).toBe(200);
+  const ownerHistoryAfterDeleteBody = (await ownerHistoryAfterDelete.json()) as {
+    items: Array<{ work: { id: string } }>;
+  };
+  expect(ownerHistoryAfterDeleteBody.items).not.toContainEqual(
+    expect.objectContaining({ work: expect.objectContaining({ id: privateWorkId }) }),
+  );
   const unchangedOwnerAnnotations = await page.request.get(
     `http://localhost:4300/api/v1/works/${privateWorkId}/annotations?chapterId=${privateChapterId}`,
   );
