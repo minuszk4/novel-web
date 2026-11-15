@@ -126,6 +126,9 @@ public final class MomoTestIpnService {
           return Result.TERMINAL_CONFLICT;
         }
 
+        if (notification.transactionId() > 0L) {
+          MomoProviderTransactionLock.acquire(connection, notification.transactionId());
+        }
         Optional<UUID> transactionOwner =
             findTransactionOrder(connection, notification.transactionId());
         if (transactionOwner.isPresent() && !transactionOwner.orElseThrow().equals(orderId)) {
@@ -302,6 +305,13 @@ public final class MomoTestIpnService {
                 SET status = ?,
                     checkout_url = CASE WHEN ? = 'PENDING' THEN checkout_url ELSE NULL END,
                     provider_transaction_id = CASE WHEN ? > 0 THEN ? ELSE provider_transaction_id END,
+                    next_reconciliation_at = CASE WHEN ? IN ('SUCCEEDED', 'FAILED')
+                        THEN NULL ELSE next_reconciliation_at END,
+                    reconciliation_lease_until = NULL,
+                    reconciliation_review_required_at = CASE WHEN ? IN ('SUCCEEDED', 'FAILED')
+                        THEN NULL ELSE reconciliation_review_required_at END,
+                    reconciliation_review_code = CASE WHEN ? IN ('SUCCEEDED', 'FAILED')
+                        THEN NULL ELSE reconciliation_review_code END,
                     updated_at = clock_timestamp()
                 WHERE id = ? AND status = ?
                 """)) {
@@ -309,8 +319,11 @@ public final class MomoTestIpnService {
       update.setString(2, nextStatus.name());
       update.setLong(3, nextStatus == OrderStatus.SUCCEEDED ? transactionId : 0L);
       update.setLong(4, nextStatus == OrderStatus.SUCCEEDED ? transactionId : 0L);
-      update.setObject(5, order.id());
-      update.setString(6, order.status().name());
+      update.setString(5, nextStatus.name());
+      update.setString(6, nextStatus.name());
+      update.setString(7, nextStatus.name());
+      update.setObject(8, order.id());
+      update.setString(9, order.status().name());
       if (update.executeUpdate() != 1)
         throw new SQLException("MoMo order state changed concurrently");
     }

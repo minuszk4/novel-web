@@ -42,6 +42,10 @@ novel:
         base-url: ${MOMO_TEST_BASE_URL:}
         ipn-url: ${MOMO_TEST_IPN_URL:}
         redirect-url: ${MOMO_TEST_REDIRECT_URL:}
+        reconciliation:
+          enabled: ${NOVEL_MOMO_TEST_RECONCILIATION_ENABLED:false}
+          poll-delay: ${NOVEL_MOMO_TEST_RECONCILIATION_POLL_DELAY:30s}
+          batch-size: ${NOVEL_MOMO_TEST_RECONCILIATION_BATCH_SIZE:5}
   web:
     cors:
       allowed-origins:

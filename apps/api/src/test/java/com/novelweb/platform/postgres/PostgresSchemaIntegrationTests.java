@@ -52,6 +52,7 @@ import com.novelweb.payment.momo.MomoTestGatewayClient;
 import com.novelweb.payment.momo.MomoTestIpnService;
 import com.novelweb.payment.momo.MomoTestIpnTestSupport;
 import com.novelweb.payment.momo.MomoTestIpnTestSupport.SignedNotification;
+import com.novelweb.payment.momo.MomoTestOrderReconciliationService;
 import com.novelweb.progression.cultivation.CultivationRepository;
 import com.novelweb.progression.cultivation.CultivationService;
 import com.novelweb.translation.glossary.GlossaryCatalogController;
@@ -236,6 +237,7 @@ class PostgresSchemaIntegrationTests {
           "credit_balance_projection",
           "credit_top_up_orders",
           "momo_test_ipn_events",
+          "momo_test_reconciliation_events",
           "content_entitlements");
 
   @Autowired private DataSource dataSource;
@@ -410,7 +412,7 @@ class PostgresSchemaIntegrationTests {
             connection.prepareStatement("SELECT COUNT(*) FROM databasechangelog");
         ResultSet changesets = changesetCount.executeQuery()) {
       changesets.next();
-      assertEquals(117, changesets.getInt(1), "unexpected number of applied changesets");
+      assertEquals(119, changesets.getInt(1), "unexpected number of applied changesets");
     }
 
     Set<String> actualTables = new HashSet<>();
@@ -13559,6 +13561,188 @@ class PostgresSchemaIntegrationTests {
   }
 
   @Test
+  void momoTestReconciliationSettlesVerifiedOrdersAndBoundsRetriesAcrossWorkers() throws Exception {
+    UUID userId = createSessionTestUser("MoMo reconciliation owner");
+    try {
+      CreditTopUpOrderService.TopUpOrder paidOrder = createPendingMomoTestTopUp(userId);
+      AtomicInteger successfulQueries = new AtomicInteger();
+      MomoTestOrderReconciliationService secondWorker =
+          new MomoTestOrderReconciliationService(
+              dataSource,
+              creditLedgerService,
+              "MOMOTEST123",
+              (request, amountVnd) -> {
+                throw new AssertionError("lease should prevent a concurrent second query");
+              },
+              5);
+      MomoTestOrderReconciliationService successWorker =
+          new MomoTestOrderReconciliationService(
+              dataSource,
+              creditLedgerService,
+              "MOMOTEST123",
+              (request, amountVnd) -> {
+                successfulQueries.incrementAndGet();
+                assertEquals("MOMOTEST123", request.partnerCode());
+                assertEquals(paidOrder.id().toString(), request.orderId());
+                assertEquals(1_000, amountVnd);
+                assertEquals(0, secondWorker.reconcileDueBatch());
+                return new MomoTestGatewayClient.QueryResult(
+                    com.novelweb.payment.momo.MomoQueryResponseValidator.Outcome.SUCCEEDED,
+                    8_777_000_001L,
+                    MomoTestGatewayClient.FailureCode.NONE);
+              },
+              5);
+
+      assertEquals(1, successWorker.reconcileDueBatch());
+      assertEquals(0, successWorker.reconcileDueBatch());
+      assertEquals(1, successfulQueries.get());
+      assertEquals(CreditTopUpOrderService.OrderStatus.SUCCEEDED, topUpOrderStatus(paidOrder.id()));
+      assertEquals(100, creditProjectedBalance(userId, "PAID"));
+      assertEquals(1, creditSourceEntryCount("PAYMENT_ORDER", paidOrder.id()));
+      assertEquals(1, momoReconciliationEventCount(paidOrder.id()));
+
+      CreditTopUpOrderService.TopUpOrder pendingOrder = createPendingMomoTestTopUp(userId);
+      AtomicInteger pendingQueries = new AtomicInteger();
+      MomoTestOrderReconciliationService pendingWorker =
+          new MomoTestOrderReconciliationService(
+              dataSource,
+              creditLedgerService,
+              "MOMOTEST123",
+              (request, amountVnd) -> {
+                pendingQueries.incrementAndGet();
+                return new MomoTestGatewayClient.QueryResult(
+                    com.novelweb.payment.momo.MomoQueryResponseValidator.Outcome.PENDING,
+                    null,
+                    MomoTestGatewayClient.FailureCode.NONE);
+              },
+              5);
+      assertEquals(1, pendingWorker.reconcileDueBatch());
+      assertEquals(0, pendingWorker.reconcileDueBatch());
+      assertEquals(1, pendingQueries.get());
+      assertEquals(
+          CreditTopUpOrderService.OrderStatus.PENDING, topUpOrderStatus(pendingOrder.id()));
+      assertEquals("PENDING", latestMomoReconciliationOutcome(pendingOrder.id()));
+      assertEquals(100, creditProjectedBalance(userId, "PAID"));
+      setTopUpReconciliationDue(pendingOrder.id(), 7);
+
+      MomoTestOrderReconciliationService exhaustedWorker =
+          new MomoTestOrderReconciliationService(
+              dataSource,
+              creditLedgerService,
+              "MOMOTEST123",
+              (request, amountVnd) ->
+                  new MomoTestGatewayClient.QueryResult(
+                      com.novelweb.payment.momo.MomoQueryResponseValidator.Outcome.UNKNOWN,
+                      null,
+                      MomoTestGatewayClient.FailureCode.TRANSPORT),
+              5);
+      assertEquals(1, exhaustedWorker.reconcileDueBatch());
+      assertEquals(
+          CreditTopUpOrderService.OrderStatus.UNKNOWN, topUpOrderStatus(pendingOrder.id()));
+      assertEquals("ATTEMPTS_EXHAUSTED", topUpReconciliationReviewCode(pendingOrder.id()));
+      assertEquals(2, momoReconciliationEventCount(pendingOrder.id()));
+      assertEquals(100, creditProjectedBalance(userId, "PAID"));
+      assertEquals(0, creditSourceEntryCount("PAYMENT_ORDER", pendingOrder.id()));
+      assertEquals(0, exhaustedWorker.reconcileDueBatch());
+    } finally {
+      deleteSessionTestUser(userId);
+    }
+  }
+
+  @Test
+  void momoTestReconciliationQuarantinesReusedProviderTransactionsAndKeepsAuditAppendOnly()
+      throws Exception {
+    UUID userId = createSessionTestUser("MoMo reconciliation collision owner");
+    UUID reconciledOrderId = null;
+    try {
+      CreditTopUpOrderService.TopUpOrder firstOrder = createPendingMomoTestTopUp(userId);
+      CreditTopUpOrderService.TopUpOrder reconciledOrder = createPendingMomoTestTopUp(userId);
+      reconciledOrderId = reconciledOrder.id();
+      SignedNotification firstPaid =
+          MomoTestIpnTestSupport.sign(
+              firstOrder.id().toString(),
+              firstOrder.requestId().toString(),
+              1_000,
+              0,
+              8_777_000_002L);
+      assertEquals(
+          MomoTestIpnService.Result.SUCCEEDED,
+          momoTestIpnService.process(firstPaid.notification(), firstPaid.signature()));
+
+      MomoTestOrderReconciliationService worker =
+          new MomoTestOrderReconciliationService(
+              dataSource,
+              creditLedgerService,
+              "MOMOTEST123",
+              (request, amountVnd) ->
+                  new MomoTestGatewayClient.QueryResult(
+                      com.novelweb.payment.momo.MomoQueryResponseValidator.Outcome.SUCCEEDED,
+                      8_777_000_002L,
+                      MomoTestGatewayClient.FailureCode.NONE),
+              5);
+      assertEquals(1, worker.reconcileDueBatch());
+      assertEquals(
+          CreditTopUpOrderService.OrderStatus.PENDING, topUpOrderStatus(reconciledOrder.id()));
+      assertEquals("TRANSACTION_ID_REUSED", topUpReconciliationReviewCode(reconciledOrder.id()));
+      assertEquals("QUARANTINED", latestMomoReconciliationOutcome(reconciledOrder.id()));
+      assertEquals(100, creditProjectedBalance(userId, "PAID"));
+      assertEquals(1, creditSourceEntryCount("PAYMENT_ORDER", firstOrder.id()));
+      assertEquals(0, creditSourceEntryCount("PAYMENT_ORDER", reconciledOrder.id()));
+      assertEquals(1, momoReconciliationEventCount(reconciledOrder.id()));
+      assertThrows(
+          SQLException.class,
+          () -> {
+            try (Connection connection = dataSource.getConnection();
+                PreparedStatement update =
+                    connection.prepareStatement(
+                        "UPDATE momo_test_reconciliation_events SET outcome = 'UNKNOWN' WHERE credit_top_up_order_id = ?")) {
+              update.setObject(1, reconciledOrder.id());
+              update.executeUpdate();
+            }
+          });
+    } finally {
+      deleteSessionTestUser(userId);
+    }
+    assertEquals(0, momoReconciliationEventCount(reconciledOrderId));
+  }
+
+  @Test
+  void momoTestReconciliationRejectsLateSuccessForAnAlreadyFailedOrder() throws Exception {
+    UUID userId = createSessionTestUser("MoMo reconciliation late success owner");
+    try {
+      CreditTopUpOrderService.TopUpOrder order = createPendingMomoTestTopUp(userId);
+      MomoTestOrderReconciliationService worker =
+          new MomoTestOrderReconciliationService(
+              dataSource,
+              creditLedgerService,
+              "MOMOTEST123",
+              (request, amountVnd) -> {
+                SignedNotification failedNotification =
+                    MomoTestIpnTestSupport.sign(
+                        order.id().toString(), order.requestId().toString(), 1_000, 1_001, 0);
+                assertEquals(
+                    MomoTestIpnService.Result.FAILED,
+                    momoTestIpnService.process(
+                        failedNotification.notification(), failedNotification.signature()));
+                return new MomoTestGatewayClient.QueryResult(
+                    com.novelweb.payment.momo.MomoQueryResponseValidator.Outcome.SUCCEEDED,
+                    8_777_000_003L,
+                    MomoTestGatewayClient.FailureCode.NONE);
+              },
+              5);
+
+      assertEquals(1, worker.reconcileDueBatch());
+      assertEquals(CreditTopUpOrderService.OrderStatus.FAILED, topUpOrderStatus(order.id()));
+      assertEquals("TERMINAL_STATUS_CONFLICT", topUpReconciliationReviewCode(order.id()));
+      assertEquals("QUARANTINED", latestMomoReconciliationOutcome(order.id()));
+      assertEquals(0, creditProjectedBalance(userId, "PAID"));
+      assertEquals(0, creditSourceEntryCount("PAYMENT_ORDER", order.id()));
+    } finally {
+      deleteSessionTestUser(userId);
+    }
+  }
+
+  @Test
   void validSignedMomoIpnWithWrongAmountOrRequestIdIsAuditedWithoutGrantingCredits()
       throws Exception {
     UUID userId = createSessionTestUser("MoMo IPN Mismatch Owner");
@@ -14338,6 +14522,67 @@ class PostgresSchemaIntegrationTests {
         assertTrue(row.next());
         return row.getLong(1);
       }
+    }
+  }
+
+  private long momoReconciliationEventCount(UUID orderId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT COUNT(*) FROM momo_test_reconciliation_events WHERE credit_top_up_order_id = ?")) {
+      select.setObject(1, orderId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getLong(1);
+      }
+    }
+  }
+
+  private String latestMomoReconciliationOutcome(UUID orderId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                """
+                    SELECT outcome FROM momo_test_reconciliation_events
+                    WHERE credit_top_up_order_id = ?
+                    ORDER BY queried_at DESC, query_request_id DESC
+                    LIMIT 1
+                    """)) {
+      select.setObject(1, orderId);
+      try (ResultSet row = select.executeQuery()) {
+        return row.next() ? row.getString("outcome") : null;
+      }
+    }
+  }
+
+  private String topUpReconciliationReviewCode(UUID orderId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT reconciliation_review_code FROM credit_top_up_orders WHERE id = ?")) {
+      select.setObject(1, orderId);
+      try (ResultSet row = select.executeQuery()) {
+        return row.next() ? row.getString("reconciliation_review_code") : null;
+      }
+    }
+  }
+
+  private void setTopUpReconciliationDue(UUID orderId, int attempts) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement update =
+            connection.prepareStatement(
+                """
+                    UPDATE credit_top_up_orders
+                    SET reconciliation_attempt_count = ?,
+                        next_reconciliation_at = clock_timestamp() - INTERVAL '1 second',
+                        reconciliation_lease_until = NULL,
+                        reconciliation_review_required_at = NULL,
+                        reconciliation_review_code = NULL
+                    WHERE id = ?
+                    """)) {
+      update.setInt(1, attempts);
+      update.setObject(2, orderId);
+      assertEquals(1, update.executeUpdate());
     }
   }
 

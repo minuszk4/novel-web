@@ -16,7 +16,10 @@ import tools.jackson.databind.ObjectMapper;
 
 /** Installs MoMo TEST adapter beans only after an explicit environment opt-in. */
 @Configuration(proxyBeanMethods = false)
-@EnableConfigurationProperties(MomoTestGatewayProperties.class)
+@EnableConfigurationProperties({
+  MomoTestGatewayProperties.class,
+  MomoTestReconciliationProperties.class
+})
 @ConditionalOnProperty(prefix = "novel.payment.momo.test", name = "enabled", havingValue = "true")
 public class MomoTestGatewayConfiguration {
 
@@ -74,5 +77,25 @@ public class MomoTestGatewayConfiguration {
   MomoTestIpnService momoTestIpnService(
       DataSource dataSource, CreditLedgerService creditLedger, MomoTestGatewaySettings settings) {
     return new MomoTestIpnService(dataSource, creditLedger, settings);
+  }
+
+  @Bean
+  @Profile("postgres")
+  @ConditionalOnProperty(
+      prefix = "novel.payment.momo.test.reconciliation",
+      name = "enabled",
+      havingValue = "true")
+  MomoTestOrderReconciliationService momoTestOrderReconciliationService(
+      DataSource dataSource,
+      CreditLedgerService creditLedger,
+      MomoTestGatewayClient gatewayClient,
+      MomoTestGatewaySettings settings,
+      MomoTestReconciliationProperties reconciliationProperties) {
+    return new MomoTestOrderReconciliationService(
+        dataSource,
+        creditLedger,
+        settings.partnerCode(),
+        gatewayClient::queryOrder,
+        reconciliationProperties.batchSize());
   }
 }
