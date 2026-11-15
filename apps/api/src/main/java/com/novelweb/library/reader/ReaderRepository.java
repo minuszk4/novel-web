@@ -39,7 +39,7 @@ public class ReaderRepository {
                     LEFT JOIN chapters c
                       ON c.work_id = w.id AND c.deleted_at IS NULL
                     WHERE w.id = ? AND w.deleted_at IS NULL
-                      AND can_access_library(w.library_id, ?, FALSE)
+                      AND (can_access_library(w.library_id, ?, FALSE) OR w.visibility = 'public')
                     GROUP BY w.id
                     """)) {
       select.setObject(1, workId);
@@ -60,19 +60,33 @@ public class ReaderRepository {
         PreparedStatement select =
             connection.prepareStatement(
                 """
-                    SELECT c.id, c.ordinal, c.title, c.status, c.source_revision_id
+                    SELECT c.id, c.ordinal, c.title,
+                           CASE
+                             WHEN c.status = 'ready' AND c.source_revision_id IS NOT NULL
+                                  AND (can_access_library(w.library_id, ?, FALSE)
+                                       OR EXISTS (
+                                           SELECT 1 FROM content_entitlements e
+                                           WHERE e.user_id = ? AND e.chapter_id = c.id))
+                               THEN 'readable'
+                             WHEN w.visibility = 'public' AND c.status = 'ready'
+                                  AND c.source_revision_id IS NOT NULL
+                               THEN 'locked'
+                             ELSE 'unavailable'
+                           END AS access_state
                     FROM chapters c
                     JOIN works w ON w.id = c.work_id
                     WHERE c.work_id = ? AND c.ordinal > ? AND c.deleted_at IS NULL
                       AND w.deleted_at IS NULL
-                      AND can_access_library(w.library_id, ?, FALSE)
+                      AND (can_access_library(w.library_id, ?, FALSE) OR w.visibility = 'public')
                     ORDER BY c.ordinal ASC
                     LIMIT ?
                     """)) {
-      select.setObject(1, workId);
-      select.setInt(2, afterOrdinal);
-      select.setObject(3, actorUserId);
-      select.setInt(4, limit + 1);
+      select.setObject(1, actorUserId);
+      select.setObject(2, actorUserId);
+      select.setObject(3, workId);
+      select.setInt(4, afterOrdinal);
+      select.setObject(5, actorUserId);
+      select.setInt(6, limit + 1);
       try (ResultSet rows = select.executeQuery()) {
         List<ReaderChapter> chapters = new ArrayList<>(limit + 1);
         while (rows.next()) chapters.add(readerChapter(rows));
@@ -99,11 +113,15 @@ public class ReaderRepository {
                      AND r.id = COALESCE(CAST(? AS UUID), c.source_revision_id)
                     WHERE c.id = ? AND c.status = 'ready' AND c.deleted_at IS NULL
                       AND w.deleted_at IS NULL
-                      AND can_access_library(w.library_id, ?, FALSE)
+                      AND (can_access_library(w.library_id, ?, FALSE)
+                           OR (w.visibility = 'public' AND EXISTS (
+                               SELECT 1 FROM content_entitlements e
+                               WHERE e.user_id = ? AND e.chapter_id = c.id)))
                     """)) {
       select.setObject(1, requestedRevisionId);
       select.setObject(2, chapterId);
       select.setObject(3, actorUserId);
+      select.setObject(4, actorUserId);
       try (ResultSet row = select.executeQuery()) {
         return row.next() ? Optional.of(readableChapter(row)) : Optional.empty();
       }
@@ -129,7 +147,10 @@ public class ReaderRepository {
                     JOIN works w ON w.id = c.work_id
                     WHERE c.id = ? AND r.id = ? AND s.ordinal > ?
                       AND c.status = 'ready' AND c.deleted_at IS NULL AND w.deleted_at IS NULL
-                      AND can_access_library(w.library_id, ?, FALSE)
+                      AND (can_access_library(w.library_id, ?, FALSE)
+                           OR (w.visibility = 'public' AND EXISTS (
+                               SELECT 1 FROM content_entitlements e
+                               WHERE e.user_id = ? AND e.chapter_id = c.id)))
                       AND s.segment_type IN ('paragraph', 'heading', 'quote')
                     ORDER BY s.ordinal ASC
                     LIMIT ?
@@ -138,7 +159,8 @@ public class ReaderRepository {
       select.setObject(2, revisionId);
       select.setInt(3, afterOrdinal);
       select.setObject(4, actorUserId);
-      select.setInt(5, limit + 1);
+      select.setObject(5, actorUserId);
+      select.setInt(6, limit + 1);
       try (ResultSet rows = select.executeQuery()) {
         List<SourceSegment> segments = new ArrayList<>(limit + 1);
         while (rows.next()) segments.add(sourceSegment(rows));
@@ -162,14 +184,11 @@ public class ReaderRepository {
   }
 
   private static ReaderChapter readerChapter(ResultSet row) throws SQLException {
-    String status = row.getString("status");
-    UUID revisionId = row.getObject("source_revision_id", UUID.class);
-    String accessState = "ready".equals(status) && revisionId != null ? "readable" : "unavailable";
     return new ReaderChapter(
         row.getObject("id", UUID.class),
         row.getInt("ordinal"),
         row.getString("title"),
-        accessState);
+        row.getString("access_state"));
   }
 
   private static ReadableChapter readableChapter(ResultSet row) throws SQLException {

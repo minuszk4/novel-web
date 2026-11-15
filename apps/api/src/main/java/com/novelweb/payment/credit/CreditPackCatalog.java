@@ -16,6 +16,7 @@ public final class CreditPackCatalog {
   private static final long TEST_PAID_CREDITS = 100;
   private static final long TEST_BONUS_CREDITS = 0;
   private static final long TEST_CHAPTER_UNLOCK_CREDITS = 10;
+  private static final int TEST_CHAPTER_UNLOCK_PRICE_VERSION = 1;
 
   private final List<CreditPackQuote> quotes;
 
@@ -63,6 +64,11 @@ public final class CreditPackCatalog {
   /** Price for an eligible published chapter in the same approved TEST fixture. */
   public long eligiblePublishedChapterUnlockCost() {
     return TEST_CHAPTER_UNLOCK_CREDITS;
+  }
+
+  /** Version of the fixed test-only published-chapter credit price. */
+  public int eligiblePublishedChapterPriceVersion() {
+    return TEST_CHAPTER_UNLOCK_PRICE_VERSION;
   }
 
   public enum PaymentEnvironment {

@@ -56,7 +56,11 @@ public class ApiSecurityConfiguration {
                         HttpMethod.GET, "/api/v1/credit-packs", "/api/v1/payment-orders/*")
                     .permitAll();
                 authorize
-                    .requestMatchers(HttpMethod.POST, "/api/v1/momo/payment-orders")
+                    .requestMatchers(HttpMethod.GET, "/api/v1/chapters/*/unlock-quote")
+                    .permitAll();
+                authorize
+                    .requestMatchers(
+                        HttpMethod.POST, "/api/v1/momo/payment-orders", "/api/v1/chapters/*/unlock")
                     .permitAll();
                 authorize
                     .requestMatchers(HttpMethod.GET, "/api/v1/libraries", "/api/v1/works")

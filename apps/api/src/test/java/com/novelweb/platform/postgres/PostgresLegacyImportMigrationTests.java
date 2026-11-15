@@ -31,7 +31,7 @@ class PostgresLegacyImportMigrationTests {
 
   private static final int LEGACY_CHANGESET_COUNT = 55;
 
-  private static final int CURRENT_CHANGESET_COUNT = 115;
+  private static final int CURRENT_CHANGESET_COUNT = 117;
 
   private static final int UPGRADE_CHANGESET_COUNT =
       CURRENT_CHANGESET_COUNT - LEGACY_CHANGESET_COUNT;
@@ -69,6 +69,7 @@ class PostgresLegacyImportMigrationTests {
         assertTrue(!tableExists(fixtureConnection, "import_parse_jobs"));
         assertFalse(tableExists(fixtureConnection, "reader_annotations"));
         assertFalse(tableExists(fixtureConnection, "credit_top_up_orders"));
+        assertFalse(tableExists(fixtureConnection, "content_entitlements"));
         assertImportJobRowsPreserved(fixtureConnection, jobIds);
 
         liquibase.update(new Contexts(), new LabelExpression());

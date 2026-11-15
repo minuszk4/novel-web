@@ -40,6 +40,7 @@ import com.novelweb.library.WorkspaceService;
 import com.novelweb.library.imports.ImportParseService;
 import com.novelweb.library.imports.ImportStagingCleanupService;
 import com.novelweb.library.imports.ImportStagingRateLimiter;
+import com.novelweb.payment.credit.ChapterUnlockService;
 import com.novelweb.payment.credit.CreditBalanceRepository;
 import com.novelweb.payment.credit.CreditHistoryRepository;
 import com.novelweb.payment.credit.CreditHistoryService;
@@ -234,7 +235,8 @@ class PostgresSchemaIntegrationTests {
           "credit_ledger_entries",
           "credit_balance_projection",
           "credit_top_up_orders",
-          "momo_test_ipn_events");
+          "momo_test_ipn_events",
+          "content_entitlements");
 
   @Autowired private DataSource dataSource;
 
@@ -262,11 +264,15 @@ class PostgresSchemaIntegrationTests {
 
   @Autowired private CreditLedgerService creditLedgerService;
 
+  @Autowired private ChapterUnlockService chapterUnlockService;
+
   @Autowired private CreditBalanceRepository creditBalanceRepository;
 
   @Autowired private CreditHistoryService creditHistoryService;
 
   @Autowired private CreditTopUpOrderService creditTopUpOrderService;
+
+  @Autowired private CreditPackCatalog creditPackCatalog;
 
   @MockitoBean private CreditTopUpCheckoutService creditTopUpCheckoutService;
 
@@ -404,7 +410,7 @@ class PostgresSchemaIntegrationTests {
             connection.prepareStatement("SELECT COUNT(*) FROM databasechangelog");
         ResultSet changesets = changesetCount.executeQuery()) {
       changesets.next();
-      assertEquals(115, changesets.getInt(1), "unexpected number of applied changesets");
+      assertEquals(117, changesets.getInt(1), "unexpected number of applied changesets");
     }
 
     Set<String> actualTables = new HashSet<>();
@@ -13159,6 +13165,314 @@ class PostgresSchemaIntegrationTests {
   }
 
   @Test
+  void publicChapterUnlockQuotesServerPriceDebitsAtomicallyAndEnablesReaderContent()
+      throws Exception {
+    UUID authorId = createSessionTestUser("Chapter Unlock Author");
+    UUID buyerId = createSessionTestUser("Chapter Unlock Buyer");
+    UUID underfundedId = createSessionTestUser("Chapter Unlock Underfunded Buyer");
+    try {
+      LibraryRepository.LibraryRecord library =
+          libraryService.createLibrary(authorId, "Unlock Fixture Shelf");
+      LibraryRepository.WorkRecord work =
+          libraryService.createPrivateImportedWork(
+              authorId,
+              library.id(),
+              "Public Unlock Fixture",
+              "Synthetic Author",
+              "vi",
+              sha256("chapter-unlock-public-fixture"));
+      LibraryRepository.VolumeRecord volume =
+          libraryService.createVolume(authorId, work.id(), 1, "Volume 1");
+      LibraryRepository.ChapterRecord firstChapter =
+          libraryService.createChapter(authorId, work.id(), volume.id(), 1, "Chapter 1", "vi");
+      LibraryRepository.ChapterRecord secondChapter =
+          libraryService.createChapter(authorId, work.id(), volume.id(), 2, "Chapter 2", "vi");
+      LibraryRepository.ChapterRecord draftChapter =
+          libraryService.createChapter(authorId, work.id(), volume.id(), 3, "Draft Chapter", "vi");
+      libraryService.appendChapterRevision(
+          authorId,
+          firstChapter.id(),
+          "plain_text",
+          "The purchased chapter body.",
+          List.of(
+              new LibraryService.NewSegment(
+                  1, "paragraph", "The purchased chapter body.", "c1-s1")));
+      libraryService.appendChapterRevision(
+          authorId,
+          secondChapter.id(),
+          "plain_text",
+          "The second chapter body.",
+          List.of(
+              new LibraryService.NewSegment(1, "paragraph", "The second chapter body.", "c2-s1")));
+      setWorkVisibility(work.id(), "public");
+      addCurrentPolicyAcceptances(buyerId);
+      addCurrentPolicyAcceptances(underfundedId);
+      inCreditLedgerTransaction(
+          connection ->
+              creditLedgerService.grantPaidTopUp(connection, buyerId, UUID.randomUUID(), 100));
+
+      SessionService.IssuedSession buyerSession = sessionService.create(buyerId).orElseThrow();
+      jakarta.servlet.http.Cookie buyerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", buyerSession.cookieValue());
+      String buyerCsrf = csrfTokenService.tokenFor(buyerSession.cookieValue());
+      String unlockKey = "chapter-unlock-http-001";
+      String staleKey = "chapter-unlock-stale-001";
+      String underfundedKey = "chapter-unlock-empty-001";
+
+      MvcResult quote =
+          mockMvc
+              .perform(
+                  get("/api/v1/chapters/{chapterId}/unlock-quote", firstChapter.id())
+                      .cookie(buyerCookie))
+              .andReturn();
+      assertEquals(200, quote.getResponse().getStatus());
+      assertTrue(quote.getResponse().getHeader("Cache-Control").contains("no-store"));
+      JsonNode quoteBody = objectMapper.readTree(quote.getResponse().getContentAsString());
+      assertEquals(1, quoteBody.path("priceVersion").asInt());
+      assertEquals(10, quoteBody.path("priceCredits").asInt());
+      assertFalse(quoteBody.path("accessAlreadyGranted").asBoolean());
+
+      MvcResult lockedManifest =
+          mockMvc
+              .perform(get("/api/v1/works/{workId}/reader-manifest", work.id()).cookie(buyerCookie))
+              .andReturn();
+      assertEquals(200, lockedManifest.getResponse().getStatus());
+      JsonNode lockedManifestBody =
+          objectMapper.readTree(lockedManifest.getResponse().getContentAsString());
+      assertEquals(
+          "locked", lockedManifestBody.path("chapters").get(0).path("accessState").asText());
+      assertFalse(
+          lockedManifest.getResponse().getContentAsString().contains("purchased chapter body"));
+
+      MvcResult deniedContent =
+          mockMvc
+              .perform(
+                  get("/api/v1/chapters/{chapterId}/content", firstChapter.id())
+                      .cookie(buyerCookie))
+              .andReturn();
+      assertEquals(404, deniedContent.getResponse().getStatus());
+      assertFalse(
+          deniedContent.getResponse().getContentAsString().contains("purchased chapter body"));
+
+      MvcResult csrfRejected =
+          mockMvc
+              .perform(
+                  post("/api/v1/chapters/{chapterId}/unlock", firstChapter.id())
+                      .cookie(buyerCookie)
+                      .header("Idempotency-Key", unlockKey)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"priceVersion\":1}"))
+              .andReturn();
+      assertEquals(403, csrfRejected.getResponse().getStatus());
+      assertEquals(100, creditProjectedBalance(buyerId, "PAID"));
+
+      MvcResult stalePrice =
+          mockMvc
+              .perform(
+                  post("/api/v1/chapters/{chapterId}/unlock", firstChapter.id())
+                      .cookie(buyerCookie)
+                      .header("X-CSRF-Token", buyerCsrf)
+                      .header("Idempotency-Key", staleKey)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"priceVersion\":2}"))
+              .andReturn();
+      assertEquals(409, stalePrice.getResponse().getStatus());
+      assertTrue(
+          stalePrice.getResponse().getContentAsString().contains("CHAPTER_PRICE_VERSION_STALE"));
+      assertEquals(100, creditProjectedBalance(buyerId, "PAID"));
+
+      MvcResult unlocked =
+          mockMvc
+              .perform(
+                  post("/api/v1/chapters/{chapterId}/unlock", firstChapter.id())
+                      .cookie(buyerCookie)
+                      .header("X-CSRF-Token", buyerCsrf)
+                      .header("Idempotency-Key", unlockKey)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"priceVersion\":1,\"creditsSpent\":1}"))
+              .andReturn();
+      assertEquals(201, unlocked.getResponse().getStatus());
+      assertTrue(unlocked.getResponse().getHeader("Cache-Control").contains("no-store"));
+      JsonNode unlockedBody = objectMapper.readTree(unlocked.getResponse().getContentAsString());
+      UUID entitlementId = UUID.fromString(unlockedBody.path("entitlementId").asText());
+      assertEquals("CREATED", unlockedBody.path("outcome").asText());
+      assertEquals(10, unlockedBody.path("creditsSpent").asInt());
+      assertFalse(unlocked.getResponse().getContentAsString().contains(buyerId.toString()));
+      assertEquals(90, creditProjectedBalance(buyerId, "PAID"));
+      assertEquals(1, creditSourceEntryCount("CHAPTER_UNLOCK", entitlementId));
+
+      MvcResult replay =
+          mockMvc
+              .perform(
+                  post("/api/v1/chapters/{chapterId}/unlock", firstChapter.id())
+                      .cookie(buyerCookie)
+                      .header("X-CSRF-Token", buyerCsrf)
+                      .header("Idempotency-Key", unlockKey)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"priceVersion\":1}"))
+              .andReturn();
+      assertEquals(200, replay.getResponse().getStatus());
+      assertEquals("true", replay.getResponse().getHeader("Idempotency-Replayed"));
+      assertEquals(90, creditProjectedBalance(buyerId, "PAID"));
+      assertEquals(1, creditSourceEntryCount("CHAPTER_UNLOCK", entitlementId));
+
+      MvcResult reusedKey =
+          mockMvc
+              .perform(
+                  post("/api/v1/chapters/{chapterId}/unlock", secondChapter.id())
+                      .cookie(buyerCookie)
+                      .header("X-CSRF-Token", buyerCsrf)
+                      .header("Idempotency-Key", unlockKey)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"priceVersion\":1}"))
+              .andReturn();
+      assertEquals(409, reusedKey.getResponse().getStatus());
+      assertTrue(reusedKey.getResponse().getContentAsString().contains("IDEMPOTENCY_KEY_REUSED"));
+
+      MvcResult alreadyOwned =
+          mockMvc
+              .perform(
+                  post("/api/v1/chapters/{chapterId}/unlock", firstChapter.id())
+                      .cookie(buyerCookie)
+                      .header("X-CSRF-Token", buyerCsrf)
+                      .header("Idempotency-Key", "chapter-unlock-again-001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"priceVersion\":1}"))
+              .andReturn();
+      assertEquals(200, alreadyOwned.getResponse().getStatus());
+      assertTrue(alreadyOwned.getResponse().getContentAsString().contains("ALREADY_OWNED"));
+      assertEquals(90, creditProjectedBalance(buyerId, "PAID"));
+
+      MvcResult readableContent =
+          mockMvc
+              .perform(
+                  get("/api/v1/chapters/{chapterId}/content", firstChapter.id())
+                      .cookie(buyerCookie))
+              .andReturn();
+      assertEquals(200, readableContent.getResponse().getStatus());
+      assertTrue(
+          readableContent.getResponse().getContentAsString().contains("purchased chapter body"));
+      JsonNode unlockedManifest =
+          objectMapper.readTree(
+              mockMvc
+                  .perform(
+                      get("/api/v1/works/{workId}/reader-manifest", work.id()).cookie(buyerCookie))
+                  .andReturn()
+                  .getResponse()
+                  .getContentAsString());
+      assertEquals(
+          "readable", unlockedManifest.path("chapters").get(0).path("accessState").asText());
+
+      MvcResult draftQuote =
+          mockMvc
+              .perform(
+                  get("/api/v1/chapters/{chapterId}/unlock-quote", draftChapter.id())
+                      .cookie(buyerCookie))
+              .andReturn();
+      assertEquals(404, draftQuote.getResponse().getStatus());
+
+      SessionService.IssuedSession underfundedSession =
+          sessionService.create(underfundedId).orElseThrow();
+      jakarta.servlet.http.Cookie underfundedCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", underfundedSession.cookieValue());
+      String underfundedCsrf = csrfTokenService.tokenFor(underfundedSession.cookieValue());
+      MvcResult insufficient =
+          mockMvc
+              .perform(
+                  post("/api/v1/chapters/{chapterId}/unlock", secondChapter.id())
+                      .cookie(underfundedCookie)
+                      .header("X-CSRF-Token", underfundedCsrf)
+                      .header("Idempotency-Key", underfundedKey)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"priceVersion\":1}"))
+              .andReturn();
+      assertEquals(409, insufficient.getResponse().getStatus());
+      assertTrue(insufficient.getResponse().getContentAsString().contains("INSUFFICIENT_CREDITS"));
+      assertEquals(0, creditProjectedBalance(underfundedId, "PAID"));
+      assertEquals(0, creditUnlockEntryCount(underfundedId));
+      assertEquals(0, contentEntitlementCount(underfundedId));
+    } finally {
+      deleteSessionTestUser(buyerId);
+      deleteSessionTestUser(underfundedId);
+      deleteLibraryTestData(authorId);
+      deleteSessionTestUser(authorId);
+    }
+  }
+
+  @Test
+  void concurrentChapterUnlocksCreateOneEntitlementAndOnePaidDebit() throws Exception {
+    UUID authorId = createSessionTestUser("Concurrent Unlock Author");
+    UUID buyerId = createSessionTestUser("Concurrent Unlock Buyer");
+    try {
+      LibraryRepository.LibraryRecord library =
+          libraryService.createLibrary(authorId, "Concurrent Unlock Shelf");
+      LibraryRepository.WorkRecord work =
+          libraryService.createPrivateImportedWork(
+              authorId,
+              library.id(),
+              "Concurrent Public Story",
+              "Synthetic Author",
+              "vi",
+              sha256("concurrent-chapter-unlock"));
+      LibraryRepository.VolumeRecord volume =
+          libraryService.createVolume(authorId, work.id(), 1, "Volume 1");
+      LibraryRepository.ChapterRecord chapter =
+          libraryService.createChapter(authorId, work.id(), volume.id(), 1, "Chapter 1", "vi");
+      libraryService.appendChapterRevision(
+          authorId,
+          chapter.id(),
+          "plain_text",
+          "Concurrent chapter body.",
+          List.of(
+              new LibraryService.NewSegment(1, "paragraph", "Concurrent chapter body.", "c1-s1")));
+      setWorkVisibility(work.id(), "public");
+      inCreditLedgerTransaction(
+          connection ->
+              creditLedgerService.grantPaidTopUp(connection, buyerId, UUID.randomUUID(), 10));
+
+      CountDownLatch ready = new CountDownLatch(2);
+      CountDownLatch start = new CountDownLatch(1);
+      ExecutorService executor = Executors.newFixedThreadPool(2);
+      try {
+        Future<ChapterUnlockService.UnlockResult> first =
+            executor.submit(
+                () -> {
+                  ready.countDown();
+                  if (!start.await(10, TimeUnit.SECONDS))
+                    throw new IllegalStateException("start timeout");
+                  return chapterUnlockService.unlock(
+                      buyerId, chapter.id(), 1, "chapter-unlock-concurrent-001");
+                });
+        Future<ChapterUnlockService.UnlockResult> second =
+            executor.submit(
+                () -> {
+                  ready.countDown();
+                  if (!start.await(10, TimeUnit.SECONDS))
+                    throw new IllegalStateException("start timeout");
+                  return chapterUnlockService.unlock(
+                      buyerId, chapter.id(), 1, "chapter-unlock-concurrent-002");
+                });
+        assertTrue(ready.await(10, TimeUnit.SECONDS));
+        start.countDown();
+        List<ChapterUnlockService.Outcome> outcomes =
+            List.of(
+                first.get(30, TimeUnit.SECONDS).outcome(),
+                second.get(30, TimeUnit.SECONDS).outcome());
+        assertTrue(outcomes.contains(ChapterUnlockService.Outcome.CREATED));
+        assertTrue(outcomes.contains(ChapterUnlockService.Outcome.ALREADY_OWNED));
+        assertEquals(0, creditProjectedBalance(buyerId, "PAID"));
+        assertEquals(1, contentEntitlementCount(buyerId));
+      } finally {
+        executor.shutdownNow();
+      }
+    } finally {
+      deleteSessionTestUser(buyerId);
+      deleteLibraryTestData(authorId);
+      deleteSessionTestUser(authorId);
+    }
+  }
+
+  @Test
   void creditTopUpCheckoutPersistsOnlyValidatedTestUrlAndSameKeyReplayDoesNotCreateAgain()
       throws Exception {
     UUID userId = createSessionTestUser("Top-up Checkout Owner");
@@ -13940,6 +14254,33 @@ class PostgresSchemaIntegrationTests {
                     """)) {
       select.setObject(1, userId);
       select.setString(2, bucket);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getLong(1);
+      }
+    }
+  }
+
+  private long contentEntitlementCount(UUID userId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT count(*) FROM content_entitlements WHERE user_id = ?")) {
+      select.setObject(1, userId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getLong(1);
+      }
+    }
+  }
+
+  private long creditUnlockEntryCount(UUID userId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT count(*) FROM credit_ledger_entries "
+                    + "WHERE user_id = ? AND source_type = 'CHAPTER_UNLOCK'")) {
+      select.setObject(1, userId);
       try (ResultSet row = select.executeQuery()) {
         assertTrue(row.next());
         return row.getLong(1);

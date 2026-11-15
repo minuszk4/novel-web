@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 6.37.0
+  version: 6.38.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -15,7 +15,7 @@ info:
     History is derived from the latest saved progress per accessible readable work, is visible for 365 days, and never returns chapter body text.
     Versioned cultivation catalogs, authenticated profile settings, private daily XP activity and bounded private Reader sessions with atomic XP awards are implemented in the PostgreSQL profile. The approved starting policy awards 1 XP per complete active Reader minute, capped at 120 XP per UTC day; same-day sub-minute remainder does not cross UTC midnight; top-ups and unlocks award none. Cultivation is feature-gated and off by default pending the rank-threshold pilot and release reviews.
     Scoped glossary storage, actor-scoped catalog listing/creation, active and writer-only latest-revision reads, version-checked immutable draft creation, authenticated diff/lint/match preview, lint-gated revision publication with append-only audit, strict JSON/CSV/TSV import preview and resolved atomic draft apply, and active/writer-only latest snapshot export are implemented in the PostgreSQL profile. Translation job enqueue/status/retry/cancel are available only as an explicit fake-local development preview and never call an external NMT provider. `features.translationFakePreviewEnabled` is true only when both required profiles and the provider/API/worker opt-in flags are active.
-    The authenticated PostgreSQL profile also exposes the current actor's available paid and non-expired bonus credit totals from the rebuildable balance projection; the response is no-store and does not expose another account's ledger.
+    The authenticated PostgreSQL profile also exposes the current actor's available paid and non-expired bonus credit totals from the rebuildable balance projection; the response is no-store and does not expose another account's ledger. When the MoMo TEST gate is explicitly enabled with valid TEST configuration, the profile also exposes server-priced public-chapter unlock quotes and an idempotent paid-credit unlock that commits the debit with an immutable entitlement; private/draft chapters remain unavailable and no production purchase is enabled.
 servers:
   - url: http://127.0.0.1:8080
 tags:
@@ -43,7 +43,7 @@ tags:
     description: Private-first author manuscript drafts with owner-only chapter content and immutable revisions; collaboration and publication are not available.
     x-implementation-status: partial
   - name: Commerce
-    description: Actor-owned credit balance/history, MoMo TEST-only feature-gated pack checkout/order status/IPN settlement are implemented; chapter purchases/unlocks and production payment remain unavailable.
+    description: Actor-owned credit balance/history, MoMo TEST-only feature-gated pack checkout/order status/IPN settlement and paid-credit chapter unlock are implemented; payment-order history, missing-IPN reconciliation, purchase history UI and production payment remain unavailable.
     x-implementation-status: partial
 paths:
   /api/v1/glossaries:
@@ -2349,6 +2349,135 @@ paths:
           $ref: '#/components/responses/Problem'
         '404':
           $ref: '#/components/responses/Problem'
+  /api/v1/chapters/{chapterId}/unlock-quote:
+    get:
+      operationId: getPublicChapterUnlockQuote
+      tags: [Commerce]
+      x-implementation-status: test-only-feature-flag
+      summary: Read the current server-owned price for a public chapter
+      description: >-
+        Available only in the PostgreSQL profile when MoMo TEST is explicitly enabled with valid TEST
+        configuration. Requires an authenticated account with current Terms and Privacy acceptance.
+        A quote is returned only for an active work whose visibility is public and whose chapter is ready
+        at its current revision; private, missing, draft, deleted and unavailable chapters are masked as
+        404. The sandbox fixture is price version 1 at 10 paid credits. Bonus credits are not used for
+        this initial unlock flow. `accessAlreadyGranted` indicates that the actor can already read the
+        chapter. This read is no-store and never returns chapter body text.
+      security:
+        - appSession: []
+      parameters:
+        - name: chapterId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Current public chapter unlock quote.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChapterUnlockQuote'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/chapters/{chapterId}/unlock:
+    post:
+      operationId: unlockPublicChapterWithPaidCredits
+      tags: [Commerce]
+      x-implementation-status: test-only-feature-flag
+      summary: Unlock a public chapter with paid credits
+      description: >-
+        Requires an authenticated account, current Terms and Privacy acceptance, session-bound CSRF,
+        `Idempotency-Key`, a current price version and explicit MoMo TEST configuration in the
+        PostgreSQL profile. The browser supplies no amount, credit bucket or credit quantity. The
+        server rechecks public work visibility and ready/current chapter state under row locks, debits
+        exactly 10 PAID credits for the current version, and inserts the entitlement in the same
+        transaction. Bonus credits are not consumed. The separate unlock action is never triggered by
+        a MoMo redirect or top-up callback. Retries with the same key and chapter return the saved
+        entitlement without a second debit; using the key for another chapter conflicts. A different
+        key for an already-owned chapter returns the existing entitlement. A debit failure leaves no
+        entitlement. Responses are no-store; no production payment or unlock is enabled by default.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - name: chapterId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            minLength: 16
+            maxLength: 128
+            pattern: '^[A-Za-z0-9._~-]+$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChapterUnlockRequest'
+      responses:
+        '200':
+          description: Idempotent replay, already-owned chapter, or access already provided by the library.
+          headers:
+            Idempotency-Replayed:
+              schema:
+                type: string
+                const: 'true'
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChapterUnlockResponse'
+        '201':
+          description: Paid-credit debit and chapter entitlement committed atomically.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChapterUnlockResponse'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          description: Insufficient paid credits, stale price version, or idempotency-key reuse.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '415':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
   /api/v1/chapters/{chapterId}/content:
     get:
       operationId: getReadableChapterContent
@@ -2356,10 +2485,10 @@ paths:
       x-implementation-status: implemented-postgres-profile
       summary: Get source-only content for an authorized chapter
       description: >-
-        Requires an authenticated actor with current Terms/Privacy acceptance and rechecks current personal-library
-        or workspace access on every page. Returns bounded normalized source segments only for readable revisions;
-        draft, missing or inaccessible chapter body is never returned. Paid entitlements and preview ranges are not
-        implemented by this operation.
+        Requires an authenticated actor with current Terms/Privacy acceptance and rechecks current personal-library,
+        workspace, or public-chapter entitlement access on every page. Returns bounded normalized source segments only
+        for readable revisions; draft, missing, locked or inaccessible chapter body is never returned. A public paid
+        chapter becomes readable only after its paid-credit debit and entitlement commit atomically.
       security:
         - appSession: []
       parameters:
@@ -6335,6 +6464,68 @@ components:
           type: string
           format: date-time
           description: Ledger commit timestamp used for newest-first pagination.
+    ChapterUnlockQuote:
+      type: object
+      additionalProperties: false
+      required: [chapterId, workId, chapterTitle, workTitle, priceVersion, priceCredits, accessAlreadyGranted]
+      properties:
+        chapterId:
+          type: string
+          format: uuid
+        workId:
+          type: string
+          format: uuid
+        chapterTitle:
+          type: string
+          maxLength: 300
+        workTitle:
+          type: string
+          maxLength: 300
+        priceVersion:
+          type: integer
+          const: 1
+        priceCredits:
+          type: integer
+          format: int64
+          const: 10
+        accessAlreadyGranted:
+          type: boolean
+    ChapterUnlockRequest:
+      type: object
+      additionalProperties: false
+      required: [priceVersion]
+      properties:
+        priceVersion:
+          type: integer
+          minimum: 1
+          description: Version shown by the current unlock quote; client-supplied amount is not accepted.
+    ChapterUnlockResponse:
+      type: object
+      additionalProperties: false
+      required: [outcome, entitlementId, chapterId, priceVersion, creditsSpent, grantedAt]
+      properties:
+        outcome:
+          type: string
+          enum: [CREATED, REPLAYED, ALREADY_OWNED, ALREADY_ACCESSIBLE]
+        entitlementId:
+          type: [string, 'null']
+          format: uuid
+          description: Null only when the actor already has library-based read access without a purchase.
+        chapterId:
+          type: string
+          format: uuid
+        priceVersion:
+          type: integer
+          minimum: 1
+        creditsSpent:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Zero for existing library access; otherwise the saved entitlement debit amount.
+        grantedAt:
+          type: [string, 'null']
+          format: date-time
+          description: Original entitlement timestamp, or null when no purchase entitlement is needed.
     CreditPackCatalog:
       type: object
       additionalProperties: false
