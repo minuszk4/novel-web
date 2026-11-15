@@ -123,6 +123,19 @@ test('private import commit refreshes Library, Work Detail and PostgreSQL Reader
     expect(foreignImportPreviewBody).toContain('IMPORT_NOT_FOUND');
     expect(foreignImportPreviewBody).not.toContain(sourceText);
 
+    const foreignCsrfResponse = await page.request.get(`${baseUrl}/api/v1/auth/csrf`);
+    expect(foreignCsrfResponse.status()).toBe(200);
+    const foreignCsrfToken = ((await foreignCsrfResponse.json()) as { token: string }).token;
+    const foreignImportCancel = await page.request.post(
+      `${baseUrl}/api/v1/imports/${importId}/cancel`,
+      { headers: { 'X-CSRF-Token': foreignCsrfToken } },
+    );
+    expect(foreignImportCancel.status()).toBe(404);
+    expect(foreignImportCancel.headers()['cache-control']).toContain('no-store');
+    const foreignImportCancelBody = await foreignImportCancel.text();
+    expect(foreignImportCancelBody).toContain('IMPORT_NOT_FOUND');
+    expect(foreignImportCancelBody).not.toContain(sourceText);
+
     await page.context().clearCookies();
     await page.context().addCookies([
       {
