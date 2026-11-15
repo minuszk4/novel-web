@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 7.0.0
+  version: 7.1.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -16,6 +16,7 @@ info:
     Versioned cultivation catalogs, authenticated profile settings, private daily XP activity and bounded private Reader sessions with atomic XP awards are implemented in the PostgreSQL profile. The approved starting policy awards 1 XP per complete active Reader minute, capped at 120 XP per UTC day; same-day sub-minute remainder does not cross UTC midnight; top-ups and unlocks award none. Cultivation is feature-gated and off by default pending the rank-threshold pilot and release reviews.
     Scoped glossary storage, actor-scoped catalog listing/creation, active and writer-only latest-revision reads, version-checked immutable draft creation, authenticated diff/lint/match preview, lint-gated revision publication with append-only audit, strict JSON/CSV/TSV import preview and resolved atomic draft apply, and active/writer-only latest snapshot export are implemented in the PostgreSQL profile. Translation job enqueue/status/retry/cancel are available only as an explicit fake-local development preview and never call an external NMT provider. `features.translationFakePreviewEnabled` is true only when both required profiles and the provider/API/worker opt-in flags are active.
     The authenticated PostgreSQL profile also exposes the current actor's available paid and non-expired bonus credit totals from the rebuildable balance projection; the response is no-store and does not expose another account's ledger. When the MoMo TEST gate is explicitly enabled with valid TEST configuration, the profile also exposes server-priced public-chapter unlock quotes and an idempotent paid-credit unlock that commits the debit with an immutable entitlement; private/draft chapters remain unavailable and no production purchase is enabled.
+    An opt-in, metadata-only guest catalog endpoint is available in the PostgreSQL profile. It is disabled by default and returns only authored, active, explicitly public works owned by active users with at least one ready chapter; it does not return descriptions or chapter bodies. Rights review/publication, catalog UI, rate limiting at the edge, and reader access for guests remain separate work.
 servers:
   - url: http://127.0.0.1:8080
 tags:
@@ -26,6 +27,9 @@ tags:
     x-implementation-status: partial
   - name: Library
     description: Library/work listing, personal reading-state/collection, import-rights and local upload-staging operations are available in the PostgreSQL profile; parsing and other operations remain planned for G2.
+    x-implementation-status: partial
+  - name: Catalog
+    description: Opt-in metadata-only guest catalog; publication and rights-review workflows remain unavailable.
     x-implementation-status: partial
   - name: Reader
     description: Source-only reader, progress, preferences, private bookmarks, source annotations and private reading history are available in the PostgreSQL profile.
@@ -46,6 +50,75 @@ tags:
     description: Actor-owned credit balance/history, MoMo TEST-only feature-gated pack checkout/order status/IPN settlement and paid-credit chapter unlock are implemented; payment-order history, missing-IPN reconciliation, purchase history UI and production payment remain unavailable.
     x-implementation-status: partial
 paths:
+  /api/v1/catalog/works:
+    get:
+      operationId: listPublicCatalogWorks
+      tags: [Catalog]
+      x-implementation-status: implemented-postgres-profile
+      summary: List explicitly public authored works
+      description: >-
+        Anonymous metadata-only catalog. Returns active authored works whose visibility is public, whose owner is
+        active and which have at least one ready chapter with a source revision. Private, unlisted, imported, archived,
+        deleted and chapterless works are excluded. Search matches title and author only; it never searches chapter
+        content. Results sort by createdAt descending and ID descending with a signed keyset cursor bound to the
+        normalized query and language filter. The server feature flag defaults off. Keep it off until rights review and
+        publication controls are approved. Responses are no-store; use edge rate limiting before enabling publicly.
+      security: []
+      parameters:
+        - name: q
+          in: query
+          description: Case-insensitive title/author substring; NFKC-normalized and limited to 120 Unicode code points.
+          schema:
+            type: string
+            maxLength: 120
+        - name: language
+          in: query
+          description: Optional source-language tag filter.
+          schema:
+            type: string
+            maxLength: 35
+            pattern: '^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$'
+        - name: cursor
+          in: query
+          description: Opaque signed keyset cursor bound to the normalized query, language and sort order.
+          schema:
+            type: string
+            maxLength: 2048
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+      responses:
+        '200':
+          description: One bounded page of public work metadata.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicCatalogPage'
+        '400':
+          description: Invalid query, language, limit or filter-bound cursor.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '503':
+          description: Feature disabled, database unavailable or cursor signing is not configured.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
   /api/v1/glossaries:
     get:
       operationId: listGlossaries
@@ -5780,6 +5853,41 @@ components:
         lastReadAt:
           type: [string, 'null']
           format: date-time
+    PublicCatalogPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/PublicCatalogWork'
+        nextCursor:
+          type: [string, 'null']
+          maxLength: 2048
+    PublicCatalogWork:
+      type: object
+      additionalProperties: false
+      required: [id, title, author, sourceLanguage, readyChapterCount]
+      properties:
+        id:
+          type: string
+          format: uuid
+        title:
+          type: string
+          minLength: 1
+          maxLength: 300
+        author:
+          type: string
+          maxLength: 200
+        sourceLanguage:
+          type: string
+          minLength: 2
+          maxLength: 35
+        readyChapterCount:
+          type: integer
+          minimum: 1
     WorkListResponse:
       type: object
       additionalProperties: false

@@ -68,6 +68,17 @@ public class LibraryCursorCodec {
         accessScopeFingerprint);
   }
 
+  public static CursorContext publicCatalogContext(String query, String language) {
+    return new CursorContext(
+        Kind.PUBLIC_CATALOG,
+        NO_SCOPE,
+        NO_SCOPE,
+        normalizeQuery(query),
+        normalizeTag(language),
+        "",
+        "public-catalog-v1");
+  }
+
   public void requireConfigured() {
     if (hmacKey == null) throw new SigningUnavailableException();
   }
@@ -217,7 +228,8 @@ public class LibraryCursorCodec {
 
   public enum Kind {
     LIBRARY(1),
-    WORK(2);
+    WORK(2),
+    PUBLIC_CATALOG(3);
 
     private final int code;
 
@@ -257,6 +269,13 @@ public class LibraryCursorCodec {
               || !tag.isEmpty()
               || !status.isEmpty())) {
         throw new IllegalArgumentException("Library cursors do not accept work filters");
+      }
+      if (kind == Kind.PUBLIC_CATALOG
+          && (!ownerUserId.equals(NO_SCOPE)
+              || !scopeId.equals(NO_SCOPE)
+              || !status.isEmpty()
+              || !accessScopeFingerprint.equals("public-catalog-v1"))) {
+        throw new IllegalArgumentException("Invalid public catalog cursor context");
       }
     }
 

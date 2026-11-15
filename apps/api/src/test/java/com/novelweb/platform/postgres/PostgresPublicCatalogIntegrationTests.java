@@ -1,0 +1,369 @@
+package com.novelweb.platform.postgres;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import java.net.URI;
+import java.net.URLEncoder;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
+import java.sql.Timestamp;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.UUID;
+import javax.sql.DataSource;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.test.context.ActiveProfiles;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+
+@SpringBootTest(
+    webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
+    properties = {
+      "novel.features.public-catalog-enabled=true",
+      "novel.library.cursor.hmac-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "novel.auth.google.rate-limit-hmac-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "novel.auth.google.web-client-id=catalog-test.apps.googleusercontent.com",
+      "novel.auth.google.credential-callback-uri=https://api.example.test/api/v1/auth/google/credential",
+      "novel.security.csrf.hmac-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "novel.payment.momo.test.enabled=false",
+      "novel.features.cultivation-enabled=false",
+      "novel.features.commerce-sandbox-enabled=false",
+      "novel.imports.parser.poll-delay=1h"
+    })
+@ActiveProfiles("postgres")
+@EnabledIfSystemProperty(named = "postgres.integration", matches = "true")
+class PostgresPublicCatalogIntegrationTests {
+
+  private final List<UUID> workIds = new ArrayList<>();
+  private UUID userId;
+  private UUID libraryId;
+
+  @Autowired private DataSource dataSource;
+
+  @Autowired private ObjectMapper objectMapper;
+
+  @LocalServerPort private int apiPort;
+
+  private final HttpClient httpClient = HttpClient.newHttpClient();
+
+  @BeforeEach
+  void createSyntheticOwnerAndPrivateLibrary() throws Exception {
+    userId = UUID.randomUUID();
+    libraryId = UUID.randomUUID();
+    try (Connection connection = dataSource.getConnection()) {
+      execute(
+          connection,
+          "INSERT INTO users (id, display_name) VALUES (?, ?)",
+          userId,
+          "Synthetic catalog owner");
+      execute(
+          connection,
+          "INSERT INTO libraries (id, owner_user_id, name, is_default) VALUES (?, ?, ?, TRUE)",
+          libraryId,
+          userId,
+          "Synthetic private catalog fixture");
+    }
+  }
+
+  @AfterEach
+  void removeSyntheticFixtures() throws Exception {
+    for (UUID workId : workIds) deleteWork(workId);
+    workIds.clear();
+    if (libraryId != null) {
+      try (Connection connection = dataSource.getConnection()) {
+        execute(connection, "DELETE FROM libraries WHERE id = ?", libraryId);
+        execute(connection, "DELETE FROM users WHERE id = ?", userId);
+      }
+    }
+  }
+
+  @Test
+  void anonymousCatalogReturnsOnlyActivePublicAuthoredWorksWithReadyChapters() throws Exception {
+    UUID listed =
+        createWork("Public authored", "Public author", "vi", "authored", "public", "active", true);
+    createWork("Private authored", "Private author", "vi", "authored", "private", "active", true);
+    createWork(
+        "Unlisted authored", "Unlisted author", "vi", "authored", "unlisted", "active", true);
+    createWork("Imported public", "Imported author", "vi", "imported", "public", "active", true);
+    createWork("Archived public", "Archived author", "vi", "authored", "public", "archived", true);
+    createWork("Draft public", "Draft author", "vi", "authored", "public", "active", false);
+    UUID deleted =
+        createWork("Deleted public", "Deleted author", "vi", "authored", "public", "active", true);
+    setDeletedAt(deleted);
+
+    HttpResult result = get("/api/v1/catalog/works?limit=50");
+
+    assertEquals(200, result.statusCode());
+    assertTrue(result.cacheControl().contains("no-store"));
+    assertEquals(1, result.body().path("items").size());
+    JsonNode item = result.body().path("items").get(0);
+    assertEquals(listed.toString(), item.path("id").asText());
+    assertEquals("Public authored", item.path("title").asText());
+    assertEquals("Public author", item.path("author").asText());
+    assertEquals("vi", item.path("sourceLanguage").asText());
+    assertEquals(1, item.path("readyChapterCount").asInt());
+    assertFalse(item.has("content"));
+    assertFalse(item.has("description"));
+    assertFalse(item.has("createdAt"));
+    assertTrue(result.body().path("nextCursor").isNull());
+
+    setOwnerStatus("suspended");
+    HttpResult inactiveOwner = get("/api/v1/catalog/works?limit=50");
+    assertEquals(200, inactiveOwner.statusCode());
+    assertEquals(0, inactiveOwner.body().path("items").size());
+  }
+
+  @Test
+  void searchFiltersLanguageAndUsesBoundedStablePagination() throws Exception {
+    Instant oldest = Instant.parse("2026-11-14T00:00:00Z");
+    Instant newest = Instant.parse("2026-11-16T00:00:00Z");
+    UUID percentWork =
+        createWork(
+            "Dragon 100%", "Search author", "vi", "authored", "public", "active", true, newest);
+    UUID underscoreWork =
+        createWork(
+            "Dragon_underscore",
+            "Search author",
+            "vi",
+            "authored",
+            "public",
+            "active",
+            true,
+            oldest);
+    createWork("Dragon en", "Search author", "en", "authored", "public", "active", true);
+
+    HttpResult first = get("/api/v1/catalog/works?q=Dragon&language=VI&limit=1");
+    assertEquals(200, first.statusCode());
+    assertEquals(percentWork.toString(), first.body().path("items").get(0).path("id").asText());
+    String cursor = first.body().path("nextCursor").asText();
+    assertFalse(cursor.isBlank());
+
+    HttpResult second =
+        get(
+            "/api/v1/catalog/works?q=dragon&language=vi&limit=1&cursor="
+                + URLEncoder.encode(cursor, StandardCharsets.UTF_8));
+    assertEquals(200, second.statusCode());
+    assertEquals(underscoreWork.toString(), second.body().path("items").get(0).path("id").asText());
+    assertTrue(second.body().path("nextCursor").isNull());
+
+    HttpResult literalPercent = get("/api/v1/catalog/works?q=%25&language=vi&limit=5");
+    assertEquals(200, literalPercent.statusCode());
+    assertEquals(1, literalPercent.body().path("items").size());
+    assertEquals(
+        percentWork.toString(), literalPercent.body().path("items").get(0).path("id").asText());
+  }
+
+  @Test
+  void cursorCannotMoveAcrossFiltersAndTakedownIsAppliedOnNextPage() throws Exception {
+    Instant firstTime = Instant.parse("2026-11-13T00:00:00Z");
+    Instant secondTime = Instant.parse("2026-11-14T00:00:00Z");
+    Instant thirdTime = Instant.parse("2026-11-15T00:00:00Z");
+    UUID firstWork =
+        createWork("Saga one", "Author", "vi", "authored", "public", "active", true, firstTime);
+    UUID secondWork =
+        createWork("Saga two", "Author", "vi", "authored", "public", "active", true, secondTime);
+    createWork("Saga three", "Author", "vi", "authored", "public", "active", true, thirdTime);
+
+    HttpResult first = get("/api/v1/catalog/works?q=saga&limit=1");
+    String cursor = first.body().path("nextCursor").asText();
+    assertFalse(cursor.isBlank());
+
+    HttpResult wrongFilter =
+        get(
+            "/api/v1/catalog/works?q=other&limit=1&cursor="
+                + URLEncoder.encode(cursor, StandardCharsets.UTF_8));
+    assertEquals(400, wrongFilter.statusCode());
+    assertEquals("INVALID_CURSOR", wrongFilter.body().path("code").asText());
+
+    setVisibility(secondWork, "private");
+    HttpResult afterTakedown =
+        get(
+            "/api/v1/catalog/works?q=saga&limit=1&cursor="
+                + URLEncoder.encode(cursor, StandardCharsets.UTF_8));
+    assertEquals(200, afterTakedown.statusCode());
+    assertEquals(
+        firstWork.toString(), afterTakedown.body().path("items").get(0).path("id").asText());
+    assertNotNull(afterTakedown.body().path("items").get(0));
+  }
+
+  @Test
+  void rejectsMalformedLanguageOversizedQueryAndInvalidLimits() throws Exception {
+    assertEquals(400, get("/api/v1/catalog/works?language=vi%21").statusCode());
+    assertEquals(400, get("/api/v1/catalog/works?limit=51").statusCode());
+    assertEquals(400, get("/api/v1/catalog/works?q=" + "x".repeat(121)).statusCode());
+  }
+
+  private UUID createWork(
+      String title,
+      String author,
+      String language,
+      String sourceKind,
+      String visibility,
+      String status,
+      boolean withReadyChapter)
+      throws Exception {
+    return createWork(
+        title, author, language, sourceKind, visibility, status, withReadyChapter, Instant.now());
+  }
+
+  private UUID createWork(
+      String title,
+      String author,
+      String language,
+      String sourceKind,
+      String visibility,
+      String status,
+      boolean withReadyChapter,
+      Instant createdAt)
+      throws Exception {
+    UUID workId = UUID.randomUUID();
+    workIds.add(workId);
+    try (Connection connection = dataSource.getConnection()) {
+      try (PreparedStatement insert =
+          connection.prepareStatement(
+              """
+                  INSERT INTO works (
+                    id, library_id, owner_user_id, title, author, source_language,
+                    source_kind, visibility, status, created_at, deleted_at)
+                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    CASE WHEN ? = 'deleted' THEN clock_timestamp() END)
+                  """)) {
+        insert.setObject(1, workId);
+        insert.setObject(2, libraryId);
+        insert.setObject(3, userId);
+        insert.setString(4, title);
+        insert.setString(5, author);
+        insert.setString(6, language);
+        insert.setString(7, sourceKind);
+        insert.setString(8, visibility);
+        insert.setString(9, status);
+        insert.setTimestamp(10, Timestamp.from(createdAt));
+        insert.setString(11, status);
+        insert.executeUpdate();
+      }
+      if (withReadyChapter) insertReadyChapter(connection, workId, title + " Chapter");
+    }
+    return workId;
+  }
+
+  private void insertReadyChapter(Connection connection, UUID workId, String title)
+      throws SQLException {
+    UUID chapterId = UUID.randomUUID();
+    UUID revisionId = UUID.randomUUID();
+    execute(
+        connection,
+        "INSERT INTO chapters (id, work_id, ordinal, title, source_language) VALUES (?, ?, 1, ?, 'vi')",
+        chapterId,
+        workId,
+        title);
+    try (PreparedStatement revision =
+        connection.prepareStatement(
+            """
+                INSERT INTO chapter_revisions (
+                  id, chapter_id, revision_no, source_format, normalized_content,
+                  content_hash, created_by_user_id)
+                VALUES (?, ?, 1, 'plain_text', ?, ?, ?)
+                """)) {
+      revision.setObject(1, revisionId);
+      revision.setObject(2, chapterId);
+      revision.setString(3, "synthetic private test body; never included in catalog DTO");
+      revision.setBytes(4, new byte[32]);
+      revision.setObject(5, userId);
+      revision.executeUpdate();
+    }
+    try (PreparedStatement ready =
+        connection.prepareStatement(
+            "UPDATE chapters SET source_revision_id = ?, status = 'ready' WHERE id = ?")) {
+      ready.setObject(1, revisionId);
+      ready.setObject(2, chapterId);
+      ready.executeUpdate();
+    }
+  }
+
+  private void setVisibility(UUID workId, String visibility) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement update =
+            connection.prepareStatement("UPDATE works SET visibility = ? WHERE id = ?")) {
+      update.setString(1, visibility);
+      update.setObject(2, workId);
+      update.executeUpdate();
+    }
+  }
+
+  private void setDeletedAt(UUID workId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement update =
+            connection.prepareStatement(
+                "UPDATE works SET status = 'deleted', deleted_at = clock_timestamp() WHERE id = ?")) {
+      update.setObject(1, workId);
+      update.executeUpdate();
+    }
+  }
+
+  private void setOwnerStatus(String status) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement update =
+            connection.prepareStatement("UPDATE users SET status = ? WHERE id = ?")) {
+      update.setString(1, status);
+      update.setObject(2, userId);
+      update.executeUpdate();
+    }
+  }
+
+  private void deleteWork(UUID workId) throws SQLException {
+    try (Connection connection = dataSource.getConnection()) {
+      try (PreparedStatement clearRevision =
+          connection.prepareStatement(
+              "UPDATE chapters SET source_revision_id = NULL WHERE work_id = ?")) {
+        clearRevision.setObject(1, workId);
+        clearRevision.executeUpdate();
+      }
+      try (PreparedStatement revisions =
+          connection.prepareStatement(
+              "DELETE FROM chapter_revisions WHERE chapter_id IN (SELECT id FROM chapters WHERE work_id = ?)")) {
+        revisions.setObject(1, workId);
+        revisions.executeUpdate();
+      }
+      execute(connection, "DELETE FROM chapters WHERE work_id = ?", workId);
+      execute(connection, "DELETE FROM works WHERE id = ?", workId);
+    }
+  }
+
+  private HttpResult get(String path) throws Exception {
+    HttpResponse<String> response =
+        httpClient.send(
+            HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + apiPort + path)).GET().build(),
+            HttpResponse.BodyHandlers.ofString());
+    return new HttpResult(
+        response.statusCode(),
+        response.headers().firstValue("Cache-Control").orElse(""),
+        objectMapper.readTree(response.body()));
+  }
+
+  private static void execute(Connection connection, String sql, Object... parameters)
+      throws SQLException {
+    try (PreparedStatement statement = connection.prepareStatement(sql)) {
+      for (int index = 0; index < parameters.length; index++) {
+        statement.setObject(index + 1, parameters[index]);
+      }
+      statement.executeUpdate();
+    }
+  }
+
+  private record HttpResult(int statusCode, String cacheControl, JsonNode body) {}
+}

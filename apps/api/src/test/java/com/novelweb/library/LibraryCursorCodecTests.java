@@ -114,6 +114,25 @@ class LibraryCursorCodecTests {
   }
 
   @Test
+  void publicCatalogCursorIsBoundToItsSearchAndLanguageFilters() {
+    LibraryCursorCodec codec = new LibraryCursorCodec(TEST_KEY);
+    LibraryCursorCodec.CursorContext context =
+        LibraryCursorCodec.publicCatalogContext("dragon", "vi");
+    LibraryCursorCodec.Position position =
+        new LibraryCursorCodec.Position(
+            0, Instant.parse("2026-11-10T08:09:10.123456Z"), UUID.randomUUID());
+    String token = codec.encode(context, position);
+
+    assertEquals(position, codec.decode(token, context));
+    assertThrows(
+        LibraryCursorCodec.InvalidCursorException.class,
+        () -> codec.decode(token, LibraryCursorCodec.publicCatalogContext("dragon", "en")));
+    assertThrows(
+        LibraryCursorCodec.InvalidCursorException.class,
+        () -> codec.decode(token, LibraryCursorCodec.publicCatalogContext("other", "vi")));
+  }
+
+  @Test
   void rejectsTamperedNonCanonicalAndUnconfiguredCursors() {
     LibraryCursorCodec codec = new LibraryCursorCodec(TEST_KEY);
     LibraryCursorCodec.CursorContext context = LibraryCursorCodec.libraryContext(UUID.randomUUID());

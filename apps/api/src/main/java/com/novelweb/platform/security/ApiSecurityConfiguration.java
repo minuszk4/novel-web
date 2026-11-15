@@ -80,7 +80,11 @@ public class ApiSecurityConfiguration {
                         HttpMethod.POST, "/api/v1/momo/payment-orders", "/api/v1/chapters/*/unlock")
                     .permitAll();
                 authorize
-                    .requestMatchers(HttpMethod.GET, "/api/v1/libraries", "/api/v1/works")
+                    .requestMatchers(
+                        HttpMethod.GET,
+                        "/api/v1/libraries",
+                        "/api/v1/works",
+                        "/api/v1/catalog/works")
                     .permitAll();
                 authorize
                     .requestMatchers(
