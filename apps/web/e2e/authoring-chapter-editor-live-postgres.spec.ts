@@ -96,6 +96,82 @@ test('private chapter editor saves to PostgreSQL and resolves stale edits by exp
   });
   await expect(page.getByRole('status').filter({ hasText: 'Đã lưu · phiên bản 1' })).toBeVisible();
 
+  const otherSessionToken = process.env['MOMO_COMMERCE_LIVE_TEST_OTHER_SESSION_TOKEN'];
+  if (otherSessionToken) {
+    expect(otherSessionToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    await page.context().clearCookies();
+    await page.context().addCookies([
+      {
+        name: '__Host-novel_session',
+        value: otherSessionToken,
+        domain: 'localhost',
+        path: '/',
+        httpOnly: true,
+        secure: true,
+        sameSite: 'Lax',
+      },
+    ]);
+    const outsiderCsrfResponse = await page.request.get(`${baseUrl}/api/v1/auth/csrf`);
+    expect(outsiderCsrfResponse.status()).toBe(200);
+    const outsiderCsrf = (await outsiderCsrfResponse.json()) as { token: string };
+    expect(outsiderCsrf.token).toMatch(/^[A-Za-z0-9_-]{43}$/);
+
+    const foreignDraftRead = await page.request.get(`${baseUrl}${draftPath}`);
+    expect(foreignDraftRead.status()).toBe(404);
+    expect(foreignDraftRead.headers()['cache-control']).toContain('no-store');
+    const foreignDraftReadBody = await foreignDraftRead.text();
+    expect(foreignDraftReadBody).toContain('DRAFT_CHAPTER_NOT_FOUND');
+    expect(foreignDraftReadBody).not.toContain('Bản đầu tiên được lưu.');
+    expect(foreignDraftReadBody).not.toContain('normalizedContent');
+    expect(foreignDraftReadBody).not.toContain('segments');
+
+    const foreignDraftWrite = await page.request.post(`${baseUrl}${revisionsPath}`, {
+      headers: {
+        'X-CSRF-Token': outsiderCsrf.token,
+        'If-Match': '"draft-1"',
+        'Idempotency-Key': 'outsider-draft-write-0001',
+      },
+      data: {
+        sourceFormat: 'plain_text',
+        normalizedContent: externalText,
+        segments: [
+          {
+            ordinal: 1,
+            type: 'paragraph',
+            sourceText: externalText,
+            stableAnchor: 'external-writer-p1',
+          },
+        ],
+      },
+    });
+    expect(foreignDraftWrite.status()).toBe(404);
+    expect(foreignDraftWrite.headers()['cache-control']).toContain('no-store');
+    const foreignDraftWriteBody = await foreignDraftWrite.text();
+    expect(foreignDraftWriteBody).toContain('DRAFT_CHAPTER_NOT_FOUND');
+    expect(foreignDraftWriteBody).not.toContain(externalText);
+
+    await page.context().clearCookies();
+    await page.context().addCookies([
+      {
+        name: '__Host-novel_session',
+        value: sessionToken!,
+        domain: 'localhost',
+        path: '/',
+        httpOnly: true,
+        secure: true,
+        sameSite: 'Lax',
+      },
+    ]);
+    const unchangedOwnerDraft = await page.request.get(`${baseUrl}${draftPath}`);
+    expect(unchangedOwnerDraft.status()).toBe(200);
+    expect(unchangedOwnerDraft.headers().etag).toBe('"draft-1"');
+    expect(await unchangedOwnerDraft.json()).toMatchObject({
+      revisionNo: 1,
+      normalizedContent: 'Bản đầu tiên được lưu.',
+      segments: [expect.objectContaining({ sourceText: 'Bản đầu tiên được lưu.' })],
+    });
+  }
+
   const externalWrite = await page.request.post(`${baseUrl}${revisionsPath}`, {
     headers: {
       'X-CSRF-Token': csrfToken,
