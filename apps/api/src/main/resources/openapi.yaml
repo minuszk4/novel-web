@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 6.34.0
+  version: 6.35.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -3318,6 +3318,50 @@ paths:
           $ref: '#/components/responses/Problem'
         '503':
           $ref: '#/components/responses/Problem'
+  /api/v1/me/credits/transactions:
+    get:
+      operationId: listCurrentUserCreditTransactions
+      tags: [Commerce]
+      x-implementation-status: implemented-postgres-profile
+      summary: List the current user's credit ledger entries
+      description: >-
+        Returns read-only ledger metadata for the authenticated actor, newest first. Current Terms and Privacy
+        acceptance is required. Keyset cursors are HMAC-signed and bound to the actor; page size is 1–50. The
+        response contains no provider payload, payment URL, source operation identifier, chapter content or other
+        account's entries. Responses are no-store. This history reflects committed ledger entries, including
+        compensating entries; it does not itself confirm payment or grant an entitlement.
+      security:
+        - appSession: []
+      parameters:
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 256
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 25
+            minimum: 1
+            maximum: 50
+      responses:
+        '200':
+          description: Private actor-owned ledger history page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreditHistoryPage'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
   /api/v1/me/reader-preferences:
     get:
       operationId: getReaderPreferences
@@ -5999,6 +6043,51 @@ components:
           type: string
           format: date-time
           description: Database snapshot time used to determine bonus-credit expiry.
+    CreditHistoryPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/CreditTransaction'
+        nextCursor:
+          type: [string, 'null']
+          maxLength: 256
+          description: Actor-bound signed keyset cursor, or null when there is no next page.
+    CreditTransaction:
+      type: object
+      additionalProperties: false
+      required: [id, entryType, bucket, amountDelta, expiresAt, sourceType, occurredAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Opaque ledger-entry identifier.
+        entryType:
+          type: string
+          enum: [TOP_UP, BONUS_GRANT, UNLOCK_DEBIT, ADJUSTMENT, REVERSAL]
+        bucket:
+          type: string
+          enum: [PAID, BONUS]
+        amountDelta:
+          type: integer
+          format: int64
+          description: Signed credit change; positive adds credits and negative consumes or reverses them.
+        expiresAt:
+          type: [string, 'null']
+          format: date-time
+          description: Bonus expiry when the entry applies to a bonus tranche; otherwise null.
+        sourceType:
+          type: string
+          enum: [PAYMENT_ORDER, CHAPTER_UNLOCK, OPERATOR, REVERSAL]
+          description: Safe source category only; internal source identifiers are not exposed.
+        occurredAt:
+          type: string
+          format: date-time
+          description: Ledger commit timestamp used for newest-first pagination.
     ReaderPreferences:
       type: object
       additionalProperties: false

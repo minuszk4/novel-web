@@ -38,6 +38,8 @@ import com.novelweb.library.imports.ImportParseService;
 import com.novelweb.library.imports.ImportStagingCleanupService;
 import com.novelweb.library.imports.ImportStagingRateLimiter;
 import com.novelweb.payment.credit.CreditBalanceRepository;
+import com.novelweb.payment.credit.CreditHistoryRepository;
+import com.novelweb.payment.credit.CreditHistoryService;
 import com.novelweb.payment.credit.CreditLedgerService;
 import com.novelweb.payment.credit.CreditPackCatalog;
 import com.novelweb.payment.credit.CreditTopUpOrderService;
@@ -243,6 +245,8 @@ class PostgresSchemaIntegrationTests {
   @Autowired private CreditLedgerService creditLedgerService;
 
   @Autowired private CreditBalanceRepository creditBalanceRepository;
+
+  @Autowired private CreditHistoryService creditHistoryService;
 
   @Autowired private CreditTopUpOrderService creditTopUpOrderService;
 
@@ -13017,6 +13021,91 @@ class PostgresSchemaIntegrationTests {
     } finally {
       executor.shutdownNow();
       deleteSessionTestUser(userId);
+    }
+  }
+
+  @Test
+  void creditHistoryUsesActorBoundKeysetPagesAndNeverIncludesForeignEntries() throws Exception {
+    UUID userId = createSessionTestUser("Credit History Owner");
+    UUID otherUserId = createSessionTestUser("Credit History Other Owner");
+    UUID emptyUserId = createSessionTestUser("Credit History Empty Owner");
+    try {
+      assertEquals(
+          CreditLedgerService.Outcome.APPLIED,
+          inCreditLedgerTransaction(
+                  connection ->
+                      creditLedgerService.grantPaidTopUp(
+                          connection, userId, UUID.randomUUID(), 100))
+              .outcome());
+      UUID unlockId = UUID.randomUUID();
+      assertEquals(
+          CreditLedgerService.Outcome.APPLIED,
+          inCreditLedgerTransaction(
+                  connection ->
+                      creditLedgerService.debitUnlock(
+                          connection,
+                          userId,
+                          unlockId,
+                          10,
+                          List.of(
+                              new CreditLedgerService.Allocation(
+                                  CreditLedgerService.Bucket.PAID, 10, null))))
+              .outcome());
+      insertCreditLedgerEntry(
+          userId,
+          "BONUS_GRANT",
+          "BONUS",
+          5,
+          Instant.now().plusSeconds(3600).truncatedTo(ChronoUnit.MICROS),
+          "OPERATOR",
+          UUID.randomUUID(),
+          null);
+      assertEquals(
+          CreditLedgerService.Outcome.APPLIED,
+          inCreditLedgerTransaction(
+                  connection ->
+                      creditLedgerService.grantPaidTopUp(
+                          connection, otherUserId, UUID.randomUUID(), 50))
+              .outcome());
+
+      CreditHistoryService.HistoryPage firstPage =
+          creditHistoryService.list(userId, null, 2).orElseThrow();
+      assertEquals(2, firstPage.items().size());
+      assertNotNull(firstPage.nextCursor());
+      CreditHistoryService.HistoryPage secondPage =
+          creditHistoryService.list(userId, firstPage.nextCursor(), 2).orElseThrow();
+      assertEquals(1, secondPage.items().size());
+      assertNull(secondPage.nextCursor());
+      List<CreditHistoryRepository.CreditEntry> allEntries = new ArrayList<>(firstPage.items());
+      allEntries.addAll(secondPage.items());
+      assertEquals(3, allEntries.size());
+      assertEquals(
+          3, allEntries.stream().map(CreditHistoryRepository.CreditEntry::id).distinct().count());
+      assertTrue(
+          allEntries.stream()
+              .anyMatch(
+                  entry ->
+                      entry.entryType().equals("UNLOCK_DEBIT")
+                          && entry.amountDelta().longValue() == -10));
+      assertTrue(
+          allEntries.stream()
+              .anyMatch(
+                  entry ->
+                      entry.entryType().equals("BONUS_GRANT") && entry.bucket().equals("BONUS")));
+      assertTrue(allEntries.get(0).occurredAt().compareTo(allEntries.get(1).occurredAt()) >= 0);
+
+      assertThrows(
+          com.novelweb.payment.credit.CreditHistoryCursorCodec.InvalidCursorException.class,
+          () -> creditHistoryService.list(otherUserId, firstPage.nextCursor(), 2));
+      CreditHistoryService.HistoryPage otherActorPage =
+          creditHistoryService.list(otherUserId, null, 2).orElseThrow();
+      assertEquals(1, otherActorPage.items().size());
+      assertEquals(50, otherActorPage.items().getFirst().amountDelta().longValue());
+      assertTrue(creditHistoryService.list(emptyUserId, null, 2).orElseThrow().items().isEmpty());
+    } finally {
+      deleteSessionTestUser(userId);
+      deleteSessionTestUser(otherUserId);
+      deleteSessionTestUser(emptyUserId);
     }
   }
 
