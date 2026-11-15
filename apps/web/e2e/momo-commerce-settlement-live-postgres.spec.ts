@@ -237,6 +237,16 @@ test('synthetic signed settlement grants credits once and unlocks a public chapt
   await expect(page.getByText('Live Paid Chapter')).toHaveCount(0);
   await expect(page.getByText('Live Public Commerce Story')).toHaveCount(0);
 
+  const directForeignChapterContent = await page.request.get(
+    `http://localhost:4300/api/v1/chapters/${chapterId}/content`,
+  );
+  expect(directForeignChapterContent.status()).toBe(404);
+  const directForeignChapterBody = await directForeignChapterContent.text();
+  expect(directForeignChapterBody).toContain('NOT_FOUND');
+  expect(directForeignChapterBody).not.toContain(
+    'This paid chapter is released only after a server-confirmed credit unlock.',
+  );
+
   chapterContentRequests.length = 0;
   await page.goto(`http://localhost:4300/app/reader/${workId}/${chapterId}`);
   await expect(page.getByRole('heading', { name: 'Live Paid Chapter' })).toBeVisible();
