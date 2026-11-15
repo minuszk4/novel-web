@@ -42,6 +42,17 @@ test('MoMo return reads a pending order from the real API and does not grant cre
   await page.goto(
     `http://localhost:4300/app/payment/result?orderId=${encodeURIComponent(orderId!)}&resultCode=0&signature=synthetic-untrusted`,
   );
+  const systemStatusResponse = await page.request.get('http://localhost:4300/api/v1/system/status');
+  expect(systemStatusResponse.status()).toBe(200);
+  expect(await systemStatusResponse.json()).toMatchObject({
+    integrations: { momoTestEnabled: true, momoEnvironment: 'TEST' },
+    features: { commerceSandboxEnabled: true },
+  });
+  const currentUserResponse = await page.request.get('http://localhost:4300/api/v1/auth/me');
+  expect(currentUserResponse.status()).toBe(200);
+  expect(await currentUserResponse.json()).toMatchObject({
+    features: { commerceSandboxEnabled: true },
+  });
   await expect(page.getByRole('heading', { name: 'Chưa xác nhận thanh toán' })).toBeVisible();
   await expect(page.getByText(/100 credit chưa được cộng/)).toBeVisible();
   await expect(page.getByText(/Đừng thanh toán lại/)).toBeVisible();

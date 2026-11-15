@@ -45,7 +45,8 @@ class ChapterUnlockControllerTests {
   @BeforeEach
   void setUp() {
     mockMvc =
-        MockMvcBuilders.standaloneSetup(new ChapterUnlockController(unlockService, policyService))
+        MockMvcBuilders.standaloneSetup(
+                new ChapterUnlockController(unlockService, policyService, true))
             .build();
   }
 
@@ -236,6 +237,37 @@ class ChapterUnlockControllerTests {
     assertEquals(400, invalid.getStatus());
     assertTrue(invalid.getContentAsString().contains("INVALID_CHAPTER_UNLOCK_REQUEST"));
     verifyNoInteractions(unlockService);
+  }
+
+  @Test
+  void disabledCommerceBlocksQuotesAndUnlocksBeforePolicyOrLedgerWork() throws Exception {
+    MockMvc disabledCommerce =
+        MockMvcBuilders.standaloneSetup(
+                new ChapterUnlockController(unlockService, policyService, false))
+            .build();
+    var quote =
+        disabledCommerce
+            .perform(
+                get("/api/v1/chapters/{chapterId}/unlock-quote", CHAPTER_ID)
+                    .principal(authentication()))
+            .andReturn()
+            .getResponse();
+    var unlock =
+        disabledCommerce
+            .perform(
+                post("/api/v1/chapters/{chapterId}/unlock", CHAPTER_ID)
+                    .principal(authentication())
+                    .header("Idempotency-Key", IDEMPOTENCY_KEY)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("{\"priceVersion\":1}"))
+            .andReturn()
+            .getResponse();
+
+    assertEquals(503, quote.getStatus());
+    assertTrue(quote.getContentAsString().contains("COMMERCE_SANDBOX_DISABLED"));
+    assertEquals(503, unlock.getStatus());
+    assertTrue(unlock.getContentAsString().contains("COMMERCE_SANDBOX_DISABLED"));
+    verifyNoInteractions(policyService, unlockService);
   }
 
   private TestingAuthenticationToken authentication() {

@@ -11,6 +11,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Profile;
 import org.springframework.http.CacheControl;
@@ -41,10 +42,15 @@ public class ChapterUnlockController {
 
   private final ChapterUnlockService unlockService;
   private final PolicyService policyService;
+  private final boolean commerceSandboxEnabled;
 
-  public ChapterUnlockController(ChapterUnlockService unlockService, PolicyService policyService) {
+  public ChapterUnlockController(
+      ChapterUnlockService unlockService,
+      PolicyService policyService,
+      @Value("${novel.features.commerce-sandbox-enabled:false}") boolean commerceSandboxEnabled) {
     this.unlockService = unlockService;
     this.policyService = policyService;
+    this.commerceSandboxEnabled = commerceSandboxEnabled;
   }
 
   @GetMapping("/unlock-quote")
@@ -58,6 +64,7 @@ public class ChapterUnlockController {
           "Sign in to view this chapter's unlock price.",
           request);
     }
+    if (!commerceSandboxEnabled) return commerceSandboxDisabled(request);
     ResponseEntity<?> policyGate = policyGate(actor.orElseThrow(), request);
     if (policyGate != null) return policyGate;
     try {
@@ -92,6 +99,7 @@ public class ChapterUnlockController {
       return problem(
           HttpStatus.UNAUTHORIZED, "UNAUTHENTICATED", "Sign in to unlock this chapter.", request);
     }
+    if (!commerceSandboxEnabled) return commerceSandboxDisabled(request);
     ResponseEntity<?> policyGate = policyGate(actor.orElseThrow(), request);
     if (policyGate != null) return policyGate;
     if (body == null || body.priceVersion() == null || body.priceVersion() < 1) {
@@ -206,6 +214,14 @@ public class ChapterUnlockController {
           "Current policy state could not be checked. Please try again.",
           request);
     }
+  }
+
+  private ResponseEntity<?> commerceSandboxDisabled(HttpServletRequest request) {
+    return problem(
+        HttpStatus.SERVICE_UNAVAILABLE,
+        "COMMERCE_SANDBOX_DISABLED",
+        "Chapter unlock is unavailable while the commerce sandbox is disabled.",
+        request);
   }
 
   private static UnlockQuoteView quoteView(UnlockQuote quote) {

@@ -27,6 +27,7 @@ novel:
   environment: ${NOVEL_ENVIRONMENT:local}
   features:
     cultivation-enabled: ${NOVEL_FEATURE_CULTIVATION_ENABLED:false}
+    commerce-sandbox-enabled: ${NOVEL_FEATURE_COMMERCE_SANDBOX_ENABLED:false}
   translation:
     fake:
       enabled: ${NOVEL_TRANSLATION_FAKE_ENABLED:false}

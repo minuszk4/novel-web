@@ -15,6 +15,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.regex.Pattern;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Profile;
 import org.springframework.http.CacheControl;
@@ -50,16 +51,19 @@ public class CreditTopUpController {
   private final CreditTopUpCheckoutService checkoutService;
   private final CreditTopUpOrderService orderService;
   private final PolicyService policyService;
+  private final boolean commerceSandboxEnabled;
 
   public CreditTopUpController(
       CreditPackCatalog catalog,
       CreditTopUpCheckoutService checkoutService,
       CreditTopUpOrderService orderService,
-      PolicyService policyService) {
+      PolicyService policyService,
+      @Value("${novel.features.commerce-sandbox-enabled:false}") boolean commerceSandboxEnabled) {
     this.catalog = catalog;
     this.checkoutService = checkoutService;
     this.orderService = orderService;
     this.policyService = policyService;
+    this.commerceSandboxEnabled = commerceSandboxEnabled;
   }
 
   @GetMapping("/credit-packs")
@@ -72,6 +76,7 @@ public class CreditTopUpController {
           "Sign in to view available credit packs.",
           request);
     }
+    if (!commerceSandboxEnabled) return commerceSandboxDisabled(request);
     ResponseEntity<?> policyGate = policyGate(actor.orElseThrow(), request);
     if (policyGate != null) return policyGate;
     try {
@@ -98,6 +103,7 @@ public class CreditTopUpController {
       return problem(
           HttpStatus.UNAUTHORIZED, "UNAUTHENTICATED", "Sign in to start a credit top-up.", request);
     }
+    if (!commerceSandboxEnabled) return commerceSandboxDisabled(request);
     ResponseEntity<?> policyGate = policyGate(actor.orElseThrow(), request);
     if (policyGate != null) return policyGate;
     if (body == null
@@ -214,6 +220,14 @@ public class CreditTopUpController {
               "The payment order could not be loaded. Check its status before trying again.",
               request);
     };
+  }
+
+  private ResponseEntity<?> commerceSandboxDisabled(HttpServletRequest request) {
+    return problem(
+        HttpStatus.SERVICE_UNAVAILABLE,
+        "COMMERCE_SANDBOX_DISABLED",
+        "Credit top-up is unavailable while the commerce sandbox is disabled.",
+        request);
   }
 
   private ResponseEntity<?> policyGate(UUID actorUserId, HttpServletRequest request) {

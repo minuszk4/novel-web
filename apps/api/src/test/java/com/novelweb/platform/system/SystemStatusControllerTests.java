@@ -4,8 +4,12 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.novelweb.identity.auth.GoogleSignInConfiguration;
+import com.novelweb.payment.momo.MomoTestGatewaySettings;
+import java.net.URI;
 import java.util.Base64;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.support.StaticListableBeanFactory;
 import org.springframework.mock.env.MockEnvironment;
 
 class SystemStatusControllerTests {
@@ -18,8 +22,7 @@ class SystemStatusControllerTests {
             "https://api.example.test/api/v1/auth/google/credential",
             Base64.getUrlEncoder().withoutPadding().encodeToString(new byte[32]));
     ApiSystemStatus status =
-        new SystemStatusController(
-                "test", googleConfiguration, false, false, false, false, new MockEnvironment())
+        controller(googleConfiguration, false, false, false, false, false, false, new String[0])
             .status();
 
     assertTrue(status.integrations().googleOidcEnabled());
@@ -29,44 +32,137 @@ class SystemStatusControllerTests {
   }
 
   @Test
+  void reportsCommerceOnlyWhenPostgresValidMomoSettingsAndTheShopOptInAreAllPresent() {
+    GoogleSignInConfiguration googleConfiguration = new GoogleSignInConfiguration("", "", "");
+    ApiSystemStatus enabled =
+        controller(googleConfiguration, true, true, false, false, false, true, "postgres").status();
+    ApiSystemStatus shopOptInMissing =
+        controller(googleConfiguration, false, false, false, false, false, true, "postgres")
+            .status();
+    ApiSystemStatus settingsMissing =
+        controller(googleConfiguration, true, true, false, false, false, false, "postgres")
+            .status();
+    ApiSystemStatus postgresMissing =
+        controller(googleConfiguration, true, true, false, false, false, true).status();
+
+    assertTrue(enabled.integrations().momoTestEnabled());
+    assertTrue(enabled.features().commerceSandboxEnabled());
+    assertTrue(shopOptInMissing.integrations().momoTestEnabled());
+    assertFalse(shopOptInMissing.features().commerceSandboxEnabled());
+    assertFalse(settingsMissing.integrations().momoTestEnabled());
+    assertFalse(settingsMissing.features().commerceSandboxEnabled());
+    assertFalse(postgresMissing.integrations().momoTestEnabled());
+    assertFalse(postgresMissing.features().commerceSandboxEnabled());
+  }
+
+  @Test
   void keepsGoogleDisabledWhenConfigurationIsIncomplete() {
     GoogleSignInConfiguration googleConfiguration = new GoogleSignInConfiguration("", "", "");
     ApiSystemStatus status =
-        new SystemStatusController(
-                "test", googleConfiguration, true, false, false, false, new MockEnvironment())
+        controller(googleConfiguration, true, false, false, false, false, false, new String[0])
             .status();
 
     assertFalse(status.integrations().googleOidcEnabled());
+    assertFalse(status.integrations().momoTestEnabled());
     assertTrue(status.features().cultivationEnabled());
+    assertFalse(status.features().commerceSandboxEnabled());
   }
 
   @Test
   void fakeTranslationPreviewRequiresBothOptInsAndBothSpringProfiles() {
     GoogleSignInConfiguration googleConfiguration = new GoogleSignInConfiguration("", "", "");
-    MockEnvironment profiles = new MockEnvironment();
-    profiles.setActiveProfiles("postgres", "translation-fake");
-
     ApiSystemStatus enabled =
-        new SystemStatusController("local", googleConfiguration, false, true, true, true, profiles)
+        controller(
+                googleConfiguration,
+                false,
+                false,
+                true,
+                true,
+                true,
+                false,
+                "postgres",
+                "translation-fake")
             .status();
     ApiSystemStatus apiOptInMissing =
-        new SystemStatusController("local", googleConfiguration, false, true, false, true, profiles)
-            .status();
-    ApiSystemStatus providerOptInMissing =
-        new SystemStatusController("local", googleConfiguration, false, false, true, true, profiles)
+        controller(
+                googleConfiguration,
+                false,
+                false,
+                true,
+                false,
+                true,
+                false,
+                "postgres",
+                "translation-fake")
             .status();
     ApiSystemStatus workerOptInMissing =
-        new SystemStatusController("local", googleConfiguration, false, true, true, false, profiles)
+        controller(
+                googleConfiguration,
+                false,
+                false,
+                true,
+                true,
+                false,
+                false,
+                "postgres",
+                "translation-fake")
+            .status();
+    ApiSystemStatus providerOptInMissing =
+        controller(
+                googleConfiguration,
+                false,
+                false,
+                false,
+                true,
+                true,
+                false,
+                "postgres",
+                "translation-fake")
             .status();
     ApiSystemStatus profileMissing =
-        new SystemStatusController(
-                "local", googleConfiguration, false, true, true, true, new MockEnvironment())
-            .status();
+        controller(googleConfiguration, false, false, true, true, true, false, "postgres").status();
 
     assertTrue(enabled.features().translationFakePreviewEnabled());
     assertFalse(apiOptInMissing.features().translationFakePreviewEnabled());
-    assertFalse(providerOptInMissing.features().translationFakePreviewEnabled());
     assertFalse(workerOptInMissing.features().translationFakePreviewEnabled());
+    assertFalse(providerOptInMissing.features().translationFakePreviewEnabled());
     assertFalse(profileMissing.features().translationFakePreviewEnabled());
+  }
+
+  private static SystemStatusController controller(
+      GoogleSignInConfiguration googleConfiguration,
+      boolean cultivation,
+      boolean commerce,
+      boolean translationEnabled,
+      boolean translationApiEnabled,
+      boolean translationWorkerEnabled,
+      boolean momoSettingsPresent,
+      String... activeProfiles) {
+    MockEnvironment environment = new MockEnvironment();
+    environment.setActiveProfiles(activeProfiles);
+    StaticListableBeanFactory beanFactory = new StaticListableBeanFactory();
+    if (momoSettingsPresent) beanFactory.addBean("momoTestSettings", momoSettings());
+    ObjectProvider<MomoTestGatewaySettings> momoSettings =
+        beanFactory.getBeanProvider(MomoTestGatewaySettings.class);
+    return new SystemStatusController(
+        "test",
+        googleConfiguration,
+        cultivation,
+        commerce,
+        translationEnabled,
+        translationApiEnabled,
+        translationWorkerEnabled,
+        momoSettings,
+        environment);
+  }
+
+  private static MomoTestGatewaySettings momoSettings() {
+    return new MomoTestGatewaySettings(
+        "synthetic-partner",
+        "synthetic-access",
+        "synthetic-secret",
+        URI.create("https://test-payment.momo.vn"),
+        URI.create("https://novel.example/api/v1/payments/momo/ipn"),
+        URI.create("https://novel.example/app/payment/result"));
   }
 }

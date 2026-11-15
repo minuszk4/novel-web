@@ -140,6 +140,7 @@ import tools.jackson.databind.ObjectMapper;
       "novel.auth.google.credential-callback-uri=https://api.example.test/api/v1/auth/google/credential",
       "novel.security.csrf.hmac-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
       "novel.features.cultivation-enabled=true",
+      "novel.features.commerce-sandbox-enabled=true",
       "novel.library.cursor.hmac-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
       "novel.payment.momo.test.enabled=true",
       "novel.payment.momo.test.environment=test",
@@ -11653,7 +11654,7 @@ class PostgresSchemaIntegrationTests {
       assertFalse(body.path("features").path("importEnabled").asBoolean());
       assertFalse(body.path("features").path("readerEnabled").asBoolean());
       assertTrue(body.path("features").path("cultivationEnabled").asBoolean());
-      assertFalse(body.path("features").path("commerceSandboxEnabled").asBoolean());
+      assertTrue(body.path("features").path("commerceSandboxEnabled").asBoolean());
       assertFalse(authenticated.getResponse().getContentAsString().contains(session.cookieValue()));
     } finally {
       deleteSessionTestUser(userId);

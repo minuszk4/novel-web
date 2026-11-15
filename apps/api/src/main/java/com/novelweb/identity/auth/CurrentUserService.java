@@ -1,5 +1,6 @@
 package com.novelweb.identity.auth;
 
+import com.novelweb.payment.momo.MomoTestGatewaySettings;
 import java.sql.Array;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -11,8 +12,11 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import javax.sql.DataSource;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Profile;
+import org.springframework.core.env.Environment;
+import org.springframework.core.env.Profiles;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -21,12 +25,19 @@ public class CurrentUserService {
 
   private final DataSource dataSource;
   private final boolean cultivationEnabled;
+  private final boolean commerceSandboxEnabled;
 
   public CurrentUserService(
       DataSource dataSource,
-      @Value("${novel.features.cultivation-enabled:false}") boolean cultivationEnabled) {
+      @Value("${novel.features.cultivation-enabled:false}") boolean cultivationEnabled,
+      @Value("${novel.features.commerce-sandbox-enabled:false}") boolean commerceSandboxRequested,
+      ObjectProvider<MomoTestGatewaySettings> momoSettings,
+      Environment springEnvironment) {
     this.dataSource = dataSource;
     this.cultivationEnabled = cultivationEnabled;
+    boolean postgresProfile = springEnvironment.acceptsProfiles(Profiles.of("postgres"));
+    boolean momoTestEnabled = postgresProfile && momoSettings.getIfAvailable() != null;
+    this.commerceSandboxEnabled = postgresProfile && commerceSandboxRequested && momoTestEnabled;
   }
 
   public Optional<CurrentUserResponse> findActiveUser(UUID userId) {
@@ -109,7 +120,8 @@ public class CurrentUserService {
                 new UserPolicyState(
                     acceptedTermsVersion, acknowledgedPrivacyVersion, requiredAcceptanceComplete),
                 List.of(new RoleScope("personal", List.of())),
-                new UserFeatureFlags(false, false, false, cultivationEnabled, false)));
+                new UserFeatureFlags(
+                    false, false, false, cultivationEnabled, commerceSandboxEnabled)));
       }
     } catch (SQLException exception) {
       throw new IllegalStateException("Unable to load the current application user", exception);

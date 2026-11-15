@@ -54,7 +54,8 @@ class CreditTopUpControllerTests {
     actorId = UUID.randomUUID();
     mockMvc =
         MockMvcBuilders.standaloneSetup(
-                new CreditTopUpController(catalog, checkoutService, orderService, policyService))
+                new CreditTopUpController(
+                    catalog, checkoutService, orderService, policyService, true))
             .build();
   }
 
@@ -239,6 +240,51 @@ class CreditTopUpControllerTests {
     assertEquals(400, missingVersion.getStatus());
     assertTrue(missingVersion.getContentAsString().contains("INVALID_CREDIT_PACK_REQUEST"));
     verifyNoInteractions(checkoutService);
+  }
+
+  @Test
+  void disabledCommerceBlocksCatalogAndNewOrdersButKeepsSavedOrderStatusReadable()
+      throws Exception {
+    MockMvc disabledShop =
+        MockMvcBuilders.standaloneSetup(
+                new CreditTopUpController(
+                    catalog, checkoutService, orderService, policyService, false))
+            .build();
+    TopUpOrder order = sampleOrder(actorId);
+    when(policyService.requiredAcceptance(actorId))
+        .thenReturn(PolicyService.RequiredAcceptance.COMPLETE);
+    when(orderService.findForActor(actorId, order.id())).thenReturn(Optional.of(order));
+
+    var catalogResponse =
+        disabledShop
+            .perform(get("/api/v1/credit-packs").principal(authentication()))
+            .andReturn()
+            .getResponse();
+    var createResponse =
+        disabledShop
+            .perform(
+                post("/api/v1/momo/payment-orders")
+                    .principal(authentication())
+                    .header("Idempotency-Key", IDEMPOTENCY_KEY)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(requestBody()))
+            .andReturn()
+            .getResponse();
+    var savedStatusResponse =
+        disabledShop
+            .perform(get("/api/v1/payment-orders/" + order.id()).principal(authentication()))
+            .andReturn()
+            .getResponse();
+
+    assertEquals(503, catalogResponse.getStatus());
+    assertTrue(catalogResponse.getContentAsString().contains("COMMERCE_SANDBOX_DISABLED"));
+    assertEquals(503, createResponse.getStatus());
+    assertTrue(createResponse.getContentAsString().contains("COMMERCE_SANDBOX_DISABLED"));
+    assertEquals(200, savedStatusResponse.getStatus());
+    assertTrue(savedStatusResponse.getContentAsString().contains("\"status\":\"PENDING\""));
+    verify(orderService).findForActor(actorId, order.id());
+    verifyNoInteractions(checkoutService);
+    verify(policyService).requiredAcceptance(actorId);
   }
 
   private TestingAuthenticationToken authentication() {
