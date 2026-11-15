@@ -66,20 +66,78 @@ test('account Reader awards cultivation XP through the real API and PostgreSQL',
 
   const baseSessionPath = '/api/v1/me/reading-sessions';
   const heartbeatAwards: number[] = [];
-  const heartbeatRequests: Array<{ sequence: number; active: boolean }> = [];
+  const heartbeatRequests: Array<{
+    sequence: number;
+    active: boolean;
+    idempotencyKey: string | undefined;
+  }> = [];
+  const heartbeatClientStatuses: number[] = [];
+  const heartbeatBackendResponses: Array<{
+    sequence: number;
+    active: boolean;
+    idempotencyKey: string | undefined;
+    status: number;
+    replayed: boolean;
+    awardedXp: number;
+    totalActiveSeconds: number;
+  }> = [];
+  let loseFirstCommittedHeartbeatResponse = true;
+
+  await page.route('**/api/v1/me/reading-sessions/**', async (route) => {
+    const request = route.request();
+    const pathname = new URL(request.url()).pathname;
+    if (request.method() !== 'POST' || !pathname.endsWith(':heartbeat')) {
+      await route.continue();
+      return;
+    }
+
+    // Let the real API commit to PostgreSQL, then drop only the response seen by the browser.
+    const upstream = await route.fetch();
+    const requestBody = request.postDataJSON() as { sequence: number; active: boolean };
+    const heartbeatBody = (await upstream.json()) as {
+      awardedXp: number;
+      totalActiveSeconds: number;
+    };
+    heartbeatBackendResponses.push({
+      ...requestBody,
+      idempotencyKey: request.headers()['idempotency-key'],
+      status: upstream.status(),
+      replayed: upstream.headers()['idempotency-replayed'] === 'true',
+      awardedXp: heartbeatBody.awardedXp,
+      totalActiveSeconds: heartbeatBody.totalActiveSeconds,
+    });
+
+    if (loseFirstCommittedHeartbeatResponse) {
+      loseFirstCommittedHeartbeatResponse = false;
+      await route.fulfill({
+        status: 503,
+        contentType: 'application/json',
+        body: JSON.stringify({ code: 'SIMULATED_RESPONSE_LOST' }),
+      });
+      return;
+    }
+
+    await route.fulfill({ response: upstream });
+  });
+
   page.on('request', (request) => {
     if (request.method() === 'POST' && new URL(request.url()).pathname.endsWith(':heartbeat')) {
-      heartbeatRequests.push(request.postDataJSON() as { sequence: number; active: boolean });
+      const body = request.postDataJSON() as { sequence: number; active: boolean };
+      heartbeatRequests.push({
+        ...body,
+        idempotencyKey: request.headers()['idempotency-key'],
+      });
     }
   });
   page.on('response', async (response: Response) => {
     if (
       response.request().method() !== 'POST' ||
-      !new URL(response.url()).pathname.endsWith(':heartbeat') ||
-      response.status() !== 200
+      !new URL(response.url()).pathname.endsWith(':heartbeat')
     ) {
       return;
     }
+    heartbeatClientStatuses.push(response.status());
+    if (response.status() !== 200) return;
     try {
       const body = (await response.json()) as { awardedXp: number };
       heartbeatAwards.push(body.awardedXp);
@@ -106,8 +164,24 @@ test('account Reader awards cultivation XP through the real API and PostgreSQL',
 
   await expect
     .poll(() => heartbeatRequests.length, { timeout: 40_000, intervals: [250, 500, 1000] })
-    .toBeGreaterThanOrEqual(1);
+    .toBeGreaterThanOrEqual(2);
   expect(heartbeatRequests[0]).toMatchObject({ sequence: 1, active: true });
+  expect(heartbeatRequests[1]).toEqual(heartbeatRequests[0]);
+  await expect.poll(() => heartbeatBackendResponses.length).toBeGreaterThanOrEqual(2);
+  expect(heartbeatBackendResponses[0]).toMatchObject({
+    sequence: 1,
+    active: true,
+    status: 200,
+    replayed: false,
+    awardedXp: 0,
+  });
+  expect(heartbeatBackendResponses[1]).toEqual({
+    ...heartbeatBackendResponses[0],
+    status: 200,
+    replayed: true,
+  });
+  await expect.poll(() => heartbeatClientStatuses.length).toBeGreaterThanOrEqual(2);
+  expect(heartbeatClientStatuses.slice(0, 2)).toEqual([503, 200]);
   await expect
     .poll(() => heartbeatAwards.length, { timeout: 5_000, intervals: [250, 500, 1000] })
     .toBeGreaterThanOrEqual(1);
@@ -118,10 +192,8 @@ test('account Reader awards cultivation XP through the real API and PostgreSQL',
       intervals: [500, 1000, 2000],
     })
     .toBe(true);
-  expect(heartbeatRequests.slice(0, 2)).toEqual([
-    { sequence: 1, active: true },
-    { sequence: 2, active: true },
-  ]);
+  expect(heartbeatRequests[2]).toMatchObject({ sequence: 2, active: true });
+  expect(heartbeatRequests[2]?.idempotencyKey).not.toBe(heartbeatRequests[0]?.idempotencyKey);
 
   const closePromise = page.waitForResponse(
     (response) =>
