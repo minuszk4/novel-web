@@ -459,6 +459,15 @@ COMMIT;
     }
     Push-Location $webDirectory
     try {
+        $translationBeforeOutline = $IncludeTranslationPreview -and $IncludeAuthoringOutline
+        $e2eExit = 0
+        if ($translationBeforeOutline) {
+            & npm.cmd run test:e2e:postgres -- 'e2e/translation-live-postgres.spec.ts' *>&1 |
+                Tee-Object -FilePath $e2eLog
+            $e2eExit = $LASTEXITCODE
+            if ($e2eExit -ne 0) { throw "Fake-local translation journey failed (exit $e2eExit)." }
+        }
+
         $e2eSpecs = @(
             'e2e/authoring-create-live-postgres.spec.ts'
         )
@@ -473,11 +482,19 @@ COMMIT;
             'e2e/glossary-import-live-postgres.spec.ts',
             'e2e/cultivation-live-postgres.spec.ts'
         )
-        if ($IncludeTranslationPreview) { $e2eSpecs += 'e2e/translation-live-postgres.spec.ts' }
+        if ($IncludeTranslationPreview -and -not $translationBeforeOutline) {
+            $e2eSpecs += 'e2e/translation-live-postgres.spec.ts'
+        }
         if ($IncludeAuthoringChapterEditor) { $e2eSpecs += 'e2e/authoring-chapter-editor-live-postgres.spec.ts' }
         if ($IncludePaymentReturn) { $e2eSpecs += 'e2e/momo-payment-return-live-postgres.spec.ts' }
         if ($IncludeCommerceSettlement) { $e2eSpecs += 'e2e/momo-commerce-settlement-live-postgres.spec.ts' }
-        & npm.cmd run test:e2e:postgres -- $e2eSpecs *>&1 | Tee-Object -FilePath $e2eLog
+        if ($translationBeforeOutline) {
+            & npm.cmd run test:e2e:postgres -- $e2eSpecs *>&1 |
+                Tee-Object -FilePath $e2eLog -Append
+        } else {
+            & npm.cmd run test:e2e:postgres -- $e2eSpecs *>&1 |
+                Tee-Object -FilePath $e2eLog
+        }
         $e2eExit = $LASTEXITCODE
     } finally { Pop-Location }
     if ($e2eExit -ne 0) { throw "Live FE/API/PostgreSQL Playwright journey failed (exit $e2eExit)." }
