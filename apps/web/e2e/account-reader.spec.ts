@@ -534,12 +534,14 @@ async function installCultivationSessionRoutes(
     if (path.endsWith(':heartbeat')) {
       const body = request.postDataJSON() as { sequence: number; active: boolean };
       const idempotencyKey = request.headers()['idempotency-key'];
+      sessionEvents.push(`heartbeat-attempt:${body.sequence}:${body.active}`);
       if (body.sequence !== sequence + 1 || !idempotencyKey) {
         return json(route, { code: 'READING_SESSION_SEQUENCE_CONFLICT' }, 409);
       }
       if (retryFirstHeartbeat && !didFailHeartbeat) {
         didFailHeartbeat = true;
         pendingFailedHeartbeat = { sequence: body.sequence, idempotencyKey };
+        sessionEvents.push(`heartbeat-503:${body.sequence}:${body.active}`);
         return json(route, { code: 'TEMPORARY_READING_SESSION_ERROR' }, 503);
       }
       if (pendingFailedHeartbeat) {
@@ -742,6 +744,15 @@ test('cultivation Reader sessions follow content, focus, chapter changes, and se
   });
   await expect.poll(() => events).toContain('heartbeat-retried-same-key');
   await expect.poll(() => events).toContain('heartbeat:1:false');
+  expect(events.filter((event) => event.startsWith('heartbeat-attempt:'))).toEqual([
+    'heartbeat-attempt:1:false',
+    'heartbeat-attempt:1:false',
+  ]);
+  expect(events.filter((event) => event.startsWith('heartbeat-503:'))).toEqual([
+    'heartbeat-503:1:false',
+  ]);
+  expect(events.filter((event) => event === 'heartbeat-retried-same-key')).toHaveLength(1);
+  expect(events.filter((event) => event.startsWith('heartbeat:'))).toEqual(['heartbeat:1:false']);
   await page.evaluate(() => {
     (window as Window & { setReaderPageFocus: (focused: boolean) => void }).setReaderPageFocus(
       true,
@@ -749,6 +760,10 @@ test('cultivation Reader sessions follow content, focus, chapter changes, and se
     window.dispatchEvent(new Event('focus'));
   });
   await expect.poll(() => events).toContain('heartbeat:2:true');
+  expect(events.filter((event) => event.startsWith('heartbeat:'))).toEqual([
+    'heartbeat:1:false',
+    'heartbeat:2:true',
+  ]);
 
   await page.getByRole('button', { name: 'Mở mục lục' }).click();
   await page
