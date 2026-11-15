@@ -181,7 +181,7 @@ test('requires explicit confirmation and waits for server-confirmed settlement',
   await page.goto('/app/credits?returnTo=%2Fapp%2Freader%2F55555555-5555-4555-8555-555555555555');
   await expect(page.getByRole('heading', { name: 'Nạp credit' })).toBeVisible();
   await expect(page.getByText('1.000 ₫')).toBeVisible();
-  await expect(page.getByText('100 paid credit')).toBeVisible();
+  await expect(page.getByText('100 credit đã mua')).toBeVisible();
   await expect(page.getByText('MoMo TEST — không dùng tiền thật.')).toBeVisible();
   await expectNoAxeViolations(page);
   await page.screenshot({

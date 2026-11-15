@@ -58,7 +58,7 @@ describe('PaymentResultPageComponent', () => {
     });
 
     expect(shopApi.getOrderStatus).toHaveBeenCalledWith(orderId);
-    expect(fixture.nativeElement.textContent).toContain('100 credit chưa được cộng');
+    expect(fixture.nativeElement.textContent).toContain('100 credit đã mua chưa được cộng');
     expect(fixture.nativeElement.textContent).toContain('Đừng thanh toán lại');
     expect(fixture.nativeElement.textContent).not.toContain('đã được xác nhận');
     expect(historyApi.getCreditBalance).not.toHaveBeenCalled();

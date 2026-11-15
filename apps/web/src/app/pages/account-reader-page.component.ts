@@ -272,6 +272,12 @@ export class AccountReaderPageComponent {
     if (panel) this.focusPanel(panel.nativeElement);
   }
 
+  @ViewChild('unlockConfirmation') private set unlockConfirmation(
+    panel: ElementRef<HTMLElement> | undefined,
+  ) {
+    if (panel) this.focusPanel(panel.nativeElement);
+  }
+
   constructor() {
     this.route.paramMap.pipe(takeUntilDestroyed(this.destroyRef)).subscribe((params) => {
       this.stopCultivationSession();
@@ -501,6 +507,9 @@ export class AccountReaderPageComponent {
     if (this.unlockSubmitting()) return;
     this.unlockConfirming.set(false);
     this.unlockMessage.set('');
+    requestAnimationFrame(() => {
+      document.getElementById('account-reader-unlock-continue')?.focus({ preventScroll: true });
+    });
   }
 
   protected async confirmChapterUnlock(): Promise<void> {
@@ -539,7 +548,9 @@ export class AccountReaderPageComponent {
       if (mapped.code === 'INSUFFICIENT_CREDITS') {
         this.chapterUnlockApi.clearIdempotencyKey(chapter.id);
         this.unlockConfirming.set(false);
-        this.unlockMessage.set('Số paid credit đã thay đổi. Hãy nạp thêm rồi xác nhận mở chương.');
+        this.unlockMessage.set(
+          'Số credit đã mua đã thay đổi. Hãy nạp thêm rồi xác nhận mở chương.',
+        );
         await this.refreshChapterCreditBalance(chapter.id, token);
       } else if (mapped.code === 'CHAPTER_PRICE_VERSION_STALE') {
         this.chapterUnlockApi.clearIdempotencyKey(chapter.id);
@@ -576,7 +587,7 @@ export class AccountReaderPageComponent {
     if (error.status === 403) return 'Cần xác nhận chính sách tài khoản hiện hành để mở chương.';
     if (error.status === 404) return 'Chương này hiện không còn khả dụng để mở bằng credit.';
     if (error.code === 'CHAPTER_PRICE_VERSION_STALE') return 'Giá chương đã thay đổi.';
-    if (error.code === 'INSUFFICIENT_CREDITS') return 'Không đủ paid credit để mở chương này.';
+    if (error.code === 'INSUFFICIENT_CREDITS') return 'Không đủ credit đã mua để mở chương này.';
     if (error.status >= 500) return 'Dịch vụ mở chương đang tạm thời không khả dụng. Thử lại sau.';
     return 'Chưa tải được thông tin mở chương. Hãy thử lại.';
   }

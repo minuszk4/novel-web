@@ -18,8 +18,8 @@
           <strong>{{ amount(currentBalance.totalCredits) }}</strong> credit
         </p>
         <p class="credit-shop-balance-breakdown">
-          {{ amount(currentBalance.paidCredits) }} đã mua ·
-          {{ amount(currentBalance.bonusCredits) }} thưởng
+          {{ amount(currentBalance.paidCredits) }} credit đã mua ·
+          {{ amount(currentBalance.bonusCredits) }} credit thưởng
         </p>
       }
     </div>
@@ -60,8 +60,8 @@
         <div>
           <h2 id="credit-shop-recovery-title">Yêu cầu nạp chưa được xác nhận</h2>
           <p>
-            Gói {{ amount(pendingPack.amountVnd) }} ₫ · {{ amount(pendingPack.paidCredits) }} paid
-            credit. Dùng cùng mã yêu cầu để kiểm tra an toàn; không chọn gói khác.
+            Gói {{ amount(pendingPack.amountVnd) }} ₫ · {{ amount(pendingPack.paidCredits) }} credit
+            đã mua. Dùng cùng mã yêu cầu để kiểm tra an toàn; không chọn gói khác.
           </p>
           @if (checkoutError()) {
             <p class="credit-shop-inline-error">{{ checkoutError() }}</p>
@@ -139,7 +139,7 @@
             <li class="credit-shop-offer">
               <div class="credit-shop-offer-copy">
                 <p class="credit-shop-amount">{{ amount(pack.amountVnd) }} ₫</p>
-                <h3>{{ amount(pack.paidCredits) }} paid credit</h3>
+                <h3>{{ amount(pack.paidCredits) }} credit đã mua</h3>
                 @if (pack.bonusCredits > 0) {
                   <p>{{ amount(pack.bonusCredits) }} credit thưởng</p>
                 } @else {
@@ -190,11 +190,11 @@
         }}</span>
       </div>
       <p>
-        {{ amount(order.paidCredits) }} paid credit · {{ amount(order.amountVnd) }} ₫ · mã lệnh
+        {{ amount(order.paidCredits) }} credit đã mua · {{ amount(order.amountVnd) }} ₫ · mã lệnh
         {{ orderReference(order.id) }}
       </p>
       @if (order.bonusCredits > 0) {
-        <p>{{ amount(order.bonusCredits) }} bonus credit trong gói này.</p>
+        <p>{{ amount(order.bonusCredits) }} credit thưởng trong gói này.</p>
       }
       @if (replayedOrder()) {
         <p role="status">Đây là lệnh đã có từ yêu cầu trước, không phải một lệnh mới.</p>
@@ -277,10 +277,10 @@
         <p class="eyebrow">XÁC NHẬN GÓI TEST</p>
         <h2 id="credit-shop-confirm-title" #confirmHeading tabindex="-1">Tạo lệnh nạp?</h2>
         <p id="credit-shop-confirm-description">
-          Bạn đang chọn {{ amount(pack.amountVnd) }} ₫ để nhận {{ amount(pack.paidCredits) }} paid
-          credit.
+          Bạn đang chọn {{ amount(pack.amountVnd) }} ₫ để nhận {{ amount(pack.paidCredits) }} credit
+          đã mua.
           @if (pack.bonusCredits > 0) {
-            Kèm {{ amount(pack.bonusCredits) }} bonus credit.
+            Kèm {{ amount(pack.bonusCredits) }} credit thưởng.
           }
           Gói này thuộc MoMo TEST và không dùng tiền thật.
         </p>

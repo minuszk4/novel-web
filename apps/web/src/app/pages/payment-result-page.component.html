@@ -68,8 +68,8 @@
           <dd>{{ amount(current.amountVnd) }} ₫</dd>
         </div>
         <div>
-          <dt>Credit theo gói</dt>
-          <dd>{{ amount(current.paidCredits) }} paid credit</dd>
+          <dt>Credit đã mua theo gói</dt>
+          <dd>{{ amount(current.paidCredits) }} credit đã mua</dd>
         </div>
         <div>
           <dt>Mã lệnh</dt>
@@ -85,8 +85,8 @@
       @if (isUnresolved()) {
         <p class="payment-result-explanation" role="status">
           Việc quay về từ trang thanh toán không chứng minh giao dịch thành công. Lệnh vẫn đang chờ
-          máy chủ xác nhận; {{ amount(current.paidCredits) }} credit chưa được cộng. Đừng thanh toán
-          lại hoặc tạo lệnh khác lúc này.
+          máy chủ xác nhận; {{ amount(current.paidCredits) }} credit đã mua chưa được cộng. Đừng
+          thanh toán lại hoặc tạo lệnh khác lúc này.
         </p>
       } @else if (current.status === 'SUCCEEDED') {
         <p class="payment-result-explanation" role="status">

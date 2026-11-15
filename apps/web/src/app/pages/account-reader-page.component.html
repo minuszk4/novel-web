@@ -722,8 +722,8 @@
           {{ activeChapter()?.title || 'Chương này cần mở khóa' }}
         </h1>
         <p class="account-reader-paywall-intro">
-          Chương chưa được gửi xuống trình đọc. Xem giá và số paid credit trước khi xác nhận mở.
-          Thưởng credit không dùng cho thao tác này.
+          Chương chưa được gửi xuống trình đọc. Xem giá và số credit đã mua cần dùng trước khi xác
+          nhận mở. Thưởng credit không dùng cho thao tác này.
         </p>
 
         @if (unlockQuoteState() === 'disabled') {
@@ -735,7 +735,7 @@
           >
         } @else if (unlockQuoteState() === 'loading') {
           <p class="account-reader-paywall-notice" role="status" aria-live="polite">
-            Đang lấy giá hiện tại và số dư paid credit…
+            Đang lấy giá hiện tại và số dư credit đã mua…
           </p>
         } @else if (unlockQuoteState() === 'error' && unlockQuoteError(); as error) {
           <p class="account-reader-paywall-notice" role="alert">
@@ -757,10 +757,10 @@
           <dl class="account-reader-paywall-facts">
             <div>
               <dt>Giá hiện tại</dt>
-              <dd>{{ quote.priceCredits }} paid credit</dd>
+              <dd>{{ quote.priceCredits }} credit đã mua</dd>
             </div>
             <div>
-              <dt>Paid credit còn lại</dt>
+              <dt>Credit đã mua còn lại</dt>
               <dd>
                 @if (creditBalanceState() === 'loading') {
                   Đang tải…
@@ -783,17 +783,29 @@
           @if (creditBalance(); as balance) {
             @if (balance.bonusCredits > 0) {
               <p class="account-reader-paywall-note">
-                Bạn có {{ balance.bonusCredits }} credit thưởng; gói mở chương này chỉ dùng paid
-                credit.
+                Bạn có {{ balance.bonusCredits }} credit thưởng; gói mở chương này chỉ dùng credit
+                đã mua.
               </p>
             }
             @if (canAffordUnlock()) {
               @if (unlockConfirming()) {
-                <div class="account-reader-unlock-confirm" aria-label="Xác nhận mở chương">
+                <div
+                  #unlockConfirmation
+                  class="account-reader-unlock-confirm"
+                  role="group"
+                  aria-labelledby="account-reader-unlock-confirm-title"
+                >
+                  <h2
+                    id="account-reader-unlock-confirm-title"
+                    tabindex="-1"
+                    data-panel-initial-focus
+                  >
+                    Xác nhận mở chương
+                  </h2>
                   <p>
-                    Xác nhận dùng <strong>{{ quote.priceCredits }} paid credit</strong> để mở chương
-                    này. Số dư sau đó là khoảng
-                    <strong>{{ balance.paidCredits - quote.priceCredits }} paid credit</strong>.
+                    Dùng <strong>{{ quote.priceCredits }} credit đã mua</strong> để mở chương này.
+                    Số dư sau đó là
+                    <strong>{{ balance.paidCredits - quote.priceCredits }} credit đã mua</strong>.
                   </p>
                   <div class="account-reader-paywall-actions">
                     <button
@@ -823,14 +835,15 @@
                   class="button button-primary"
                   type="button"
                   [disabled]="creditBalanceState() !== 'ready'"
+                  id="account-reader-unlock-continue"
                   (click)="beginUnlockConfirmation()"
                 >
-                  Xem lại điều kiện
+                  Tiếp tục đến xác nhận
                 </button>
               }
             } @else {
               <p class="account-reader-paywall-notice" role="status">
-                Bạn còn {{ balance.paidCredits }} paid credit, chưa đủ
+                Bạn còn {{ balance.paidCredits }} credit đã mua, chưa đủ
                 {{ quote.priceCredits }} credit để mở chương.
               </p>
               <a

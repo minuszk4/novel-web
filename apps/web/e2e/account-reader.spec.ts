@@ -1102,7 +1102,7 @@ test('public work details link a locked chapter to its Reader paywall', async ({
   await page.getByRole('link', { name: /Chương 2 Bản nháp Xem giá & mở/ }).click();
   await expect(page).toHaveURL(new RegExp(`/app/reader/${workId}/${chapterIds[1]}$`));
   await expect(page.getByRole('heading', { name: 'Bản nháp' })).toBeVisible();
-  await expect(page.getByText('10 paid credit', { exact: true })).toBeVisible();
+  await expect(page.getByText('10 credit đã mua', { exact: true })).toBeVisible();
   await expectNoAxeViolations(page);
 });
 
@@ -1168,29 +1168,35 @@ test('requires explicit confirmation before paid-credit chapter unlock', async (
   await page.goto(`/app/reader/${workId}/${chapterIds[1]}`);
   await expect(page.getByRole('heading', { name: 'Bản nháp' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Bản nháp' })).toBeFocused();
-  await expect(page.getByText('10 paid credit', { exact: true })).toBeVisible();
+  await expect(page.getByText('10 credit đã mua', { exact: true })).toBeVisible();
   await expect(page.getByText('100', { exact: true })).toBeVisible();
   await expect.poll(() => quoteRequests).toBe(1);
   expect(loadedChapters).not.toContain(chapterIds[1]);
   await expectNoAxeViolations(page);
   await page.screenshot({ path: testInfo.outputPath('reader-paywall-360x800.png') });
 
-  await page.getByRole('button', { name: 'Xem lại điều kiện' }).click();
+  await page.getByRole('button', { name: 'Tiếp tục đến xác nhận' }).focus();
+  await page.keyboard.press('Enter');
+  await expect(page.getByRole('heading', { name: 'Xác nhận mở chương' })).toBeFocused();
+  await expectNoAxeViolations(page);
+  await page.screenshot({ path: testInfo.outputPath('reader-paywall-confirmation-360x800.png') });
   await expect(page.getByRole('button', { name: 'Xác nhận · 10 credit' })).toBeVisible();
-  await page.getByRole('button', { name: 'Hủy', exact: true }).click();
+  await page.getByRole('button', { name: 'Hủy', exact: true }).focus();
+  await page.keyboard.press('Enter');
+  await expect(page.getByRole('button', { name: 'Tiếp tục đến xác nhận' })).toBeFocused();
   expect(unlockRequests).toBe(0);
   await expectNoAxeViolations(page);
 
-  await page.getByRole('button', { name: 'Xem lại điều kiện' }).click();
+  await page.getByRole('button', { name: 'Tiếp tục đến xác nhận' }).click();
   await page.getByRole('button', { name: 'Xác nhận · 10 credit' }).click();
   await expect(page.getByText(/Chưa xác nhận được kết quả/)).toBeVisible();
   expect(unlockRequests).toBe(1);
   expect(loadedChapters).not.toContain(chapterIds[1]);
   await page.reload();
   await expect(page.getByRole('heading', { name: 'Bản nháp' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Xem lại điều kiện' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Tiếp tục đến xác nhận' })).toBeVisible();
   await expect.poll(() => quoteRequests).toBe(2);
-  await page.getByRole('button', { name: 'Xem lại điều kiện' }).click();
+  await page.getByRole('button', { name: 'Tiếp tục đến xác nhận' }).click();
   await page.getByRole('button', { name: 'Xác nhận · 10 credit' }).click();
   await expect(page.locator('.account-reader-content')).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Bản nháp' })).toBeVisible();
@@ -1252,11 +1258,11 @@ test('locked-chapter paywall fits a 200% effective mobile viewport', async ({ br
 
     await page.goto(`/app/reader/${workId}/${chapterIds[1]}`);
     await expect(page.getByRole('heading', { name: 'Bản nháp' })).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Xem lại điều kiện' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Tiếp tục đến xác nhận' })).toBeVisible();
     const paywall = page.getByRole('region', { name: 'Bản nháp' });
     await paywall.focus();
     await page.keyboard.press('End');
-    await expect(page.getByRole('button', { name: 'Xem lại điều kiện' })).toBeInViewport();
+    await expect(page.getByRole('button', { name: 'Tiếp tục đến xác nhận' })).toBeInViewport();
     const dimensions = await page.evaluate(() => ({
       document: document.documentElement.scrollWidth,
       viewport: document.documentElement.clientWidth,

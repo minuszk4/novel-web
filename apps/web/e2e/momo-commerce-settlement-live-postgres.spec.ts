@@ -136,11 +136,11 @@ test('synthetic signed settlement grants credits once and unlocks a public chapt
 
   await page.goto(`http://localhost:4300/app/reader/${workId}/${chapterId}`);
   await expect(page.getByRole('heading', { name: 'Live Paid Chapter' })).toBeVisible();
-  await expect(page.getByText('10 paid credit', { exact: true })).toBeVisible();
+  await expect(page.getByText('10 credit đã mua', { exact: true })).toBeVisible();
   await expect(page.getByText('100', { exact: true })).toBeVisible();
   expect(chapterContentRequests).toEqual([]);
 
-  await page.getByRole('button', { name: 'Xem lại điều kiện' }).click();
+  await page.getByRole('button', { name: 'Tiếp tục đến xác nhận' }).click();
   await expect(page.getByRole('button', { name: 'Xác nhận · 10 credit' })).toBeVisible();
   await page.getByRole('button', { name: 'Xác nhận · 10 credit' }).click();
   await expect(page.locator('.account-reader-content')).toContainText(
@@ -548,7 +548,7 @@ test('synthetic signed settlement grants credits once and unlocks a public chapt
   );
   await expect(page.getByRole('heading', { name: 'Chưa tải được trạng thái' })).toBeVisible();
   await expect(page.getByText(/Chưa tải được trạng thái do máy chủ lưu/)).toBeVisible();
-  await expect(page.getByText(/100 paid credit|1\.000 ₫/)).toHaveCount(0);
+  await expect(page.getByText(/100 credit đã mua|1\.000 ₫/)).toHaveCount(0);
 
   await page.goto('http://localhost:4300/app/purchases?view=orders');
   await expect(page.getByRole('heading', { name: 'Chưa có lệnh nạp' })).toBeVisible();
@@ -578,8 +578,8 @@ test('synthetic signed settlement grants credits once and unlocks a public chapt
   chapterContentRequests.length = 0;
   await page.goto(`http://localhost:4300/app/reader/${workId}/${chapterId}`);
   await expect(page.getByRole('heading', { name: 'Live Paid Chapter' })).toBeVisible();
-  await expect(page.getByText(/Bạn còn 0 paid credit, chưa đủ 10 credit/)).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Xem lại điều kiện' })).toHaveCount(0);
+  await expect(page.getByText(/Bạn còn 0 credit đã mua, chưa đủ 10 credit/)).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Tiếp tục đến xác nhận' })).toHaveCount(0);
   await expect(page.getByRole('link', { name: 'Nạp credit MoMo TEST' })).toBeVisible();
   expect(chapterContentRequests).toEqual([]);
 

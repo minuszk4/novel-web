@@ -168,8 +168,8 @@ for (const viewport of viewports) {
         .getByRole('list', { name: 'Các lệnh nạp credit' })
         .getByText('Đang chờ xác nhận', { exact: true }),
     ).toBeVisible();
-    await expect(page.getByText('100 paid credit · 1.000 ₫')).toBeVisible();
-    await expect(page.getByText('Gói TEST 100 paid credit · phiên bản 1')).toBeVisible();
+    await expect(page.getByText('100 credit đã mua · 1.000 ₫')).toBeVisible();
+    await expect(page.getByText('Gói TEST 100 credit đã mua · phiên bản 1')).toBeVisible();
     await expect(page.getByText('Chưa ghi nhận credit')).toBeVisible();
     await expect(page.getByText('Đừng thanh toán lại lệnh này.')).toBeVisible();
     await expect(page.getByText('MÔI TRƯỜNG TEST')).toBeVisible();

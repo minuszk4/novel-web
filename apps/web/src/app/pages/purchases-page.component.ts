@@ -171,15 +171,15 @@ export class PurchasesPageComponent {
   }
 
   protected orderQuantityLabel(order: CommercePaymentOrder): string {
-    const paid = `${this.amount(order.paidCreditsPurchased)} paid credit`;
+    const paid = `${this.amount(order.paidCreditsPurchased)} credit đã mua`;
     return order.bonusCreditsPurchased > 0
-      ? `${paid} + ${this.amount(order.bonusCreditsPurchased)} bonus`
+      ? `${paid} + ${this.amount(order.bonusCreditsPurchased)} credit thưởng`
       : paid;
   }
 
   protected packLabel(order: CommercePaymentOrder): string {
     return order.packId === 'momo-test-credits-100'
-      ? `Gói TEST 100 paid credit · phiên bản ${order.packVersion}`
+      ? `Gói TEST 100 credit đã mua · phiên bản ${order.packVersion}`
       : `Gói credit · phiên bản ${order.packVersion}`;
   }
 
