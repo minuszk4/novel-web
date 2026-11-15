@@ -178,7 +178,7 @@ jobs:
           fi
       - name: Check OpenAPI version impact
         if: github.event_name == 'pull_request' && env.OPENAPI_BASE_SPEC != ''
-        run: npm run diff -- "$OPENAPI_BASE_SPEC" ../../apps/api/src/main/resources/openapi.yaml --format=github-actions --fail-on=none --check-version
+        run: npm run diff -- "$OPENAPI_BASE_SPEC" ../../apps/api/src/main/resources/openapi.yaml --format=github-actions --fail-on=major --check-version
 
   dependency-review:
     name: Pull request dependency review

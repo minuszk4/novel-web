@@ -22,7 +22,7 @@ Redocly CLI is pinned in `package.json` and `package-lock.json`. The same comman
 Compare the current contract with the version from the target branch:
 
 ```powershell
-npm run diff -- <path-to-base-openapi.yaml> ../../apps/api/src/main/resources/openapi.yaml --fail-on=none --check-version
+npm run diff -- <path-to-base-openapi.yaml> ../../apps/api/src/main/resources/openapi.yaml --fail-on=major --check-version
 ```
 
-The pull-request workflow fetches the base contract and runs this check automatically. `--check-version` fails when `info.version` does not meet the semantic-version bump implied by the change. The Google credential callback intentionally returns `303` on success, so Redocly's generic `operation-2xx-response` rule reports one warning for that redirect-only operation. The Redocly `diff` command is currently experimental, so reviewers must still verify that a breaking change has a route/migration plan and that repository branch protection requires the OpenAPI job before merge.
+The pull-request workflow fetches the base contract and runs this check automatically. `--fail-on=major` fails on incompatible API changes, including removal or replacement of a response status; `--check-version` also fails when `info.version` does not meet the semantic-version bump implied by the diff. A synthetic probe against the pinned Redocly CLI confirms that changing `200` to `202` exits non-zero with `--fail-on=major` and exits zero with the previous `--fail-on=none` setting. The Google credential callback intentionally returns `303` on success, so Redocly's generic `operation-2xx-response` rule reports one warning for that redirect-only operation. The Redocly `diff` command is currently experimental, so reviewers must still verify that an accepted breaking change has a route/migration plan and that repository branch protection requires the OpenAPI job before merge.
