@@ -119,6 +119,12 @@ export const routes: Routes = [
         title: 'Lịch sử nạp và mở chương — Novel',
       },
       {
+        path: 'credits',
+        loadComponent: () =>
+          import('./pages/credit-shop-page.component').then((page) => page.CreditShopPageComponent),
+        title: 'Nạp credit TEST — Novel',
+      },
+      {
         path: 'works/:workId',
         loadComponent: () =>
           import('./pages/account-work-detail-page.component').then(

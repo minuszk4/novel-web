@@ -49,7 +49,11 @@
                 "input": "public"
               }
             ],
-            "styles": ["src/styles.css", "src/app/pages/purchases-page.component.css"]
+            "styles": [
+              "src/styles.css",
+              "src/app/pages/purchases-page.component.css",
+              "src/app/pages/credit-shop-page.component.css"
+            ]
           },
           "configurations": {
             "production": {

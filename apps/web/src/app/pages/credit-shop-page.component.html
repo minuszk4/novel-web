@@ -1,0 +1,339 @@
+<section class="page-wrap credit-shop-page" aria-labelledby="credit-shop-title">
+  <header class="page-heading credit-shop-heading">
+    <p class="eyebrow">TÀI KHOẢN · CREDIT</p>
+    <h1 id="credit-shop-title" tabindex="-1">Nạp credit</h1>
+    <p>Credit dùng để mở khóa các chương có thu phí. Gói và giá được tải trực tiếp từ máy chủ.</p>
+  </header>
+
+  <section class="credit-shop-balance" aria-labelledby="credit-shop-balance-title">
+    <div class="credit-shop-balance-copy">
+      <p class="eyebrow">SỐ DƯ HIỆN TẠI</p>
+      <h2 id="credit-shop-balance-title">Ví credit</h2>
+      @if (balancePhase() === 'loading') {
+        <p role="status" aria-live="polite">Đang tải số dư…</p>
+      } @else if (balancePhase() === 'error') {
+        <p role="status">{{ balanceError() }}</p>
+      } @else if (balance(); as currentBalance) {
+        <p class="credit-shop-balance-total">
+          <strong>{{ amount(currentBalance.totalCredits) }}</strong> credit
+        </p>
+        <p class="credit-shop-balance-breakdown">
+          {{ amount(currentBalance.paidCredits) }} đã mua ·
+          {{ amount(currentBalance.bonusCredits) }} thưởng
+        </p>
+      }
+    </div>
+    @if (balancePhase() === 'error') {
+      <button class="button button-outline" type="button" (click)="retryBalance()">
+        Thử tải lại số dư
+      </button>
+    }
+  </section>
+
+  <aside class="credit-shop-test-banner" aria-label="Thông tin môi trường thanh toán">
+    <span aria-hidden="true">ⓘ</span>
+    @if (sandboxEnabled()) {
+      <p>
+        <strong>MoMo TEST — không dùng tiền thật.</strong>
+        Số dư chỉ thay đổi khi máy chủ xác nhận thanh toán. Trở về từ trang thanh toán không có
+        nghĩa giao dịch đã thành công.
+      </p>
+    } @else {
+      <p>
+        <strong>MoMo TEST hiện chưa được bật.</strong>
+        Không tạo lệnh nạp khi máy chủ chưa xác nhận đúng môi trường TEST.
+      </p>
+    }
+  </aside>
+
+  @if (statusMessage()) {
+    <p class="credit-shop-message" role="status" aria-live="polite">{{ statusMessage() }}</p>
+  }
+
+  @if (uncertainCreate()) {
+    @if (selectedPack(); as pendingPack) {
+      <section
+        class="credit-shop-recovery"
+        aria-labelledby="credit-shop-recovery-title"
+        role="alert"
+      >
+        <div>
+          <h2 id="credit-shop-recovery-title">Yêu cầu nạp chưa được xác nhận</h2>
+          <p>
+            Gói {{ amount(pendingPack.amountVnd) }} ₫ · {{ amount(pendingPack.paidCredits) }} paid
+            credit. Dùng cùng mã yêu cầu để kiểm tra an toàn; không chọn gói khác.
+          </p>
+          @if (checkoutError()) {
+            <p class="credit-shop-inline-error">{{ checkoutError() }}</p>
+          }
+        </div>
+        <button
+          class="button button-primary"
+          type="button"
+          [disabled]="creatingOrder() || !sandboxEnabled()"
+          (click)="retrySameOrder()"
+        >
+          {{ creatingOrder() ? 'Đang kiểm tra lệnh…' : 'Thử lại cùng yêu cầu' }}
+        </button>
+      </section>
+    }
+  }
+
+  @if (catalogPhase() === 'loading') {
+    <p class="credit-shop-state" role="status" aria-live="polite">
+      Đang kiểm tra môi trường và tải gói…
+    </p>
+  } @else if (catalogPhase() === 'environment-error') {
+    <section class="credit-shop-state-card" role="alert">
+      <h2>Chưa kiểm tra được môi trường</h2>
+      <p>
+        Không thể xác nhận MoMo TEST đang bật. Vì an toàn, danh sách gói và nút nạp đang bị khóa.
+      </p>
+      <button class="button button-outline" type="button" (click)="retryCatalog()">
+        Kiểm tra lại
+      </button>
+    </section>
+  } @else if (catalogPhase() === 'disabled') {
+    <section class="credit-shop-state-card" aria-labelledby="credit-shop-disabled-title">
+      <h2 id="credit-shop-disabled-title">Cửa hàng TEST đang tắt</h2>
+      <p>
+        Không thể tạo lệnh nạp lúc này. Bạn vẫn có thể xem các lệnh trước đó trong lịch sử giao
+        dịch.
+      </p>
+      <a class="button button-outline" routerLink="/app/purchases">Xem lịch sử nạp</a>
+    </section>
+  } @else if (catalogPhase() === 'error') {
+    <section class="credit-shop-state-card" role="alert">
+      <h2>Chưa tải được danh sách gói</h2>
+      <p>{{ catalogError() }}</p>
+      @if (recovery() === 'sign-in') {
+        <a
+          class="button button-primary"
+          [routerLink]="['/sign-in']"
+          [queryParams]="{ returnTo: '/app/credits' }"
+          >Đăng nhập</a
+        >
+      } @else if (recovery() === 'settings') {
+        <a class="button button-primary" routerLink="/app/settings">Mở cài đặt tài khoản</a>
+      } @else {
+        <button class="button button-outline" type="button" (click)="retryCatalog()">
+          Thử lại
+        </button>
+      }
+    </section>
+  } @else {
+    <section class="credit-shop-offers" aria-labelledby="credit-shop-offers-title">
+      <div class="credit-shop-section-heading">
+        <div>
+          <p class="eyebrow">GÓI NẠP</p>
+          <h2 id="credit-shop-offers-title">Chọn số credit</h2>
+        </div>
+        <span class="credit-shop-test-label">MÔI TRƯỜNG TEST</span>
+      </div>
+
+      @if (offers().length === 0) {
+        <p class="credit-shop-state">Hiện chưa có gói credit để nạp.</p>
+      } @else {
+        <ul class="credit-shop-offer-list" aria-label="Các gói credit TEST">
+          @for (pack of offers(); track pack.packId + ':' + pack.packVersion) {
+            <li class="credit-shop-offer">
+              <div class="credit-shop-offer-copy">
+                <p class="credit-shop-amount">{{ amount(pack.amountVnd) }} ₫</p>
+                <h3>{{ amount(pack.paidCredits) }} paid credit</h3>
+                @if (pack.bonusCredits > 0) {
+                  <p>{{ amount(pack.bonusCredits) }} credit thưởng</p>
+                } @else {
+                  <p>Không kèm credit thưởng</p>
+                }
+                @if (pack.paidExpiresAt) {
+                  <p>Credit đã mua hết hạn {{ dateTime(pack.paidExpiresAt) }}</p>
+                } @else {
+                  <p>Credit đã mua không có hạn dùng</p>
+                }
+                @if (pack.bonusCredits > 0 && pack.bonusExpiresAt) {
+                  <p>Credit thưởng hết hạn {{ dateTime(pack.bonusExpiresAt) }}</p>
+                }
+              </div>
+              <button
+                class="button button-primary credit-shop-select"
+                type="button"
+                [disabled]="creatingOrder() || uncertainCreate()"
+                [attr.aria-label]="
+                  'Chọn gói ' +
+                  amount(pack.paidCredits) +
+                  ' credit, giá ' +
+                  amount(pack.amountVnd) +
+                  ' đồng'
+                "
+                (click)="choosePack(pack)"
+              >
+                Chọn gói
+              </button>
+            </li>
+          }
+        </ul>
+      }
+    </section>
+  }
+
+  @if (paymentOrder(); as order) {
+    <section class="credit-shop-order-result" aria-labelledby="credit-shop-result-title">
+      <div class="credit-shop-section-heading">
+        <div>
+          <p class="eyebrow">LỆNH NẠP</p>
+          <h2 id="credit-shop-result-title" #resultHeading tabindex="-1">
+            {{ orderStatusLabel(order.status) }}
+          </h2>
+        </div>
+        <span class="credit-shop-order-status" [attr.data-state]="order.status">{{
+          orderStatusShortLabel(order.status)
+        }}</span>
+      </div>
+      <p>
+        {{ amount(order.paidCredits) }} paid credit · {{ amount(order.amountVnd) }} ₫ · mã lệnh
+        {{ orderReference(order.id) }}
+      </p>
+      @if (order.bonusCredits > 0) {
+        <p>{{ amount(order.bonusCredits) }} bonus credit trong gói này.</p>
+      }
+      @if (replayedOrder()) {
+        <p role="status">Đây là lệnh đã có từ yêu cầu trước, không phải một lệnh mới.</p>
+      }
+      @if (isOrderPending(order.status)) {
+        <p class="credit-shop-pending-note">
+          Lệnh đang chờ máy chủ xác nhận. Không thanh toán lại và không tạo lệnh khác trong lúc này.
+        </p>
+        @if (!checkoutUrl()) {
+          <p class="credit-shop-pending-note">
+            Chưa có liên kết thanh toán TEST được xác nhận. Hãy kiểm tra trạng thái đã lưu sau ít
+            phút; không tạo lệnh mới.
+          </p>
+        }
+      }
+      @if (checkoutError()) {
+        <p class="credit-shop-inline-error" role="alert">{{ checkoutError() }}</p>
+      }
+      @if (recovery() === 'sign-in') {
+        <p>
+          <a [routerLink]="['/sign-in']" [queryParams]="{ returnTo: '/app/credits' }"
+            >Đăng nhập lại</a
+          >
+        </p>
+      } @else if (recovery() === 'settings') {
+        <p><a routerLink="/app/settings">Mở cài đặt tài khoản</a></p>
+      }
+      <div class="credit-shop-result-actions">
+        @if (checkoutUrl() && isOrderPending(order.status)) {
+          <a
+            class="button button-primary"
+            [href]="checkoutUrl()"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Mở trang MoMo TEST <span aria-hidden="true">↗</span>
+          </a>
+        }
+        @if (isOrderPending(order.status)) {
+          <button
+            class="button button-outline"
+            type="button"
+            [disabled]="checkingStatus()"
+            (click)="checkOrderStatus()"
+          >
+            {{ checkingStatus() ? 'Đang tải trạng thái…' : 'Kiểm tra trạng thái đã lưu' }}
+          </button>
+        }
+        <a class="button button-outline" [routerLink]="returnLink()">{{
+          returnLink() === '/app/purchases' ? 'Xem lịch sử nạp' : 'Trở lại chương đang đọc'
+        }}</a>
+      </div>
+      @if (order.status === 'SUCCEEDED') {
+        <p class="credit-shop-success-note" role="status">
+          Credit đã được cập nhật theo trạng thái do máy chủ xác nhận.
+        </p>
+      } @else if (
+        order.status === 'FAILED' || order.status === 'CANCELLED' || order.status === 'EXPIRED'
+      ) {
+        <p class="credit-shop-pending-note">
+          Lệnh này đã kết thúc. Xem lịch sử để biết trạng thái mới nhất trước khi tạo lệnh khác.
+        </p>
+      }
+    </section>
+  }
+
+  <p class="credit-shop-history-link">
+    <a routerLink="/app/purchases">Mở lịch sử nạp, credit và chương đã mở</a>
+  </p>
+
+  <dialog
+    #confirmDialog
+    class="credit-shop-dialog"
+    aria-labelledby="credit-shop-confirm-title"
+    aria-describedby="credit-shop-confirm-description"
+    (cancel)="preventCloseWhileCreating($event)"
+  >
+    @if (selectedPack(); as pack) {
+      <div class="credit-shop-dialog-content">
+        <p class="eyebrow">XÁC NHẬN GÓI TEST</p>
+        <h2 id="credit-shop-confirm-title" #confirmHeading tabindex="-1">Tạo lệnh nạp?</h2>
+        <p id="credit-shop-confirm-description">
+          Bạn đang chọn {{ amount(pack.amountVnd) }} ₫ để nhận {{ amount(pack.paidCredits) }} paid
+          credit.
+          @if (pack.bonusCredits > 0) {
+            Kèm {{ amount(pack.bonusCredits) }} bonus credit.
+          }
+          Gói này thuộc MoMo TEST và không dùng tiền thật.
+        </p>
+        <p class="credit-shop-confirm-note">
+          Việc tạo lệnh chưa cộng credit. Chỉ trạng thái thanh toán do máy chủ xác nhận mới cập nhật
+          số dư.
+        </p>
+        @if (checkoutError()) {
+          <p class="credit-shop-inline-error" role="alert">{{ checkoutError() }}</p>
+        }
+        <div class="credit-shop-dialog-actions">
+          @if (recovery() === 'sign-in') {
+            <a
+              class="button button-primary"
+              [routerLink]="['/sign-in']"
+              [queryParams]="{ returnTo: '/app/credits' }"
+              >Đăng nhập lại</a
+            >
+          } @else if (recovery() === 'settings') {
+            <a class="button button-primary" routerLink="/app/settings">Mở cài đặt</a>
+          } @else if (uncertainCreate()) {
+            <button
+              class="button button-primary"
+              type="button"
+              [disabled]="creatingOrder()"
+              (click)="retrySameOrder()"
+            >
+              {{ creatingOrder() ? 'Đang kiểm tra lệnh…' : 'Thử lại cùng yêu cầu an toàn' }}
+            </button>
+            <p class="credit-shop-pending-note">
+              Mạng bị gián đoạn nên chưa rõ máy chủ đã tạo lệnh chưa. Giữ nguyên yêu cầu này; không
+              chọn gói khác.
+            </p>
+          } @else {
+            <button
+              class="button button-outline"
+              type="button"
+              [disabled]="creatingOrder()"
+              (click)="cancelConfirmation()"
+            >
+              Hủy
+            </button>
+            <button
+              class="button button-primary"
+              type="button"
+              [disabled]="creatingOrder()"
+              (click)="confirmOrder()"
+            >
+              {{ creatingOrder() ? 'Đang tạo lệnh…' : 'Xác nhận tạo lệnh' }}
+            </button>
+          }
+        </div>
+      </div>
+    }
+  </dialog>
+</section>

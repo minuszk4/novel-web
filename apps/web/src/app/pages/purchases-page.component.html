@@ -50,6 +50,11 @@
         hình này.
       }
     </p>
+    @if (sandboxEnabled()) {
+      <a class="button button-primary purchases-shop-link" routerLink="/app/credits">
+        Xem gói credit TEST
+      </a>
+    }
   </section>
 
   <nav class="purchases-tabs" aria-label="Các loại lịch sử mua hàng">
