@@ -57,6 +57,7 @@ export class LibraryPageComponent {
   protected readonly workStateSync = signal<Record<string, SyncPhase>>({});
   protected readonly workStateErrors = signal<Record<string, string>>({});
   protected readonly isOnline = signal(typeof navigator === 'undefined' || navigator.onLine);
+  private workStateLoadQueue: Promise<void> = Promise.resolve();
   protected readonly isAccountMode = computed(() => this.policy.status() === 'accepted');
   protected readonly filters: { value: LibraryFilter; label: string }[] = [
     { value: 'all', label: 'Tất cả' },
@@ -413,11 +414,16 @@ export class LibraryPageComponent {
 
   private async loadWorkStates(works: AccountWorkSummary[]): Promise<void> {
     const uniqueWorks = [...new Map(works.map((work) => [work.id, work])).values()];
-    for (let index = 0; index < uniqueWorks.length; index += 4) {
-      await Promise.all(
-        uniqueWorks.slice(index, index + 4).map((work) => this.loadWorkState(work.id)),
-      );
-    }
+    const loadBatch = async () => {
+      for (let index = 0; index < uniqueWorks.length; index += 4) {
+        await Promise.all(
+          uniqueWorks.slice(index, index + 4).map((work) => this.loadWorkState(work.id)),
+        );
+      }
+    };
+    const queuedLoad = this.workStateLoadQueue.then(loadBatch, loadBatch);
+    this.workStateLoadQueue = queuedLoad.catch(() => undefined);
+    await queuedLoad;
   }
 
   private async loadAccountCollections(): Promise<void> {

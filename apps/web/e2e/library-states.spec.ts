@@ -533,6 +533,83 @@ test('account library exposes a retry when collection loading fails', async ({ p
   await expectNoAxeViolations(page);
 });
 
+test('account library keeps work-state reads within four across overlapping page loads', async ({
+  page,
+}) => {
+  const libraryId = '88888888-8888-4888-8888-888888888888';
+  const works = Array.from({ length: 50 }, (_, index) => ({
+    id: `99999999-9999-4999-8999-${String(index + 1).padStart(12, '0')}`,
+    libraryId,
+    title: `Tác phẩm ${index + 1}`,
+    author: 'Tác giả',
+    language: 'vi',
+    visibility: 'private',
+    chapterCount: 0,
+    createdAt: '2026-11-10T00:00:00Z',
+  }));
+  const secondPageWorkIds = new Set(works.slice(25, 49).map(({ id }) => id));
+  let activeStateReads = 0;
+  let maxActiveStateReads = 0;
+  let completedStateReads = 0;
+  let secondPageStateRead = false;
+
+  await page.setViewportSize({ width: 360, height: 800 });
+  await page.addInitScript(() => localStorage.removeItem('novel.demo.library.v1'));
+  await installAcceptedAccountRoutes(page);
+  await page.route('**/api/v1/libraries**', (route) =>
+    json(route, {
+      items: [
+        {
+          id: libraryId,
+          name: 'Thư viện chính',
+          visibility: 'private',
+          isDefault: true,
+          createdAt: '2026-11-10T00:00:00Z',
+        },
+      ],
+      nextCursor: null,
+    }),
+  );
+  await page.route('**/api/v1/works**', (route) => {
+    const cursor = new URL(route.request().url()).searchParams.get('cursor');
+    const pageItems = cursor ? [...works.slice(0, 1), ...works.slice(25, 49)] : works.slice(0, 25);
+    return json(route, { items: pageItems, nextCursor: cursor ? null : 'page-2' });
+  });
+  await page.route('**/api/v1/me/works/*/library-state', async (route) => {
+    const workId = new URL(route.request().url()).pathname.split('/')[5];
+    activeStateReads += 1;
+    maxActiveStateReads = Math.max(maxActiveStateReads, activeStateReads);
+    if (secondPageWorkIds.has(workId)) secondPageStateRead = true;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    await json(
+      route,
+      {
+        workId,
+        readingStatus: 'want-to-read',
+        collectionIds: [],
+        version: 0,
+        updatedAt: null,
+      },
+      200,
+      { etag: '"v0"' },
+    );
+    activeStateReads -= 1;
+    completedStateReads += 1;
+  });
+
+  await page.goto('/app/library');
+  await expect(page.getByRole('heading', { name: 'Tác phẩm 1', exact: true })).toBeVisible();
+  await expect.poll(() => activeStateReads).toBe(4);
+  await page.getByRole('button', { name: 'Tải thêm tác phẩm' }).click();
+  await expect(page.getByRole('heading', { name: 'Tác phẩm 26', exact: true })).toBeVisible();
+  await expect.poll(() => secondPageStateRead).toBe(true);
+  await expect.poll(() => completedStateReads).toBe(49, { timeout: 20_000 });
+  await expect(page.getByRole('button', { name: 'Tất cả 49', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Tác phẩm 1', exact: true })).toHaveCount(1);
+
+  expect(maxActiveStateReads).toBeLessThanOrEqual(4);
+});
+
 const acceptedAccount = {
   user: {
     id: 'user-1',
