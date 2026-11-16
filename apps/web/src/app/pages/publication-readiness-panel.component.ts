@@ -19,6 +19,10 @@ import {
   PublicationReadiness,
   PublicationReleaseReceipt,
   PublicationRequestReceipt,
+  PublicationRequestHistoryAction,
+  PublicationRequestHistoryEvent,
+  PublicationRequestHistoryPage,
+  PublicationRequestHistoryReason,
   PublicationScopeCode,
   newAuthoringIdempotencyKey,
 } from '../core/authoring-api.service';
@@ -27,6 +31,7 @@ import { PublicationRequestFormComponent } from './publication-request-form.comp
 
 type PanelState = 'idle' | 'loading' | 'ready' | 'error' | 'publishing' | 'uncertain' | 'published';
 type WithdrawalState = 'idle' | 'confirming' | 'submitting' | 'uncertain';
+type RequestHistoryState = 'idle' | 'loading' | 'ready' | 'error';
 
 interface ReleaseAttempt {
   workId: string;
@@ -65,11 +70,17 @@ export class PublicationReadinessPanelComponent implements OnChanges {
   protected readonly requestFlowActive = signal(false);
   protected readonly withdrawalState = signal<WithdrawalState>('idle');
   protected readonly withdrawalError = signal<AuthoringApiError | null>(null);
+  protected readonly requestHistoryState = signal<RequestHistoryState>('idle');
+  protected readonly requestHistory = signal<PublicationRequestHistoryPage | null>(null);
+  protected readonly requestHistoryError = signal<AuthoringApiError | null>(null);
+  protected readonly requestHistoryAnnouncement = signal('');
 
   private readonly api = inject(AuthoringApiService);
   private readonly systemStatus = inject(SystemStatusService);
   private readonly injector = inject(Injector);
   private requestToken = 0;
+  private requestHistoryToken = 0;
+  private failedHistoryCursor: string | null = null;
   private pendingRelease: ReleaseAttempt | null = null;
   private pendingWithdrawal: WithdrawalAttempt | null = null;
 
@@ -174,6 +185,7 @@ export class PublicationReadinessPanelComponent implements OnChanges {
     this.withdrawalState.set('idle');
     this.withdrawalError.set(null);
     this.pendingWithdrawal = null;
+    this.resetRequestHistory();
 
     try {
       const readiness = await this.api.getPublicationReadiness(this.workId);
@@ -396,6 +408,51 @@ export class PublicationReadinessPanelComponent implements OnChanges {
     this.requestFlowActive.set(active);
   }
 
+  protected async loadRequestHistory(cursor: string | null = null): Promise<void> {
+    if (!this.workId || this.requestHistoryState() === 'loading') return;
+    const token = ++this.requestHistoryToken;
+    this.failedHistoryCursor = cursor;
+    this.requestHistoryState.set('loading');
+    this.requestHistoryError.set(null);
+    this.requestHistoryAnnouncement.set('');
+    try {
+      const page = await this.api.getPublicationRequestHistory(this.workId, cursor);
+      if (token !== this.requestHistoryToken) return;
+      const current = this.requestHistory();
+      const items = cursor === null || !current ? page.items : [...current.items, ...page.items];
+      const byVersion = new Map(items.map((item) => [item.requestVersion, item]));
+      const merged = [...byVersion.values()].sort(
+        (left, right) => right.requestVersion - left.requestVersion,
+      );
+      this.requestHistory.set({ items: merged, nextCursor: page.nextCursor });
+      this.requestHistoryState.set('ready');
+      this.failedHistoryCursor = null;
+      this.requestHistoryAnnouncement.set(
+        page.items.length === 0 && merged.length === 0
+          ? 'Chưa có hoạt động xét duyệt nào.'
+          : cursor === null
+            ? `Đã tải ${merged.length} yêu cầu trong lịch sử.`
+            : `Đã tải thêm ${page.items.length} yêu cầu cũ.`,
+      );
+    } catch (error) {
+      if (token !== this.requestHistoryToken) return;
+      this.requestHistoryError.set(toAuthoringError(error));
+      this.requestHistoryState.set('error');
+      this.requestHistoryAnnouncement.set('Chưa tải được lịch sử xét duyệt.');
+    }
+  }
+
+  protected retryRequestHistory(): void {
+    if (this.requestHistoryState() !== 'error') return;
+    void this.loadRequestHistory(this.failedHistoryCursor);
+  }
+
+  protected loadOlderRequestHistory(): void {
+    const cursor = this.requestHistory()?.nextCursor;
+    if (!cursor || this.requestHistoryState() === 'loading') return;
+    void this.loadRequestHistory(cursor);
+  }
+
   protected blockerLabel(code: string): string {
     switch (code) {
       case 'PUBLICATION_RIGHTS_POLICY_NOT_CONFIGURED':
@@ -439,6 +496,66 @@ export class PublicationReadinessPanelComponent implements OnChanges {
       default:
         return 'Chưa có yêu cầu duyệt hiện hành';
     }
+  }
+
+  protected historyActionLabel(action: PublicationRequestHistoryAction): string {
+    switch (action) {
+      case 'SUBMITTED':
+        return 'Đã gửi yêu cầu duyệt';
+      case 'NEEDS_INFORMATION':
+        return 'Người duyệt yêu cầu bổ sung thông tin';
+      case 'APPROVED':
+        return 'Yêu cầu đã được duyệt, bản thảo vẫn riêng tư';
+      case 'REJECTED':
+        return 'Yêu cầu đã bị từ chối';
+      case 'SUPERSEDED':
+        return 'Yêu cầu được thay thế bởi phiên bản mới';
+      case 'WITHDRAWN':
+        return 'Yêu cầu đã được rút';
+    }
+  }
+
+  protected historyReasonLabel(reason: PublicationRequestHistoryReason): string {
+    switch (reason) {
+      case 'INCOMPLETE_CLAIM':
+        return 'Khai báo quyền còn thiếu';
+      case 'MORE_INFORMATION':
+        return 'Cần bổ sung thông tin';
+      case 'SCOPE_UNCLEAR':
+        return 'Phạm vi quyền chưa rõ';
+      case 'RIGHTS_REVIEWED':
+        return 'Đã xem xét khai báo quyền';
+      case 'SCOPE_CONFIRMED':
+        return 'Phạm vi quyền đã được xác nhận';
+      case 'RIGHTS_NOT_VERIFIED':
+        return 'Chưa xác minh được quyền';
+      case 'OUT_OF_SCOPE':
+        return 'Nội dung nằm ngoài phạm vi xem xét';
+      case 'POLICY_MISMATCH':
+        return 'Khai báo chưa phù hợp với chính sách';
+    }
+  }
+
+  protected historyActorLabel(actorType: PublicationRequestHistoryEvent['actorType']): string {
+    return actorType === 'OWNER' ? 'Bạn' : 'Nhóm duyệt';
+  }
+
+  protected historyTimestamp(value: string): string {
+    return new Intl.DateTimeFormat('vi-VN', {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+      timeZone: 'Asia/Ho_Chi_Minh',
+    }).format(new Date(value));
+  }
+
+  protected requestHistoryErrorMessage(): string {
+    const error = this.requestHistoryError();
+    if (error?.status === 401) return 'Phiên đăng nhập đã hết hạn. Hãy đăng nhập lại.';
+    if (error?.status === 404) return 'Không tìm thấy bản thảo của bạn.';
+    if (error?.status === 503)
+      return 'Lịch sử chưa tải được. Dữ liệu bản thảo vẫn được bảo vệ; hãy thử lại.';
+    if (error?.status === 502) return 'Máy chủ trả về lịch sử không hợp lệ. Hãy thử tải lại.';
+    return 'Chưa tải được lịch sử xét duyệt. Kiểm tra kết nối rồi thử lại.';
   }
 
   protected errorMessage(): string {
@@ -500,6 +617,16 @@ export class PublicationReadinessPanelComponent implements OnChanges {
     this.withdrawalState.set('idle');
     this.withdrawalError.set(null);
     this.pendingWithdrawal = null;
+    this.resetRequestHistory();
+  }
+
+  private resetRequestHistory(): void {
+    this.requestHistoryToken += 1;
+    this.requestHistoryState.set('idle');
+    this.requestHistory.set(null);
+    this.requestHistoryError.set(null);
+    this.requestHistoryAnnouncement.set('');
+    this.failedHistoryCursor = null;
   }
 }
 

@@ -199,6 +199,7 @@ public class ApiSecurityConfiguration {
                         "/api/v1/authoring/manuscripts/*",
                         "/api/v1/authoring/manuscripts/*/publication/rights-policy",
                         "/api/v1/authoring/manuscripts/*/publication/readiness",
+                        "/api/v1/authoring/manuscripts/*/publication/requests/history",
                         "/api/v1/authoring/manuscripts/*/chapters",
                         "/api/v1/authoring/manuscripts/*/chapters/*/draft")
                     .permitAll();

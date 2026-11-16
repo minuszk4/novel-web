@@ -78,6 +78,36 @@ const publicationRequestWithdrawalReceipt = {
   state: 'WITHDRAWN',
   withdrawnAt: '2026-11-17T04:30:00Z',
 };
+const publicationRequestHistoryPage = {
+  items: [
+    {
+      requestVersion: 1,
+      state: 'NEEDS_INFORMATION',
+      submittedAt: '2026-11-17T04:00:00Z',
+      events: [
+        {
+          sequence: 1,
+          actorType: 'OWNER',
+          actionCode: 'SUBMITTED',
+          fromState: null,
+          toState: 'PENDING_REVIEW',
+          reasonCode: null,
+          createdAt: '2026-11-17T04:00:00Z',
+        },
+        {
+          sequence: 2,
+          actorType: 'REVIEWER',
+          actionCode: 'NEEDS_INFORMATION',
+          fromState: 'PENDING_REVIEW',
+          toState: 'NEEDS_INFORMATION',
+          reasonCode: 'MORE_INFORMATION',
+          createdAt: '2026-11-17T04:10:00Z',
+        },
+      ],
+    },
+  ],
+  nextCursor: null,
+};
 const createdDraft = {
   id: workId,
   title: 'Hành trình tu luyện',
@@ -472,6 +502,89 @@ describe('AuthoringApiService', () => {
     await expect(cacheable).rejects.toMatchObject({
       status: 502,
       code: 'INVALID_PUBLICATION_REQUEST_WITHDRAWAL_RESPONSE',
+    });
+  });
+
+  it('loads a strict, private publication request timeline without requesting mutation CSRF', async () => {
+    const pending = api.getPublicationRequestHistory(workId);
+    const request = http.expectOne(
+      `/api/v1/authoring/manuscripts/${workId}/publication/requests/history?limit=20`,
+    );
+    expect(request.request.method).toBe('GET');
+    expect(request.request.headers.has('X-CSRF-Token')).toBe(false);
+    request.flush(publicationRequestHistoryPage, {
+      status: 200,
+      statusText: 'OK',
+      headers: new HttpHeaders({ 'Cache-Control': 'no-store', Pragma: 'no-cache' }),
+    });
+    await expect(pending).resolves.toEqual(publicationRequestHistoryPage);
+
+    const invalidQuery = api.getPublicationRequestHistory(workId, 'invalid cursor');
+    await expect(invalidQuery).rejects.toMatchObject({
+      status: 400,
+      code: 'INVALID_PUBLICATION_HISTORY_QUERY',
+    });
+    http.expectNone((candidate) => candidate.url.endsWith('/publication/requests/history'));
+  });
+
+  it('rejects timeline identity leaks, unknown reasons, broken state sequences and cacheable pages', async () => {
+    const invalid = api.getPublicationRequestHistory(workId);
+    http
+      .expectOne((request) => request.url.includes('/publication/requests/history?'))
+      .flush(
+        { ...publicationRequestHistoryPage, reviewerId: 'must-not-be-returned' },
+        {
+          status: 200,
+          statusText: 'OK',
+          headers: new HttpHeaders({ 'Cache-Control': 'no-store', Pragma: 'no-cache' }),
+        },
+      );
+    await expect(invalid).rejects.toMatchObject({
+      status: 502,
+      code: 'INVALID_PUBLICATION_REQUEST_HISTORY_RESPONSE',
+    });
+
+    const wrongReason = api.getPublicationRequestHistory(workId);
+    http
+      .expectOne((request) => request.url.includes('/publication/requests/history?'))
+      .flush(
+        {
+          ...publicationRequestHistoryPage,
+          items: [
+            {
+              ...publicationRequestHistoryPage.items[0],
+              events: [
+                publicationRequestHistoryPage.items[0].events[0],
+                {
+                  ...publicationRequestHistoryPage.items[0].events[1],
+                  reasonCode: 'INTERNAL_NOTE',
+                },
+              ],
+            },
+          ],
+        },
+        {
+          status: 200,
+          statusText: 'OK',
+          headers: new HttpHeaders({ 'Cache-Control': 'no-store', Pragma: 'no-cache' }),
+        },
+      );
+    await expect(wrongReason).rejects.toMatchObject({
+      status: 502,
+      code: 'INVALID_PUBLICATION_REQUEST_HISTORY_RESPONSE',
+    });
+
+    const cacheable = api.getPublicationRequestHistory(workId);
+    http
+      .expectOne((request) => request.url.includes('/publication/requests/history?'))
+      .flush(publicationRequestHistoryPage, {
+        status: 200,
+        statusText: 'OK',
+        headers: new HttpHeaders({ 'Cache-Control': 'public', Pragma: 'no-cache' }),
+      });
+    await expect(cacheable).rejects.toMatchObject({
+      status: 502,
+      code: 'INVALID_PUBLICATION_REQUEST_HISTORY_RESPONSE',
     });
   });
 

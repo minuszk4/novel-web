@@ -132,6 +132,41 @@ export interface PublicationRequestWithdrawalReceipt {
   withdrawnAt: string;
 }
 
+export type PublicationRequestHistoryAction =
+  'SUBMITTED' | 'NEEDS_INFORMATION' | 'APPROVED' | 'REJECTED' | 'SUPERSEDED' | 'WITHDRAWN';
+
+export type PublicationRequestHistoryReason =
+  | 'INCOMPLETE_CLAIM'
+  | 'MORE_INFORMATION'
+  | 'SCOPE_UNCLEAR'
+  | 'RIGHTS_REVIEWED'
+  | 'SCOPE_CONFIRMED'
+  | 'RIGHTS_NOT_VERIFIED'
+  | 'OUT_OF_SCOPE'
+  | 'POLICY_MISMATCH';
+
+export interface PublicationRequestHistoryEvent {
+  sequence: number;
+  actorType: 'OWNER' | 'REVIEWER';
+  actionCode: PublicationRequestHistoryAction;
+  fromState: PublicationRequestState | null;
+  toState: PublicationRequestState;
+  reasonCode: PublicationRequestHistoryReason | null;
+  createdAt: string;
+}
+
+export interface PublicationRequestHistoryItem {
+  requestVersion: number;
+  state: PublicationRequestState;
+  submittedAt: string;
+  events: PublicationRequestHistoryEvent[];
+}
+
+export interface PublicationRequestHistoryPage {
+  items: PublicationRequestHistoryItem[];
+  nextCursor: string | null;
+}
+
 export interface PrivateManuscriptListPage {
   items: PrivateManuscriptListItem[];
   nextCursor: string | null;
@@ -417,6 +452,44 @@ export class AuthoringApiService {
         throw invalidPublicationReadinessResponse();
       }
       return parsePublicationReadiness(response.body, workId, response.headers.get('ETag'));
+    } catch (error) {
+      throw toAuthoringApiError(error);
+    }
+  }
+
+  async getPublicationRequestHistory(
+    workId: string,
+    cursor: string | null = null,
+    limit = 20,
+  ): Promise<PublicationRequestHistoryPage> {
+    if (
+      !isUuid(workId) ||
+      !Number.isSafeInteger(limit) ||
+      limit < 1 ||
+      limit > 50 ||
+      (cursor !== null && (!isBoundedString(cursor, 1, 2048) || /\s/.test(cursor)))
+    ) {
+      throw new AuthoringApiError(400, 'INVALID_PUBLICATION_HISTORY_QUERY');
+    }
+
+    const cursorQuery = cursor === null ? '' : `&cursor=${encodeURIComponent(cursor)}`;
+    try {
+      const response = await firstValueFrom(
+        this.http
+          .get<unknown>(
+            `${manuscriptsUrl}/${workId}/publication/requests/history?limit=${limit}${cursorQuery}`,
+            { observe: 'response' },
+          )
+          .pipe(timeout(requestTimeoutMs)),
+      );
+      if (
+        response.status !== 200 ||
+        response.headers.get('Cache-Control') !== 'no-store' ||
+        response.headers.get('Pragma') !== 'no-cache'
+      ) {
+        throw invalidPublicationRequestHistoryResponse();
+      }
+      return parsePublicationRequestHistoryPage(response.body, limit);
     } catch (error) {
       throw toAuthoringApiError(error);
     }
@@ -1120,6 +1193,150 @@ function parsePublicationRequestWithdrawalReceipt(
   return value as unknown as PublicationRequestWithdrawalReceipt;
 }
 
+function parsePublicationRequestHistoryPage(
+  value: unknown,
+  requestedLimit: number,
+): PublicationRequestHistoryPage {
+  if (
+    !isRecord(value) ||
+    hasUnexpectedFields(value, ['items', 'nextCursor']) ||
+    !Array.isArray(value['items']) ||
+    value['items'].length > requestedLimit ||
+    !(value['nextCursor'] === null || isBoundedString(value['nextCursor'], 1, 2048)) ||
+    (value['nextCursor'] !== null && value['items'].length !== requestedLimit)
+  ) {
+    throw invalidPublicationRequestHistoryResponse();
+  }
+
+  const parsed = value['items'].map(parsePublicationRequestHistoryItem);
+  if (
+    parsed.some((item) => item === null) ||
+    new Set(parsed.map((item) => item?.requestVersion)).size !== parsed.length ||
+    parsed.some(
+      (item, index) => index > 0 && parsed[index - 1]!.requestVersion <= item!.requestVersion,
+    )
+  ) {
+    throw invalidPublicationRequestHistoryResponse();
+  }
+  return {
+    items: parsed as PublicationRequestHistoryItem[],
+    nextCursor: value['nextCursor'] as string | null,
+  };
+}
+
+function parsePublicationRequestHistoryItem(value: unknown): PublicationRequestHistoryItem | null {
+  if (
+    !isRecord(value) ||
+    hasUnexpectedFields(value, ['requestVersion', 'state', 'submittedAt', 'events']) ||
+    !Number.isSafeInteger(value['requestVersion']) ||
+    (value['requestVersion'] as number) < 1 ||
+    !isPublicationRequestState(value['state']) ||
+    !isInstant(value['submittedAt']) ||
+    !Array.isArray(value['events']) ||
+    value['events'].length < 1 ||
+    value['events'].length > 10
+  ) {
+    return null;
+  }
+
+  const parsedEvents = value['events'].map(parsePublicationRequestHistoryEvent);
+  if (parsedEvents.some((event) => event === null)) return null;
+  const events = parsedEvents as PublicationRequestHistoryEvent[];
+  if (
+    events.some((event, index) => event.sequence !== index + 1) ||
+    events[0].actionCode !== 'SUBMITTED' ||
+    events[0].fromState !== null ||
+    events.some((event, index) => index > 0 && event.fromState !== events[index - 1].toState) ||
+    events[events.length - 1].toState !== value['state']
+  ) {
+    return null;
+  }
+
+  return { ...(value as unknown as Omit<PublicationRequestHistoryItem, 'events'>), events };
+}
+
+function parsePublicationRequestHistoryEvent(
+  value: unknown,
+): PublicationRequestHistoryEvent | null {
+  if (
+    !isRecord(value) ||
+    hasUnexpectedFields(value, [
+      'sequence',
+      'actorType',
+      'actionCode',
+      'fromState',
+      'toState',
+      'reasonCode',
+      'createdAt',
+    ]) ||
+    !Number.isSafeInteger(value['sequence']) ||
+    (value['sequence'] as number) < 1 ||
+    (value['actorType'] !== 'OWNER' && value['actorType'] !== 'REVIEWER') ||
+    !isPublicationRequestHistoryAction(value['actionCode']) ||
+    !isNullablePublicationRequestState(value['fromState']) ||
+    !isPublicationRequestState(value['toState']) ||
+    !isNullablePublicationRequestHistoryReason(value['reasonCode']) ||
+    !isInstant(value['createdAt']) ||
+    !isPublicationHistoryEventShape(value as unknown as PublicationRequestHistoryEvent)
+  ) {
+    return null;
+  }
+  return value as unknown as PublicationRequestHistoryEvent;
+}
+
+function isPublicationHistoryEventShape(event: PublicationRequestHistoryEvent): boolean {
+  switch (event.actionCode) {
+    case 'SUBMITTED':
+      return (
+        event.actorType === 'OWNER' &&
+        event.fromState === null &&
+        event.toState === 'PENDING_REVIEW' &&
+        event.reasonCode === null
+      );
+    case 'NEEDS_INFORMATION':
+      return (
+        event.actorType === 'REVIEWER' &&
+        event.fromState === 'PENDING_REVIEW' &&
+        event.toState === 'NEEDS_INFORMATION' &&
+        (event.reasonCode === 'INCOMPLETE_CLAIM' ||
+          event.reasonCode === 'MORE_INFORMATION' ||
+          event.reasonCode === 'SCOPE_UNCLEAR')
+      );
+    case 'APPROVED':
+      return (
+        event.actorType === 'REVIEWER' &&
+        event.fromState === 'PENDING_REVIEW' &&
+        event.toState === 'APPROVED_UNPUBLISHED' &&
+        (event.reasonCode === 'RIGHTS_REVIEWED' || event.reasonCode === 'SCOPE_CONFIRMED')
+      );
+    case 'REJECTED':
+      return (
+        event.actorType === 'REVIEWER' &&
+        event.fromState === 'PENDING_REVIEW' &&
+        event.toState === 'REJECTED' &&
+        (event.reasonCode === 'RIGHTS_NOT_VERIFIED' ||
+          event.reasonCode === 'OUT_OF_SCOPE' ||
+          event.reasonCode === 'POLICY_MISMATCH')
+      );
+    case 'SUPERSEDED':
+      return (
+        event.actorType === 'OWNER' &&
+        (event.fromState === 'NEEDS_INFORMATION' ||
+          event.fromState === 'REJECTED' ||
+          event.fromState === 'APPROVED_UNPUBLISHED') &&
+        event.toState === 'SUPERSEDED' &&
+        event.reasonCode === null
+      );
+    case 'WITHDRAWN':
+      return (
+        event.actorType === 'OWNER' &&
+        (event.fromState === 'PENDING_REVIEW' || event.fromState === 'NEEDS_INFORMATION') &&
+        event.toState === 'WITHDRAWN' &&
+        event.reasonCode === null
+      );
+  }
+}
+
 function parseOutlineItem(value: unknown): PrivateChapterOutlineItem {
   if (
     !isRecord(value) ||
@@ -1376,6 +1593,39 @@ function isNullablePublicationRequestState(
   );
 }
 
+function isPublicationRequestState(value: unknown): value is PublicationRequestState {
+  return value !== null && isNullablePublicationRequestState(value);
+}
+
+function isPublicationRequestHistoryAction(
+  value: unknown,
+): value is PublicationRequestHistoryAction {
+  return (
+    value === 'SUBMITTED' ||
+    value === 'NEEDS_INFORMATION' ||
+    value === 'APPROVED' ||
+    value === 'REJECTED' ||
+    value === 'SUPERSEDED' ||
+    value === 'WITHDRAWN'
+  );
+}
+
+function isNullablePublicationRequestHistoryReason(
+  value: unknown,
+): value is PublicationRequestHistoryReason | null {
+  return (
+    value === null ||
+    value === 'INCOMPLETE_CLAIM' ||
+    value === 'MORE_INFORMATION' ||
+    value === 'SCOPE_UNCLEAR' ||
+    value === 'RIGHTS_REVIEWED' ||
+    value === 'SCOPE_CONFIRMED' ||
+    value === 'RIGHTS_NOT_VERIFIED' ||
+    value === 'OUT_OF_SCOPE' ||
+    value === 'POLICY_MISMATCH'
+  );
+}
+
 function isPublicationScopeCode(value: unknown): value is PublicationScopeCode {
   return value === 'PUBLIC_METADATA' || value === 'CHAPTER_TEXT' || value === 'COMMERCIAL_SALE';
 }
@@ -1501,6 +1751,10 @@ function invalidPublicationRequestResponse(): AuthoringApiError {
 
 function invalidPublicationRequestWithdrawalResponse(): AuthoringApiError {
   return new AuthoringApiError(502, 'INVALID_PUBLICATION_REQUEST_WITHDRAWAL_RESPONSE');
+}
+
+function invalidPublicationRequestHistoryResponse(): AuthoringApiError {
+  return new AuthoringApiError(502, 'INVALID_PUBLICATION_REQUEST_HISTORY_RESPONSE');
 }
 
 function invalidChapterResponse(): AuthoringApiError {

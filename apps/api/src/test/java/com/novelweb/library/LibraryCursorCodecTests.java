@@ -133,6 +133,33 @@ class LibraryCursorCodecTests {
   }
 
   @Test
+  void publicationRequestHistoryCursorIsBoundToOwnerAndManuscript() {
+    LibraryCursorCodec codec = new LibraryCursorCodec(TEST_KEY);
+    UUID ownerId = UUID.randomUUID();
+    UUID workId = UUID.randomUUID();
+    LibraryCursorCodec.CursorContext context =
+        LibraryCursorCodec.publicationRequestHistoryContext(ownerId, workId);
+    LibraryCursorCodec.Position position =
+        new LibraryCursorCodec.Position(
+            0, Instant.parse("2026-11-17T04:10:11.123456Z"), UUID.randomUUID());
+    String token = codec.encode(context, position);
+
+    assertEquals(position, codec.decode(token, context));
+    assertThrows(
+        LibraryCursorCodec.InvalidCursorException.class,
+        () ->
+            codec.decode(
+                token,
+                LibraryCursorCodec.publicationRequestHistoryContext(UUID.randomUUID(), workId)));
+    assertThrows(
+        LibraryCursorCodec.InvalidCursorException.class,
+        () ->
+            codec.decode(
+                token,
+                LibraryCursorCodec.publicationRequestHistoryContext(ownerId, UUID.randomUUID())));
+  }
+
+  @Test
   void rejectsTamperedNonCanonicalAndUnconfiguredCursors() {
     LibraryCursorCodec codec = new LibraryCursorCodec(TEST_KEY);
     LibraryCursorCodec.CursorContext context = LibraryCursorCodec.libraryContext(UUID.randomUUID());

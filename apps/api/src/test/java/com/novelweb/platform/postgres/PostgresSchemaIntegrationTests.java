@@ -1715,6 +1715,201 @@ class PostgresSchemaIntegrationTests {
   }
 
   @Test
+  void publicationRequestHistoryIsOwnerScopedPaginatedAndReasonRedacted() throws Exception {
+    UUID ownerId = createSessionTestUser("Publication history owner");
+    UUID reviewerId = createSessionTestUser("Publication history reviewer");
+    UUID policyApproverId = createSessionTestUser("Publication history policy approver");
+    UUID outsiderId = createSessionTestUser("Publication history outsider");
+    List<UUID> userIds = List.of(ownerId, reviewerId, policyApproverId, outsiderId);
+    List<SubmittedPublicationFixture> fixtures = new ArrayList<>();
+    String policyVersion = "publication-history-" + UUID.randomUUID().toString().replace("-", "");
+    String policyText = "Synthetic publication history policy; not legal text.";
+    byte[] policyDigest = sha256(policyText);
+    UUID workId = null;
+    try {
+      for (UUID userId : userIds) addCurrentPolicyAcceptances(userId);
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement insert =
+              connection.prepareStatement(
+                  """
+                      INSERT INTO publication_rights_policy_documents
+                          (version, effective_at, display_text, policy_sha256)
+                      VALUES (?, clock_timestamp() - INTERVAL '1 second', ?, ?)
+                      """)) {
+        insert.setString(1, policyVersion);
+        insert.setString(2, policyText);
+        insert.setBytes(3, policyDigest);
+        assertEquals(1, insert.executeUpdate());
+      }
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement approve =
+              connection.prepareStatement(
+                  """
+                      UPDATE publication_rights_policy_documents
+                         SET status = 'APPROVED', approved_at = clock_timestamp(), approved_by = ?
+                       WHERE version = ? AND status = 'DRAFT'
+                      """)) {
+        approve.setObject(1, policyApproverId);
+        approve.setString(2, policyVersion);
+        assertEquals(1, approve.executeUpdate());
+      }
+
+      insertPublicationReviewerAssignment(reviewerId, ownerId);
+      SessionService.IssuedSession ownerSession = sessionService.create(ownerId).orElseThrow();
+      SessionService.IssuedSession reviewerSession =
+          sessionService.create(reviewerId).orElseThrow();
+      SessionService.IssuedSession outsiderSession =
+          sessionService.create(outsiderId).orElseThrow();
+      jakarta.servlet.http.Cookie ownerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", ownerSession.cookieValue());
+      jakarta.servlet.http.Cookie reviewerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", reviewerSession.cookieValue());
+      jakarta.servlet.http.Cookie outsiderCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", outsiderSession.cookieValue());
+
+      SubmittedPublicationFixture request =
+          submitPublicationRequestForReviewQueue(
+              fixtures,
+              ownerId,
+              ownerSession,
+              policyVersion,
+              policyDigest,
+              "Private history manuscript",
+              "ORIGINAL_WORK");
+      workId = request.workId();
+      String detailPath = "/api/v1/review/publications/" + request.requestId();
+      MvcResult detail = mockMvc.perform(get(detailPath).cookie(reviewerCookie)).andReturn();
+      assertEquals(200, detail.getResponse().getStatus());
+      String reviewerCsrf = csrfTokenService.tokenFor(reviewerSession.cookieValue());
+      MvcResult requestedInformation =
+          mockMvc
+              .perform(
+                  post(detailPath + "/decisions")
+                      .cookie(reviewerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, reviewerCsrf)
+                      .header(
+                          HttpHeaders.IF_MATCH, detail.getResponse().getHeader(HttpHeaders.ETAG))
+                      .header("Idempotency-Key", "publication-history-review-key-0001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          "{\"actionCode\":\"NEEDS_INFORMATION\",\"reasonCode\":\"MORE_INFORMATION\"}"))
+              .andReturn();
+      assertEquals(201, requestedInformation.getResponse().getStatus());
+
+      String readinessPath = "/api/v1/authoring/manuscripts/" + workId + "/publication/readiness";
+      MvcResult readiness = mockMvc.perform(get(readinessPath).cookie(ownerCookie)).andReturn();
+      assertEquals(200, readiness.getResponse().getStatus());
+      String requestPath = "/api/v1/authoring/manuscripts/" + workId + "/publication/requests";
+      String resubmissionBody =
+          objectMapper.writeValueAsString(
+              Map.of(
+                  "policyVersion",
+                  policyVersion,
+                  "scopeClaims",
+                  List.of(
+                      Map.of("scopeCode", "PUBLIC_METADATA", "rightsBasisCode", "ORIGINAL_WORK"),
+                      Map.of("scopeCode", "CHAPTER_TEXT", "rightsBasisCode", "ORIGINAL_WORK"))));
+      // Allow the isolated pagination fixture to create a second request version. Rate-limit
+      // behavior has separate PostgreSQL coverage in this class.
+      deletePublicationRateLimitBucket(ownerId);
+      MvcResult resubmitted =
+          mockMvc
+              .perform(
+                  post(requestPath)
+                      .cookie(ownerCookie)
+                      .header(
+                          SessionCsrfTokenService.TOKEN_HEADER_NAME,
+                          csrfTokenService.tokenFor(ownerSession.cookieValue()))
+                      .header(
+                          HttpHeaders.IF_MATCH, readiness.getResponse().getHeader(HttpHeaders.ETAG))
+                      .header("Idempotency-Key", "publication-history-owner-key-0002")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(resubmissionBody))
+              .andReturn();
+      assertEquals(201, resubmitted.getResponse().getStatus());
+      assertEquals(2, publicationRequestCount(workId));
+
+      String historyPath =
+          "/api/v1/authoring/manuscripts/" + workId + "/publication/requests/history";
+      MvcResult anonymous = mockMvc.perform(get(historyPath).param("limit", "1")).andReturn();
+      assertEquals(401, anonymous.getResponse().getStatus());
+      assertTrue(anonymous.getResponse().getHeader(HttpHeaders.CACHE_CONTROL).contains("no-store"));
+
+      MvcResult invalidLimit =
+          mockMvc.perform(get(historyPath).cookie(ownerCookie).param("limit", "51")).andReturn();
+      assertEquals(400, invalidLimit.getResponse().getStatus());
+
+      MvcResult firstPage =
+          mockMvc.perform(get(historyPath).cookie(ownerCookie).param("limit", "1")).andReturn();
+      assertEquals(200, firstPage.getResponse().getStatus());
+      assertTrue(firstPage.getResponse().getHeader(HttpHeaders.CACHE_CONTROL).contains("no-store"));
+      assertEquals("no-cache", firstPage.getResponse().getHeader(HttpHeaders.PRAGMA));
+      JsonNode latest = objectMapper.readTree(firstPage.getResponse().getContentAsString());
+      assertEquals(2, latest.path("items").get(0).path("requestVersion").asInt());
+      assertEquals("PENDING_REVIEW", latest.path("items").get(0).path("state").asText());
+      String cursor = latest.path("nextCursor").asText();
+      assertFalse(cursor.isBlank());
+      String firstPageText = firstPage.getResponse().getContentAsString();
+      assertFalse(firstPageText.contains(ownerId.toString()));
+      assertFalse(firstPageText.contains(reviewerId.toString()));
+      assertFalse(firstPageText.contains(request.requestId().toString()));
+      assertFalse(firstPageText.contains("Private chapter prose"));
+      assertFalse(firstPageText.contains("policySha256"));
+
+      MvcResult outsider =
+          mockMvc.perform(get(historyPath).cookie(outsiderCookie).param("limit", "1")).andReturn();
+      assertEquals(404, outsider.getResponse().getStatus());
+      MvcResult tamperedCursor =
+          mockMvc
+              .perform(
+                  get(historyPath)
+                      .cookie(ownerCookie)
+                      .param("limit", "1")
+                      .param("cursor", cursor + "x"))
+              .andReturn();
+      assertEquals(400, tamperedCursor.getResponse().getStatus());
+
+      MvcResult previousPage =
+          mockMvc
+              .perform(
+                  get(historyPath).cookie(ownerCookie).param("limit", "1").param("cursor", cursor))
+              .andReturn();
+      assertEquals(200, previousPage.getResponse().getStatus());
+      JsonNode previous = objectMapper.readTree(previousPage.getResponse().getContentAsString());
+      JsonNode previousRequest = previous.path("items").get(0);
+      assertEquals(1, previousRequest.path("requestVersion").asInt());
+      assertEquals("SUPERSEDED", previousRequest.path("state").asText());
+      JsonNode events = previousRequest.path("events");
+      assertEquals(3, events.size());
+      assertEquals("NEEDS_INFORMATION", events.get(1).path("actionCode").asText());
+      assertEquals("REVIEWER", events.get(1).path("actorType").asText());
+      assertEquals("MORE_INFORMATION", events.get(1).path("reasonCode").asText());
+      assertEquals("SUPERSEDED", events.get(2).path("toState").asText());
+      assertTrue(previous.path("nextCursor").isNull());
+      String previousPageText = previousPage.getResponse().getContentAsString();
+      assertFalse(previousPageText.contains(reviewerId.toString()));
+      assertFalse(previousPageText.contains("Private chapter prose"));
+      assertFalse(previousPageText.contains("snapshotSha256"));
+    } finally {
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement delete =
+              connection.prepareStatement(
+                  "DELETE FROM security_role_assignments WHERE user_id = ?")) {
+        delete.setObject(1, reviewerId);
+        delete.executeUpdate();
+      }
+      for (SubmittedPublicationFixture fixture : fixtures) {
+        deletePublicationRequestFixtures(fixture.workId());
+        deletePublicationRightsPolicyAcceptanceFixture(fixture.workId());
+        deletePublicationRateLimitBucket(fixture.ownerId());
+        deleteLibraryUserData(fixture.ownerId(), fixture.workId());
+      }
+      deletePublicationRightsPolicyFixture(policyVersion);
+      for (UUID userId : userIds) deleteSessionTestUser(userId);
+    }
+  }
+
+  @Test
   void publicationReviewQueueUsesCurrentRoleStableCursorAndRedactedDetails() throws Exception {
     UUID ownerOneId = createSessionTestUser("Publication review owner one");
     UUID ownerTwoId = createSessionTestUser("Publication review owner two");

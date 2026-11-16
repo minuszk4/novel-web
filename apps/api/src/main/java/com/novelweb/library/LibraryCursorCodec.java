@@ -90,6 +90,17 @@ public class LibraryCursorCodec {
         "publication-review-queue-v1");
   }
 
+  public static CursorContext publicationRequestHistoryContext(UUID ownerUserId, UUID workId) {
+    return new CursorContext(
+        Kind.PUBLICATION_REQUEST_HISTORY,
+        ownerUserId,
+        workId,
+        "",
+        "",
+        "",
+        "publication-request-history-v1");
+  }
+
   public void requireConfigured() {
     if (hmacKey == null) throw new SigningUnavailableException();
   }
@@ -241,7 +252,8 @@ public class LibraryCursorCodec {
     LIBRARY(1),
     WORK(2),
     PUBLIC_CATALOG(3),
-    PUBLICATION_REVIEW_QUEUE(4);
+    PUBLICATION_REVIEW_QUEUE(4),
+    PUBLICATION_REQUEST_HISTORY(5);
 
     private final int code;
 
@@ -297,6 +309,14 @@ public class LibraryCursorCodec {
               || !accessScopeFingerprint.equals("publication-review-queue-v1"))) {
         throw new IllegalArgumentException("Invalid publication-review cursor context");
       }
+      if (kind == Kind.PUBLICATION_REQUEST_HISTORY
+          && (scopeId.equals(NO_SCOPE)
+              || !query.isEmpty()
+              || !tag.isEmpty()
+              || !status.isEmpty()
+              || !accessScopeFingerprint.equals("publication-request-history-v1"))) {
+        throw new IllegalArgumentException("Invalid publication-history cursor context");
+      }
     }
 
     byte[] filterHash() {
@@ -307,7 +327,7 @@ public class LibraryCursorCodec {
         updateUuid(digest, scopeId);
         updateString(
             digest,
-            kind == Kind.PUBLICATION_REVIEW_QUEUE
+            kind == Kind.PUBLICATION_REVIEW_QUEUE || kind == Kind.PUBLICATION_REQUEST_HISTORY
                 ? "submitted_at_desc,id_desc"
                 : "created_at_desc,id_desc");
         updateString(digest, query);

@@ -94,6 +94,105 @@
       </div>
     </dl>
 
+    @if (current.currentRequestState !== null) {
+      <section class="publication-request-history" aria-labelledby="publication-history-title">
+        <h3 id="publication-history-title" class="publication-readiness-subheading">
+          Lịch sử xét duyệt
+        </h3>
+        <p class="publication-request-history-intro">
+          Chỉ hiển thị thời điểm, trạng thái và lý do đã được chuẩn hóa. Lịch sử không chứa ghi chú
+          nội bộ hoặc nội dung chương.
+        </p>
+        <p class="visually-hidden" role="status" aria-live="polite" aria-atomic="true">
+          {{ requestHistoryAnnouncement() }}
+        </p>
+
+        @if (requestHistoryState() === 'idle') {
+          <button
+            class="button button-outline publication-history-trigger"
+            type="button"
+            (click)="loadRequestHistory()"
+          >
+            Xem lịch sử xử lý
+          </button>
+        }
+        @if (requestHistoryState() === 'loading' && !requestHistory()) {
+          <p class="publication-readiness-status" role="status" aria-live="polite" aria-busy="true">
+            Đang tải lịch sử xét duyệt…
+          </p>
+        }
+        @if (requestHistoryState() === 'error' && !requestHistory()) {
+          <div class="publication-readiness-error" role="alert">
+            <p>{{ requestHistoryErrorMessage() }}</p>
+            <button class="button button-outline" type="button" (click)="retryRequestHistory()">
+              Thử tải lại lịch sử
+            </button>
+          </div>
+        }
+        @if (requestHistory(); as history) {
+          @if (requestHistoryState() === 'loading') {
+            <p
+              class="publication-readiness-status"
+              role="status"
+              aria-live="polite"
+              aria-busy="true"
+            >
+              Đang tải thêm yêu cầu cũ…
+            </p>
+          }
+          @if (requestHistoryState() === 'error') {
+            <div class="publication-readiness-error" role="alert">
+              <p>{{ requestHistoryErrorMessage() }}</p>
+              <button class="button button-outline" type="button" (click)="retryRequestHistory()">
+                Thử lại tải trang này
+              </button>
+            </div>
+          }
+          @if (history.items.length === 0) {
+            <p class="publication-request-history-empty">Chưa có hoạt động xét duyệt nào.</p>
+          } @else {
+            <ol class="publication-request-history-list" aria-label="Các phiên bản yêu cầu duyệt">
+              @for (item of history.items; track item.requestVersion) {
+                <li class="publication-request-history-version">
+                  <h4>
+                    Yêu cầu lần {{ item.requestVersion }} · {{ requestStateLabel(item.state) }}
+                  </h4>
+                  <ol class="publication-request-history-events">
+                    @for (event of item.events; track event.sequence) {
+                      <li>
+                        <time [attr.datetime]="event.createdAt">
+                          {{ historyTimestamp(event.createdAt) }}
+                        </time>
+                        <div>
+                          <strong>{{ historyActionLabel(event.actionCode) }}</strong>
+                          <p>{{ historyActorLabel(event.actorType) }}</p>
+                          @if (event.reasonCode) {
+                            <p class="publication-request-history-reason">
+                              Lý do: {{ historyReasonLabel(event.reasonCode) }}
+                            </p>
+                          }
+                        </div>
+                      </li>
+                    }
+                  </ol>
+                </li>
+              }
+            </ol>
+          }
+          @if (history.nextCursor) {
+            <button
+              class="button button-outline publication-history-trigger"
+              type="button"
+              [disabled]="requestHistoryState() !== 'ready'"
+              (click)="loadOlderRequestHistory()"
+            >
+              Tải yêu cầu cũ hơn
+            </button>
+          }
+        }
+      </section>
+    }
+
     @if (canWithdrawCurrentRequest) {
       <button
         #withdrawTrigger

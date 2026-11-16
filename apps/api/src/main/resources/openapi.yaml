@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 9.3.0
+  version: 9.4.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -2314,6 +2314,65 @@ paths:
               schema:
                 $ref: '#/components/schemas/Problem'
         '428':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/authoring/manuscripts/{workId}/publication/requests/history:
+    get:
+      operationId: getOwnerPublicationRequestHistory
+      tags: [Authoring]
+      x-implementation-status: implemented-postgres-profile
+      summary: Read the owner's content-free publication request timeline
+      description: >-
+        Requires the active owner of an active authored manuscript and returns immutable request-state events only.
+        The response includes safe action/reason codes and coarse owner/reviewer actor types, but never reviewer IDs,
+        internal notes, rights-policy text, scope snapshots, digests or chapter prose. The owner may read their history
+        even if the work is public; requests are ordered newest first and paginated with a signed cursor bound to the
+        owner and work. Responses are not cacheable.
+      security:
+        - appSession: []
+      parameters:
+        - name: workId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 2048
+      responses:
+        '200':
+          description: A page of this owner's request versions and their public-safe events.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicationRequestHistoryPage'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '404':
           $ref: '#/components/responses/Problem'
         '503':
           $ref: '#/components/responses/Problem'
@@ -7467,6 +7526,65 @@ components:
           type: string
           const: WITHDRAWN
         withdrawnAt:
+          type: string
+          format: date-time
+    PublicationRequestHistoryPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/PublicationRequestHistoryItem'
+        nextCursor:
+          type: [string, 'null']
+          maxLength: 2048
+    PublicationRequestHistoryItem:
+      type: object
+      additionalProperties: false
+      required: [requestVersion, state, submittedAt, events]
+      properties:
+        requestVersion:
+          type: integer
+          minimum: 1
+        state:
+          type: string
+          enum: [PENDING_REVIEW, NEEDS_INFORMATION, APPROVED_UNPUBLISHED, REJECTED, SUPERSEDED, WITHDRAWN]
+        submittedAt:
+          type: string
+          format: date-time
+        events:
+          type: array
+          minItems: 1
+          maxItems: 10
+          items:
+            $ref: '#/components/schemas/PublicationRequestHistoryEvent'
+    PublicationRequestHistoryEvent:
+      type: object
+      additionalProperties: false
+      required: [sequence, actorType, actionCode, fromState, toState, reasonCode, createdAt]
+      properties:
+        sequence:
+          type: integer
+          minimum: 1
+        actorType:
+          type: string
+          enum: [OWNER, REVIEWER]
+        actionCode:
+          type: string
+          enum: [SUBMITTED, NEEDS_INFORMATION, APPROVED, REJECTED, SUPERSEDED, WITHDRAWN]
+        fromState:
+          type: [string, 'null']
+          enum: [PENDING_REVIEW, NEEDS_INFORMATION, APPROVED_UNPUBLISHED, REJECTED, SUPERSEDED, WITHDRAWN, null]
+        toState:
+          type: string
+          enum: [PENDING_REVIEW, NEEDS_INFORMATION, APPROVED_UNPUBLISHED, REJECTED, SUPERSEDED, WITHDRAWN]
+        reasonCode:
+          type: [string, 'null']
+          enum: [INCOMPLETE_CLAIM, MORE_INFORMATION, SCOPE_UNCLEAR, RIGHTS_REVIEWED, SCOPE_CONFIRMED, RIGHTS_NOT_VERIFIED, OUT_OF_SCOPE, POLICY_MISMATCH, null]
+        createdAt:
           type: string
           format: date-time
     PublicationReviewQueuePage:

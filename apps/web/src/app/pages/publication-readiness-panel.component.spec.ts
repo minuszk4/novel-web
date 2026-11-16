@@ -7,6 +7,7 @@ import {
   AuthoringApiService,
   PublicationReadiness,
   PublicationReleaseReceipt,
+  PublicationRequestHistoryPage,
   PublicationRequestWithdrawalReceipt,
 } from '../core/authoring-api.service';
 import { SystemStatusService } from '../core/system-status.service';
@@ -81,10 +82,53 @@ function withdrawalReceipt(): PublicationRequestWithdrawalReceipt {
   };
 }
 
+function publicationHistoryPage(
+  requestVersion: number,
+  state: 'PENDING_REVIEW' | 'NEEDS_INFORMATION',
+  nextCursor: string | null,
+): PublicationRequestHistoryPage {
+  const submitted = {
+    sequence: 1,
+    actorType: 'OWNER' as const,
+    actionCode: 'SUBMITTED' as const,
+    fromState: null,
+    toState: 'PENDING_REVIEW' as const,
+    reasonCode: null,
+    createdAt: '2026-11-17T04:00:00Z',
+  };
+  const events =
+    state === 'NEEDS_INFORMATION'
+      ? [
+          submitted,
+          {
+            sequence: 2,
+            actorType: 'REVIEWER' as const,
+            actionCode: 'NEEDS_INFORMATION' as const,
+            fromState: 'PENDING_REVIEW' as const,
+            toState: 'NEEDS_INFORMATION' as const,
+            reasonCode: 'MORE_INFORMATION' as const,
+            createdAt: '2026-11-17T04:10:00Z',
+          },
+        ]
+      : [submitted];
+  return {
+    items: [
+      {
+        requestVersion,
+        state,
+        submittedAt: '2026-11-17T04:00:00Z',
+        events,
+      },
+    ],
+    nextCursor,
+  };
+}
+
 describe('PublicationReadinessPanelComponent', () => {
   let fixture: ComponentFixture<PublicationReadinessPanelComponent>;
   let api: {
     getPublicationReadiness: ReturnType<typeof vi.fn>;
+    getPublicationRequestHistory: ReturnType<typeof vi.fn>;
     publishManuscriptNow: ReturnType<typeof vi.fn>;
     withdrawPublicationRequest: ReturnType<typeof vi.fn>;
   };
@@ -93,6 +137,7 @@ describe('PublicationReadinessPanelComponent', () => {
   beforeEach(() => {
     api = {
       getPublicationReadiness: vi.fn().mockResolvedValue(readiness()),
+      getPublicationRequestHistory: vi.fn(),
       publishManuscriptNow: vi.fn().mockResolvedValue(receipt()),
       withdrawPublicationRequest: vi.fn().mockResolvedValue(withdrawalReceipt()),
     };
@@ -127,6 +172,36 @@ describe('PublicationReadinessPanelComponent', () => {
     expect(fixture.nativeElement.textContent).toContain('Nội dung chương');
     expect(fixture.nativeElement.textContent).toContain('Quyền thương mại');
     expect(fixture.nativeElement.textContent).toContain('không xác minh quyền pháp lý');
+  });
+
+  it('loads owner-safe reason history on demand and appends older request versions', async () => {
+    api.getPublicationReadiness.mockResolvedValueOnce(
+      readiness({ currentRequestState: 'NEEDS_INFORMATION' }),
+    );
+    api.getPublicationRequestHistory
+      .mockResolvedValueOnce(publicationHistoryPage(2, 'PENDING_REVIEW', 'older-history-cursor'))
+      .mockResolvedValueOnce(publicationHistoryPage(1, 'NEEDS_INFORMATION', null));
+
+    await clickButton('Kiểm tra điều kiện xuất bản');
+    expect(button('Xem lịch sử xử lý')).not.toBeNull();
+    expect(api.getPublicationRequestHistory).not.toHaveBeenCalled();
+
+    await clickButton('Xem lịch sử xử lý');
+    expect(api.getPublicationRequestHistory).toHaveBeenCalledWith(workId, null);
+    expect(fixture.nativeElement.textContent).toContain('Yêu cầu lần 2');
+    expect(fixture.nativeElement.textContent).not.toContain('REVIEWER_USER_ID');
+    expect(button('Tải yêu cầu cũ hơn')).not.toBeNull();
+
+    await clickButton('Tải yêu cầu cũ hơn');
+    expect(api.getPublicationRequestHistory).toHaveBeenLastCalledWith(
+      workId,
+      'older-history-cursor',
+    );
+    expect(fixture.nativeElement.textContent).toContain('Yêu cầu lần 1');
+    expect(fixture.nativeElement.textContent).toContain('Cần bổ sung thông tin');
+    expect(fixture.nativeElement.textContent).toContain('Nhóm duyệt');
+    expect(fixture.nativeElement.textContent).not.toContain('reviewer@example.com');
+    expect(button('Tải yêu cầu cũ hơn')).toBeNull();
   });
 
   it('hides the release control unless both server capability and readiness gates pass', async () => {

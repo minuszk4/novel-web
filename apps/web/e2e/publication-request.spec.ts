@@ -404,6 +404,123 @@ for (const viewport of [
   });
 }
 
+for (const viewport of [
+  { name: 'effective 200% width 180×400', width: 180, height: 400 },
+  { name: 'mobile 360×800', width: 360, height: 800 },
+  { name: 'tablet 768×1024', width: 768, height: 1024 },
+  { name: 'desktop 1280×900', width: 1280, height: 900 },
+] as const) {
+  test(`author explicitly loads a redacted request timeline at ${viewport.name}`, async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    await installAccount(page);
+    await page.route(`**/api/v1/authoring/manuscripts/${workId}`, (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        headers: { 'Cache-Control': 'no-store', ETag: '"manuscript-metadata-1"' },
+        body: JSON.stringify({
+          id: workId,
+          title: 'Hành trình tu luyện',
+          author: 'Bút danh',
+          language: 'vi',
+          visibility: 'private',
+          publicationState: 'draft',
+          chapterCount: 1,
+          createdAt: '2026-11-15T12:00:00Z',
+          metadataVersion: 1,
+        }),
+      }),
+    );
+    await page.route(`**/api/v1/authoring/manuscripts/${workId}/chapters?**`, (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        headers: { 'Cache-Control': 'no-store', Pragma: 'no-cache' },
+        body: JSON.stringify(outline),
+      }),
+    );
+    await page.route(`**/api/v1/authoring/manuscripts/${workId}/publication/readiness`, (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        headers: { 'Cache-Control': 'no-store', Pragma: 'no-cache', ETag: readinessEtag },
+        body: JSON.stringify({
+          ...readyReadiness,
+          currentRequestState: 'NEEDS_INFORMATION',
+        }),
+      }),
+    );
+    await page.route(
+      `**/api/v1/authoring/manuscripts/${workId}/publication/requests/history**`,
+      async (route) => {
+        expect(route.request().method()).toBe('GET');
+        expect(new URL(route.request().url()).searchParams.get('limit')).toBe('20');
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          headers: { 'Cache-Control': 'no-store', Pragma: 'no-cache' },
+          body: JSON.stringify({
+            items: [
+              {
+                requestVersion: 1,
+                state: 'NEEDS_INFORMATION',
+                submittedAt: '2026-11-17T04:00:00Z',
+                events: [
+                  {
+                    sequence: 1,
+                    actorType: 'OWNER',
+                    actionCode: 'SUBMITTED',
+                    fromState: null,
+                    toState: 'PENDING_REVIEW',
+                    reasonCode: null,
+                    createdAt: '2026-11-17T04:00:00Z',
+                  },
+                  {
+                    sequence: 2,
+                    actorType: 'REVIEWER',
+                    actionCode: 'NEEDS_INFORMATION',
+                    fromState: 'PENDING_REVIEW',
+                    toState: 'NEEDS_INFORMATION',
+                    reasonCode: 'MORE_INFORMATION',
+                    createdAt: '2026-11-17T04:10:00Z',
+                  },
+                ],
+              },
+            ],
+            nextCursor: null,
+          }),
+        });
+      },
+    );
+
+    await page.goto(`/app/authoring/${workId}/chapters`);
+    await page.getByRole('button', { name: 'Kiểm tra điều kiện xuất bản' }).click();
+    await expect(page.getByRole('button', { name: 'Xem lịch sử xử lý' })).toBeVisible();
+    await expect(page.getByText('Cần bổ sung thông tin')).toHaveCount(0);
+    await expectNoAxeViolations(page);
+
+    await page.getByRole('button', { name: 'Xem lịch sử xử lý' }).click();
+    await expect(
+      page.getByText('Yêu cầu lần 1 · Người duyệt yêu cầu bổ sung thông tin'),
+    ).toBeVisible();
+    await expect(page.getByText('Cần bổ sung thông tin')).toBeVisible();
+    await expect(page.getByText('Nhóm duyệt')).toBeVisible();
+    await expect(page.getByText('reviewer-user-id', { exact: false })).toHaveCount(0);
+    await expectNoAxeViolations(page);
+    const widths = await page.evaluate(() => ({
+      client: document.documentElement.clientWidth,
+      scroll: document.documentElement.scrollWidth,
+    }));
+    expect(widths.scroll).toBeLessThanOrEqual(widths.client);
+    await page.screenshot({
+      path: testInfo.outputPath(`publication-history-${viewport.width}.png`),
+      fullPage: true,
+    });
+  });
+}
+
 async function installAccount(page: import('@playwright/test').Page): Promise<void> {
   await page.route('**/api/v1/system/status', (route) =>
     route.fulfill({
