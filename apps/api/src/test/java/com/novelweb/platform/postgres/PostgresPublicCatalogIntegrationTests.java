@@ -323,6 +323,49 @@ class PostgresPublicCatalogIntegrationTests {
   }
 
   @Test
+  void currentSegmentMutationInvalidatesApprovalWithoutRebuildingSnapshotOnReads()
+      throws Exception {
+    UUID approvedWork =
+        createWork(
+            "Versioned approval", "Synthetic Author", "vi", "authored", "public", "active", true);
+    long approvedVersion = publicationContentVersion(approvedWork);
+    assertTrue(publicationScopeIsCurrent(approvedWork));
+    assertTrue(
+        get("/api/v1/catalog/works?limit=50").body().toString().contains(approvedWork.toString()));
+
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement tamperVersion =
+            connection.prepareStatement(
+                "UPDATE works SET publication_content_version = publication_content_version + 1 WHERE id = ?")) {
+      tamperVersion.setObject(1, approvedWork);
+      SQLException rejectedVersionWrite =
+          assertThrows(SQLException.class, tamperVersion::executeUpdate);
+      assertEquals("55000", rejectedVersionWrite.getSQLState());
+    }
+
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement editCurrentSegment =
+            connection.prepareStatement(
+                """
+                    UPDATE segments
+                       SET source_text = 'edited after review without changing its checksum'
+                     WHERE chapter_revision_id = (
+                         SELECT source_revision_id
+                           FROM chapters
+                          WHERE work_id = ? AND status = 'ready' AND deleted_at IS NULL
+                     )
+                    """)) {
+      editCurrentSegment.setObject(1, approvedWork);
+      assertEquals(1, editCurrentSegment.executeUpdate());
+    }
+
+    assertTrue(publicationContentVersion(approvedWork) > approvedVersion);
+    assertFalse(publicationScopeIsCurrent(approvedWork));
+    assertFalse(
+        get("/api/v1/catalog/works?limit=50").body().toString().contains(approvedWork.toString()));
+  }
+
+  @Test
   void rateLimitsSearchAndCursorReadsPerTrustedClientAddress() throws Exception {
     String clientAddress = testClientAddress();
     String path = "/api/v1/catalog/works?q=rate-limit-sentinel&limit=1";
@@ -696,6 +739,43 @@ class PostgresPublicCatalogIntegrationTests {
       ready.setObject(2, chapterId);
       ready.executeUpdate();
     }
+    execute(
+        connection,
+        """
+            INSERT INTO segments (
+                id, chapter_revision_id, ordinal, segment_type, source_text, stable_anchor, checksum)
+            VALUES (?, ?, 1, 'paragraph', ?, 'catalog-chapter-p1', ?)
+            """,
+        UUID.randomUUID(),
+        revisionId,
+        "Synthetic private test body; never included in catalog DTO",
+        new byte[32]);
+  }
+
+  private long publicationContentVersion(UUID workId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT publication_content_version FROM works WHERE id = ?")) {
+      select.setObject(1, workId);
+      try (var row = select.executeQuery()) {
+        if (!row.next()) throw new SQLException("Publication work was not found");
+        return row.getLong(1);
+      }
+    }
+  }
+
+  private boolean publicationScopeIsCurrent(UUID workId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT publication_scope_access_is_current(?, 'PUBLIC_METADATA')")) {
+      select.setObject(1, workId);
+      try (var row = select.executeQuery()) {
+        if (!row.next()) throw new SQLException("Publication authorization returned no row");
+        return row.getBoolean(1);
+      }
+    }
   }
 
   private void setVisibility(UUID workId, String visibility) throws SQLException {
@@ -756,6 +836,15 @@ class PostgresPublicCatalogIntegrationTests {
               "UPDATE chapters SET source_revision_id = NULL WHERE work_id = ?")) {
         clearRevision.setObject(1, workId);
         clearRevision.executeUpdate();
+      }
+      try (PreparedStatement segments =
+          connection.prepareStatement(
+              "DELETE FROM segments WHERE chapter_revision_id IN "
+                  + "(SELECT revision.id FROM chapter_revisions revision "
+                  + "JOIN chapters chapter ON chapter.id = revision.chapter_id "
+                  + "WHERE chapter.work_id = ?)")) {
+        segments.setObject(1, workId);
+        segments.executeUpdate();
       }
       try (PreparedStatement revisions =
           connection.prepareStatement(
