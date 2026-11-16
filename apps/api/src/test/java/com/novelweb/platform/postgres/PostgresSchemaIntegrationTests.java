@@ -13649,7 +13649,8 @@ class PostgresSchemaIntegrationTests {
               connection.prepareStatement(
                   """
                          UPDATE google_auth_attempts
-                         SET expires_at = CURRENT_TIMESTAMP - INTERVAL '1 millisecond'
+                         SET created_at = CURRENT_TIMESTAMP - INTERVAL '1 minute',
+                             expires_at = CURRENT_TIMESTAMP - INTERVAL '1 second'
                          WHERE nonce_hash = ?
                          """)) {
         expire.setBytes(1, nonceHash);
