@@ -230,6 +230,8 @@ class PostgresSchemaIntegrationTests {
           "library_collection_works",
           "import_rights_statements",
           "import_rights_acceptances",
+          "publication_rights_policy_documents",
+          "publication_rights_policy_acceptances",
           "import_jobs",
           "import_actor_rate_limits",
           "import_parse_jobs",
@@ -417,7 +419,7 @@ class PostgresSchemaIntegrationTests {
             connection.prepareStatement("SELECT COUNT(*) FROM databasechangelog");
         ResultSet changesets = changesetCount.executeQuery()) {
       changesets.next();
-      assertEquals(121, changesets.getInt(1), "unexpected number of applied changesets");
+      assertEquals(131, changesets.getInt(1), "unexpected number of applied changesets");
     }
 
     Set<String> actualTables = new HashSet<>();
@@ -437,6 +439,207 @@ class PostgresSchemaIntegrationTests {
       }
     }
     assertEquals(EXPECTED_APPLICATION_TABLES, actualTables);
+  }
+
+  @Test
+  void publicationRightsAcceptanceIsPolicyVersionBoundOwnerScopedAndAppendOnly() throws Exception {
+    UUID ownerId = createSessionTestUser("Synthetic publication-rights policy owner");
+    UUID approverId = createSessionTestUser("Synthetic publication-rights policy approver");
+    String policyVersion = "synthetic-publication-rights-v1";
+    String policyText = "Synthetic test-only publication-rights policy; not legal text.";
+    byte[] policyDigest = sha256(policyText);
+    UUID workId = null;
+    UUID acceptanceId = UUID.randomUUID();
+    UUID idempotencyKey = UUID.randomUUID();
+    try {
+      addCurrentPolicyAcceptances(ownerId);
+      UUID authoredWorkId =
+          libraryService
+              .createPrivateAuthoredWork(
+                  ownerId,
+                  "Publication Rights Fixture",
+                  "Synthetic Author",
+                  "vi",
+                  "pub-rights-fixture-0001")
+              .id();
+      workId = authoredWorkId;
+
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement insert =
+              connection.prepareStatement(
+                  """
+                      INSERT INTO publication_rights_policy_documents
+                          (version, effective_at, display_text, policy_sha256)
+                      VALUES (?, clock_timestamp() - INTERVAL '1 second', ?, ?)
+                      """)) {
+        insert.setString(1, policyVersion);
+        insert.setString(2, policyText);
+        insert.setBytes(3, policyDigest);
+        assertEquals(1, insert.executeUpdate());
+      }
+
+      SQLException draftAcceptance =
+          assertThrows(
+              SQLException.class,
+              () ->
+                  insertPublicationRightsPolicyAcceptance(
+                      acceptanceId,
+                      ownerId,
+                      authoredWorkId,
+                      idempotencyKey,
+                      policyVersion,
+                      policyDigest));
+      assertEquals("23514", draftAcceptance.getSQLState());
+
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement approve =
+              connection.prepareStatement(
+                  """
+                      UPDATE publication_rights_policy_documents
+                         SET status = 'APPROVED', approved_at = clock_timestamp(), approved_by = ?
+                       WHERE version = ? AND status = 'DRAFT'
+                      """)) {
+        approve.setObject(1, approverId);
+        approve.setString(2, policyVersion);
+        assertEquals(1, approve.executeUpdate());
+      }
+
+      insertPublicationRightsPolicyAcceptance(
+          acceptanceId, ownerId, authoredWorkId, idempotencyKey, policyVersion, policyDigest);
+      assertEquals(1, publicationRightsPolicyAcceptanceCount(ownerId, authoredWorkId));
+
+      SQLException repeatedIdempotencyKey =
+          assertThrows(
+              SQLException.class,
+              () ->
+                  insertPublicationRightsPolicyAcceptance(
+                      UUID.randomUUID(),
+                      ownerId,
+                      authoredWorkId,
+                      idempotencyKey,
+                      policyVersion,
+                      policyDigest));
+      assertEquals("23505", repeatedIdempotencyKey.getSQLState());
+
+      SQLException repeatedPolicyAcceptance =
+          assertThrows(
+              SQLException.class,
+              () ->
+                  insertPublicationRightsPolicyAcceptance(
+                      UUID.randomUUID(),
+                      ownerId,
+                      authoredWorkId,
+                      UUID.randomUUID(),
+                      policyVersion,
+                      policyDigest));
+      assertEquals("23505", repeatedPolicyAcceptance.getSQLState());
+
+      SQLException foreignOwner =
+          assertThrows(
+              SQLException.class,
+              () ->
+                  insertPublicationRightsPolicyAcceptance(
+                      UUID.randomUUID(),
+                      approverId,
+                      authoredWorkId,
+                      UUID.randomUUID(),
+                      policyVersion,
+                      policyDigest));
+      assertEquals("23503", foreignOwner.getSQLState());
+
+      byte[] mismatchedDigest = policyDigest.clone();
+      mismatchedDigest[0] = (byte) (mismatchedDigest[0] ^ 0x01);
+      SQLException mismatchedPolicySnapshot =
+          assertThrows(
+              SQLException.class,
+              () ->
+                  insertPublicationRightsPolicyAcceptance(
+                      UUID.randomUUID(),
+                      ownerId,
+                      authoredWorkId,
+                      UUID.randomUUID(),
+                      policyVersion,
+                      mismatchedDigest));
+      assertEquals("23514", mismatchedPolicySnapshot.getSQLState());
+
+      SQLException changedApprovedPolicy =
+          assertThrows(
+              SQLException.class,
+              () -> {
+                try (Connection connection = dataSource.getConnection();
+                    PreparedStatement update =
+                        connection.prepareStatement(
+                            "UPDATE publication_rights_policy_documents SET display_text = 'changed'"
+                                + " WHERE version = ?")) {
+                  update.setString(1, policyVersion);
+                  update.executeUpdate();
+                }
+              });
+      assertEquals("55000", changedApprovedPolicy.getSQLState());
+
+      SQLException rewrittenAcceptance =
+          assertThrows(
+              SQLException.class,
+              () -> {
+                try (Connection connection = dataSource.getConnection();
+                    PreparedStatement update =
+                        connection.prepareStatement(
+                            "UPDATE publication_rights_policy_acceptances SET source = 'web-import-flow'"
+                                + " WHERE id = ?")) {
+                  update.setObject(1, acceptanceId);
+                  update.executeUpdate();
+                }
+              });
+      assertEquals("55000", rewrittenAcceptance.getSQLState());
+
+      SQLException deletedAcceptance =
+          assertThrows(
+              SQLException.class,
+              () -> {
+                try (Connection connection = dataSource.getConnection();
+                    PreparedStatement delete =
+                        connection.prepareStatement(
+                            "DELETE FROM publication_rights_policy_acceptances WHERE id = ?")) {
+                  delete.setObject(1, acceptanceId);
+                  delete.executeUpdate();
+                }
+              });
+      assertEquals("55000", deletedAcceptance.getSQLState());
+
+      SQLException truncatedAcceptances =
+          assertThrows(
+              SQLException.class,
+              () -> {
+                try (Connection connection = dataSource.getConnection();
+                    java.sql.Statement truncate = connection.createStatement()) {
+                  truncate.execute("TRUNCATE publication_rights_policy_acceptances");
+                }
+              });
+      assertEquals("55000", truncatedAcceptances.getSQLState());
+
+      SQLException deletedAuthoredWorkLink =
+          assertThrows(
+              SQLException.class,
+              () -> {
+                try (Connection connection = dataSource.getConnection();
+                    PreparedStatement delete =
+                        connection.prepareStatement(
+                            "DELETE FROM authoring_manuscript_creations WHERE work_id = ?")) {
+                  delete.setObject(1, authoredWorkId);
+                  delete.executeUpdate();
+                }
+              });
+      assertEquals("23503", deletedAuthoredWorkLink.getSQLState());
+    } finally {
+      if (workId != null) {
+        deletePublicationRightsPolicyAcceptanceFixture(workId);
+        deleteBareAuthoredWorkData(ownerId, workId);
+      }
+      deletePublicationRightsPolicyFixture(policyVersion);
+      deleteOwnerLibraries(ownerId);
+      deleteSessionTestUser(ownerId);
+      deleteSessionTestUser(approverId);
+    }
   }
 
   @Test
@@ -10975,6 +11178,8 @@ class PostgresSchemaIntegrationTests {
             "import_commits",
             "import_rights_acceptances",
             "import_rights_statements",
+            "publication_rights_policy_acceptances",
+            "publication_rights_policy_documents",
             "auth_events",
             "session_revoke_confirmations",
             "workspace_members",
@@ -15638,6 +15843,103 @@ class PostgresSchemaIntegrationTests {
     addPolicyAcceptance(userId, "TERMS", "terms-current-1", "TERMS_ACCEPTED");
     addPolicyAcceptance(
         userId, "PRIVACY_NOTICE", "privacy-current-1", "PRIVACY_NOTICE_ACKNOWLEDGED");
+  }
+
+  private void insertPublicationRightsPolicyAcceptance(
+      UUID acceptanceId,
+      UUID userId,
+      UUID workId,
+      UUID idempotencyKey,
+      String policyVersion,
+      byte[] policyDigest)
+      throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement insert =
+            connection.prepareStatement(
+                """
+                    INSERT INTO publication_rights_policy_acceptances
+                        (id, user_id, work_id, idempotency_key, policy_version, policy_sha256, source)
+                    VALUES (?, ?, ?, ?, ?, ?, 'web-authoring-publication')
+                    """)) {
+      insert.setObject(1, acceptanceId);
+      insert.setObject(2, userId);
+      insert.setObject(3, workId);
+      insert.setObject(4, idempotencyKey);
+      insert.setString(5, policyVersion);
+      insert.setBytes(6, policyDigest);
+      assertEquals(1, insert.executeUpdate());
+    }
+  }
+
+  private int publicationRightsPolicyAcceptanceCount(UUID userId, UUID workId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT COUNT(*) FROM publication_rights_policy_acceptances"
+                    + " WHERE user_id = ? AND work_id = ?")) {
+      select.setObject(1, userId);
+      select.setObject(2, workId);
+      try (ResultSet rows = select.executeQuery()) {
+        assertTrue(rows.next());
+        return rows.getInt(1);
+      }
+    }
+  }
+
+  private void deletePublicationRightsPolicyAcceptanceFixture(UUID workId) throws SQLException {
+    try (Connection connection = dataSource.getConnection()) {
+      connection.setAutoCommit(false);
+      try {
+        try (java.sql.Statement disable = connection.createStatement()) {
+          disable.execute(
+              "ALTER TABLE publication_rights_policy_acceptances"
+                  + " DISABLE TRIGGER trg_publication_rights_acceptance_immutable");
+        }
+        try (PreparedStatement delete =
+            connection.prepareStatement(
+                "DELETE FROM publication_rights_policy_acceptances WHERE work_id = ?")) {
+          delete.setObject(1, workId);
+          delete.executeUpdate();
+        }
+        try (java.sql.Statement enable = connection.createStatement()) {
+          enable.execute(
+              "ALTER TABLE publication_rights_policy_acceptances"
+                  + " ENABLE TRIGGER trg_publication_rights_acceptance_immutable");
+        }
+        connection.commit();
+      } catch (SQLException exception) {
+        connection.rollback();
+        throw exception;
+      }
+    }
+  }
+
+  private void deletePublicationRightsPolicyFixture(String policyVersion) throws SQLException {
+    try (Connection connection = dataSource.getConnection()) {
+      connection.setAutoCommit(false);
+      try {
+        try (java.sql.Statement disable = connection.createStatement()) {
+          disable.execute(
+              "ALTER TABLE publication_rights_policy_documents"
+                  + " DISABLE TRIGGER trg_publication_rights_policy_immutable");
+        }
+        try (PreparedStatement delete =
+            connection.prepareStatement(
+                "DELETE FROM publication_rights_policy_documents WHERE version = ?")) {
+          delete.setString(1, policyVersion);
+          delete.executeUpdate();
+        }
+        try (java.sql.Statement enable = connection.createStatement()) {
+          enable.execute(
+              "ALTER TABLE publication_rights_policy_documents"
+                  + " ENABLE TRIGGER trg_publication_rights_policy_immutable");
+        }
+        connection.commit();
+      } catch (SQLException exception) {
+        connection.rollback();
+        throw exception;
+      }
+    }
   }
 
   private void addPolicyAcceptance(UUID userId, String type, String version, String decision)
