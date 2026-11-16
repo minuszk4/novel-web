@@ -31,7 +31,7 @@ class PostgresLegacyImportMigrationTests {
 
   private static final int LEGACY_CHANGESET_COUNT = 55;
 
-  private static final int CURRENT_CHANGESET_COUNT = 147;
+  private static final int CURRENT_CHANGESET_COUNT = 148;
 
   private static final int UPGRADE_CHANGESET_COUNT =
       CURRENT_CHANGESET_COUNT - LEGACY_CHANGESET_COUNT;
@@ -74,6 +74,7 @@ class PostgresLegacyImportMigrationTests {
         assertFalse(tableExists(fixtureConnection, "public_catalog_rate_limits"));
         assertFalse(tableExists(fixtureConnection, "publication_rights_policy_documents"));
         assertFalse(tableExists(fixtureConnection, "publication_rights_policy_acceptances"));
+        assertFalse(tableExists(fixtureConnection, "publication_request_rate_limits"));
         assertFalse(
             tableExists(fixtureConnection, "publication_rights_policy_acceptance_idempotency"));
         assertFalse(tableExists(fixtureConnection, "publication_scope_access_approvals"));
@@ -94,6 +95,7 @@ class PostgresLegacyImportMigrationTests {
         assertTrue(tableExists(fixtureConnection, "momo_test_reconciliation_events"));
         assertTrue(tableExists(fixtureConnection, "publication_rights_policy_documents"));
         assertTrue(tableExists(fixtureConnection, "publication_rights_policy_acceptances"));
+        assertTrue(tableExists(fixtureConnection, "publication_request_rate_limits"));
         assertTrue(
             tableExists(fixtureConnection, "publication_rights_policy_acceptance_idempotency"));
         assertTrue(tableExists(fixtureConnection, "publication_scope_access_approvals"));

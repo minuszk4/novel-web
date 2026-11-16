@@ -141,19 +141,22 @@ public class PublicationRightsPolicyService {
         String policyDigest =
             activePolicy.map(policy -> HexFormat.of().formatHex(policy.sha256())).orElse("none");
         Instant acceptedAt = acceptedPolicy == null ? null : acceptedPolicy.acceptedAt();
-        String metadataEtag = scopeEtag("PUBLIC_METADATA", snapshot.metadataSnapshot());
-        String chapterTextEtag = scopeEtag("CHAPTER_TEXT", snapshot.chapterTextSnapshot());
-        String commercialSaleEtag = scopeEtag("COMMERCIAL_SALE", snapshot.commercialSaleSnapshot());
+        String metadataEtag =
+            PublicationSnapshotEtags.scope("PUBLIC_METADATA", snapshot.metadataSnapshot());
+        String chapterTextEtag =
+            PublicationSnapshotEtags.scope("CHAPTER_TEXT", snapshot.chapterTextSnapshot());
+        String commercialSaleEtag =
+            PublicationSnapshotEtags.scope("COMMERCIAL_SALE", snapshot.commercialSaleSnapshot());
         String snapshotEtag =
-            readinessEtag(
+            PublicationSnapshotEtags.readiness(
                 workId,
-                snapshot,
+                snapshot.contentVersion(),
+                snapshot.readyChapterCount(),
                 policyVersion,
                 policyDigest,
                 acceptedAt,
-                metadataEtag,
-                chapterTextEtag,
-                commercialSaleEtag);
+                snapshot.currentRequestState(),
+                List.of(metadataEtag, chapterTextEtag, commercialSaleEtag));
         return ReadinessResult.available(
             new PublicationReadiness(
                 workId,
@@ -352,38 +355,6 @@ public class PublicationRightsPolicyService {
             row.getString("current_request_state"));
       }
     }
-  }
-
-  private static String scopeEtag(String scopeCode, String snapshot) {
-    return "\"publication-scope-"
-        + HexFormat.of().formatHex(sha256(scopeCode + "\n" + snapshot))
-        + "\"";
-  }
-
-  private static String readinessEtag(
-      UUID workId,
-      ReadinessSnapshot snapshot,
-      String policyVersion,
-      String policyDigest,
-      Instant acceptedAt,
-      String metadataEtag,
-      String chapterTextEtag,
-      String commercialSaleEtag) {
-    String canonical =
-        String.join(
-            "\n",
-            "publication-readiness-v1",
-            workId.toString(),
-            Long.toString(snapshot.contentVersion()),
-            Integer.toString(snapshot.readyChapterCount()),
-            Objects.toString(policyVersion, "none"),
-            policyDigest,
-            Objects.toString(acceptedAt, "none"),
-            Objects.toString(snapshot.currentRequestState(), "none"),
-            metadataEtag,
-            chapterTextEtag,
-            commercialSaleEtag);
-    return "\"publication-snapshot-" + HexFormat.of().formatHex(sha256(canonical)) + "\"";
   }
 
   private Optional<PolicyDocument> currentPolicy(Connection connection) throws SQLException {

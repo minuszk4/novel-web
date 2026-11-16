@@ -207,6 +207,7 @@ public class ApiSecurityConfiguration {
                         HttpMethod.POST,
                         "/api/v1/authoring/manuscripts",
                         "/api/v1/authoring/manuscripts/*/publication/rights-policy/acceptance",
+                        "/api/v1/authoring/manuscripts/*/publication/requests",
                         "/api/v1/authoring/manuscripts/*/chapters",
                         "/api/v1/authoring/manuscripts/*/chapters/*/revisions")
                     .permitAll();

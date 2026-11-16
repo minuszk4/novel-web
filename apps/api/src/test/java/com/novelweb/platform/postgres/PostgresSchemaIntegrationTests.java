@@ -164,6 +164,7 @@ import tools.jackson.databind.ObjectMapper;
       "novel.imports.staging.upload-rate-limit-capacity=20",
       "novel.imports.staging.upload-rate-limit-refill-interval=1h",
       "novel.imports.staging.rate-limit-retention=24h",
+      "novel.publication.requests.rate-limit-capacity=1",
       "novel.web.cors.allowed-origins=https://app.example.test"
     })
 class PostgresSchemaIntegrationTests {
@@ -239,6 +240,7 @@ class PostgresSchemaIntegrationTests {
           "publication_request_scope_snapshots",
           "publication_request_scope_claims",
           "publication_review_events",
+          "publication_request_rate_limits",
           "import_jobs",
           "import_actor_rate_limits",
           "import_parse_jobs",
@@ -426,7 +428,7 @@ class PostgresSchemaIntegrationTests {
             connection.prepareStatement("SELECT COUNT(*) FROM databasechangelog");
         ResultSet changesets = changesetCount.executeQuery()) {
       changesets.next();
-      assertEquals(147, changesets.getInt(1), "unexpected number of applied changesets");
+      assertEquals(148, changesets.getInt(1), "unexpected number of applied changesets");
     }
 
     Set<String> actualTables = new HashSet<>();
@@ -456,6 +458,7 @@ class PostgresSchemaIntegrationTests {
     String policyText = "Synthetic test-only publication-rights policy; not legal text.";
     byte[] policyDigest = sha256(policyText);
     UUID workId = null;
+    UUID secondWorkId = null;
     UUID acceptanceId = UUID.randomUUID();
     UUID idempotencyKey = UUID.randomUUID();
     try {
@@ -1078,6 +1081,7 @@ class PostgresSchemaIntegrationTests {
     String policyText = "Synthetic publication readiness policy; not legal text.";
     byte[] policyDigest = sha256(policyText);
     UUID workId = null;
+    UUID secondWorkId = null;
     try {
       workId =
           libraryService
@@ -1096,6 +1100,23 @@ class PostgresSchemaIntegrationTests {
       jakarta.servlet.http.Cookie outsiderCookie =
           new jakarta.servlet.http.Cookie("__Host-novel_session", outsiderSession.cookieValue());
       String path = "/api/v1/authoring/manuscripts/" + workId + "/publication/readiness";
+      String requestPath = "/api/v1/authoring/manuscripts/" + workId + "/publication/requests";
+      String ownerCsrf = csrfTokenService.tokenFor(ownerSession.cookieValue());
+      String outsiderCsrf = csrfTokenService.tokenFor(outsiderSession.cookieValue());
+      String requestBody =
+          objectMapper.writeValueAsString(
+              Map.of(
+                  "policyVersion",
+                  policyVersion,
+                  "scopeClaims",
+                  List.of(
+                      Map.of("scopeCode", "PUBLIC_METADATA", "rightsBasisCode", "ORIGINAL_WORK"),
+                      Map.of("scopeCode", "CHAPTER_TEXT", "rightsBasisCode", "ORIGINAL_WORK"),
+                      Map.of(
+                          "scopeCode",
+                          "COMMERCIAL_SALE",
+                          "rightsBasisCode",
+                          "LICENSE_OR_PERMISSION"))));
 
       assertEquals(401, mockMvc.perform(get(path)).andReturn().getResponse().getStatus());
       MvcResult foreign = mockMvc.perform(get(path).cookie(outsiderCookie)).andReturn();
@@ -1127,6 +1148,74 @@ class PostgresSchemaIntegrationTests {
       String unavailableBodyText = unavailablePolicy.getResponse().getContentAsString();
       assertFalse(unavailableBodyText.contains("Private readiness title"));
       assertFalse(unavailableBodyText.contains("snapshot JSON"));
+
+      MvcResult missingCsrf =
+          mockMvc
+              .perform(
+                  post(requestPath)
+                      .cookie(ownerCookie)
+                      .header(HttpHeaders.IF_MATCH, unavailableBody.path("snapshotEtag").asText())
+                      .header("Idempotency-Key", "publication-request-key-0001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(requestBody))
+              .andReturn();
+      assertEquals(403, missingCsrf.getResponse().getStatus());
+      assertTrue(missingCsrf.getResponse().getContentAsString().contains("CSRF_FAILED"));
+
+      MvcResult missingIfMatch =
+          mockMvc
+              .perform(
+                  post(requestPath)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header("Idempotency-Key", "publication-request-key-0001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(requestBody))
+              .andReturn();
+      assertEquals(428, missingIfMatch.getResponse().getStatus());
+
+      MvcResult oversized =
+          mockMvc
+              .perform(
+                  post(requestPath)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(HttpHeaders.IF_MATCH, unavailableBody.path("snapshotEtag").asText())
+                      .header("Idempotency-Key", "publication-request-key-0001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(" ".repeat(4_097)))
+              .andReturn();
+      assertEquals(413, oversized.getResponse().getStatus());
+      assertEquals(0, publicationRequestCount(workId));
+
+      MvcResult foreignRequest =
+          mockMvc
+              .perform(
+                  post(requestPath)
+                      .cookie(outsiderCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, outsiderCsrf)
+                      .header(HttpHeaders.IF_MATCH, unavailableBody.path("snapshotEtag").asText())
+                      .header("Idempotency-Key", "publication-request-key-0001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(requestBody))
+              .andReturn();
+      assertEquals(404, foreignRequest.getResponse().getStatus());
+      assertTrue(
+          foreignRequest.getResponse().getContentAsString().contains("MANUSCRIPT_NOT_FOUND"));
+
+      MvcResult noActiveRightsPolicy =
+          mockMvc
+              .perform(
+                  post(requestPath)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(HttpHeaders.IF_MATCH, unavailableBody.path("snapshotEtag").asText())
+                      .header("Idempotency-Key", "publication-request-key-0001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(requestBody))
+              .andReturn();
+      assertEquals(503, noActiveRightsPolicy.getResponse().getStatus());
+      assertEquals(0, publicationRequestCount(workId));
 
       try (Connection connection = dataSource.getConnection();
           PreparedStatement insert =
@@ -1163,9 +1252,45 @@ class PostgresSchemaIntegrationTests {
               .path("blockerCodes")
               .toString()
               .contains("PUBLICATION_RIGHTS_POLICY_NOT_ACCEPTED"));
+      MvcResult rightsPolicyNotAccepted =
+          mockMvc
+              .perform(
+                  post(requestPath)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(
+                          HttpHeaders.IF_MATCH,
+                          acceptanceRequired.getResponse().getHeader(HttpHeaders.ETAG))
+                      .header("Idempotency-Key", "publication-request-key-0001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(requestBody))
+              .andReturn();
+      assertEquals(403, rightsPolicyNotAccepted.getResponse().getStatus());
+      assertTrue(
+          rightsPolicyNotAccepted
+              .getResponse()
+              .getContentAsString()
+              .contains("PUBLICATION_RIGHTS_POLICY_ACCEPTANCE_REQUIRED"));
 
       insertPublicationRightsPolicyAcceptance(
           UUID.randomUUID(), ownerId, workId, UUID.randomUUID(), policyVersion, policyDigest);
+      MvcResult noReadyChapter = mockMvc.perform(get(path).cookie(ownerCookie)).andReturn();
+      MvcResult chapterRequired =
+          mockMvc
+              .perform(
+                  post(requestPath)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(
+                          HttpHeaders.IF_MATCH,
+                          noReadyChapter.getResponse().getHeader(HttpHeaders.ETAG))
+                      .header("Idempotency-Key", "publication-request-key-0001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(requestBody))
+              .andReturn();
+      assertEquals(409, chapterRequired.getResponse().getStatus());
+      assertTrue(
+          chapterRequired.getResponse().getContentAsString().contains("READY_CHAPTER_REQUIRED"));
       LibraryRepository.VolumeRecord volume =
           libraryService.createVolume(ownerId, workId, 1, "Private volume");
       LibraryRepository.ChapterRecord chapter =
@@ -1196,6 +1321,20 @@ class PostgresSchemaIntegrationTests {
       assertFalse(readyResponseText.contains("Private chapter prose"));
       assertFalse(readyResponseText.contains("Private chapter\""));
 
+      MvcResult stalePolicy =
+          mockMvc
+              .perform(
+                  post(requestPath)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(HttpHeaders.IF_MATCH, ready.getResponse().getHeader(HttpHeaders.ETAG))
+                      .header("Idempotency-Key", "publication-request-key-0001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(requestBody.replace(policyVersion, "old-publication-policy")))
+              .andReturn();
+      assertEquals(409, stalePolicy.getResponse().getStatus());
+      assertTrue(stalePolicy.getResponse().getContentAsString().contains("POLICY_STALE"));
+
       try (Connection connection = dataSource.getConnection();
           PreparedStatement update =
               connection.prepareStatement("UPDATE works SET title = ? WHERE id = ?")) {
@@ -1203,6 +1342,23 @@ class PostgresSchemaIntegrationTests {
         update.setObject(2, workId);
         assertEquals(1, update.executeUpdate());
       }
+      MvcResult staleSnapshot =
+          mockMvc
+              .perform(
+                  post(requestPath)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(HttpHeaders.IF_MATCH, ready.getResponse().getHeader(HttpHeaders.ETAG))
+                      .header("Idempotency-Key", "publication-request-key-0001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(requestBody))
+              .andReturn();
+      assertEquals(412, staleSnapshot.getResponse().getStatus());
+      assertTrue(
+          staleSnapshot.getResponse().getContentAsString().contains("PUBLICATION_SNAPSHOT_STALE"));
+      assertNotNull(staleSnapshot.getResponse().getHeader(HttpHeaders.ETAG));
+      assertEquals(0, publicationRequestCount(workId));
+
       MvcResult updated = mockMvc.perform(get(path).cookie(ownerCookie)).andReturn();
       assertEquals(200, updated.getResponse().getStatus());
       assertNotEquals(
@@ -1210,8 +1366,125 @@ class PostgresSchemaIntegrationTests {
           updated.getResponse().getHeader(HttpHeaders.ETAG));
       assertFalse(
           updated.getResponse().getContentAsString().contains("Updated private readiness title"));
+
+      MvcResult submitted =
+          mockMvc
+              .perform(
+                  post(requestPath)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(
+                          HttpHeaders.IF_MATCH, updated.getResponse().getHeader(HttpHeaders.ETAG))
+                      .header("Idempotency-Key", "publication-request-key-0001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(requestBody))
+              .andReturn();
+      assertEquals(201, submitted.getResponse().getStatus());
+      assertTrue(submitted.getResponse().getHeader(HttpHeaders.CACHE_CONTROL).contains("no-store"));
+      assertEquals("no-cache", submitted.getResponse().getHeader(HttpHeaders.PRAGMA));
+      JsonNode receipt = objectMapper.readTree(submitted.getResponse().getContentAsString());
+      assertEquals(1, receipt.path("requestVersion").asInt());
+      assertEquals("PENDING_REVIEW", receipt.path("state").asText());
+      assertEquals(3, receipt.path("scopeCodes").size());
+      assertFalse(submitted.getResponse().getContentAsString().contains("Private chapter prose"));
+      assertEquals(1, publicationRequestCount(workId));
+      assertEquals(1, publicationReviewEventCount(workId));
+
+      MvcResult replay =
+          mockMvc
+              .perform(
+                  post(requestPath)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(
+                          HttpHeaders.IF_MATCH, updated.getResponse().getHeader(HttpHeaders.ETAG))
+                      .header("Idempotency-Key", "publication-request-key-0001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(requestBody))
+              .andReturn();
+      assertEquals(201, replay.getResponse().getStatus());
+      assertEquals(receipt, objectMapper.readTree(replay.getResponse().getContentAsString()));
+      assertEquals(1, publicationRequestCount(workId));
+      assertEquals(1, publicationReviewEventCount(workId));
+
+      MvcResult keyReused =
+          mockMvc
+              .perform(
+                  post(requestPath)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(
+                          HttpHeaders.IF_MATCH, updated.getResponse().getHeader(HttpHeaders.ETAG))
+                      .header("Idempotency-Key", "publication-request-key-0001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          requestBody.replace(
+                              "\"rightsBasisCode\":\"ORIGINAL_WORK\"",
+                              "\"rightsBasisCode\":\"NEEDS_REVIEW\"")))
+              .andReturn();
+      assertEquals(409, keyReused.getResponse().getStatus());
+      assertTrue(keyReused.getResponse().getContentAsString().contains("IDEMPOTENCY_KEY_REUSED"));
+      assertEquals(1, publicationRequestCount(workId));
+      assertEquals(1, publicationReviewEventCount(workId));
+
+      secondWorkId =
+          libraryService
+              .createPrivateAuthoredWork(
+                  ownerId,
+                  "Second rate-limit fixture",
+                  "Synthetic Author",
+                  "vi",
+                  "publication-rate-work-" + UUID.randomUUID().toString().replace("-", ""))
+              .id();
+      insertPublicationRightsPolicyAcceptance(
+          UUID.randomUUID(), ownerId, secondWorkId, UUID.randomUUID(), policyVersion, policyDigest);
+      LibraryRepository.VolumeRecord secondVolume =
+          libraryService.createVolume(ownerId, secondWorkId, 1, "Second rate volume");
+      LibraryRepository.ChapterRecord secondChapter =
+          libraryService.createChapter(
+              ownerId, secondWorkId, secondVolume.id(), 1, "Second ready chapter", "vi");
+      libraryService.appendChapterRevision(
+          ownerId,
+          secondChapter.id(),
+          "plain_text",
+          "Synthetic second work text.",
+          List.of(
+              new LibraryService.NewSegment(
+                  1, "paragraph", "Synthetic second work text.", "rate-c1-s1")));
+      String secondRequestPath =
+          "/api/v1/authoring/manuscripts/" + secondWorkId + "/publication/requests";
+      MvcResult secondReadiness =
+          mockMvc
+              .perform(
+                  get("/api/v1/authoring/manuscripts/" + secondWorkId + "/publication/readiness")
+                      .cookie(ownerCookie))
+              .andReturn();
+      MvcResult rateLimited =
+          mockMvc
+              .perform(
+                  post(secondRequestPath)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(
+                          HttpHeaders.IF_MATCH,
+                          secondReadiness.getResponse().getHeader(HttpHeaders.ETAG))
+                      .header("Idempotency-Key", "publication-request-key-0002")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(requestBody))
+              .andReturn();
+      assertEquals(429, rateLimited.getResponse().getStatus());
+      assertNotNull(rateLimited.getResponse().getHeader(HttpHeaders.RETRY_AFTER));
+      assertEquals(0, publicationRequestCount(secondWorkId));
+      assertEquals(1, publicationRateLimitBucketCount(ownerId));
+
     } finally {
+      if (secondWorkId != null) {
+        deletePublicationRequestFixtures(secondWorkId);
+        deletePublicationRightsPolicyAcceptanceFixture(secondWorkId);
+        deleteLibraryUserData(ownerId, secondWorkId);
+      }
       if (workId != null) {
+        deletePublicationRequestFixtures(workId);
         deletePublicationRightsPolicyAcceptanceFixture(workId);
         deleteLibraryUserData(ownerId, workId);
       }
@@ -1219,6 +1492,110 @@ class PostgresSchemaIntegrationTests {
       deleteSessionTestUser(ownerId);
       deleteSessionTestUser(outsiderId);
       deleteSessionTestUser(approverId);
+    }
+  }
+
+  private int publicationRequestCount(UUID workId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT COUNT(*) FROM publication_requests WHERE work_id = ?")) {
+      select.setObject(1, workId);
+      try (ResultSet rows = select.executeQuery()) {
+        assertTrue(rows.next());
+        return rows.getInt(1);
+      }
+    }
+  }
+
+  private int publicationReviewEventCount(UUID workId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT COUNT(*) FROM publication_review_events event"
+                    + " JOIN publication_requests request ON request.id = event.request_id"
+                    + " WHERE request.work_id = ?")) {
+      select.setObject(1, workId);
+      try (ResultSet rows = select.executeQuery()) {
+        assertTrue(rows.next());
+        return rows.getInt(1);
+      }
+    }
+  }
+
+  private int publicationRateLimitBucketCount(UUID userId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT COUNT(*) FROM publication_request_rate_limits WHERE user_id = ?")) {
+      select.setObject(1, userId);
+      try (ResultSet rows = select.executeQuery()) {
+        assertTrue(rows.next());
+        return rows.getInt(1);
+      }
+    }
+  }
+
+  private void deletePublicationRequestFixtures(UUID workId) throws SQLException {
+    try (Connection connection = dataSource.getConnection()) {
+      connection.setAutoCommit(false);
+      try {
+        try (java.sql.Statement disable = connection.createStatement()) {
+          disable.execute(
+              "ALTER TABLE publication_review_events"
+                  + " DISABLE TRIGGER trg_publication_review_event_immutable");
+          disable.execute(
+              "ALTER TABLE publication_request_scope_claims"
+                  + " DISABLE TRIGGER trg_publication_request_scope_claim_immutable");
+          disable.execute(
+              "ALTER TABLE publication_request_scope_snapshots"
+                  + " DISABLE TRIGGER trg_publication_request_scope_snapshot_immutable");
+          disable.execute(
+              "ALTER TABLE publication_requests"
+                  + " DISABLE TRIGGER trg_publication_request_immutable");
+        }
+        try (PreparedStatement deleteEvents =
+                connection.prepareStatement(
+                    "DELETE FROM publication_review_events WHERE request_id IN"
+                        + " (SELECT id FROM publication_requests WHERE work_id = ?)");
+            PreparedStatement deleteClaims =
+                connection.prepareStatement(
+                    "DELETE FROM publication_request_scope_claims WHERE request_id IN"
+                        + " (SELECT id FROM publication_requests WHERE work_id = ?)");
+            PreparedStatement deleteSnapshots =
+                connection.prepareStatement(
+                    "DELETE FROM publication_request_scope_snapshots WHERE request_id IN"
+                        + " (SELECT id FROM publication_requests WHERE work_id = ?)");
+            PreparedStatement deleteRequests =
+                connection.prepareStatement("DELETE FROM publication_requests WHERE work_id = ?")) {
+          deleteEvents.setObject(1, workId);
+          deleteEvents.executeUpdate();
+          deleteClaims.setObject(1, workId);
+          deleteClaims.executeUpdate();
+          deleteSnapshots.setObject(1, workId);
+          deleteSnapshots.executeUpdate();
+          deleteRequests.setObject(1, workId);
+          deleteRequests.executeUpdate();
+        }
+        try (java.sql.Statement enable = connection.createStatement()) {
+          enable.execute(
+              "ALTER TABLE publication_requests"
+                  + " ENABLE TRIGGER trg_publication_request_immutable");
+          enable.execute(
+              "ALTER TABLE publication_request_scope_snapshots"
+                  + " ENABLE TRIGGER trg_publication_request_scope_snapshot_immutable");
+          enable.execute(
+              "ALTER TABLE publication_request_scope_claims"
+                  + " ENABLE TRIGGER trg_publication_request_scope_claim_immutable");
+          enable.execute(
+              "ALTER TABLE publication_review_events"
+                  + " ENABLE TRIGGER trg_publication_review_event_immutable");
+        }
+        connection.commit();
+      } catch (SQLException exception) {
+        connection.rollback();
+        throw exception;
+      }
     }
   }
 
@@ -18293,7 +18670,9 @@ class PostgresSchemaIntegrationTests {
         }
       }
       try (PreparedStatement deleteLibraries =
-          connection.prepareStatement("DELETE FROM libraries WHERE owner_user_id = ?")) {
+          connection.prepareStatement(
+              "DELETE FROM libraries library WHERE library.owner_user_id = ?"
+                  + " AND NOT EXISTS (SELECT 1 FROM works work WHERE work.library_id = library.id)")) {
         deleteLibraries.setObject(1, userId);
         deleteLibraries.executeUpdate();
       }

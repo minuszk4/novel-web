@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 8.5.0
+  version: 8.6.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -16,7 +16,7 @@ info:
     Versioned cultivation catalogs, authenticated profile settings, private daily XP activity and bounded private Reader sessions with atomic XP awards are implemented in the PostgreSQL profile. The approved starting policy awards 1 XP per complete active Reader minute, capped at 120 XP per UTC day; same-day sub-minute remainder does not cross UTC midnight; top-ups and unlocks award none. Cultivation is feature-gated and off by default pending the rank-threshold pilot and release reviews.
     Scoped glossary storage, actor-scoped catalog listing/creation, active and writer-only latest-revision reads, version-checked immutable draft creation, authenticated diff/lint/match preview, lint-gated revision publication with append-only audit, strict JSON/CSV/TSV import preview and resolved atomic draft apply, and active/writer-only latest snapshot export are implemented in the PostgreSQL profile. Translation job enqueue/status/retry/cancel are available only as an explicit fake-local development preview and never call an external NMT provider. `features.translationFakePreviewEnabled` is true only when both required profiles and the provider/API/worker opt-in flags are active.
     The authenticated PostgreSQL profile also exposes the current actor's available paid and non-expired bonus credit totals from the rebuildable balance projection; the response is no-store and does not expose another account's ledger. When the MoMo TEST gate is explicitly enabled with valid TEST configuration, the profile also exposes server-priced public-chapter unlock quotes and an idempotent paid-credit unlock that commits the debit with an immutable entitlement; private/draft chapters remain unavailable and no production purchase is enabled.
-    An opt-in, metadata-only guest catalog endpoint is available in the PostgreSQL profile. It is disabled by default and returns only authored, active, explicitly public works owned by active users with at least one ready chapter; it does not return descriptions or chapter bodies. Admin-only publication-reviewer role assignment, bounded eligible-account search and status-filtered assignment history are implemented in the PostgreSQL profile; the current-user response exposes the caller's server-derived security capability for navigation only. Author-owned private drafts can read the current effective publication-rights policy and record a work-scoped, idempotent policy acknowledgement. The API does not bootstrap system administrators, let authors define policy, collect publication scope claims, review, approve or publish work. Rights review decisions, publication controls, catalog UI, rate limiting at the edge, and reader access for guests remain separate work.
+    An opt-in, metadata-only guest catalog endpoint is available in the PostgreSQL profile. It is disabled by default and returns only authored, active, explicitly public works owned by active users with at least one ready chapter; it does not return descriptions or chapter bodies. Admin-only publication-reviewer role assignment, bounded eligible-account search and status-filtered assignment history are implemented in the PostgreSQL profile; the current-user response exposes the caller's server-derived security capability for navigation only. Author-owned private drafts can read the current effective publication-rights policy, record a work-scoped acknowledgement and submit an immutable rights-review request with scoped declarations. Submission is owner-only, CSRF-protected, snapshot-checked, bounded and persistently rate-limited. The API does not bootstrap system administrators, let authors define policy, review, approve or publish work. Reviewer queues/decisions, public controls, catalog UI, edge rate limits and guest reader access remain separate work.
 servers:
   - url: http://127.0.0.1:8080
 tags:
@@ -47,7 +47,7 @@ tags:
     description: Explicitly opted-in fake-local translation job lifecycle; external providers, reviewer publication and paid usage are unavailable.
     x-implementation-status: local-preview
   - name: Authoring
-    description: Private-first author manuscript drafts with owner-only chapter content and immutable revisions; collaboration and publication are not available.
+    description: Private-first owner manuscript drafts and content. Publication requests submit immutable rights-review records only; reviewer decisions and public release are not available.
     x-implementation-status: partial
   - name: Commerce
     description: Actor-owned credit balance/history, MoMo TEST-only feature-gated pack checkout/order status/IPN settlement and paid-credit chapter unlock are implemented; payment-order history, missing-IPN reconciliation, purchase history UI and production payment remain unavailable.
@@ -2042,6 +2042,111 @@ paths:
           $ref: '#/components/responses/Problem'
         '404':
           $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/authoring/manuscripts/{workId}/publication/requests:
+    post:
+      operationId: submitPublicationRequestForManuscript
+      tags: [Authoring]
+      x-implementation-status: implemented-postgres-profile
+      summary: Submit an immutable owner rights-review request
+      description: >-
+        Requires a live owner session, current Terms and Privacy acceptance, session-bound CSRF, the exact current
+        publication-readiness ETag in If-Match, a safe 16–128 character Idempotency-Key and a JSON body no larger
+        than 4 KiB. The current approved rights-policy version must have been acknowledged for this manuscript.
+        Exactly one PUBLIC_METADATA and one CHAPTER_TEXT declaration are required; COMMERCIAL_SALE is optional.
+        Declarations use ORIGINAL_WORK, LICENSE_OR_PERMISSION, PUBLIC_DOMAIN or NEEDS_REVIEW and are not legal
+        findings. The server snapshots selected current scope data and appends a SUBMITTED event atomically.
+        Exact retries return the same receipt; changed data with the same key is 409. Stale content returns 412
+        with the current readiness ETag. A persistent per-actor token bucket limits new submissions. This endpoint
+        does not review, approve or publish a work.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - name: workId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: If-Match
+          in: header
+          required: true
+          description: Exact strong ETag from the current publication readiness response.
+          schema:
+            type: string
+            pattern: '^"publication-snapshot-[a-f0-9]{64}"$'
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: Reuse the same safe key for an exact retry; use a fresh key for a changed request.
+          schema:
+            type: string
+            minLength: 16
+            maxLength: 128
+            pattern: '^[A-Za-z0-9._~-]{16,128}$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PublicationRequestSubmission'
+      responses:
+        '201':
+          description: Immutable request and initial audit event committed; exact replay returns the same receipt.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicationRequestReceipt'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '412':
+          description: Readiness snapshot changed; reload before confirmation.
+          headers:
+            ETag:
+              description: Current readiness validator for a safe reload-and-confirm retry.
+              schema:
+                type: string
+                pattern: '^"publication-snapshot-[a-f0-9]{64}"$'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '413':
+          $ref: '#/components/responses/Problem'
+        '415':
+          $ref: '#/components/responses/Problem'
+        '428':
+          $ref: '#/components/responses/Problem'
+        '429':
+          description: Persistent actor-scoped submission bucket is empty; honor Retry-After.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+                minimum: 1
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
         '503':
           $ref: '#/components/responses/Problem'
   /api/v1/authoring/manuscripts/{workId}/publication/rights-policy/acceptance:
@@ -6625,6 +6730,65 @@ components:
         snapshotEtag:
           type: string
           pattern: '^"publication-scope-[a-f0-9]{64}"$'
+    PublicationRequestSubmission:
+      type: object
+      additionalProperties: false
+      required: [policyVersion, scopeClaims]
+      properties:
+        policyVersion:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
+        scopeClaims:
+          type: array
+          minItems: 2
+          maxItems: 3
+          description: Metadata and chapter text are required; commercial sale is optional.
+          items:
+            $ref: '#/components/schemas/PublicationRequestScopeClaim'
+    PublicationRequestScopeClaim:
+      type: object
+      additionalProperties: false
+      required: [scopeCode, rightsBasisCode]
+      properties:
+        scopeCode:
+          type: string
+          enum: [PUBLIC_METADATA, CHAPTER_TEXT, COMMERCIAL_SALE]
+        rightsBasisCode:
+          type: string
+          enum: [ORIGINAL_WORK, LICENSE_OR_PERMISSION, PUBLIC_DOMAIN, NEEDS_REVIEW]
+    PublicationRequestReceipt:
+      type: object
+      additionalProperties: false
+      required: [requestId, requestVersion, policyVersion, snapshotSha256, scopeCodes, submittedAt, state]
+      properties:
+        requestId:
+          type: string
+          format: uuid
+        requestVersion:
+          type: integer
+          minimum: 1
+        policyVersion:
+          type: string
+          maxLength: 64
+        snapshotSha256:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        scopeCodes:
+          type: array
+          minItems: 2
+          maxItems: 3
+          uniqueItems: true
+          items:
+            type: string
+            enum: [PUBLIC_METADATA, CHAPTER_TEXT, COMMERCIAL_SALE]
+        submittedAt:
+          type: string
+          format: date-time
+        state:
+          type: string
+          const: PENDING_REVIEW
     PublicationRightsAcceptanceRequest:
       type: object
       additionalProperties: false
