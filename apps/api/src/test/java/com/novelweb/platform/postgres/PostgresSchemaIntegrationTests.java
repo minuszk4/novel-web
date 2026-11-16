@@ -1803,16 +1803,28 @@ class PostgresSchemaIntegrationTests {
   void publicationReviewerDecisionsAreAtomicIdempotentAndNeverPublish() throws Exception {
     UUID unresolvedOwnerId = createSessionTestUser("Publication decision unresolved owner");
     UUID approvableOwnerId = createSessionTestUser("Publication decision approvable owner");
+    UUID staleContentOwnerId = createSessionTestUser("Publication decision stale content owner");
+    UUID stalePolicyOwnerId = createSessionTestUser("Publication decision stale policy owner");
     UUID reviewerId = createSessionTestUser("Publication decision reviewer and self owner");
     UUID blockedReviewerId = createSessionTestUser("Publication decision policy blocked reviewer");
     UUID policyApproverId = createSessionTestUser("Publication decision policy approver");
     List<UUID> userIds =
         List.of(
-            unresolvedOwnerId, approvableOwnerId, reviewerId, blockedReviewerId, policyApproverId);
+            unresolvedOwnerId,
+            approvableOwnerId,
+            staleContentOwnerId,
+            stalePolicyOwnerId,
+            reviewerId,
+            blockedReviewerId,
+            policyApproverId);
     List<SubmittedPublicationFixture> fixtures = new ArrayList<>();
     String policyVersion = "publication-decision-" + UUID.randomUUID().toString().replace("-", "");
     String policyText = "Synthetic reviewer-decision policy; not legal text.";
     byte[] policyDigest = sha256(policyText);
+    String newerPolicyVersion =
+        "publication-decision-newer-" + UUID.randomUUID().toString().replace("-", "");
+    String newerPolicyText = "Synthetic successor review policy; not legal text.";
+    byte[] newerPolicyDigest = sha256(newerPolicyText);
     try {
       for (UUID userId : userIds) {
         if (!userId.equals(blockedReviewerId)) addCurrentPolicyAcceptances(userId);
@@ -1849,6 +1861,10 @@ class PostgresSchemaIntegrationTests {
           sessionService.create(unresolvedOwnerId).orElseThrow();
       SessionService.IssuedSession approvableOwnerSession =
           sessionService.create(approvableOwnerId).orElseThrow();
+      SessionService.IssuedSession staleContentOwnerSession =
+          sessionService.create(staleContentOwnerId).orElseThrow();
+      SessionService.IssuedSession stalePolicyOwnerSession =
+          sessionService.create(stalePolicyOwnerId).orElseThrow();
       SessionService.IssuedSession reviewerSession =
           sessionService.create(reviewerId).orElseThrow();
       SessionService.IssuedSession blockedReviewerSession =
@@ -1884,6 +1900,24 @@ class PostgresSchemaIntegrationTests {
               policyVersion,
               policyDigest,
               "Reviewer's own private request");
+      SubmittedPublicationFixture staleContentFixture =
+          submitPublicationRequestForReviewQueue(
+              fixtures,
+              staleContentOwnerId,
+              staleContentOwnerSession,
+              policyVersion,
+              policyDigest,
+              "Request whose manuscript changes after submission",
+              "ORIGINAL_WORK");
+      SubmittedPublicationFixture stalePolicyFixture =
+          submitPublicationRequestForReviewQueue(
+              fixtures,
+              stalePolicyOwnerId,
+              stalePolicyOwnerSession,
+              policyVersion,
+              policyDigest,
+              "Request whose rights policy becomes stale",
+              "ORIGINAL_WORK");
 
       String csrf = csrfTokenService.tokenFor(reviewerSession.cookieValue());
       String unresolvedPath =
@@ -1898,6 +1932,35 @@ class PostgresSchemaIntegrationTests {
       String unresolvedEtag = unresolvedDetail.getResponse().getHeader(HttpHeaders.ETAG);
 
       String approvalBody = "{\"actionCode\":\"APPROVED\",\"reasonCode\":\"RIGHTS_REVIEWED\"}";
+      MvcResult anonymousDecision =
+          mockMvc
+              .perform(
+                  post(unresolvedPath)
+                      .header(HttpHeaders.IF_MATCH, unresolvedEtag)
+                      .header("Idempotency-Key", "publication-decision-anonymous-01")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(approvalBody))
+              .andReturn();
+      assertEquals(403, anonymousDecision.getResponse().getStatus());
+      assertTrue(anonymousDecision.getResponse().getContentAsString().contains("CSRF_FAILED"));
+      assertEquals(1, publicationReviewEventCount(unresolvedFixture.workId()));
+
+      MvcResult ownerDecision =
+          mockMvc
+              .perform(
+                  post(unresolvedPath)
+                      .cookie(ownerCookie)
+                      .header(
+                          SessionCsrfTokenService.TOKEN_HEADER_NAME,
+                          csrfTokenService.tokenFor(approvableOwnerSession.cookieValue()))
+                      .header(HttpHeaders.IF_MATCH, unresolvedEtag)
+                      .header("Idempotency-Key", "publication-decision-owner-01")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(approvalBody))
+              .andReturn();
+      assertEquals(403, ownerDecision.getResponse().getStatus());
+      assertEquals(1, publicationReviewEventCount(unresolvedFixture.workId()));
+
       MvcResult missingCsrf =
           mockMvc
               .perform(
@@ -1961,6 +2024,7 @@ class PostgresSchemaIntegrationTests {
               .getHeader(HttpHeaders.CACHE_CONTROL)
               .contains("no-store"));
       assertEquals(1, publicationReviewEventCount(unresolvedFixture.workId()));
+      assertEquals(0, publicationScopeApprovalCount(unresolvedFixture.workId()));
 
       String needsInformationBody =
           "{\"actionCode\":\"NEEDS_INFORMATION\",\"reasonCode\":\"MORE_INFORMATION\"}";
@@ -2070,6 +2134,55 @@ class PostgresSchemaIntegrationTests {
               .getContentAsString()
               .contains("POLICY_ACCEPTANCE_REQUIRED"));
 
+      MvcResult staleContentDetail =
+          mockMvc
+              .perform(
+                  get("/api/v1/review/publications/{requestId}", staleContentFixture.requestId())
+                      .cookie(reviewerCookie))
+              .andReturn();
+      assertEquals(200, staleContentDetail.getResponse().getStatus());
+      String staleContentEtag = staleContentDetail.getResponse().getHeader(HttpHeaders.ETAG);
+      updatePublicationWorkTitle(staleContentFixture.workId(), "Edited after review submission");
+      MvcResult staleContentVersion =
+          mockMvc
+              .perform(
+                  post(
+                          "/api/v1/review/publications/{requestId}/decisions",
+                          staleContentFixture.requestId())
+                      .cookie(reviewerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, csrf)
+                      .header(HttpHeaders.IF_MATCH, staleContentEtag)
+                      .header("Idempotency-Key", "publication-decision-content-stale-01")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(approvalBody))
+              .andReturn();
+      assertEquals(412, staleContentVersion.getResponse().getStatus());
+      assertNotEquals(
+          staleContentEtag, staleContentVersion.getResponse().getHeader(HttpHeaders.ETAG));
+      MvcResult staleContentSnapshot =
+          mockMvc
+              .perform(
+                  post(
+                          "/api/v1/review/publications/{requestId}/decisions",
+                          staleContentFixture.requestId())
+                      .cookie(reviewerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, csrf)
+                      .header(
+                          HttpHeaders.IF_MATCH,
+                          staleContentVersion.getResponse().getHeader(HttpHeaders.ETAG))
+                      .header("Idempotency-Key", "publication-decision-content-snapshot-01")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(approvalBody))
+              .andReturn();
+      assertEquals(412, staleContentSnapshot.getResponse().getStatus());
+      assertTrue(
+          staleContentSnapshot
+              .getResponse()
+              .getContentAsString()
+              .contains("PUBLICATION_REVIEW_SNAPSHOT_STALE"));
+      assertEquals(1, publicationReviewEventCount(staleContentFixture.workId()));
+      assertEquals(0, publicationScopeApprovalCount(staleContentFixture.workId()));
+
       MvcResult approvalDetail =
           mockMvc
               .perform(
@@ -2078,6 +2191,29 @@ class PostgresSchemaIntegrationTests {
               .andReturn();
       assertEquals(200, approvalDetail.getResponse().getStatus());
       String approvalEtag = approvalDetail.getResponse().getHeader(HttpHeaders.ETAG);
+      String approvalIdempotencyKey = "publication-decision-approve-0001";
+      installFailingPublicationApprovalTrigger();
+      MvcResult rolledBackApproval;
+      try {
+        rolledBackApproval =
+            mockMvc
+                .perform(
+                    post(
+                            "/api/v1/review/publications/{requestId}/decisions",
+                            approvableFixture.requestId())
+                        .cookie(reviewerCookie)
+                        .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, csrf)
+                        .header(HttpHeaders.IF_MATCH, approvalEtag)
+                        .header("Idempotency-Key", approvalIdempotencyKey)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(approvalBody))
+                .andReturn();
+      } finally {
+        dropFailingPublicationApprovalTrigger();
+      }
+      assertEquals(503, rolledBackApproval.getResponse().getStatus());
+      assertEquals(1, publicationReviewEventCount(approvableFixture.workId()));
+      assertEquals(0, publicationScopeApprovalCount(approvableFixture.workId()));
       MvcResult approved =
           mockMvc
               .perform(
@@ -2087,7 +2223,7 @@ class PostgresSchemaIntegrationTests {
                       .cookie(reviewerCookie)
                       .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, csrf)
                       .header(HttpHeaders.IF_MATCH, approvalEtag)
-                      .header("Idempotency-Key", "publication-decision-approve-0001")
+                      .header("Idempotency-Key", approvalIdempotencyKey)
                       .contentType(MediaType.APPLICATION_JSON)
                       .content(approvalBody))
               .andReturn();
@@ -2125,6 +2261,132 @@ class PostgresSchemaIntegrationTests {
         }
       }
       assertEquals(2, publicationReviewEventCount(approvableFixture.workId()));
+      assertEquals(
+          "55000",
+          assertThrows(
+                  SQLException.class,
+                  () -> mutatePublicationReviewEvent(approvableFixture.requestId()))
+              .getSQLState());
+      assertEquals(
+          "55000",
+          assertThrows(
+                  SQLException.class,
+                  () -> mutatePublicationScopeApproval(approvableFixture.workId()))
+              .getSQLState());
+
+      MvcResult stalePolicyDetail =
+          mockMvc
+              .perform(
+                  get("/api/v1/review/publications/{requestId}", stalePolicyFixture.requestId())
+                      .cookie(reviewerCookie))
+              .andReturn();
+      assertEquals(200, stalePolicyDetail.getResponse().getStatus());
+      String stalePolicyEtag = stalePolicyDetail.getResponse().getHeader(HttpHeaders.ETAG);
+      insertApprovedPublicationRightsPolicy(
+          policyApproverId, newerPolicyVersion, newerPolicyText, newerPolicyDigest);
+      MvcResult stalePolicyValidator =
+          mockMvc
+              .perform(
+                  post(
+                          "/api/v1/review/publications/{requestId}/decisions",
+                          stalePolicyFixture.requestId())
+                      .cookie(reviewerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, csrf)
+                      .header(HttpHeaders.IF_MATCH, stalePolicyEtag)
+                      .header("Idempotency-Key", "publication-decision-policy-version-01")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(approvalBody))
+              .andReturn();
+      assertEquals(412, stalePolicyValidator.getResponse().getStatus());
+      MvcResult stalePolicyApproval =
+          mockMvc
+              .perform(
+                  post(
+                          "/api/v1/review/publications/{requestId}/decisions",
+                          stalePolicyFixture.requestId())
+                      .cookie(reviewerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, csrf)
+                      .header(
+                          HttpHeaders.IF_MATCH,
+                          stalePolicyValidator.getResponse().getHeader(HttpHeaders.ETAG))
+                      .header("Idempotency-Key", "publication-decision-policy-stale-01")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(approvalBody))
+              .andReturn();
+      assertEquals(409, stalePolicyApproval.getResponse().getStatus());
+      assertTrue(
+          stalePolicyApproval
+              .getResponse()
+              .getContentAsString()
+              .contains("PUBLICATION_RIGHTS_POLICY_STALE"));
+      assertEquals(1, publicationReviewEventCount(stalePolicyFixture.workId()));
+      assertEquals(0, publicationScopeApprovalCount(stalePolicyFixture.workId()));
+
+      MvcResult revocationRaceDetail =
+          mockMvc
+              .perform(
+                  get("/api/v1/review/publications/{requestId}", staleContentFixture.requestId())
+                      .cookie(reviewerCookie))
+              .andReturn();
+      assertEquals(200, revocationRaceDetail.getResponse().getStatus());
+      ExecutorService decisionExecutor = Executors.newSingleThreadExecutor();
+      try (Connection revocationConnection = dataSource.getConnection()) {
+        revocationConnection.setAutoCommit(false);
+        try {
+          try (PreparedStatement revoke =
+              revocationConnection.prepareStatement(
+                  """
+                      UPDATE security_role_assignments
+                         SET revoked_by_user_id = ?, revoked_at = clock_timestamp(),
+                             revocation_reason_code = 'ACCESS_ENDED'
+                       WHERE user_id = ? AND role_code = 'publication_reviewer'
+                         AND revoked_at IS NULL
+                      """)) {
+            revoke.setObject(1, approvableOwnerId);
+            revoke.setObject(2, reviewerId);
+            assertEquals(1, revoke.executeUpdate());
+          }
+          Future<MvcResult> inFlightDecision =
+              decisionExecutor.submit(
+                  () ->
+                      mockMvc
+                          .perform(
+                              post(
+                                      "/api/v1/review/publications/{requestId}/decisions",
+                                      staleContentFixture.requestId())
+                                  .cookie(reviewerCookie)
+                                  .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, csrf)
+                                  .header(
+                                      HttpHeaders.IF_MATCH,
+                                      revocationRaceDetail
+                                          .getResponse()
+                                          .getHeader(HttpHeaders.ETAG))
+                                  .header(
+                                      "Idempotency-Key",
+                                      "publication-decision-revoked-in-flight-01")
+                                  .contentType(MediaType.APPLICATION_JSON)
+                                  .content(approvalBody))
+                          .andReturn());
+          assertTrue(
+              awaitPublicationDecisionLockWait(inFlightDecision),
+              "The HTTP decision must wait on the active reviewer assignment lock");
+          revocationConnection.commit();
+          MvcResult revokedDuringDecision = inFlightDecision.get(5, TimeUnit.SECONDS);
+          assertEquals(403, revokedDuringDecision.getResponse().getStatus());
+          assertTrue(
+              revokedDuringDecision
+                  .getResponse()
+                  .getContentAsString()
+                  .contains("PUBLICATION_REVIEWER_REQUIRED"));
+          assertEquals(1, publicationReviewEventCount(staleContentFixture.workId()));
+          assertEquals(0, publicationScopeApprovalCount(staleContentFixture.workId()));
+        } finally {
+          if (!revocationConnection.getAutoCommit()) revocationConnection.rollback();
+        }
+      } finally {
+        decisionExecutor.shutdownNow();
+        assertTrue(decisionExecutor.awaitTermination(5, TimeUnit.SECONDS));
+      }
     } finally {
       for (SubmittedPublicationFixture fixture : fixtures) {
         deletePublicationRequestFixtures(fixture.workId());
@@ -2140,6 +2402,7 @@ class PostgresSchemaIntegrationTests {
         delete.setObject(2, blockedReviewerId);
         delete.executeUpdate();
       }
+      deletePublicationRightsPolicyFixture(newerPolicyVersion);
       deletePublicationRightsPolicyFixture(policyVersion);
       for (UUID userId : userIds) deleteSessionTestUser(userId);
     }
@@ -2294,6 +2557,139 @@ class PostgresSchemaIntegrationTests {
         return rows.getInt(1);
       }
     }
+  }
+
+  private long publicationScopeApprovalCount(UUID workId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT COUNT(*) FROM publication_scope_access_approvals WHERE work_id = ?")) {
+      select.setObject(1, workId);
+      try (ResultSet rows = select.executeQuery()) {
+        assertTrue(rows.next());
+        return rows.getLong(1);
+      }
+    }
+  }
+
+  private void updatePublicationWorkTitle(UUID workId, String title) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement update =
+            connection.prepareStatement("UPDATE works SET title = ? WHERE id = ?")) {
+      update.setString(1, title);
+      update.setObject(2, workId);
+      assertEquals(1, update.executeUpdate());
+    }
+  }
+
+  private void insertApprovedPublicationRightsPolicy(
+      UUID approverId, String version, String displayText, byte[] digest) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement insert =
+            connection.prepareStatement(
+                """
+                    INSERT INTO publication_rights_policy_documents
+                        (version, effective_at, display_text, policy_sha256)
+                    VALUES (?, clock_timestamp() - INTERVAL '1 second', ?, ?)
+                    """)) {
+      insert.setString(1, version);
+      insert.setString(2, displayText);
+      insert.setBytes(3, digest);
+      assertEquals(1, insert.executeUpdate());
+    }
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement approve =
+            connection.prepareStatement(
+                """
+                    UPDATE publication_rights_policy_documents
+                       SET status = 'APPROVED', approved_at = clock_timestamp(), approved_by = ?
+                     WHERE version = ? AND status = 'DRAFT'
+                    """)) {
+      approve.setObject(1, approverId);
+      approve.setString(2, version);
+      assertEquals(1, approve.executeUpdate());
+    }
+  }
+
+  private void installFailingPublicationApprovalTrigger() throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        java.sql.Statement statement = connection.createStatement()) {
+      statement.execute(
+          """
+              CREATE OR REPLACE FUNCTION test_fail_publication_scope_approval()
+              RETURNS trigger LANGUAGE plpgsql AS $$
+              BEGIN
+                  IF NEW.scope_code = 'CHAPTER_TEXT' THEN
+                      RAISE EXCEPTION 'synthetic approval rollback check' USING ERRCODE = '23514';
+                  END IF;
+                  RETURN NEW;
+              END;
+              $$
+              """);
+      statement.execute(
+          """
+              CREATE TRIGGER trg_test_fail_publication_scope_approval
+                  BEFORE INSERT ON publication_scope_access_approvals
+                  FOR EACH ROW EXECUTE FUNCTION test_fail_publication_scope_approval()
+              """);
+    }
+  }
+
+  private void dropFailingPublicationApprovalTrigger() throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        java.sql.Statement statement = connection.createStatement()) {
+      statement.execute(
+          "DROP TRIGGER IF EXISTS trg_test_fail_publication_scope_approval "
+              + "ON publication_scope_access_approvals");
+      statement.execute("DROP FUNCTION IF EXISTS test_fail_publication_scope_approval()");
+    }
+  }
+
+  private void mutatePublicationReviewEvent(UUID requestId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement update =
+            connection.prepareStatement(
+                "UPDATE publication_review_events SET reason_code = reason_code "
+                    + "WHERE request_id = ? AND event_sequence = 2")) {
+      update.setObject(1, requestId);
+      update.executeUpdate();
+    }
+  }
+
+  private void mutatePublicationScopeApproval(UUID workId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement update =
+            connection.prepareStatement(
+                "UPDATE publication_scope_access_approvals SET reason_code = reason_code "
+                    + "WHERE work_id = ?")) {
+      update.setObject(1, workId);
+      update.executeUpdate();
+    }
+  }
+
+  private boolean awaitPublicationDecisionLockWait(Future<?> operation) throws Exception {
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+    while (System.nanoTime() < deadline) {
+      if (operation.isDone()) return false;
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement select =
+              connection.prepareStatement(
+                  """
+                      SELECT EXISTS (
+                          SELECT 1
+                            FROM pg_stat_activity
+                           WHERE wait_event_type = 'Lock'
+                             AND state = 'active'
+                             AND query LIKE '%FOR UPDATE OF assignment, reviewer%'
+                      )
+                      """)) {
+        try (ResultSet row = select.executeQuery()) {
+          if (row.next() && row.getBoolean(1)) return true;
+        }
+      }
+      Thread.sleep(20);
+    }
+    return false;
   }
 
   private int publicationRateLimitBucketCount(UUID userId) throws SQLException {
@@ -16953,8 +17349,18 @@ class PostgresSchemaIntegrationTests {
     UUID adminId = createSessionTestUser("Synthetic role assignment admin");
     UUID targetId = createSessionTestUser("Synthetic publication reviewer");
     UUID outsiderId = createSessionTestUser("Synthetic role assignment outsider");
+    String rightsPolicyVersion =
+        "reviewer-admin-decision-" + UUID.randomUUID().toString().replace("-", "");
+    String rightsPolicyText = "Synthetic role-matrix policy; not legal text.";
+    byte[] rightsPolicyDigest = sha256(rightsPolicyText);
+    List<SubmittedPublicationFixture> decisionFixtures = new ArrayList<>();
     try {
       insertBootstrapSecurityAdminFixture(adminId);
+      addCurrentPolicyAcceptances(adminId);
+      addCurrentPolicyAcceptances(targetId);
+      addCurrentPolicyAcceptances(outsiderId);
+      insertApprovedPublicationRightsPolicy(
+          adminId, rightsPolicyVersion, rightsPolicyText, rightsPolicyDigest);
       SessionService.IssuedSession adminSession = sessionService.create(adminId).orElseThrow();
       SessionService.IssuedSession outsiderSession =
           sessionService.create(outsiderId).orElseThrow();
@@ -17170,6 +17576,48 @@ class PostgresSchemaIntegrationTests {
       assertEquals("REVIEW_CAPACITY", latestGrantEvent.path("lastEventReasonCode").asText());
 
       SessionService.IssuedSession reviewerSession = sessionService.create(targetId).orElseThrow();
+      SubmittedPublicationFixture adminDecisionFixture =
+          submitPublicationRequestForReviewQueue(
+              decisionFixtures,
+              outsiderId,
+              outsiderSession,
+              rightsPolicyVersion,
+              rightsPolicyDigest,
+              "Request used for the system-admin decision denial matrix",
+              "ORIGINAL_WORK");
+      var reviewerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", reviewerSession.cookieValue());
+      MvcResult reviewerDetail =
+          mockMvc
+              .perform(
+                  get("/api/v1/review/publications/{requestId}", adminDecisionFixture.requestId())
+                      .cookie(reviewerCookie))
+              .andReturn();
+      assertEquals(200, reviewerDetail.getResponse().getStatus());
+      MvcResult systemAdminDecision =
+          mockMvc
+              .perform(
+                  post(
+                          "/api/v1/review/publications/{requestId}/decisions",
+                          adminDecisionFixture.requestId())
+                      .cookie(adminCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, adminCsrf)
+                      .header(
+                          HttpHeaders.IF_MATCH,
+                          reviewerDetail.getResponse().getHeader(HttpHeaders.ETAG))
+                      .header("Idempotency-Key", "system-admin-cannot-review-0001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"actionCode\":\"APPROVED\",\"reasonCode\":\"RIGHTS_REVIEWED\"}"))
+              .andReturn();
+      assertEquals(403, systemAdminDecision.getResponse().getStatus());
+      assertTrue(
+          systemAdminDecision
+              .getResponse()
+              .getContentAsString()
+              .contains("PUBLICATION_REVIEWER_REQUIRED"));
+      assertEquals(1, publicationReviewEventCount(adminDecisionFixture.workId()));
+      assertEquals(0, publicationScopeApprovalCount(adminDecisionFixture.workId()));
+
       MvcResult reviewerDenied =
           mockMvc
               .perform(
@@ -17265,6 +17713,13 @@ class PostgresSchemaIntegrationTests {
       assertThrows(SQLException.class, this::truncateSecurityRoleEvents);
       assertEquals(2, countSecurityRoleEvents(targetId));
     } finally {
+      for (SubmittedPublicationFixture fixture : decisionFixtures) {
+        deletePublicationRequestFixtures(fixture.workId());
+        deletePublicationRightsPolicyAcceptanceFixture(fixture.workId());
+        deletePublicationRateLimitBucket(fixture.ownerId());
+        deleteLibraryUserData(fixture.ownerId(), fixture.workId());
+      }
+      deletePublicationRightsPolicyFixture(rightsPolicyVersion);
       deleteSessionTestUser(adminId);
       deleteSessionTestUser(targetId);
       deleteSessionTestUser(outsiderId);
