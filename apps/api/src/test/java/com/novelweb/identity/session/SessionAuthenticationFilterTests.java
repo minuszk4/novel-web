@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.novelweb.platform.security.ApiProblemWriter;
@@ -85,6 +86,42 @@ class SessionAuthenticationFilterTests {
   }
 
   @Test
+  void missingOrUnrelatedCookieContinuesWithoutAuthentication() throws Exception {
+    SessionService sessionService = mock(SessionService.class);
+    SessionAuthenticationFilter filter =
+        new SessionAuthenticationFilter(
+            sessionService, mock(SessionCsrfTokenService.class), new ApiProblemWriter());
+    MockHttpServletRequest missingCookieRequest = new MockHttpServletRequest();
+    MockHttpServletRequest unrelatedCookieRequest = new MockHttpServletRequest();
+    unrelatedCookieRequest.setCookies(new Cookie("unrelated", "value"));
+
+    assertUnauthenticatedRequestContinues(filter, sessionService, missingCookieRequest);
+    assertUnauthenticatedRequestContinues(filter, sessionService, unrelatedCookieRequest);
+  }
+
+  @Test
+  void expiredOrRevokedSessionContinuesWithoutAuthentication() throws Exception {
+    SessionService sessionService = mock(SessionService.class);
+    SessionCsrfTokenService csrfService = mock(SessionCsrfTokenService.class);
+    when(sessionService.validateAndTouch(SESSION_TOKEN)).thenReturn(Optional.empty());
+    SessionAuthenticationFilter filter =
+        new SessionAuthenticationFilter(sessionService, csrfService, new ApiProblemWriter());
+    MockHttpServletRequest request = requestWithSession(SESSION_TOKEN);
+    MockHttpServletResponse response = new MockHttpServletResponse();
+    AtomicReference<Authentication> reachedAuthentication = new AtomicReference<>();
+    FilterChain chain =
+        (servletRequest, servletResponse) ->
+            reachedAuthentication.set(SecurityContextHolder.getContext().getAuthentication());
+
+    filter.doFilter(request, response, chain);
+
+    assertNull(reachedAuthentication.get());
+    assertEquals(200, response.getStatus());
+    verify(sessionService).validateAndTouch(SESSION_TOKEN);
+    verifyNoInteractions(csrfService);
+  }
+
+  @Test
   void databaseFailureReturnsGenericServiceUnavailableProblem() throws Exception {
     SessionService sessionService = mock(SessionService.class);
     when(sessionService.validateAndTouch(SESSION_TOKEN))
@@ -109,5 +146,23 @@ class SessionAuthenticationFilterTests {
     MockHttpServletRequest request = new MockHttpServletRequest();
     request.setCookies(new Cookie(SessionCookieFactory.COOKIE_NAME, token));
     return request;
+  }
+
+  private static void assertUnauthenticatedRequestContinues(
+      SessionAuthenticationFilter filter,
+      SessionService sessionService,
+      MockHttpServletRequest request)
+      throws Exception {
+    MockHttpServletResponse response = new MockHttpServletResponse();
+    AtomicReference<Authentication> reachedAuthentication = new AtomicReference<>();
+    FilterChain chain =
+        (servletRequest, servletResponse) ->
+            reachedAuthentication.set(SecurityContextHolder.getContext().getAuthentication());
+
+    filter.doFilter(request, response, chain);
+
+    assertNull(reachedAuthentication.get());
+    assertEquals(200, response.getStatus());
+    verifyNoInteractions(sessionService);
   }
 }
