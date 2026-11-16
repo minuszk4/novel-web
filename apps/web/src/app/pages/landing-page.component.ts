@@ -174,6 +174,7 @@ export class LandingPageComponent {
     this.activeLanguage = language;
     this.catalogState.set('loading');
     this.catalogItems.set([]);
+    this.announcement.set('');
     this.nextCursor.set(null);
     this.pageError.set(null);
     this.isLoadingMore.set(false);

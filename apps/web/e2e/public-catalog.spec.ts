@@ -148,6 +148,54 @@ test('recovers from a failed page request without hiding search', async ({ page 
   await expect(page.getByRole('alert')).toHaveCount(0);
 });
 
+test('shows Retry-After without auto-retry and preserves the search for explicit recovery', async ({
+  page,
+}) => {
+  const catalogRequests: URL[] = [];
+  await installCatalog(page, true);
+  await page.route('**/api/v1/catalog/works**', async (route) => {
+    const requestUrl = new URL(route.request().url());
+    catalogRequests.push(requestUrl);
+    if (catalogRequests.length === 2) {
+      await route.fulfill({
+        status: 429,
+        headers: { 'Retry-After': '8', 'Cache-Control': 'no-store' },
+        contentType: 'application/problem+json',
+        body: JSON.stringify({ code: 'PUBLIC_CATALOG_RATE_LIMITED' }),
+      });
+      return;
+    }
+    await json(route, { items: [works[0]], nextCursor: null });
+  });
+  await page.setViewportSize({ width: 360, height: 800 });
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Long Vân Truyện' })).toBeVisible();
+
+  const query = page.getByRole('searchbox', { name: 'Tên truyện hoặc tác giả' });
+  await query.fill('kiem');
+  await page.getByRole('button', { name: 'Tìm truyện' }).click();
+
+  await expect(page.getByRole('alert')).toContainText('Hãy thử lại sau 8 giây');
+  await expect(query).toHaveValue('kiem');
+  await expect(page.locator('.public-catalog-announcement')).toBeEmpty();
+  expect(catalogRequests).toHaveLength(2);
+  const evidenceDirectory = process.env['PUBLIC_CATALOG_EVIDENCE_DIR'];
+  if (evidenceDirectory) {
+    await page.screenshot({
+      path: join(evidenceDirectory, 'catalog-429-retry-after-mobile-360x800.png'),
+      fullPage: true,
+    });
+  }
+  await page.waitForTimeout(1_200);
+  expect(catalogRequests).toHaveLength(2);
+  await expectNoAxeViolations(page);
+
+  await page.getByRole('button', { name: 'Thử tải lại' }).click();
+  await expect(page.getByRole('heading', { name: 'Long Vân Truyện' })).toBeVisible();
+  expect(catalogRequests).toHaveLength(3);
+  expect(catalogRequests[2].searchParams.get('q')).toBe('kiem');
+});
+
 for (const viewport of [
   { name: 'mobile 360px', width: 360, height: 800 },
   { name: 'tablet 768px', width: 768, height: 1024 },
