@@ -19,15 +19,32 @@ class GoogleCsrfTokenValidatorTests {
   }
 
   @Test
+  void acceptsTokensAtTheMaximumLength() {
+    String maximumLengthToken = "x".repeat(512);
+    assertDoesNotThrow(
+        () ->
+            GoogleCsrfTokenValidator.requireMatchingTokens(maximumLengthToken, maximumLengthToken));
+  }
+
+  @Test
   void rejectsMissingBlankAndOversizedTokens() {
     assertThrows(
         InvalidGoogleCredentialException.class,
         () -> GoogleCsrfTokenValidator.requireMatchingTokens(null, "body-value"));
     assertThrows(
         InvalidGoogleCredentialException.class,
-        () -> GoogleCsrfTokenValidator.requireMatchingTokens(" ", " "));
+        () -> GoogleCsrfTokenValidator.requireMatchingTokens("cookie-value", null));
     assertThrows(
         InvalidGoogleCredentialException.class,
-        () -> GoogleCsrfTokenValidator.requireMatchingTokens("x".repeat(513), "x".repeat(513)));
+        () -> GoogleCsrfTokenValidator.requireMatchingTokens(" ", "body-value"));
+    assertThrows(
+        InvalidGoogleCredentialException.class,
+        () -> GoogleCsrfTokenValidator.requireMatchingTokens("cookie-value", " "));
+    assertThrows(
+        InvalidGoogleCredentialException.class,
+        () -> GoogleCsrfTokenValidator.requireMatchingTokens("x".repeat(513), "body-value"));
+    assertThrows(
+        InvalidGoogleCredentialException.class,
+        () -> GoogleCsrfTokenValidator.requireMatchingTokens("cookie-value", "x".repeat(513)));
   }
 }
