@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 8.8.0
+  version: 8.9.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -1339,10 +1339,12 @@ paths:
       summary: Get the current application user and access state
       description: >-
         Returns only the authenticated principal's first-party profile, linked provider names, latest recorded
-        policy versions, base personal scope and server feature flags. requiredAcceptanceComplete is true only
-        when both active policy records match the latest recorded decisions; it stays false until both approved
-        policy documents are available and accepted. Product permissions and features remain disabled until their
-        backend routes are implemented. The response is no-store and never returns Google subject, credential,
+        policy versions, base personal scope, server-derived navigation capabilities and server feature flags.
+        The security scope advertises reviewer-role administration to active system admins; publication.review is
+        advertised only for an active assigned reviewer. These capabilities are navigation hints, not authorization;
+        every protected API rechecks the current PostgreSQL role. requiredAcceptanceComplete is true only when both
+        active policy records match the latest recorded decisions; it stays false until both approved policy
+        documents are available and accepted. The response is no-store and never returns Google subject, credential,
         session secret or raw provider claims.
       security:
         - appSession: []
@@ -6411,9 +6413,10 @@ components:
       type: object
       additionalProperties: false
       description: >-
-        Server-derived scope for the current account. The security scope contains the exact reviewer administration
-        capability only for an active system administrator and is intended for navigation/affordance display; every
-        protected API independently rechecks the role in PostgreSQL.
+        Server-derived navigation/affordance scope for the current account. The security scope contains the reviewer
+        administration capability only for an active system administrator. The publication scope contains
+        publication.review only for a currently active assigned reviewer. Every protected API independently
+        rechecks the role in PostgreSQL.
       required: [scope, permissions]
       properties:
         scope:

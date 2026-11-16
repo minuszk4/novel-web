@@ -1,0 +1,111 @@
+<div class="publication-review-page">
+  <header class="publication-review-heading">
+    <p class="eyebrow">KHÔNG GIAN NGƯỜI DUYỆT</p>
+    <h1 id="publication-review-queue-title" tabindex="-1">Hàng đợi duyệt quyền xuất bản</h1>
+    <p>Xem các yêu cầu đang chờ và đánh giá phạm vi quyền tác giả đã khai báo.</p>
+  </header>
+
+  <aside class="publication-review-boundary" role="note">
+    <strong>Giới hạn khi xem xét:</strong> màn hình này chỉ có metadata, cấu trúc chương, mã băm và
+    số đoạn. Không có văn bản chương hay tài liệu chứng minh. Chấp thuận chỉ đánh dấu
+    <strong>Được duyệt · Chưa công khai</strong>; thao tác này không xuất bản tác phẩm.
+  </aside>
+
+  @if (accessState() === 'unauthenticated') {
+    <section class="publication-review-state" aria-labelledby="review-access-title">
+      <h2 id="review-access-title">Phiên đăng nhập không còn hiệu lực</h2>
+      <p>Đăng nhập lại để xác minh quyền người duyệt trước khi xem hàng đợi.</p>
+      <a class="review-button review-button-primary" routerLink="/sign-in">Đăng nhập</a>
+    </section>
+  } @else if (accessState() === 'policy-required') {
+    <section class="publication-review-state" aria-labelledby="review-access-title">
+      <h2 id="review-access-title">Cần xác nhận chính sách hiện hành</h2>
+      <p>Hoàn tất Điều khoản và Thông báo quyền riêng tư trước khi tiếp tục.</p>
+      <a class="review-button review-button-primary" routerLink="/app/setup">Mở thiết lập</a>
+    </section>
+  } @else if (accessState() === 'reviewer-required') {
+    <section class="publication-review-state" aria-labelledby="review-access-title">
+      <h2 id="review-access-title">Không thể truy cập hàng đợi</h2>
+      <p>Thông tin yêu cầu không được tải vì tài khoản hiện không có quyền truy cập.</p>
+    </section>
+  } @else {
+    <section class="publication-review-queue" aria-labelledby="review-queue-list-title">
+      <div class="publication-review-list-heading">
+        <div>
+          <h2 id="review-queue-list-title">Yêu cầu đang chờ</h2>
+          <p>{{ items().length }} yêu cầu đã tải</p>
+        </div>
+        <button
+          class="review-button review-button-secondary"
+          type="button"
+          (click)="refresh()"
+          [disabled]="loading() || loadingMore()"
+        >
+          {{ refreshing() ? 'Đang làm mới…' : 'Làm mới' }}
+        </button>
+      </div>
+
+      @if (loading()) {
+        <p class="publication-review-state" role="status">Đang tải hàng đợi duyệt…</p>
+      } @else if (errorMessage()) {
+        <div class="publication-review-error" role="alert">
+          <p>{{ errorMessage() }}</p>
+          <button class="review-button review-button-secondary" type="button" (click)="refresh()">
+            {{ firstPageRecovery() ? 'Tải lại hàng đợi' : 'Thử tải lại' }}
+          </button>
+        </div>
+      } @else if (items().length === 0) {
+        <div class="publication-review-state" role="status">
+          <h3>Chưa có yêu cầu đang chờ</h3>
+          <p>Các yêu cầu mới sẽ xuất hiện tại đây sau khi tác giả gửi duyệt.</p>
+        </div>
+      } @else {
+        <ol class="publication-review-list" aria-label="Các yêu cầu đang chờ duyệt">
+          @for (item of items(); track item.requestId) {
+            <li class="publication-review-card">
+              <div class="publication-review-card-main">
+                <p class="publication-review-card-meta">
+                  <span>Gửi {{ formatDate(item.submittedAt) }}</span>
+                  <span>Chính sách {{ item.policyVersion }}</span>
+                  <span>Yêu cầu {{ item.requestVersion }}</span>
+                </p>
+                <h3>
+                  <a [routerLink]="['/app/review', item.requestId]">{{ item.title }}</a>
+                </h3>
+                <p class="publication-review-card-author">
+                  {{ item.author }} · {{ item.sourceLanguage }}
+                </p>
+                <ul class="publication-review-scopes" aria-label="Phạm vi quyền được yêu cầu">
+                  @for (scope of item.scopeCodes; track scope) {
+                    <li>{{ scopeLabel(scope) }}</li>
+                  }
+                </ul>
+              </div>
+              <a
+                class="review-button review-button-primary publication-review-open"
+                [routerLink]="['/app/review', item.requestId]"
+                [attr.aria-label]="'Xem yêu cầu của ' + item.title"
+              >
+                Xem yêu cầu
+              </a>
+            </li>
+          }
+        </ol>
+
+        @if (nextCursor()) {
+          <div class="publication-review-more">
+            <button
+              class="review-button review-button-secondary"
+              type="button"
+              (click)="loadMore()"
+              [disabled]="loadingMore()"
+            >
+              {{ loadingMore() ? 'Đang tải…' : 'Tải thêm yêu cầu' }}
+            </button>
+          </div>
+        }
+      }
+      <p class="visually-hidden" role="status" aria-live="polite">{{ announcement() }}</p>
+    </section>
+  }
+</div>

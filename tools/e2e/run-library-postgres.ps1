@@ -7,6 +7,7 @@ param(
     [switch]$IncludeAuthoringDraftApi,
     [switch]$IncludeAuthoringEmptyChapterDelete,
     [switch]$IncludePublicationRightsAcceptance,
+    [switch]$IncludePublicationReviewWorkspace,
     [switch]$IncludePaymentReturn,
     [switch]$IncludeCommerceSettlement
 )
@@ -73,6 +74,8 @@ $environmentNames = @(
     'AUTHORING_OUTLINE_LIVE_TEST_EXPECTED_TITLE',
     'PUBLICATION_RIGHTS_LIVE_TEST_WORK_ID', 'PUBLICATION_RIGHTS_LIVE_TEST_SCREENSHOT',
     'PUBLICATION_RIGHTS_LIVE_TEST_VERSION', 'PUBLICATION_RIGHTS_LIVE_TEST_TEXT', 'PUBLICATION_RIGHTS_LIVE_TEST_SHA256',
+    'PUBLICATION_REVIEW_LIVE_TEST_REVIEWER_SESSION_TOKEN', 'PUBLICATION_REVIEW_LIVE_TEST_WORK_ID',
+    'PUBLICATION_REVIEW_LIVE_TEST_SCREENSHOT',
     'AUTHORING_EDITOR_LIVE_TEST_WORK_ID', 'AUTHORING_EDITOR_LIVE_TEST_CHAPTER_ID',
     'AUTHORING_EDITOR_LIVE_TEST_SCREENSHOT',
     'TRANSLATION_LIVE_TEST_WORK_ID', 'TRANSLATION_LIVE_TEST_CHAPTER_ID', 'TRANSLATION_LIVE_TEST_SCREENSHOT',
@@ -96,6 +99,7 @@ $cultivationLedgerXp = 0
 $cultivationLedgerEntries = 0
 $glossaryParts = @()
 $publicationRightsParts = @()
+$publicationReviewParts = @()
 $authoringEditorParts = @()
 $startedAt = Get-Date
 $postgresPassword = [guid]::NewGuid().ToString('N')
@@ -114,6 +118,11 @@ $paymentReturnSessionBytes = New-Object byte[] 32
 $paymentReturnSessionToken = [Convert]::ToBase64String($paymentReturnSessionBytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
 $paymentReturnSessionHash = [Convert]::ToHexString(
     [System.Security.Cryptography.SHA256]::HashData($paymentReturnSessionBytes))
+$publicationReviewSessionBytes = New-Object byte[] 32
+[System.Security.Cryptography.RandomNumberGenerator]::Fill($publicationReviewSessionBytes)
+$publicationReviewSessionToken = [Convert]::ToBase64String($publicationReviewSessionBytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+$publicationReviewSessionHash = [Convert]::ToHexString(
+    [System.Security.Cryptography.SHA256]::HashData($publicationReviewSessionBytes))
 $userId = [guid]::NewGuid()
 $paymentReturnUserId = [guid]::NewGuid()
 $libraryId = [guid]::NewGuid()
@@ -141,6 +150,9 @@ $commerceVolumeId = [guid]::NewGuid()
 $commerceChapterId = [guid]::NewGuid()
 $commerceRevisionId = [guid]::NewGuid()
 $commerceSegmentId = [guid]::NewGuid()
+$publicationReviewAdminId = [guid]::NewGuid()
+$publicationReviewReviewerId = [guid]::NewGuid()
+$publicationReviewAssignmentId = [guid]::NewGuid()
 $glossaryActiveRevisionId = [guid]::NewGuid()
 $glossaryDraftRevisionId = [guid]::NewGuid()
 $glossaryTermId = [guid]::NewGuid()
@@ -153,7 +165,8 @@ $publicationRightsPolicySha256 = [Convert]::ToHexString(
     [System.Security.Cryptography.SHA256]::HashData([System.Text.Encoding]::UTF8.GetBytes($publicationRightsPolicyText))
 ).ToLowerInvariant()
 $publicationRightsScreenshotPath = Join-Path $evidenceDirectory 'publication-rights-policy-live.png'
-$secondWorkSourceKind = if ($IncludeTranslationPreview -or $IncludeAuthoringOutline -or $IncludeCommerceSettlement -or $IncludePublicationRightsAcceptance) { 'authored' } else { 'imported' }
+$publicationReviewScreenshotPath = Join-Path $evidenceDirectory 'publication-review-workspace-live.png'
+$secondWorkSourceKind = if ($IncludeTranslationPreview -or $IncludeAuthoringOutline -or $IncludeCommerceSettlement -or $IncludePublicationRightsAcceptance -or $IncludePublicationReviewWorkspace) { 'authored' } else { 'imported' }
 $readerSourceText = 'Live E2E source text is served from PostgreSQL.'
 $readerSourceHash = [Convert]::ToHexString(
     [System.Security.Cryptography.SHA256]::HashData([System.Text.Encoding]::UTF8.GetBytes($readerSourceText))
@@ -195,6 +208,9 @@ try {
     }
     if ($IncludePublicationRightsAcceptance -and $IncludeAuthoringOutline) {
         throw 'Run -IncludePublicationRightsAcceptance separately from -IncludeAuthoringOutline because those journeys require different policy fixtures.'
+    }
+    if ($IncludePublicationReviewWorkspace -and ($IncludePublicationRightsAcceptance -or $IncludeAuthoringOutline)) {
+        throw 'Run -IncludePublicationReviewWorkspace separately from publication-rights acceptance and authoring-outline journeys because each mutates the same synthetic manuscript/policy fixtures.'
     }
 
     $env:POSTGRES_PORT = [string]$hostPort
@@ -322,16 +338,42 @@ try {
     }
 
     $authoringOutlineFixtureSql = ''
-    $authoringOutlineCreationFixtureSql = if ($IncludeAuthoringOutline -or $IncludePublicationRightsAcceptance) {
+    $authoringOutlineCreationFixtureSql = if ($IncludeAuthoringOutline -or $IncludePublicationRightsAcceptance -or $IncludePublicationReviewWorkspace) {
         "INSERT INTO authoring_manuscript_creations (actor_user_id, idempotency_key, request_sha256, work_id) VALUES ('$userId', 'live-outline-fixture-0001', decode(repeat('00', 32), 'hex'), '$secondWorkId');"
     } else { '' }
-    $publicationRightsPolicyFixtureSql = if ($IncludePublicationRightsAcceptance) {
+    $publicationRightsPolicyFixtureSql = if ($IncludePublicationRightsAcceptance -or $IncludePublicationReviewWorkspace) {
         @"
 INSERT INTO publication_rights_policy_documents (version, effective_at, display_text, policy_sha256, status)
 VALUES ('$publicationRightsPolicyVersion', clock_timestamp() - INTERVAL '10 minutes', '$publicationRightsPolicyText', decode('$publicationRightsPolicySha256', 'hex'), 'DRAFT');
 UPDATE publication_rights_policy_documents
    SET status = 'APPROVED', approved_at = clock_timestamp(), approved_by = '$userId'
  WHERE version = '$publicationRightsPolicyVersion';
+"@
+    } else { '' }
+    $publicationReviewReviewerFixtureSql = if ($IncludePublicationReviewWorkspace) {
+        @"
+INSERT INTO users (id, display_name, contact_email, email_verified_at, status)
+VALUES
+    ('$publicationReviewAdminId', 'Synthetic E2E System Admin', 'review-admin-$publicationReviewAdminId@example.test', clock_timestamp(), 'active'),
+    ('$publicationReviewReviewerId', 'Live E2E Assigned Reviewer', 'review-reviewer-$publicationReviewReviewerId@example.test', clock_timestamp(), 'active');
+INSERT INTO policy_acceptances (id, user_id, policy_type, version, decision, recorded_at, source) VALUES
+(gen_random_uuid(), '$publicationReviewReviewerId', 'TERMS', 'terms-live-e2e-v1', 'TERMS_ACCEPTED', clock_timestamp(), 'e2e-fixture'),
+(gen_random_uuid(), '$publicationReviewReviewerId', 'PRIVACY_NOTICE', 'privacy-live-e2e-v1', 'PRIVACY_NOTICE_ACKNOWLEDGED', clock_timestamp(), 'e2e-fixture');
+INSERT INTO sessions (id_hash, user_id, expires_at)
+VALUES (decode('$publicationReviewSessionHash', 'hex'), '$publicationReviewReviewerId', clock_timestamp() + INTERVAL '1 day');
+INSERT INTO security_role_assignments (id, user_id, role_code, assigned_by_user_id, reason_code)
+VALUES
+    (gen_random_uuid(), '$publicationReviewAdminId', 'system_admin', NULL, 'INITIAL_ADMIN_BOOTSTRAP'),
+    ('$publicationReviewAssignmentId', '$publicationReviewReviewerId', 'publication_reviewer', '$publicationReviewAdminId', 'REVIEW_CAPACITY');
+INSERT INTO security_role_assignment_events
+    (id, assignment_id, target_user_id, role_code, action_code, actor_user_id,
+     operator_identity, ticket_reference, reason_code)
+VALUES
+    (gen_random_uuid(), (SELECT id FROM security_role_assignments WHERE user_id = '$publicationReviewAdminId' AND role_code = 'system_admin'),
+     '$publicationReviewAdminId', 'system_admin', 'BOOTSTRAPPED', NULL,
+     'disposable E2E fixture operator', 'E2E-$publicationReviewAdminId', 'INITIAL_ADMIN_BOOTSTRAP'),
+    (gen_random_uuid(), '$publicationReviewAssignmentId', '$publicationReviewReviewerId', 'publication_reviewer',
+     'GRANTED', '$publicationReviewAdminId', NULL, NULL, 'REVIEW_CAPACITY');
 "@
     } else { '' }
     if ($IncludeAuthoringOutline -and $IncludeAuthoringChapterEditor) {
@@ -437,6 +479,7 @@ VALUES
      'APPROVED', clock_timestamp(), '$userId');
 INSERT INTO sessions (id_hash, user_id, expires_at)
 VALUES (decode('$sessionHash', 'hex'), '$userId', clock_timestamp() + INTERVAL '1 day');
+$publicationReviewReviewerFixtureSql
 INSERT INTO libraries (id, owner_user_id, name, visibility, is_default)
 VALUES ('$libraryId', '$userId', 'Live E2E Library', 'private', TRUE);
 INSERT INTO works (id, library_id, owner_user_id, title, author, source_language, source_kind, visibility, status)
@@ -528,6 +571,11 @@ COMMIT;
         $env:PUBLICATION_RIGHTS_LIVE_TEST_TEXT = $publicationRightsPolicyText
         $env:PUBLICATION_RIGHTS_LIVE_TEST_SHA256 = $publicationRightsPolicySha256
     }
+    if ($IncludePublicationReviewWorkspace) {
+        $env:PUBLICATION_REVIEW_LIVE_TEST_REVIEWER_SESSION_TOKEN = $publicationReviewSessionToken
+        $env:PUBLICATION_REVIEW_LIVE_TEST_WORK_ID = [string]$secondWorkId
+        $env:PUBLICATION_REVIEW_LIVE_TEST_SCREENSHOT = $publicationReviewScreenshotPath
+    }
     if ($IncludeAuthoringChapterEditor) {
         $env:AUTHORING_EDITOR_LIVE_TEST_WORK_ID = [string]$secondWorkId
         $env:AUTHORING_EDITOR_LIVE_TEST_CHAPTER_ID = [string]$authoringEditorChapterId
@@ -565,6 +613,7 @@ COMMIT;
             'e2e/cultivation-live-postgres.spec.ts'
         )
         if ($IncludePublicationRightsAcceptance) { $e2eSpecs += 'e2e/publication-rights-policy-live-postgres.spec.ts' }
+        if ($IncludePublicationReviewWorkspace) { $e2eSpecs += 'e2e/publication-review-live-postgres.spec.ts' }
         if ($IncludeTranslationPreview -and -not $translationBeforeOutline) {
             $e2eSpecs += 'e2e/translation-live-postgres.spec.ts'
         }
@@ -588,6 +637,15 @@ COMMIT;
         $publicationRightsParts = ([string]$publicationRightsSummary).Trim() -split '\|'
         if ($publicationRightsParts.Count -ne 3 -or $publicationRightsParts[0] -ne '1' -or $publicationRightsParts[1] -ne '1' -or $publicationRightsParts[2] -ne $publicationRightsPolicySha256) {
             throw "Publication-rights acceptance invariants failed in disposable PostgreSQL: $publicationRightsSummary"
+        }
+    }
+
+    if ($IncludePublicationReviewWorkspace) {
+        $publicationReviewSummary = & $docker @composeArguments exec -T postgres psql -v ON_ERROR_STOP=1 -tA -U novelweb -d novelweb -c "SELECT state.current_state || '|' || (SELECT COUNT(*) FROM publication_review_events event WHERE event.request_id = request.id)::text || '|' || (SELECT COUNT(*) FROM publication_scope_access_approvals approval WHERE approval.work_id = request.work_id)::text || '|' || work.visibility || '|' || (SELECT event.action_code || ':' || event.reason_code FROM publication_review_events event WHERE event.request_id = request.id AND event.actor_user_id = '$publicationReviewReviewerId' ORDER BY event.event_sequence DESC LIMIT 1) FROM publication_requests request JOIN publication_request_current_state state ON state.request_id = request.id JOIN works work ON work.id = request.work_id WHERE request.owner_user_id = '$userId' AND request.work_id = '$secondWorkId';"
+        if ($LASTEXITCODE -ne 0) { throw 'Could not verify the reviewer decision in disposable PostgreSQL.' }
+        $publicationReviewParts = ([string]$publicationReviewSummary).Trim() -split '\|'
+        if ($publicationReviewParts.Count -ne 5 -or $publicationReviewParts[0] -ne 'APPROVED_UNPUBLISHED' -or $publicationReviewParts[1] -ne '2' -or $publicationReviewParts[2] -ne '3' -or $publicationReviewParts[3] -ne 'private' -or $publicationReviewParts[4] -ne 'APPROVED:RIGHTS_REVIEWED') {
+            throw "PostgreSQL reviewer workspace invariants failed after the browser decision: $publicationReviewSummary"
         }
     }
 
@@ -706,7 +764,8 @@ COMMIT;
         $(if ($IncludeAuthoringDraftApi) { '- Authoring draft API integration: 1/1 PostgreSQL-backed test passed for policy/CSRF/owner gates, draft ETags, immutable revisions, exact replay, key collision, stale-version response, transactional row counts, and Reader/publication isolation' } else { '- Authoring draft API integration: not requested' })
         $(if ($IncludeAuthoringEmptyChapterDelete) { '- Empty chapter deletion API integration: 2/2 PostgreSQL-backed tests passed for owner/policy/CSRF gates, soft delete, idempotent replay, saved-content conflict, privacy, Reader isolation, and concurrent delete/save winner' } else { '- Empty chapter deletion API integration: not requested' })
         $(if ($IncludePublicationRightsAcceptance) { '- Publication-rights browser/API: disposable synthetic approved policy only; the real acceptance endpoint committed the first confirmation, the browser received a synthetic 503, and same-key retry replayed the same acceptance' } else { '- Publication-rights browser/API: not requested' })
-        "- Browser journey: session cookie/policy → rights receipt → upload/parse/preview/private commit → refreshed Library → Work Detail → Reader source/bookmark, then opt-in → server-timed Reader session → XP award → private profile/activity → glossary import/draft edit/revision preview$(if ($IncludeTranslationPreview) { ' → fake-local Reader translation → redacted job status → unpublished PostgreSQL candidate' } else { '' })$(if ($IncludeAuthoringOutline) { ' → private authoring chapter outline → CSRF/idempotent blank-chapter creation' } else { '' })$(if ($IncludeAuthoringChapterEditor) { ' → private chapter editor → immutable save → competing writer → explicit conflict resolution' } else { '' })$(if ($IncludePublicationRightsAcceptance) { ' → exact synthetic rights policy → explicit author acknowledgement → lost-response same-key retry' } else { '' })$(if ($IncludeCommerceSettlement) { ' → synthetic signed TEST settlement → paid-credit ledger/projection → explicit Reader unlock/entitlement' } else { '' })"
+        $(if ($IncludePublicationReviewWorkspace) { '- Reviewer workspace browser/API: owner session accepted only the synthetic policy and submitted a snapshot through real endpoints; a separately assigned reviewer loaded the queue/detail and approved with the live CSRF + ETag + idempotency path; PostgreSQL confirms APPROVED_UNPUBLISHED, two events, three scope approvals, and private work visibility' } else { '- Reviewer workspace browser/API: not requested' })
+        "- Browser journey: session cookie/policy → rights receipt → upload/parse/preview/private commit → refreshed Library → Work Detail → Reader source/bookmark, then opt-in → server-timed Reader session → XP award → private profile/activity → glossary import/draft edit/revision preview$(if ($IncludeTranslationPreview) { ' → fake-local Reader translation → redacted job status → unpublished PostgreSQL candidate' } else { '' })$(if ($IncludeAuthoringOutline) { ' → private authoring chapter outline → CSRF/idempotent blank-chapter creation' } else { '' })$(if ($IncludeAuthoringChapterEditor) { ' → private chapter editor → immutable save → competing writer → explicit conflict resolution' } else { '' })$(if ($IncludePublicationRightsAcceptance) { ' → exact synthetic rights policy → explicit author acknowledgement → lost-response same-key retry' } else { '' })$(if ($IncludePublicationReviewWorkspace) { ' → accepted synthetic rights policy → submitted request → assigned reviewer queue/detail → reason-coded approval with no publication' } else { '' })$(if ($IncludeCommerceSettlement) { ' → synthetic signed TEST settlement → paid-credit ledger/projection → explicit Reader unlock/entitlement' } else { '' })"
         $(if ($IncludeAuthoringDraftApi) { '- Separate PostgreSQL authoring draft API test: 1/1 passed for owner/policy/CSRF gates, ETags, immutable writes, exact replay, stale-version response, outline/Reader isolation, and persisted row counts; see authoring-draft-api-test.log' } else { '- Separate PostgreSQL authoring draft API test: not requested' })
         $(if ($IncludeAuthoringEmptyChapterDelete) { '- Separate PostgreSQL empty chapter deletion API tests: 2/2 passed for soft delete/replay/security and transactional save/delete race; see authoring-empty-chapter-delete-api-test.log' } else { '- Separate PostgreSQL empty chapter deletion API tests: not requested' })
         '- Cultivation feature flag: enabled only in this random disposable API process; prior process value restored during cleanup'
@@ -723,7 +782,7 @@ COMMIT;
         "- Elapsed: $duration seconds"
         "- Cleanup: $cleanup"
         "- Staging cleanup: $stagingCleanup"
-        "- Screenshots: $([System.IO.Path]::GetFileName($screenshotPath)), $([System.IO.Path]::GetFileName($workDetailScreenshotPath)), $([System.IO.Path]::GetFileName($readerScreenshotPath)), $([System.IO.Path]::GetFileName($glossaryImportScreenshotPath)), $([System.IO.Path]::GetFileName($glossaryEditorScreenshotPath)), $([System.IO.Path]::GetFileName($authoringScreenshotPath))$(if ($IncludeAuthoringOutline) { ', authoring-outline-live.png' } else { '' })$(if ($IncludeAuthoringChapterEditor) { ', authoring-chapter-editor-live.png' } else { '' })$(if ($IncludePublicationRightsAcceptance) { ', publication-rights-policy-live.png' } else { '' })$(if ($IncludeTranslationPreview) { ', translation-job-live.png' } else { '' })$(if ($IncludePaymentReturn) { ', momo-payment-return-pending-live.png, momo-payment-history-zero-live.png' } else { '' })$(if ($IncludeCommerceSettlement) { ', momo-commerce-success-live.png, momo-commerce-unlocked-chapter-live.png' } else { '' }), private-import-commit-live.png, private-import-detail-live.png, private-import-reader-live.png, private-import-html-commit-live.png, private-import-html-detail-live.png, private-import-html-reader-live.png, private-import-markdown-commit-live.png, private-import-markdown-detail-live.png, private-import-markdown-reader-live.png, private-import-epub-commit-live.png, private-import-epub-detail-live.png, private-import-epub-reader-live.png"
+        "- Screenshots: $([System.IO.Path]::GetFileName($screenshotPath)), $([System.IO.Path]::GetFileName($workDetailScreenshotPath)), $([System.IO.Path]::GetFileName($readerScreenshotPath)), $([System.IO.Path]::GetFileName($glossaryImportScreenshotPath)), $([System.IO.Path]::GetFileName($glossaryEditorScreenshotPath)), $([System.IO.Path]::GetFileName($authoringScreenshotPath))$(if ($IncludeAuthoringOutline) { ', authoring-outline-live.png' } else { '' })$(if ($IncludeAuthoringChapterEditor) { ', authoring-chapter-editor-live.png' } else { '' })$(if ($IncludePublicationRightsAcceptance) { ', publication-rights-policy-live.png' } else { '' })$(if ($IncludePublicationReviewWorkspace) { ', publication-review-workspace-live.png' } else { '' })$(if ($IncludeTranslationPreview) { ', translation-job-live.png' } else { '' })$(if ($IncludePaymentReturn) { ', momo-payment-return-pending-live.png, momo-payment-history-zero-live.png' } else { '' })$(if ($IncludeCommerceSettlement) { ', momo-commerce-success-live.png, momo-commerce-unlocked-chapter-live.png' } else { '' }), private-import-commit-live.png, private-import-detail-live.png, private-import-reader-live.png, private-import-html-commit-live.png, private-import-html-detail-live.png, private-import-html-reader-live.png, private-import-markdown-commit-live.png, private-import-markdown-detail-live.png, private-import-markdown-reader-live.png, private-import-epub-commit-live.png, private-import-epub-detail-live.png, private-import-epub-reader-live.png"
         "- Logs: api-build.log, api-stdout.log, api-stderr.log, playwright.log$(if ($IncludeAuthoringDraftApi) { ', authoring-draft-api-test.log' } else { '' })$(if ($IncludeAuthoringEmptyChapterDelete) { ', authoring-empty-chapter-delete-api-test.log' } else { '' })"
         $(if ($failure) { "- Failure: $failure" } else { '- Failure: none' })
         ''

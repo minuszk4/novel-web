@@ -242,6 +242,22 @@ export const routes: Routes = [
           ),
         title: 'Quản lý người duyệt — Novel',
       },
+      {
+        path: 'review',
+        loadComponent: () =>
+          import('./pages/publication-review-queue-page.component').then(
+            (page) => page.PublicationReviewQueuePageComponent,
+          ),
+        title: 'Hàng đợi duyệt — Novel',
+      },
+      {
+        path: 'review/:requestId',
+        loadComponent: () =>
+          import('./pages/publication-review-detail-page.component').then(
+            (page) => page.PublicationReviewDetailPageComponent,
+          ),
+        title: 'Chi tiết yêu cầu duyệt — Novel',
+      },
     ],
   },
   { path: '**', redirectTo: '' },

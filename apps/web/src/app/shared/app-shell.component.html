@@ -52,6 +52,11 @@
           <span class="nav-symbol" aria-hidden="true">✓</span><span>Quản lý người duyệt</span>
         </a>
       }
+      @if (policy.canReviewPublications()) {
+        <a routerLink="/app/review" routerLinkActive="selected">
+          <span class="nav-symbol" aria-hidden="true">⚖</span><span>Hàng đợi duyệt</span>
+        </a>
+      }
       <a routerLink="/app/settings" routerLinkActive="selected">
         <span class="nav-symbol" aria-hidden="true">⚙</span><span>Cài đặt</span>
       </a>
@@ -130,8 +135,9 @@
     </main>
     <nav
       class="mobile-nav"
-      [class.mobile-nav-six]="!showTranslationDesk()"
-      [class.mobile-nav-seven]="showTranslationDesk()"
+      [class.mobile-nav-six]="!showTranslationDesk() && !policy.canReviewPublications()"
+      [class.mobile-nav-seven]="showTranslationDesk() !== policy.canReviewPublications()"
+      [class.mobile-nav-eight]="showTranslationDesk() && policy.canReviewPublications()"
       aria-label="Điều hướng di động"
     >
       <a
@@ -155,6 +161,11 @@
       @if (showTranslationDesk()) {
         <a routerLink="/app/translation" routerLinkActive="selected"
           ><span aria-hidden="true">⇄</span><small>Bàn dịch</small></a
+        >
+      }
+      @if (policy.canReviewPublications()) {
+        <a routerLink="/app/review" routerLinkActive="selected"
+          ><span aria-hidden="true">⚖</span><small>Duyệt</small></a
         >
       }
       <a routerLink="/app/settings" routerLinkActive="selected"

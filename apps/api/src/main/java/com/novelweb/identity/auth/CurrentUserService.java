@@ -52,8 +52,17 @@ public class CurrentUserService {
                                 FROM security_role_assignments role_assignment
                                 WHERE role_assignment.user_id = u.id
                                   AND role_assignment.role_code = 'system_admin'
+                                  AND role_assignment.assigned_at <= clock_timestamp()
                                   AND role_assignment.revoked_at IS NULL
                             ) AS can_manage_security_roles,
+                            EXISTS (
+                                SELECT 1
+                                FROM security_role_assignments role_assignment
+                                WHERE role_assignment.user_id = u.id
+                                  AND role_assignment.role_code = 'publication_reviewer'
+                                  AND role_assignment.assigned_at <= clock_timestamp()
+                                  AND role_assignment.revoked_at IS NULL
+                            ) AS can_review_publications,
                             COALESCE((
                                 SELECT array_agg(e.provider ORDER BY e.provider)
                                 FROM external_identities e
@@ -124,6 +133,9 @@ public class CurrentUserService {
         roles.add(new RoleScope("personal", List.of()));
         if (row.getBoolean("can_manage_security_roles")) {
           roles.add(new RoleScope("security", List.of("publication.reviewers.manage")));
+        }
+        if (row.getBoolean("can_review_publications")) {
+          roles.add(new RoleScope("publication", List.of("publication.review")));
         }
 
         return Optional.of(

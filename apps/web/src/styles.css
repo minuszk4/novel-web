@@ -5558,6 +5558,9 @@ button.reader-chapter-nav {
   .mobile-nav.mobile-nav-seven {
     grid-template-columns: repeat(7, minmax(0, 1fr));
   }
+  .mobile-nav.mobile-nav-eight {
+    grid-template-columns: repeat(8, minmax(0, 1fr));
+  }
   .mobile-nav a {
     display: flex;
     flex-direction: column;
@@ -5597,8 +5600,25 @@ button.reader-chapter-nav {
   }
 }
 @media (max-width: 200px) {
-  .mobile-nav.mobile-nav-seven {
-    padding-inline: 0;
+  .mobile-nav.mobile-nav-six,
+  .mobile-nav.mobile-nav-seven,
+  .mobile-nav.mobile-nav-eight {
+    display: flex;
+    grid-template-columns: none;
+    justify-content: flex-start;
+    gap: 2px;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scroll-snap-type: x proximity;
+    padding-inline: 4px;
+  }
+  .mobile-nav.mobile-nav-six > a,
+  .mobile-nav.mobile-nav-seven > a,
+  .mobile-nav.mobile-nav-eight > a {
+    min-width: 44px;
+    min-height: 44px;
+    flex: 0 0 44px;
+    scroll-snap-align: start;
   }
 }
 @media (max-width: 650px) {

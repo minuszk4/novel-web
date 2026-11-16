@@ -51,6 +51,7 @@ export class PolicyOnboardingService {
   readonly status = signal<PolicyOnboardingStatus>('idle');
   readonly accountIdentity = signal<AccountIdentitySummary | null>(null);
   readonly canManageReviewerRoles = signal(false);
+  readonly canReviewPublications = signal(false);
   readonly currentPolicies = signal<CurrentPolicies | null>(null);
   readonly termsDocument = signal<string | null>(null);
   readonly privacyDocument = signal<string | null>(null);
@@ -158,6 +159,7 @@ export class PolicyOnboardingService {
       contactEmail: account.user.contactEmail,
     });
     this.canManageReviewerRoles.set(hasReviewerRoleManagementCapability(account.roles));
+    this.canReviewPublications.set(hasPublicationReviewCapability(account.roles));
 
     this.termsAcceptedVersion.set(account.policy.termsAcceptedVersion);
     this.privacyAcknowledgedVersion.set(account.policy.privacyNoticeAcknowledgedVersion);
@@ -219,6 +221,7 @@ export class PolicyOnboardingService {
   private enterDemoMode(httpStatus: number): void {
     this.accountIdentity.set(null);
     this.canManageReviewerRoles.set(false);
+    this.canReviewPublications.set(false);
     this.status.set('demo');
     if (httpStatus === 401) {
       this.demoNotice.set('Chưa có phiên đăng nhập trên máy chủ. Lựa chọn demo mất khi tải lại.');
@@ -229,6 +232,7 @@ export class PolicyOnboardingService {
 
   private fail(message: string): void {
     this.canManageReviewerRoles.set(false);
+    this.canReviewPublications.set(false);
     this.status.set('error');
     this.errorMessage.set(message);
   }
@@ -271,6 +275,21 @@ function hasReviewerRoleManagementCapability(roles: unknown): boolean {
         (role as { scope?: unknown }).scope === 'security' &&
         Array.isArray((role as { permissions?: unknown }).permissions) &&
         (role as { permissions: unknown[] }).permissions.includes('publication.reviewers.manage'),
+    )
+  );
+}
+
+function hasPublicationReviewCapability(roles: unknown): boolean {
+  return (
+    Array.isArray(roles) &&
+    roles.some(
+      (role) =>
+        typeof role === 'object' &&
+        role !== null &&
+        !Array.isArray(role) &&
+        (role as { scope?: unknown }).scope === 'publication' &&
+        Array.isArray((role as { permissions?: unknown }).permissions) &&
+        (role as { permissions: unknown[] }).permissions.includes('publication.review'),
     )
   );
 }

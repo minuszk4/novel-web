@@ -1,0 +1,334 @@
+<div class="publication-review-page">
+  <a class="review-back-link" routerLink="/app/review">← Quay lại hàng đợi</a>
+
+  @if (accessState() === 'unauthenticated') {
+    <section class="publication-review-state" aria-labelledby="review-detail-access-title">
+      <h1 id="review-detail-access-title">Phiên đăng nhập không còn hiệu lực</h1>
+      <p>Đăng nhập lại để xác minh quyền trước khi mở yêu cầu.</p>
+      <a class="review-button review-button-primary" routerLink="/sign-in">Đăng nhập</a>
+    </section>
+  } @else if (accessState() === 'policy-required') {
+    <section class="publication-review-state" aria-labelledby="review-detail-access-title">
+      <h1 id="review-detail-access-title">Cần xác nhận chính sách hiện hành</h1>
+      <p>Hoàn tất Điều khoản và Thông báo quyền riêng tư trước khi tiếp tục.</p>
+      <a class="review-button review-button-primary" routerLink="/app/setup">Mở thiết lập</a>
+    </section>
+  } @else if (accessState() === 'reviewer-required') {
+    <section class="publication-review-state" aria-labelledby="review-detail-access-title">
+      <h1 id="review-detail-access-title">Yêu cầu không khả dụng</h1>
+      <p>Thông tin chi tiết không được tải vì tài khoản hiện không có quyền truy cập.</p>
+    </section>
+  } @else if (accessState() === 'not-found') {
+    <section class="publication-review-state" aria-labelledby="review-detail-access-title">
+      <h1 id="review-detail-access-title">Yêu cầu không khả dụng</h1>
+      <p>
+        Yêu cầu không tồn tại, không còn truy cập được hoặc không thuộc phạm vi xem xét của bạn.
+      </p>
+      <a class="review-button review-button-secondary" routerLink="/app/review">Về hàng đợi</a>
+    </section>
+  } @else if (loading() && !detail()) {
+    <p class="publication-review-state" role="status">Đang tải yêu cầu…</p>
+  } @else if (!detail()) {
+    <section class="publication-review-state" aria-labelledby="review-detail-error-title">
+      <h1 id="review-detail-error-title">Chưa tải được yêu cầu</h1>
+      <p>{{ errorMessage() }}</p>
+      <button class="review-button review-button-secondary" type="button" (click)="refreshDetail()">
+        Thử tải lại
+      </button>
+    </section>
+  } @else {
+    <header class="publication-review-heading">
+      <p class="eyebrow">CHI TIẾT XEM XÉT</p>
+      <h1 #pageTitle id="publication-review-detail-title" tabindex="-1">
+        {{ detail()!.scopes[0].work.title }}
+      </h1>
+      <p>{{ detail()!.scopes[0].work.author }} · {{ detail()!.scopes[0].work.sourceLanguage }}</p>
+      <dl class="publication-review-metadata">
+        <div>
+          <dt>Trạng thái</dt>
+          <dd>{{ stateLabel(detail()!.state) }}</dd>
+        </div>
+        <div>
+          <dt>Gửi lúc</dt>
+          <dd>{{ formatDate(detail()!.submittedAt) }}</dd>
+        </div>
+        <div>
+          <dt>Phiên bản chính sách</dt>
+          <dd>{{ detail()!.policyVersion }}</dd>
+        </div>
+        <div>
+          <dt>Phiên bản yêu cầu</dt>
+          <dd>{{ detail()!.requestVersion }}</dd>
+        </div>
+      </dl>
+    </header>
+
+    <aside class="publication-review-boundary" role="note">
+      <strong>Chỉ có metadata để xem xét.</strong> API không cung cấp văn bản chương hay tài liệu
+      chứng minh; không thể đối chiếu nội dung đầy đủ tại màn hình này. Quyền được chấp thuận ở đây
+      vẫn chưa làm tác phẩm công khai.
+    </aside>
+
+    @if (resultMessage()) {
+      <p
+        #resultStatus
+        class="publication-review-result"
+        tabindex="-1"
+        role="status"
+        aria-live="polite"
+      >
+        {{ resultMessage() }}
+      </p>
+    }
+
+    @if (errorMessage()) {
+      <section #errorSummary class="publication-review-error" tabindex="-1" role="alert">
+        <p>{{ errorMessage() }}</p>
+        @if (pendingAttempt()) {
+          <p>
+            Đang giữ lựa chọn “{{ reasonLabel(pendingAttempt()!.reasonCode) }}” và mã yêu cầu cũ.
+            Không tạo quyết định mới cho tới khi xác minh được kết quả.
+          </p>
+          <button
+            class="review-button review-button-primary"
+            type="button"
+            (click)="retryExactDecision()"
+            [disabled]="actionBusy()"
+          >
+            {{ actionBusy() ? 'Đang gửi lại…' : 'Gửi lại đúng quyết định này' }}
+          </button>
+        } @else if (detailRefreshRequired() || detailRefreshError()) {
+          <button
+            class="review-button review-button-secondary"
+            type="button"
+            (click)="refreshDetail()"
+            [disabled]="loading()"
+          >
+            {{ loading() ? 'Đang tải lại…' : 'Tải lại chi tiết' }}
+          </button>
+        } @else {
+          <button
+            class="review-button review-button-secondary"
+            type="button"
+            (click)="refreshDetail()"
+            [disabled]="loading()"
+          >
+            {{ loading() ? 'Đang tải lại…' : 'Thử tải lại' }}
+          </button>
+        }
+      </section>
+    }
+
+    @if (detailRefreshRequired()) {
+      <aside class="publication-review-stale" role="status">
+        Cần tải lại snapshot và lịch sử trước khi chọn quyết định mới.
+      </aside>
+    }
+
+    <section class="publication-review-section" aria-labelledby="review-claims-title">
+      <h2 id="review-claims-title">Phạm vi và căn cứ tác giả khai báo</h2>
+      <p class="section-intro">
+        Các mục dưới đây là lời khai của tác giả. Chúng không phải kết luận pháp lý hay bằng chứng
+        đã được xác minh.
+      </p>
+      @if (hasUnresolvedClaim()) {
+        <p class="unresolved-claim" role="note">
+          Có căn cứ quyền cần xác minh thêm. Không thể chấp thuận yêu cầu hiện tại.
+        </p>
+      }
+      <div class="publication-review-scope-list">
+        @for (scope of detail()!.scopes; track scope.scopeCode) {
+          <article class="publication-review-scope-card">
+            <div class="scope-heading">
+              <div>
+                <p class="eyebrow">PHẠM VI QUYỀN</p>
+                <h3>{{ scopeLabel(scope.scopeCode) }}</h3>
+              </div>
+              <span class="claim-basis">{{
+                basisLabel(claimFor(scope.scopeCode)!.rightsBasisCode)
+              }}</span>
+            </div>
+            <details class="snapshot-digest">
+              <summary>Mã kiểm tra snapshot</summary>
+              <code>{{ scope.snapshotSha256 }}</code>
+            </details>
+            @if (scope.chapters.length > 0) {
+              <details class="chapter-preview">
+                <summary>{{ scope.chapters.length }} chương trong snapshot</summary>
+                <ol>
+                  @for (chapter of scope.chapters; track chapter.ordinal) {
+                    <li>
+                      <strong>Chương {{ chapter.ordinal }} · {{ chapter.title }}</strong>
+                      <span>{{ chapter.sourceLanguage }}</span>
+                      <span>{{ chapter.segmentCount ?? 'Không có' }} đoạn</span>
+                      <code>{{ chapter.contentHash ?? 'Chưa có mã băm' }}</code>
+                    </li>
+                  }
+                </ol>
+              </details>
+            }
+          </article>
+        }
+      </div>
+    </section>
+
+    <section class="publication-review-section" aria-labelledby="review-history-title">
+      <h2 id="review-history-title">Lịch sử yêu cầu</h2>
+      <ol class="publication-review-events">
+        @for (event of detail()!.events; track event.sequence) {
+          <li>
+            <div class="event-heading">
+              <strong>{{ eventActionLabel(event.actionCode) }}</strong>
+              <time [attr.datetime]="event.createdAt">{{ formatDate(event.createdAt) }}</time>
+            </div>
+            <p>{{ actorLabel(event.actorRoleCode) }} · {{ stateLabel(event.toState) }}</p>
+            @if (event.reasonCode) {
+              <p>Lý do: {{ reasonLabel(event.reasonCode) }}</p>
+            }
+          </li>
+        }
+      </ol>
+    </section>
+
+    @if (detail()!.state === 'PENDING_REVIEW') {
+      <section class="publication-review-actions" aria-labelledby="review-actions-title">
+        <div>
+          <h2 id="review-actions-title">Quyết định xem xét</h2>
+          <p>
+            Yêu cầu thông tin chỉ ghi trạng thái và lý do; hệ thống chưa gửi tin nhắn cho tác giả.
+          </p>
+        </div>
+        @if (hasUnresolvedClaim()) {
+          <p class="unresolved-claim" role="note">
+            Chưa thể chấp thuận vì có căn cứ quyền cần xác minh thêm. Bạn vẫn có thể yêu cầu bổ sung
+            hoặc từ chối.
+          </p>
+        }
+        <div class="publication-review-action-buttons">
+          <button
+            class="review-button review-button-secondary"
+            type="button"
+            (click)="openDecision('NEEDS_INFORMATION', $event)"
+            [disabled]="!canDecide()"
+          >
+            Yêu cầu bổ sung
+          </button>
+          <button
+            class="review-button review-button-danger"
+            type="button"
+            (click)="openDecision('REJECTED', $event)"
+            [disabled]="!canDecide()"
+          >
+            Từ chối
+          </button>
+          <button
+            class="review-button review-button-primary"
+            type="button"
+            (click)="openDecision('APPROVED', $event)"
+            [disabled]="!canApprove()"
+          >
+            Chấp thuận quyền
+          </button>
+        </div>
+        @if (detailRefreshRequired() || loading()) {
+          <p role="status">Các quyết định đang tạm khóa cho tới khi tải được trạng thái mới.</p>
+        }
+      </section>
+    }
+
+    <p class="visually-hidden" role="status" aria-live="polite">{{ announcement() }}</p>
+  }
+
+  <dialog
+    #decisionDialog
+    class="publication-review-dialog"
+    aria-labelledby="review-dialog-title"
+    aria-describedby="review-dialog-description"
+    (cancel)="onDialogCancel($event)"
+    (close)="onDialogClosed()"
+  >
+    <div class="review-dialog-content">
+      <p class="eyebrow">XÁC NHẬN QUYẾT ĐỊNH</p>
+      <h2 id="review-dialog-title">
+        @switch (decisionAction()) {
+          @case ('NEEDS_INFORMATION') {
+            Yêu cầu bổ sung thông tin?
+          }
+          @case ('REJECTED') {
+            Từ chối yêu cầu này?
+          }
+          @case ('APPROVED') {
+            Chấp thuận quyền cho snapshot này?
+          }
+        }
+      </h2>
+      <p id="review-dialog-description">
+        @if (decisionAction() === 'APPROVED') {
+          Thao tác ghi nhận phạm vi quyền đã duyệt cho snapshot hiện tại. Tác phẩm vẫn ở trạng thái
+          “Được duyệt · Chưa công khai”; không nội dung nào được phát hành.
+        } @else if (decisionAction() === 'REJECTED') {
+          Đây là quyết định đối với yêu cầu quyền. Thao tác không gỡ, xóa hoặc công khai tác phẩm.
+        } @else {
+          Hệ thống chỉ ghi trạng thái và lý do. Không có tin nhắn tự do nào được gửi cho tác giả.
+        }
+      </p>
+
+      @if (pendingAttempt()) {
+        <div class="publication-review-error" role="alert">
+          <p>Kết quả lần gửi trước chưa xác định. Lựa chọn và mã yêu cầu được giữ nguyên.</p>
+          <p>{{ reasonLabel(pendingAttempt()!.reasonCode) }}</p>
+        </div>
+      } @else {
+        <fieldset class="review-reason-options">
+          <legend>Chọn một lý do bắt buộc</legend>
+          @for (reason of reasonsForAction(decisionAction()); track reason; let index = $index) {
+            <label>
+              <input
+                type="radio"
+                [name]="'review-reason-' + decisionAction()"
+                [value]="reason"
+                [checked]="selectedReason() === reason"
+                (change)="onReasonChange($event, reason)"
+                [disabled]="actionBusy()"
+                [attr.autofocus]="index === 0 ? '' : null"
+              />
+              <span>{{ reasonLabel(reason) }}</span>
+            </label>
+          }
+        </fieldset>
+      }
+
+      @if (errorMessage()) {
+        <p class="review-dialog-error" role="alert">{{ errorMessage() }}</p>
+      }
+      <div class="review-dialog-actions">
+        <button
+          class="review-button review-button-secondary"
+          type="button"
+          (click)="cancelDialog()"
+        >
+          {{ pendingAttempt() ? 'Đóng, giữ nguyên yêu cầu' : 'Hủy' }}
+        </button>
+        @if (pendingAttempt()) {
+          <button
+            class="review-button review-button-primary"
+            type="button"
+            (click)="retryExactDecision()"
+            [disabled]="actionBusy()"
+          >
+            {{ actionBusy() ? 'Đang gửi lại…' : 'Gửi lại đúng quyết định' }}
+          </button>
+        } @else {
+          <button
+            class="review-button review-button-primary"
+            type="button"
+            (click)="confirmDecision()"
+            [disabled]="actionBusy() || !selectedReason()"
+          >
+            {{ actionBusy() ? 'Đang ghi nhận…' : 'Xác nhận quyết định' }}
+          </button>
+        }
+      </div>
+    </div>
+  </dialog>
+</div>

@@ -17387,6 +17387,12 @@ class PostgresSchemaIntegrationTests {
               .path("permissions")
               .get(0)
               .asText());
+      assertEquals(
+          2,
+          objectMapper
+              .readTree(currentAdmin.getResponse().getContentAsString())
+              .path("roles")
+              .size());
       MvcResult nonAdminCurrent =
           mockMvc.perform(get("/api/v1/auth/me").cookie(outsiderCookie)).andReturn();
       assertEquals(200, nonAdminCurrent.getResponse().getStatus());
@@ -17577,6 +17583,18 @@ class PostgresSchemaIntegrationTests {
       assertEquals("REVIEW_CAPACITY", latestGrantEvent.path("lastEventReasonCode").asText());
 
       SessionService.IssuedSession reviewerSession = sessionService.create(targetId).orElseThrow();
+      var reviewerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", reviewerSession.cookieValue());
+      MvcResult reviewerCurrent =
+          mockMvc.perform(get("/api/v1/auth/me").cookie(reviewerCookie)).andReturn();
+      assertEquals(200, reviewerCurrent.getResponse().getStatus());
+      var reviewerRoles =
+          objectMapper.readTree(reviewerCurrent.getResponse().getContentAsString()).path("roles");
+      assertEquals(
+          "publication", reviewerRoles.get(reviewerRoles.size() - 1).path("scope").asText());
+      assertEquals(
+          "publication.review",
+          reviewerRoles.get(reviewerRoles.size() - 1).path("permissions").get(0).asText());
       SubmittedPublicationFixture adminDecisionFixture =
           submitPublicationRequestForReviewQueue(
               decisionFixtures,
@@ -17586,8 +17604,6 @@ class PostgresSchemaIntegrationTests {
               rightsPolicyDigest,
               "Request used for the system-admin decision denial matrix",
               "ORIGINAL_WORK");
-      var reviewerCookie =
-          new jakarta.servlet.http.Cookie("__Host-novel_session", reviewerSession.cookieValue());
       MvcResult reviewerDetail =
           mockMvc
               .perform(
@@ -17657,6 +17673,14 @@ class PostgresSchemaIntegrationTests {
       assertEquals(204, revokeReplay.getResponse().getStatus());
       assertEquals(2, countSecurityRoleEvents(targetId));
       assertEquals(0, countActiveReviewerAssignments(targetId));
+      MvcResult reviewerAfterRevoke =
+          mockMvc.perform(get("/api/v1/auth/me").cookie(reviewerCookie)).andReturn();
+      assertEquals(200, reviewerAfterRevoke.getResponse().getStatus());
+      var revokedReviewerRoles =
+          objectMapper
+              .readTree(reviewerAfterRevoke.getResponse().getContentAsString())
+              .path("roles");
+      assertEquals(1, revokedReviewerRoles.size());
 
       MvcResult afterRevoke =
           mockMvc
