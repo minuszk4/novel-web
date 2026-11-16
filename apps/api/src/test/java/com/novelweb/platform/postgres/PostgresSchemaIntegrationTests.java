@@ -254,7 +254,8 @@ class PostgresSchemaIntegrationTests {
           "momo_test_ipn_events",
           "momo_test_reconciliation_events",
           "content_entitlements",
-          "public_catalog_rate_limits");
+          "public_catalog_rate_limits",
+          "publication_work_takedown_events");
 
   @Autowired private DataSource dataSource;
 
@@ -428,7 +429,7 @@ class PostgresSchemaIntegrationTests {
             connection.prepareStatement("SELECT COUNT(*) FROM databasechangelog");
         ResultSet changesets = changesetCount.executeQuery()) {
       changesets.next();
-      assertEquals(148, changesets.getInt(1), "unexpected number of applied changesets");
+      assertEquals(149, changesets.getInt(1), "unexpected number of applied changesets");
     }
 
     Set<String> actualTables = new HashSet<>();
@@ -2274,6 +2275,152 @@ class PostgresSchemaIntegrationTests {
                   () -> mutatePublicationScopeApproval(approvableFixture.workId()))
               .getSQLState());
 
+      setPublicationWorkVisibility(approvableFixture.workId(), "public");
+      insertCurrentSyntheticPublicationApprovals(
+          approvableFixture.workId(),
+          reviewerId,
+          policyVersion,
+          policyDigest,
+          List.of("PUBLIC_METADATA", "CHAPTER_TEXT", "COMMERCIAL_SALE"));
+      assertTrue(publicationScopeIsCurrent(approvableFixture.workId(), "PUBLIC_METADATA"));
+      assertTrue(publicationScopeIsCurrent(approvableFixture.workId(), "CHAPTER_TEXT"));
+      assertTrue(publicationScopeIsCurrent(approvableFixture.workId(), "COMMERCIAL_SALE"));
+      String takedownPath = "/api/v1/review/works/" + approvableFixture.workId() + "/takedown";
+      String takedownKey = "publication-takedown-rollback-01";
+      String takedownBody = "{\"reasonCode\":\"EMERGENCY_TAKEDOWN\"}";
+      MvcResult takedownWithoutCsrf =
+          mockMvc
+              .perform(
+                  post(takedownPath)
+                      .cookie(reviewerCookie)
+                      .header("Idempotency-Key", "publication-takedown-no-csrf-01")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(takedownBody))
+              .andReturn();
+      assertEquals(403, takedownWithoutCsrf.getResponse().getStatus());
+      assertTrue(takedownWithoutCsrf.getResponse().getContentAsString().contains("CSRF_FAILED"));
+
+      MvcResult ownerTakedown =
+          mockMvc
+              .perform(
+                  post(takedownPath)
+                      .cookie(ownerCookie)
+                      .header(
+                          SessionCsrfTokenService.TOKEN_HEADER_NAME,
+                          csrfTokenService.tokenFor(approvableOwnerSession.cookieValue()))
+                      .header("Idempotency-Key", "publication-takedown-owner-01")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(takedownBody))
+              .andReturn();
+      assertEquals(403, ownerTakedown.getResponse().getStatus());
+      assertTrue(
+          ownerTakedown
+              .getResponse()
+              .getContentAsString()
+              .contains("PUBLICATION_TAKEDOWN_ROLE_REQUIRED"));
+
+      MvcResult takedownExtraField =
+          mockMvc
+              .perform(
+                  post(takedownPath)
+                      .cookie(reviewerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, csrf)
+                      .header("Idempotency-Key", "publication-takedown-extra-field-01")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"reasonCode\":\"EMERGENCY_TAKEDOWN\",\"note\":\"private text\"}"))
+              .andReturn();
+      assertEquals(400, takedownExtraField.getResponse().getStatus());
+
+      installFailingPublicationRevocationTrigger();
+      MvcResult interruptedTakedown;
+      try {
+        interruptedTakedown =
+            mockMvc
+                .perform(
+                    post(takedownPath)
+                        .cookie(reviewerCookie)
+                        .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, csrf)
+                        .header("Idempotency-Key", takedownKey)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(takedownBody))
+                .andReturn();
+      } finally {
+        dropFailingPublicationRevocationTrigger();
+      }
+      assertEquals(503, interruptedTakedown.getResponse().getStatus());
+      assertEquals(0, publicationScopeRevocationCount(approvableFixture.workId()));
+      assertEquals(0, publicationWorkTakedownEventCount(approvableFixture.workId()));
+      assertEquals("public", publicationWorkVisibility(approvableFixture.workId()));
+      assertTrue(publicationScopeIsCurrent(approvableFixture.workId(), "PUBLIC_METADATA"));
+
+      MvcResult takenDown =
+          mockMvc
+              .perform(
+                  post(takedownPath)
+                      .cookie(reviewerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, csrf)
+                      .header("Idempotency-Key", takedownKey)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(takedownBody))
+              .andReturn();
+      assertEquals(200, takenDown.getResponse().getStatus());
+      assertTrue(takenDown.getResponse().getHeader(HttpHeaders.CACHE_CONTROL).contains("no-store"));
+      assertEquals("no-cache", takenDown.getResponse().getHeader(HttpHeaders.PRAGMA));
+      JsonNode takedownReceipt =
+          objectMapper.readTree(takenDown.getResponse().getContentAsString());
+      assertEquals("ACCESS_REVOKED", takedownReceipt.path("accessState").asText());
+      assertEquals("NOT_CONFIGURED", takedownReceipt.path("externalCachePurgeStatus").asText());
+      assertEquals("publication_reviewer", takedownReceipt.path("actorRoleCode").asText());
+      assertEquals("EMERGENCY_TAKEDOWN", takedownReceipt.path("reasonCode").asText());
+      assertEquals(6, takedownReceipt.path("revokedApprovalCount").asInt());
+      assertEquals("public", takedownReceipt.path("previousVisibility").asText());
+      assertEquals("private", takedownReceipt.path("currentVisibility").asText());
+      assertEquals("private", publicationWorkVisibility(approvableFixture.workId()));
+      assertEquals(6, publicationScopeRevocationCount(approvableFixture.workId()));
+      assertEquals(1, publicationWorkTakedownEventCount(approvableFixture.workId()));
+
+      MvcResult replayedTakedown =
+          mockMvc
+              .perform(
+                  post(takedownPath)
+                      .cookie(reviewerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, csrf)
+                      .header("Idempotency-Key", takedownKey)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(takedownBody))
+              .andReturn();
+      assertEquals(200, replayedTakedown.getResponse().getStatus());
+      assertEquals("true", replayedTakedown.getResponse().getHeader("Idempotency-Replayed"));
+      assertEquals(
+          takenDown.getResponse().getContentAsString(),
+          replayedTakedown.getResponse().getContentAsString());
+      assertEquals(1, publicationWorkTakedownEventCount(approvableFixture.workId()));
+
+      MvcResult reusedTakedownKey =
+          mockMvc
+              .perform(
+                  post(takedownPath)
+                      .cookie(reviewerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, csrf)
+                      .header("Idempotency-Key", takedownKey)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"reasonCode\":\"RIGHTS_WITHDRAWN\"}"))
+              .andReturn();
+      assertEquals(409, reusedTakedownKey.getResponse().getStatus());
+      assertTrue(
+          reusedTakedownKey.getResponse().getContentAsString().contains("IDEMPOTENCY_KEY_REUSED"));
+
+      setPublicationWorkVisibility(approvableFixture.workId(), "public");
+      assertFalse(publicationScopeIsCurrent(approvableFixture.workId(), "PUBLIC_METADATA"));
+      assertFalse(publicationScopeIsCurrent(approvableFixture.workId(), "CHAPTER_TEXT"));
+      assertFalse(publicationScopeIsCurrent(approvableFixture.workId(), "COMMERCIAL_SALE"));
+      assertEquals(
+          "55000",
+          assertThrows(
+                  SQLException.class,
+                  () -> mutatePublicationWorkTakedownEvent(approvableFixture.workId()))
+              .getSQLState());
+
       MvcResult stalePolicyDetail =
           mockMvc
               .perform(
@@ -2572,6 +2719,101 @@ class PostgresSchemaIntegrationTests {
     }
   }
 
+  private long publicationScopeRevocationCount(UUID workId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT COUNT(*) FROM publication_scope_access_revocations revocation"
+                    + " JOIN publication_scope_access_approvals approval"
+                    + " ON approval.id = revocation.approval_id WHERE approval.work_id = ?")) {
+      select.setObject(1, workId);
+      try (ResultSet rows = select.executeQuery()) {
+        assertTrue(rows.next());
+        return rows.getLong(1);
+      }
+    }
+  }
+
+  private long publicationWorkTakedownEventCount(UUID workId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT COUNT(*) FROM publication_work_takedown_events WHERE work_id = ?")) {
+      select.setObject(1, workId);
+      try (ResultSet rows = select.executeQuery()) {
+        assertTrue(rows.next());
+        return rows.getLong(1);
+      }
+    }
+  }
+
+  private boolean publicationScopeIsCurrent(UUID workId, String scopeCode) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement("SELECT publication_scope_access_is_current(?, ?)")) {
+      select.setObject(1, workId);
+      select.setString(2, scopeCode);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getBoolean(1);
+      }
+    }
+  }
+
+  private void insertCurrentSyntheticPublicationApprovals(
+      UUID workId,
+      UUID reviewerId,
+      String policyVersion,
+      byte[] policyDigest,
+      List<String> scopeCodes)
+      throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement insert =
+            connection.prepareStatement(
+                """
+                    INSERT INTO publication_scope_access_approvals (
+                        id, work_id, scope_code, approved_snapshot, policy_version, policy_sha256,
+                        approved_by_user_id, reason_code, approved_content_version)
+                    SELECT ?, work.id, ?, publication_work_scope_snapshot(work.id, ?), ?, ?, ?,
+                           'RIGHTS_REVIEWED', work.publication_content_version
+                      FROM works work
+                     WHERE work.id = ?
+                    """)) {
+      for (String scopeCode : scopeCodes) {
+        insert.setObject(1, UUID.randomUUID());
+        insert.setString(2, scopeCode);
+        insert.setString(3, scopeCode);
+        insert.setString(4, policyVersion);
+        insert.setBytes(5, policyDigest);
+        insert.setObject(6, reviewerId);
+        insert.setObject(7, workId);
+        assertEquals(1, insert.executeUpdate());
+      }
+    }
+  }
+
+  private String publicationWorkVisibility(UUID workId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement("SELECT visibility FROM works WHERE id = ?")) {
+      select.setObject(1, workId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getString(1);
+      }
+    }
+  }
+
+  private void setPublicationWorkVisibility(UUID workId, String visibility) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement update =
+            connection.prepareStatement("UPDATE works SET visibility = ? WHERE id = ?")) {
+      update.setString(1, visibility);
+      update.setObject(2, workId);
+      assertEquals(1, update.executeUpdate());
+    }
+  }
+
   private void updatePublicationWorkTitle(UUID workId, String title) throws SQLException {
     try (Connection connection = dataSource.getConnection();
         PreparedStatement update =
@@ -2645,6 +2887,44 @@ class PostgresSchemaIntegrationTests {
     }
   }
 
+  private void installFailingPublicationRevocationTrigger() throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        java.sql.Statement statement = connection.createStatement()) {
+      statement.execute(
+          """
+              CREATE OR REPLACE FUNCTION test_fail_publication_scope_revocation()
+              RETURNS trigger LANGUAGE plpgsql AS $$
+              DECLARE
+                  revoked_scope VARCHAR(32);
+              BEGIN
+                  SELECT scope_code INTO revoked_scope
+                    FROM publication_scope_access_approvals WHERE id = NEW.approval_id;
+                  IF revoked_scope = 'CHAPTER_TEXT' THEN
+                      RAISE EXCEPTION 'synthetic revocation rollback check' USING ERRCODE = '23514';
+                  END IF;
+                  RETURN NEW;
+              END;
+              $$
+              """);
+      statement.execute(
+          """
+              CREATE TRIGGER trg_test_fail_publication_scope_revocation
+                  BEFORE INSERT ON publication_scope_access_revocations
+                  FOR EACH ROW EXECUTE FUNCTION test_fail_publication_scope_revocation()
+              """);
+    }
+  }
+
+  private void dropFailingPublicationRevocationTrigger() throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        java.sql.Statement statement = connection.createStatement()) {
+      statement.execute(
+          "DROP TRIGGER IF EXISTS trg_test_fail_publication_scope_revocation "
+              + "ON publication_scope_access_revocations");
+      statement.execute("DROP FUNCTION IF EXISTS test_fail_publication_scope_revocation()");
+    }
+  }
+
   private void mutatePublicationReviewEvent(UUID requestId) throws SQLException {
     try (Connection connection = dataSource.getConnection();
         PreparedStatement update =
@@ -2661,6 +2941,17 @@ class PostgresSchemaIntegrationTests {
         PreparedStatement update =
             connection.prepareStatement(
                 "UPDATE publication_scope_access_approvals SET reason_code = reason_code "
+                    + "WHERE work_id = ?")) {
+      update.setObject(1, workId);
+      update.executeUpdate();
+    }
+  }
+
+  private void mutatePublicationWorkTakedownEvent(UUID workId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement update =
+            connection.prepareStatement(
+                "UPDATE publication_work_takedown_events SET reason_code = reason_code "
                     + "WHERE work_id = ?")) {
       update.setObject(1, workId);
       update.executeUpdate();

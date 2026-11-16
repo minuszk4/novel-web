@@ -221,6 +221,9 @@ public class ApiSecurityConfiguration {
                     .requestMatchers(HttpMethod.POST, "/api/v1/review/publications/*/decisions")
                     .permitAll();
                 authorize
+                    .requestMatchers(HttpMethod.POST, "/api/v1/review/works/*/takedown")
+                    .permitAll();
+                authorize
                     .requestMatchers(
                         HttpMethod.DELETE, "/api/v1/authoring/manuscripts/*/chapters/*")
                     .permitAll();
@@ -325,7 +328,7 @@ public class ApiSecurityConfiguration {
             "X-Import-Upload-Token",
             SessionCsrfTokenService.TOKEN_HEADER_NAME));
     apiConfiguration.setExposedHeaders(
-        List.of("X-Correlation-Id", "Location", "Retry-After", "ETag"));
+        List.of("X-Correlation-Id", "Location", "Retry-After", "ETag", "Idempotency-Replayed"));
     apiConfiguration.setAllowCredentials(true);
     apiConfiguration.setMaxAge(Duration.ofMinutes(30));
 

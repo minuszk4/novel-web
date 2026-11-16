@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 8.9.0
+  version: 8.10.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -2407,6 +2407,122 @@ paths:
           $ref: '#/components/responses/Problem'
         '503':
           description: Policy configuration or safe decision storage is unavailable.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+  /api/v1/review/works/{workId}/takedown:
+    post:
+      operationId: revokePublicationAccessForWork
+      tags: [Publication review]
+      x-implementation-status: implemented-postgres-profile
+      summary: Revoke every current public access scope for an authored work
+      description: >-
+        Requires an authenticated active publication_reviewer or system_admin, current Terms and Privacy acceptance,
+        session-bound CSRF, a strict JSON reasonCode and a safe Idempotency-Key. The work is locked; every currently
+        unrevoked publication scope approval is revoked and visibility is changed to private in the same PostgreSQL
+        transaction. Exact retries with the same key and body return the same immutable receipt; reuse for another
+        command is 409. The receipt reports ACCESS_REVOKED and externalCachePurgeStatus NOT_CONFIGURED deliberately:
+        this API does not claim that an external CDN/cache purge completed. Current Reader, catalog, quote and unlock
+        requests recheck PostgreSQL authorization, but old external signed links or caches require a separate purge
+        integration before public release. Existing credit balances and entitlements are not changed and no refund
+        is issued. Every response is no-store. This endpoint revokes access; it is not a publish or release API.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - name: workId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            minLength: 16
+            maxLength: 128
+            pattern: '^[A-Za-z0-9._~-]{16,128}$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reasonCode]
+              properties:
+                reasonCode:
+                  type: string
+                  enum: [RIGHTS_WITHDRAWN, REVIEW_INVALIDATED, POLICY_CHANGED, EMERGENCY_TAKEDOWN]
+      responses:
+        '200':
+          description: Access-revocation receipt. This is not confirmation of external cache purge.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
+            Idempotency-Replayed:
+              description: Present and true when this exact command returned its stored receipt.
+              schema:
+                type: string
+                const: 'true'
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [eventId, workId, accessState, externalCachePurgeStatus, actorRoleCode, reasonCode, revokedApprovalCount, previousVisibility, currentVisibility, createdAt]
+                properties:
+                  eventId: {type: string, format: uuid}
+                  workId: {type: string, format: uuid}
+                  accessState: {type: string, const: ACCESS_REVOKED}
+                  externalCachePurgeStatus: {type: string, const: NOT_CONFIGURED}
+                  actorRoleCode: {type: string, enum: [publication_reviewer, system_admin]}
+                  reasonCode: {type: string, enum: [RIGHTS_WITHDRAWN, REVIEW_INVALIDATED, POLICY_CHANGED, EMERGENCY_TAKEDOWN]}
+                  revokedApprovalCount: {type: integer, minimum: 0}
+                  previousVisibility: {type: string, enum: [private, unlisted, public]}
+                  currentVisibility: {type: string, const: private}
+                  createdAt: {type: string, format: date-time}
+        '400':
+          description: The work ID, idempotency key or strict reason body is invalid.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          description: The actor lacks an active reviewer/admin role or current Terms/Privacy acceptance.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: Work is missing, not authored, deleted or owned by the current actor.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: The Idempotency-Key was already used for a different takedown command.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '413':
+          $ref: '#/components/responses/Problem'
+        '415':
+          $ref: '#/components/responses/Problem'
+        '503':
+          description: Required policy documents or the atomic authorization write are unavailable. Retry with the same key.
           content:
             application/problem+json:
               schema:
