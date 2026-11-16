@@ -6093,6 +6093,13 @@ button.reader-chapter-nav {
     gap: 9px;
     padding: 12px 11px;
   }
+  .mobile-form-page > .consent-list {
+    gap: 8px;
+    margin-top: 12px;
+  }
+  .mobile-form-page > .consent-list > .consent-row {
+    padding-block: 10px;
+  }
   .consent-copy strong {
     font-size: 11px;
   }
