@@ -19,6 +19,8 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -218,15 +220,25 @@ class PostgresPublicCatalogIntegrationTests {
     String clientAddress = testClientAddress();
     String path = "/api/v1/catalog/works?q=rate-limit-sentinel&limit=1";
 
-    for (int request = 0; request < 60; request++) {
-      assertEquals(200, get(path, clientAddress).statusCode());
+    List<Future<HttpResult>> concurrentResponses = new ArrayList<>();
+    try (var executor = Executors.newFixedThreadPool(24)) {
+      for (int request = 0; request < 72; request++) {
+        concurrentResponses.add(executor.submit(() -> get(path, clientAddress)));
+      }
     }
-    HttpResult limited = get(path, clientAddress);
+    List<HttpResult> responses = new ArrayList<>(concurrentResponses.size());
+    for (Future<HttpResult> response : concurrentResponses) responses.add(response.get());
 
-    assertEquals(429, limited.statusCode());
-    assertEquals("PUBLIC_CATALOG_RATE_LIMITED", limited.body().path("code").asText());
-    assertEquals("3600", limited.retryAfter());
-    assertTrue(limited.cacheControl().contains("no-store"));
+    List<HttpResult> allowed =
+        responses.stream().filter(response -> response.statusCode() == 200).toList();
+    List<HttpResult> limited =
+        responses.stream().filter(response -> response.statusCode() == 429).toList();
+    assertEquals(60, allowed.size());
+    assertEquals(12, limited.size());
+    assertEquals(List.of("3600"), limited.stream().map(HttpResult::retryAfter).distinct().toList());
+    assertEquals("PUBLIC_CATALOG_RATE_LIMITED", limited.get(0).body().path("code").asText());
+    assertEquals("3600", limited.get(0).retryAfter());
+    assertTrue(limited.get(0).cacheControl().contains("no-store"));
     assertEquals(200, get(path, testClientAddress()).statusCode());
 
     try (Connection connection = dataSource.getConnection();
