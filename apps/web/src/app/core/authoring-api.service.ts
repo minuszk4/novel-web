@@ -101,6 +101,29 @@ export interface PublicationReleaseReceipt {
   publicationContentVersion: number;
 }
 
+export type PublicationRightsBasisCode =
+  'ORIGINAL_WORK' | 'LICENSE_OR_PERMISSION' | 'PUBLIC_DOMAIN' | 'NEEDS_REVIEW';
+
+export interface PublicationRequestScopeClaim {
+  scopeCode: PublicationScopeCode;
+  rightsBasisCode: PublicationRightsBasisCode;
+}
+
+export interface PublicationRequestSubmission {
+  policyVersion: string;
+  scopeClaims: PublicationRequestScopeClaim[];
+}
+
+export interface PublicationRequestReceipt {
+  requestId: string;
+  requestVersion: number;
+  policyVersion: string;
+  snapshotSha256: string;
+  scopeCodes: PublicationScopeCode[];
+  submittedAt: string;
+  state: 'PENDING_REVIEW';
+}
+
 export interface PrivateManuscriptListPage {
   items: PrivateManuscriptListItem[];
   nextCursor: string | null;
@@ -431,6 +454,47 @@ export class AuthoringApiService {
     }
   }
 
+  async submitPublicationRequest(
+    workId: string,
+    readinessEtag: string,
+    submission: PublicationRequestSubmission,
+    idempotencyKey: string,
+  ): Promise<PublicationRequestReceipt> {
+    if (
+      !isUuid(workId) ||
+      !isPublicationReadinessEtag(readinessEtag) ||
+      !idempotencyKeyPattern.test(idempotencyKey) ||
+      !isValidPublicationRequestSubmission(submission)
+    ) {
+      throw new AuthoringApiError(400, 'INVALID_PUBLICATION_REQUEST');
+    }
+
+    try {
+      const headers = (await this.csrfHeaders())
+        .set('Content-Type', 'application/json')
+        .set('If-Match', readinessEtag)
+        .set('Idempotency-Key', idempotencyKey);
+      const response = await firstValueFrom(
+        this.http
+          .post<unknown>(`${manuscriptsUrl}/${workId}/publication/requests`, submission, {
+            headers,
+            observe: 'response',
+          })
+          .pipe(timeout(requestTimeoutMs)),
+      );
+      if (
+        response.status !== 201 ||
+        response.headers.get('Cache-Control') !== 'no-store' ||
+        response.headers.get('Pragma') !== 'no-cache'
+      ) {
+        throw invalidPublicationRequestResponse();
+      }
+      return parsePublicationRequestReceipt(response.body, submission.policyVersion);
+    } catch (error) {
+      throw toAuthoringApiError(error);
+    }
+  }
+
   async updatePrivateManuscript(
     workId: string,
     input: UpdatePrivateManuscriptInput,
@@ -661,6 +725,7 @@ export class AuthoringApiError extends Error {
     readonly status: number,
     readonly code: string | null,
     readonly currentEtag: string | null = null,
+    readonly retryAfterSeconds: number | null = null,
   ) {
     super(code ?? 'AUTHORING_UNAVAILABLE');
     this.name = 'AuthoringApiError';
@@ -950,6 +1015,41 @@ function parsePublicationReleaseReceipt(
   return value as unknown as PublicationReleaseReceipt;
 }
 
+function parsePublicationRequestReceipt(
+  value: unknown,
+  expectedPolicyVersion: string,
+): PublicationRequestReceipt {
+  if (
+    !isRecord(value) ||
+    hasUnexpectedFields(value, [
+      'requestId',
+      'requestVersion',
+      'policyVersion',
+      'snapshotSha256',
+      'scopeCodes',
+      'submittedAt',
+      'state',
+    ]) ||
+    !isUuid(value['requestId']) ||
+    !Number.isSafeInteger(value['requestVersion']) ||
+    (value['requestVersion'] as number) < 1 ||
+    value['policyVersion'] !== expectedPolicyVersion ||
+    !isSha256(value['snapshotSha256']) ||
+    !Array.isArray(value['scopeCodes']) ||
+    value['scopeCodes'].length < 2 ||
+    value['scopeCodes'].length > 3 ||
+    value['scopeCodes'].some((scope) => !isPublicationScopeCode(scope)) ||
+    new Set(value['scopeCodes']).size !== value['scopeCodes'].length ||
+    !value['scopeCodes'].includes('PUBLIC_METADATA') ||
+    !value['scopeCodes'].includes('CHAPTER_TEXT') ||
+    !isInstant(value['submittedAt']) ||
+    value['state'] !== 'PENDING_REVIEW'
+  ) {
+    throw invalidPublicationRequestResponse();
+  }
+  return value as unknown as PublicationRequestReceipt;
+}
+
 function parseOutlineItem(value: unknown): PrivateChapterOutlineItem {
   if (
     !isRecord(value) ||
@@ -1210,6 +1310,49 @@ function isPublicationScopeCode(value: unknown): value is PublicationScopeCode {
   return value === 'PUBLIC_METADATA' || value === 'CHAPTER_TEXT' || value === 'COMMERCIAL_SALE';
 }
 
+function isPublicationRightsBasisCode(value: unknown): value is PublicationRightsBasisCode {
+  return (
+    value === 'ORIGINAL_WORK' ||
+    value === 'LICENSE_OR_PERMISSION' ||
+    value === 'PUBLIC_DOMAIN' ||
+    value === 'NEEDS_REVIEW'
+  );
+}
+
+function isValidPublicationRequestSubmission(
+  value: PublicationRequestSubmission,
+): value is PublicationRequestSubmission {
+  if (
+    !isRecord(value) ||
+    hasUnexpectedFields(value, ['policyVersion', 'scopeClaims']) ||
+    typeof value['policyVersion'] !== 'string' ||
+    !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value['policyVersion']) ||
+    !Array.isArray(value['scopeClaims']) ||
+    value['scopeClaims'].length < 2 ||
+    value['scopeClaims'].length > 3
+  ) {
+    return false;
+  }
+  const claims = value['scopeClaims'];
+  if (
+    claims.some(
+      (claim) =>
+        !isRecord(claim) ||
+        hasUnexpectedFields(claim, ['scopeCode', 'rightsBasisCode']) ||
+        !isPublicationScopeCode(claim['scopeCode']) ||
+        !isPublicationRightsBasisCode(claim['rightsBasisCode']),
+    )
+  ) {
+    return false;
+  }
+  const scopeCodes = claims.map((claim) => (claim as PublicationRequestScopeClaim).scopeCode);
+  return (
+    new Set(scopeCodes).size === scopeCodes.length &&
+    scopeCodes.includes('PUBLIC_METADATA') &&
+    scopeCodes.includes('CHAPTER_TEXT')
+  );
+}
+
 function isPublicationReadinessBlocker(value: unknown): value is PublicationReadinessBlocker {
   return (
     value === 'PUBLICATION_RIGHTS_POLICY_NOT_CONFIGURED' ||
@@ -1242,7 +1385,10 @@ function toAuthoringApiError(error: unknown): AuthoringApiError {
       isRecord(error.error) && isDraftEtag(error.error['currentEtag'])
         ? error.error['currentEtag']
         : null;
-    return new AuthoringApiError(error.status, code, currentEtag);
+    const retryAfterValue = error.headers.get('Retry-After');
+    const retryAfterSeconds =
+      retryAfterValue && /^[1-9][0-9]{0,5}$/.test(retryAfterValue) ? Number(retryAfterValue) : null;
+    return new AuthoringApiError(error.status, code, currentEtag, retryAfterSeconds);
   }
   return new AuthoringApiError(0, null);
 }
@@ -1277,6 +1423,10 @@ function invalidPublicationReadinessResponse(): AuthoringApiError {
 
 function invalidPublicationReleaseResponse(): AuthoringApiError {
   return new AuthoringApiError(502, 'INVALID_PUBLICATION_RELEASE_RESPONSE');
+}
+
+function invalidPublicationRequestResponse(): AuthoringApiError {
+  return new AuthoringApiError(502, 'INVALID_PUBLICATION_REQUEST_RESPONSE');
 }
 
 function invalidChapterResponse(): AuthoringApiError {

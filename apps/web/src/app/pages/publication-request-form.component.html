@@ -1,0 +1,315 @@
+@if (canPrepareRequest) {
+  <section class="publication-request" aria-labelledby="publication-request-title">
+    <p class="eyebrow">GỬI DUYỆT QUYỀN</p>
+    <h3 id="publication-request-title">Yêu cầu người duyệt xem xét</h3>
+    <p class="publication-request-intro">
+      Chọn căn cứ cho từng phạm vi. Đây là khai báo của bạn; lựa chọn không tự xác minh quyền, không
+      công khai bản thảo và không tự bật bán chương.
+    </p>
+    <p class="publication-request-policy">
+      Chính sách quyền xuất bản hiện hành: phiên bản
+      <strong>{{ readiness.publicationRightsPolicyVersion }}</strong> · đã được bạn xác nhận.
+      <button class="text-button" type="button" (click)="requestPolicy()">
+        Xem lại chính sách
+      </button>
+    </p>
+
+    @if (!formOpen()) {
+      <button
+        #requestTrigger
+        class="button button-primary publication-request-trigger"
+        type="button"
+        (click)="openRequestForm()"
+      >
+        {{ requestButtonLabel }}
+      </button>
+    } @else {
+      <section class="publication-request-form" aria-labelledby="publication-request-form-title">
+        <h4 #requestHeading id="publication-request-form-title" tabindex="-1">
+          Rà soát bản đã lưu và khai báo phạm vi
+        </h4>
+        <p>
+          Yêu cầu sẽ gắn với snapshot nội dung phiên bản
+          {{ readiness.publicationContentVersion }} và {{ readiness.readyChapterCount }} chương sẵn
+          sàng. Chỉ nội dung đã lưu mới được xem trước; thay đổi sau đó sẽ làm snapshot cũ và máy
+          chủ từ chối bằng phiên bản mới.
+        </p>
+
+        <div class="publication-request-chapter-review">
+          <div class="publication-request-section-heading">
+            <div>
+              <h5>Chương trong bản đã lưu</h5>
+              <p>
+                {{ chapters().length }} mục đã tải
+                @if (!chapterListComplete()) {
+                  · còn trang tiếp theo
+                }
+              </p>
+            </div>
+            @if (nextChapterCursor()) {
+              <button
+                class="button button-outline"
+                type="button"
+                [disabled]="chapterListLoading() || formLocked"
+                (click)="loadMoreChapters()"
+              >
+                {{ chapterListLoading() ? 'Đang tải…' : 'Tải thêm chương' }}
+              </button>
+            }
+          </div>
+
+          @if (chapterListLoading()) {
+            <p class="publication-request-status" role="status" aria-live="polite">
+              Đang tải danh sách chương riêng tư…
+            </p>
+          }
+          @if (chapterListError(); as error) {
+            <div class="publication-request-error" role="alert">
+              @if (error.code === 'PUBLICATION_SNAPSHOT_STALE') {
+                Danh sách chương đã đổi so với checklist. Hãy tải lại trạng thái trước khi gửi.
+                <button class="button button-outline" type="button" (click)="retryReadiness()">
+                  Tải lại checklist
+                </button>
+              } @else {
+                Chưa tải được danh sách chương riêng tư. Hãy thử tải lại checklist.
+                <button class="button button-outline" type="button" (click)="retryReadiness()">
+                  Thử lại
+                </button>
+              }
+            </div>
+          }
+          @if (chapters().length > 0) {
+            <ol class="publication-request-chapters">
+              @for (chapter of chapters(); track chapter.id) {
+                <li>
+                  <div>
+                    <strong>Chương {{ chapter.ordinal }} · {{ chapter.title }}</strong>
+                    <span>{{ chapterStateLabel(chapter) }}</span>
+                  </div>
+                  @if (chapter.status === 'ready' && chapter.contentAvailable) {
+                    <button
+                      class="button button-outline"
+                      type="button"
+                      [disabled]="formLocked"
+                      (click)="previewChapter(chapter)"
+                    >
+                      Xem bản đã lưu
+                    </button>
+                  }
+                </li>
+              }
+            </ol>
+          }
+          @if (chapterListComplete() && !hasCompleteReadyChapterList) {
+            <p class="publication-request-error" role="alert">
+              Số chương sẵn sàng không khớp checklist. Tải lại điều kiện xuất bản để lấy snapshot
+              mới.
+            </p>
+          }
+          @if (previewLoading()) {
+            <p class="publication-request-status" role="status" aria-live="polite">
+              Đang tải nội dung chương riêng tư…
+            </p>
+          }
+          @if (previewError()) {
+            <p class="publication-request-error" role="alert">
+              Không tải được bản chương đã lưu. Nội dung chưa được gửi; bạn có thể thử lại từ danh
+              sách.
+            </p>
+          }
+          @if (previewDraft(); as draft) {
+            <section
+              class="publication-request-preview"
+              aria-labelledby="publication-request-preview-title"
+            >
+              <div class="publication-request-section-heading">
+                <h5 #previewHeading id="publication-request-preview-title" tabindex="-1">
+                  {{ draft.title }} · bản lưu {{ draft.revisionNo }}
+                </h5>
+                <button class="text-button" type="button" (click)="closePreview()">
+                  Đóng xem trước
+                </button>
+              </div>
+              @if (draft.normalizedContent.trim()) {
+                <pre tabindex="0" aria-label="Nội dung văn bản của bản chương đã lưu">{{
+                  draft.normalizedContent
+                }}</pre>
+              } @else {
+                <p>Bản lưu này chưa có nội dung văn bản để xem trước.</p>
+              }
+            </section>
+          }
+        </div>
+
+        <div class="publication-request-claims">
+          <h5>Khai báo căn cứ theo phạm vi</h5>
+          <label for="publication-request-metadata-basis">
+            <span>Thông tin tác phẩm · bắt buộc</span>
+            <select
+              id="publication-request-metadata-basis"
+              [value]="metadataBasis()"
+              [disabled]="formLocked"
+              (change)="changeMetadataBasis($event)"
+            >
+              <option value="">Chọn căn cứ bạn khai báo</option>
+              @for (option of basisOptions; track option.code) {
+                <option [value]="option.code">{{ option.label }}</option>
+              }
+            </select>
+          </label>
+
+          <label for="publication-request-chapter-basis">
+            <span>Nội dung chương · bắt buộc</span>
+            <select
+              id="publication-request-chapter-basis"
+              [value]="chapterTextBasis()"
+              [disabled]="formLocked"
+              (change)="changeChapterTextBasis($event)"
+            >
+              <option value="">Chọn căn cứ bạn khai báo</option>
+              @for (option of basisOptions; track option.code) {
+                <option [value]="option.code">{{ option.label }}</option>
+              }
+            </select>
+          </label>
+
+          <label class="publication-request-commercial-toggle">
+            <input
+              type="checkbox"
+              [checked]="includeCommercialSale()"
+              [disabled]="formLocked"
+              (change)="toggleCommercialSale($event)"
+            />
+            <span>
+              Tôi cũng yêu cầu xem xét quyền thương mại để có thể bán chương nếu được chấp thuận.
+            </span>
+          </label>
+          @if (includeCommercialSale()) {
+            <label for="publication-request-commercial-basis">
+              <span>Quyền thương mại · bắt buộc khi chọn</span>
+              <select
+                id="publication-request-commercial-basis"
+                [value]="commercialSaleBasis()"
+                [disabled]="isBusy || uncertain()"
+                (change)="changeCommercialBasis($event)"
+              >
+                <option value="">Chọn căn cứ bạn khai báo</option>
+                @for (option of basisOptions; track option.code) {
+                  <option [value]="option.code">{{ option.label }}</option>
+                }
+              </select>
+            </label>
+          }
+
+          <ul class="publication-request-disclosures">
+            <li>Thông tin công khai, nội dung chương và quyền bán là ba phạm vi tách biệt.</li>
+            <li>
+              Chọn “Cần người duyệt xem xét” thì yêu cầu chưa thể được chấp thuận cho đến khi làm
+              rõ.
+            </li>
+            <li>
+              Không tải giấy tờ hoặc dán URL chứng minh ở đây; kênh lưu bằng chứng chưa được cấu
+              hình.
+            </li>
+            <li>MoMo Test hoặc số dư credit không chứng minh quyền thương mại.</li>
+          </ul>
+
+          <label class="publication-request-confirmation">
+            <input
+              type="checkbox"
+              [checked]="declarationConfirmed()"
+              [disabled]="formLocked"
+              (change)="confirmDeclarations($event)"
+            />
+            <span>
+              Tôi đã rà soát các phạm vi và căn cứ đã chọn, và muốn gửi chính snapshot này để người
+              duyệt xem xét. Khai báo không tự cấp quyền hoặc công khai bản thảo.
+            </span>
+          </label>
+        </div>
+
+        @if (requestError()) {
+          <div class="publication-request-error" role="alert">
+            <p>{{ requestErrorMessage() }}</p>
+            @if (
+              requestError()?.status === 409 &&
+              requestError()?.code === 'PUBLICATION_RIGHTS_POLICY_STALE'
+            ) {
+              <button class="button button-outline" type="button" (click)="requestPolicy()">
+                Xem và xác nhận chính sách mới
+              </button>
+            }
+            @if (requestError()?.status === 401) {
+              <a
+                class="button button-outline"
+                routerLink="/sign-in"
+                [queryParams]="{ returnTo: '/app/authoring/' + workId + '/chapters' }"
+              >
+                Đăng nhập lại
+              </a>
+            }
+            @if (requestError()?.status === 429) {
+              <p class="publication-request-status" role="status" aria-live="polite">
+                {{ retryLabel }}
+              </p>
+              <button
+                class="button button-primary"
+                type="button"
+                [disabled]="retryCountdown() > 0 || submitting()"
+                (click)="retryRateLimitedRequest()"
+              >
+                Thử lại cùng yêu cầu
+              </button>
+            } @else if (uncertain()) {
+              <p class="publication-request-status" role="status" aria-live="polite">
+                {{ retryLabel }}
+              </p>
+              <button
+                class="button button-primary"
+                type="button"
+                [disabled]="submitting()"
+                (click)="retryUncertainRequest()"
+              >
+                Thử lại cùng yêu cầu
+              </button>
+            }
+          </div>
+        }
+
+        <div class="publication-request-actions">
+          <button
+            class="button button-outline"
+            type="button"
+            [disabled]="formLocked"
+            (click)="cancelForm()"
+          >
+            Hủy
+          </button>
+          <button
+            class="button button-primary"
+            type="button"
+            [disabled]="!canSubmitRequest"
+            (click)="submitRequest()"
+          >
+            {{
+              submitting()
+                ? 'Đang gửi…'
+                : requestButtonLabel === 'Chuẩn bị yêu cầu duyệt'
+                  ? 'Gửi yêu cầu duyệt'
+                  : 'Gửi yêu cầu xem xét lại'
+            }}
+          </button>
+        </div>
+
+        @if (submitting()) {
+          <p class="publication-request-status" role="status" aria-live="polite" aria-busy="true">
+            Đang ghi nhận yêu cầu và các khai báo…
+          </p>
+        }
+        <p class="visually-hidden" role="status" aria-live="polite" aria-atomic="true">
+          {{ announcement() }}
+        </p>
+      </section>
+    }
+  </section>
+}

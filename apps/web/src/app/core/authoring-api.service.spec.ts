@@ -2,7 +2,11 @@ import { HttpHeaders, provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { AuthoringApiError, AuthoringApiService } from './authoring-api.service';
+import {
+  AuthoringApiError,
+  AuthoringApiService,
+  PublicationRequestSubmission,
+} from './authoring-api.service';
 
 const workId = '11111111-1111-4111-8111-111111111111';
 const csrfToken = 'A'.repeat(43);
@@ -48,6 +52,24 @@ const publicationReceipt = {
   state: 'PUBLISHED',
   publishedAt: '2026-11-16T12:30:00Z',
   publicationContentVersion: 7,
+};
+const publicationRequestIdempotencyKey = 'publication-request-test-key-0001';
+const publicationRequest: PublicationRequestSubmission = {
+  policyVersion: 'rights-v1',
+  scopeClaims: [
+    { scopeCode: 'PUBLIC_METADATA', rightsBasisCode: 'ORIGINAL_WORK' },
+    { scopeCode: 'CHAPTER_TEXT', rightsBasisCode: 'LICENSE_OR_PERMISSION' },
+    { scopeCode: 'COMMERCIAL_SALE', rightsBasisCode: 'NEEDS_REVIEW' },
+  ],
+};
+const publicationRequestReceipt = {
+  requestId: '99999999-9999-4999-8999-999999999999',
+  requestVersion: 2,
+  policyVersion: 'rights-v1',
+  snapshotSha256: 'c'.repeat(64),
+  scopeCodes: ['PUBLIC_METADATA', 'CHAPTER_TEXT', 'COMMERCIAL_SALE'],
+  submittedAt: '2026-11-17T04:00:00Z',
+  state: 'PENDING_REVIEW',
 };
 const createdDraft = {
   id: workId,
@@ -328,6 +350,122 @@ describe('AuthoringApiService', () => {
         headers: new HttpHeaders({ 'Cache-Control': 'no-store', Pragma: 'no-cache' }),
       });
     await expect(replay).resolves.toEqual(publicationReceipt);
+  });
+
+  it('submits owner rights claims with the current snapshot, CSRF and exact-key replay', async () => {
+    const pending = api.submitPublicationRequest(
+      workId,
+      publicationEtag,
+      publicationRequest,
+      publicationRequestIdempotencyKey,
+    );
+    await flushCsrf(http);
+    const request = http.expectOne(`/api/v1/authoring/manuscripts/${workId}/publication/requests`);
+    expect(request.request.method).toBe('POST');
+    expect(request.request.headers.get('X-CSRF-Token')).toBe(csrfToken);
+    expect(request.request.headers.get('If-Match')).toBe(publicationEtag);
+    expect(request.request.headers.get('Idempotency-Key')).toBe(publicationRequestIdempotencyKey);
+    expect(request.request.body).toEqual(publicationRequest);
+    request.flush(publicationRequestReceipt, {
+      status: 201,
+      statusText: 'Created',
+      headers: new HttpHeaders({ 'Cache-Control': 'no-store', Pragma: 'no-cache' }),
+    });
+    await expect(pending).resolves.toEqual(publicationRequestReceipt);
+
+    const replay = api.submitPublicationRequest(
+      workId,
+      publicationEtag,
+      publicationRequest,
+      publicationRequestIdempotencyKey,
+    );
+    await flushCsrf(http);
+    http
+      .expectOne(`/api/v1/authoring/manuscripts/${workId}/publication/requests`)
+      .flush(publicationRequestReceipt, {
+        status: 201,
+        statusText: 'Created',
+        headers: new HttpHeaders({ 'Cache-Control': 'no-store', Pragma: 'no-cache' }),
+      });
+    await expect(replay).resolves.toEqual(publicationRequestReceipt);
+  });
+
+  it('rejects invalid publication claims and malformed or cacheable request receipts', async () => {
+    const missingRequiredScope: PublicationRequestSubmission = {
+      policyVersion: 'rights-v1',
+      scopeClaims: [{ scopeCode: 'PUBLIC_METADATA', rightsBasisCode: 'ORIGINAL_WORK' }],
+    };
+    await expect(
+      api.submitPublicationRequest(
+        workId,
+        publicationEtag,
+        missingRequiredScope,
+        publicationRequestIdempotencyKey,
+      ),
+    ).rejects.toMatchObject({ status: 400, code: 'INVALID_PUBLICATION_REQUEST' });
+    http.expectNone((request) => request.url.endsWith('/publication/requests'));
+
+    const unexpectedReceipt = api.submitPublicationRequest(
+      workId,
+      publicationEtag,
+      publicationRequest,
+      publicationRequestIdempotencyKey,
+    );
+    await flushCsrf(http);
+    http.expectOne(`/api/v1/authoring/manuscripts/${workId}/publication/requests`).flush(
+      { ...publicationRequestReceipt, chapterText: 'must not be returned' },
+      {
+        status: 201,
+        statusText: 'Created',
+        headers: new HttpHeaders({ 'Cache-Control': 'no-store', Pragma: 'no-cache' }),
+      },
+    );
+    await expect(unexpectedReceipt).rejects.toMatchObject({
+      status: 502,
+      code: 'INVALID_PUBLICATION_REQUEST_RESPONSE',
+    });
+
+    const cacheableReceipt = api.submitPublicationRequest(
+      workId,
+      publicationEtag,
+      publicationRequest,
+      publicationRequestIdempotencyKey,
+    );
+    await flushCsrf(http);
+    http
+      .expectOne(`/api/v1/authoring/manuscripts/${workId}/publication/requests`)
+      .flush(publicationRequestReceipt, {
+        status: 201,
+        statusText: 'Created',
+        headers: new HttpHeaders({ 'Cache-Control': 'public' }),
+      });
+    await expect(cacheableReceipt).rejects.toMatchObject({
+      status: 502,
+      code: 'INVALID_PUBLICATION_REQUEST_RESPONSE',
+    });
+  });
+
+  it('retains the safe Retry-After value from the publication request rate limit', async () => {
+    const pending = api.submitPublicationRequest(
+      workId,
+      publicationEtag,
+      publicationRequest,
+      publicationRequestIdempotencyKey,
+    );
+    await flushCsrf(http);
+    http.expectOne(`/api/v1/authoring/manuscripts/${workId}/publication/requests`).flush(
+      { code: 'PUBLICATION_REQUEST_RATE_LIMITED' },
+      {
+        status: 429,
+        statusText: 'Too Many Requests',
+        headers: new HttpHeaders({ 'Retry-After': '45' }),
+      },
+    );
+    await expect(pending).rejects.toMatchObject({
+      status: 429,
+      code: 'PUBLICATION_REQUEST_RATE_LIMITED',
+      retryAfterSeconds: 45,
+    });
   });
 
   it('validates release inputs and keeps API conflict codes for safe recovery', async () => {

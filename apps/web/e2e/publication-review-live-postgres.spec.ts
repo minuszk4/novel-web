@@ -61,32 +61,46 @@ test('assigned reviewer approves a submitted snapshot through the real API and P
   });
   expect(accepted.status()).toBe(200);
 
-  const readinessPath = `/api/v1/authoring/manuscripts/${workId}/publication/readiness`;
-  const readiness = await page.request.get(`${baseUrl}${readinessPath}`);
-  expect(readiness.status()).toBe(200);
-  const readinessEtag = readiness.headers()['etag'];
-  expect(readinessEtag).toBeTruthy();
+  await page.goto(`${baseUrl}/app/authoring/${workId}/chapters`);
+  await expect(page.getByRole('heading', { name: 'Live E2E Novel Two' })).toBeVisible();
+  await page.getByRole('button', { name: 'Kiểm tra điều kiện xuất bản' }).click();
+  await expect(page.getByRole('heading', { name: 'Yêu cầu người duyệt xem xét' })).toBeVisible();
+  await page.getByRole('button', { name: 'Chuẩn bị yêu cầu duyệt' }).click();
+  await expect(
+    page.getByRole('heading', { name: 'Rà soát bản đã lưu và khai báo phạm vi' }),
+  ).toBeFocused();
+  await page.locator('#publication-request-metadata-basis').selectOption('ORIGINAL_WORK');
+  await page.locator('#publication-request-chapter-basis').selectOption('ORIGINAL_WORK');
+  await page.getByLabel(/Tôi cũng yêu cầu xem xét quyền thương mại/).check();
+  await page.locator('#publication-request-commercial-basis').selectOption('ORIGINAL_WORK');
+  await page.getByLabel(/Tôi đã rà soát các phạm vi/).check();
 
-  const submission = await page.request.post(
-    `${baseUrl}/api/v1/authoring/manuscripts/${workId}/publication/requests`,
-    {
-      data: {
-        policyVersion: policy.version,
-        scopeClaims: [
-          { scopeCode: 'PUBLIC_METADATA', rightsBasisCode: 'ORIGINAL_WORK' },
-          { scopeCode: 'CHAPTER_TEXT', rightsBasisCode: 'ORIGINAL_WORK' },
-          { scopeCode: 'COMMERCIAL_SALE', rightsBasisCode: 'ORIGINAL_WORK' },
-        ],
-      },
-      headers: {
-        'X-CSRF-Token': csrf.token,
-        'If-Match': readinessEtag!,
-        'Idempotency-Key': randomUUID(),
-      },
-    },
+  const submissionResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' &&
+      new URL(response.url()).pathname.endsWith('/publication/requests'),
   );
+  await page.getByRole('button', { name: 'Gửi yêu cầu duyệt' }).click();
+  const submission = await submissionResponse;
   expect(submission.status()).toBe(201);
+  const submissionRequest = submission.request();
   const request = (await submission.json()) as { requestId: string };
+  expect(submissionRequest.postDataJSON()).toEqual({
+    policyVersion: policy.version,
+    scopeClaims: [
+      { scopeCode: 'PUBLIC_METADATA', rightsBasisCode: 'ORIGINAL_WORK' },
+      { scopeCode: 'CHAPTER_TEXT', rightsBasisCode: 'ORIGINAL_WORK' },
+      { scopeCode: 'COMMERCIAL_SALE', rightsBasisCode: 'ORIGINAL_WORK' },
+    ],
+  });
+  expect(submissionRequest.headers()['if-match']).toMatch(/^"publication-snapshot-[a-f0-9]{64}"$/);
+  expect(submissionRequest.headers()['x-csrf-token']).toMatch(/^[A-Za-z0-9_-]{43}$/);
+  expect(submissionRequest.headers()['idempotency-key']).toMatch(/^[A-Za-z0-9_-]{16,128}$/);
+  expect(submission.headers()['cache-control']).toBe('no-store');
+  expect(submission.headers()['pragma']).toBe('no-cache');
+  await expect(page.locator('.publication-readiness-summary dd').nth(2)).toHaveText(
+    'Đang chờ người duyệt',
+  );
   expect(request.requestId).toMatch(/^[0-9a-f-]{36}$/i);
 
   await addSession(reviewerSessionToken!);

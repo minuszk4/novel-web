@@ -18,10 +18,12 @@ import {
   AuthoringApiService,
   PublicationReadiness,
   PublicationReleaseReceipt,
+  PublicationRequestReceipt,
   PublicationScopeCode,
   newAuthoringIdempotencyKey,
 } from '../core/authoring-api.service';
 import { SystemStatusService } from '../core/system-status.service';
+import { PublicationRequestFormComponent } from './publication-request-form.component';
 
 type PanelState = 'idle' | 'loading' | 'ready' | 'error' | 'publishing' | 'uncertain' | 'published';
 
@@ -33,7 +35,7 @@ interface ReleaseAttempt {
 
 @Component({
   selector: 'app-publication-readiness-panel',
-  imports: [RouterLink],
+  imports: [RouterLink, PublicationRequestFormComponent],
   templateUrl: './publication-readiness-panel.component.html',
   styleUrl: './publication-readiness-panel.component.css',
 })
@@ -53,6 +55,7 @@ export class PublicationReadinessPanelComponent implements OnChanges {
   protected readonly announcement = signal('');
   protected readonly confirmationOpen = signal(false);
   protected readonly receipt = signal<PublicationReleaseReceipt | null>(null);
+  protected readonly requestFlowActive = signal(false);
 
   private readonly api = inject(AuthoringApiService);
   private readonly systemStatus = inject(SystemStatusService);
@@ -87,6 +90,7 @@ export class PublicationReadinessPanelComponent implements OnChanges {
     const readiness = this.readiness();
     return (
       this.state() === 'ready' &&
+      !this.requestFlowActive() &&
       !this.error() &&
       this.systemStatus.status()?.features.publicationReleaseEnabled === true &&
       readiness?.canSubmit === true &&
@@ -126,6 +130,7 @@ export class PublicationReadinessPanelComponent implements OnChanges {
   protected async loadReadiness(afterLoadAnnouncement = ''): Promise<void> {
     if (!this.workId || this.isBusy) return;
     const token = ++this.requestToken;
+    this.requestFlowActive.set(false);
     this.state.set('loading');
     this.readiness.set(null);
     this.receipt.set(null);
@@ -248,6 +253,25 @@ export class PublicationReadinessPanelComponent implements OnChanges {
     this.requestPolicyReview.emit();
   }
 
+  protected onRequestSubmitted(receipt: PublicationRequestReceipt): void {
+    this.requestFlowActive.set(false);
+    void this.loadReadiness(
+      `Đã gửi yêu cầu duyệt phiên bản ${receipt.requestVersion}. Bản thảo vẫn riêng tư.`,
+    );
+  }
+
+  protected onRequestReadinessUpdated(readiness: PublicationReadiness): void {
+    if (readiness.workId !== this.workId) return;
+    this.readiness.set(readiness);
+    this.state.set('ready');
+    this.error.set(null);
+    this.announcement.set('Snapshot mới đã tải. Hãy rà soát lại trước khi gửi.');
+  }
+
+  protected onRequestActivityChange(active: boolean): void {
+    this.requestFlowActive.set(active);
+  }
+
   protected blockerLabel(code: string): string {
     switch (code) {
       case 'PUBLICATION_RIGHTS_POLICY_NOT_CONFIGURED':
@@ -330,6 +354,7 @@ export class PublicationReadinessPanelComponent implements OnChanges {
     this.announcement.set('');
     this.confirmationOpen.set(false);
     this.receipt.set(null);
+    this.requestFlowActive.set(false);
     this.pendingRelease = null;
   }
 }

@@ -128,11 +128,18 @@
           này.
         </p>
       }
-    } @else if (current.canSubmit) {
-      <p class="publication-readiness-note">
-        Các điều kiện dữ liệu hiện đã đạt. Tác phẩm vẫn riêng tư; checklist này chưa gửi yêu cầu
-        duyệt.
-      </p>
+    }
+
+    @if (current.canSubmit && current.currentRequestState !== 'PENDING_REVIEW') {
+      <app-publication-request-form
+        [workId]="workId"
+        [readiness]="current"
+        (requestSubmitted)="onRequestSubmitted($event)"
+        (readinessUpdated)="onRequestReadinessUpdated($event)"
+        (requestPolicyReview)="openRightsPolicy()"
+        (readinessRefreshRequested)="retryReadiness()"
+        (requestActivityChange)="onRequestActivityChange($event)"
+      />
     }
 
     @if (error()) {
