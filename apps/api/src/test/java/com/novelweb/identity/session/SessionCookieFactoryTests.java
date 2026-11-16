@@ -41,7 +41,14 @@ class SessionCookieFactoryTests {
         IllegalArgumentException.class,
         () -> SessionCookieFactory.issue(SESSION_TOKEN + "=", Duration.ofDays(1)));
     assertThrows(
+        IllegalArgumentException.class, () -> SessionCookieFactory.issue(null, Duration.ofDays(1)));
+    assertThrows(
+        IllegalArgumentException.class, () -> SessionCookieFactory.issue(SESSION_TOKEN, null));
+    assertThrows(
         IllegalArgumentException.class,
         () -> SessionCookieFactory.issue(SESSION_TOKEN, Duration.ZERO));
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> SessionCookieFactory.issue(SESSION_TOKEN, Duration.ofSeconds(-1)));
   }
 }
