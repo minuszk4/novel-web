@@ -145,9 +145,9 @@ exit $LASTEXITCODE
     $winningUserId = $successfulInvocations[0].TargetUserId
     $losingUserId = if ($winningUserId -eq $activeUserId) { $competingUserId } else { $activeUserId }
 
-    $successCounts = & $dockerCommand.Source exec $containerName psql -X -A -t -U postgres -d $databaseName -c "SELECT (SELECT count(*) FROM security_role_assignments WHERE user_id = '$winningUserId' AND role_code = 'system_admin' AND revoked_at IS NULL)::text || '|' || (SELECT count(*) FROM security_role_assignment_events WHERE target_user_id = '$winningUserId' AND role_code = 'system_admin' AND action_code = 'BOOTSTRAPPED')::text"
+    $successCounts = & $dockerCommand.Source exec $containerName psql -X -A -t -U postgres -d $databaseName -c "SELECT (SELECT count(*) FROM security_role_assignments WHERE user_id = '$winningUserId' AND role_code = 'system_admin' AND revoked_at IS NULL)::text || '|' || (SELECT count(*) FROM security_role_assignment_events event JOIN security_role_assignments assignment ON assignment.id = event.assignment_id WHERE event.target_user_id = '$winningUserId' AND event.role_code = 'system_admin' AND event.action_code = 'BOOTSTRAPPED' AND event.reason_code = 'INITIAL_ADMIN_BOOTSTRAP' AND event.actor_user_id IS NULL AND event.ticket_reference = '$operatorTicket' AND event.operator_identity LIKE 'windows:%' AND event.operator_identity LIKE '%,database-user:postgres' AND event.occurred_at IS NOT NULL AND assignment.id IS NOT NULL AND assignment.assigned_by_user_id IS NULL AND assignment.reason_code = 'INITIAL_ADMIN_BOOTSTRAP')::text"
     if ($LASTEXITCODE -ne 0 -or ($successCounts -join '').Trim() -ne '1|1') {
-        throw "Expected one active assignment and one bootstrap event; observed: $($successCounts -join '')"
+        throw "Expected one active assignment and one correctly attributed bootstrap event; observed: $($successCounts -join '')"
     }
 
     $validArguments = @('-UserId', $winningUserId, '-ConfirmUserId', $winningUserId) + $commonArguments
