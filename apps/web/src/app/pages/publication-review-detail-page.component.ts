@@ -275,7 +275,6 @@ export class PublicationReviewDetailPageComponent implements OnInit {
   private async submitAttempt(attempt: DecisionAttempt): Promise<void> {
     const currentEtag = this.etag();
     if (!this.requestId || !currentEtag || this.actionBusy()) return;
-    this.pendingAttempt.set(attempt);
     this.actionBusy.set(true);
     this.errorMessage.set(null);
     try {
@@ -323,10 +322,7 @@ export class PublicationReviewDetailPageComponent implements OnInit {
         this.decisionDialog?.nativeElement.close();
         this.focusErrorSummary();
       } else if (status === 0 || status >= 500) {
-        this.errorMessage.set(
-          'Chưa thể xác minh kết quả. Giữ nguyên lý do và gửi lại đúng quyết định này bằng cùng mã yêu cầu.',
-        );
-        this.announcement.set(this.errorMessage() ?? 'Chưa thể xác minh kết quả.');
+        this.pendingAttempt.set(attempt);
         if (!this.decisionDialog?.nativeElement.open) this.openRetryDialog();
       } else {
         this.pendingAttempt.set(null);

@@ -367,7 +367,9 @@ test('an uncertain server reply reuses the same action, reason, ETag and idempot
   const dialog = page.getByRole('dialog', { name: 'Yêu cầu bổ sung thông tin?' });
   await dialog.getByLabel('Cần thêm thông tin').check();
   await dialog.getByRole('button', { name: 'Xác nhận quyết định' }).click();
-  await expect(dialog.getByRole('alert')).toContainText('Kết quả lần gửi trước chưa xác định');
+  await expect(
+    dialog.getByText('Kết quả lần gửi trước chưa xác định. Lựa chọn và mã yêu cầu được giữ nguyên.'),
+  ).toBeVisible();
   await dialog.getByRole('button', { name: 'Gửi lại đúng quyết định' }).click();
   await expect(page.locator('.publication-review-result')).toContainText('Đã yêu cầu bổ sung');
 
