@@ -57,7 +57,9 @@ export class LibraryPageComponent {
   protected readonly workStateSync = signal<Record<string, SyncPhase>>({});
   protected readonly workStateErrors = signal<Record<string, string>>({});
   protected readonly isOnline = signal(typeof navigator === 'undefined' || navigator.onLine);
-  private workStateLoadQueue: Promise<void> = Promise.resolve();
+  private readonly workStateLoadQueue: { workId: string; resolve: () => void }[] = [];
+  private readonly workStateLoads = new Map<string, Promise<void>>();
+  private activeWorkStateLoads = 0;
   protected readonly isAccountMode = computed(() => this.policy.status() === 'accepted');
   protected readonly filters: { value: LibraryFilter; label: string }[] = [
     { value: 'all', label: 'Tất cả' },
@@ -353,7 +355,7 @@ export class LibraryPageComponent {
   }
 
   retryWorkState(workId: string): void {
-    if (this.isAccountWork(workId)) void this.loadWorkState(workId);
+    if (this.isAccountWork(workId)) void this.queueWorkStateLoad(workId);
   }
 
   private async loadAccountCatalog(): Promise<void> {
@@ -414,16 +416,34 @@ export class LibraryPageComponent {
 
   private async loadWorkStates(works: AccountWorkSummary[]): Promise<void> {
     const uniqueWorks = [...new Map(works.map((work) => [work.id, work])).values()];
-    const loadBatch = async () => {
-      for (let index = 0; index < uniqueWorks.length; index += 4) {
-        await Promise.all(
-          uniqueWorks.slice(index, index + 4).map((work) => this.loadWorkState(work.id)),
-        );
-      }
-    };
-    const queuedLoad = this.workStateLoadQueue.then(loadBatch, loadBatch);
-    this.workStateLoadQueue = queuedLoad.catch(() => undefined);
-    await queuedLoad;
+    await Promise.all(uniqueWorks.map((work) => this.queueWorkStateLoad(work.id)));
+  }
+
+  private queueWorkStateLoad(workId: string): Promise<void> {
+    const existing = this.workStateLoads.get(workId);
+    if (existing) return existing;
+
+    let resolve!: () => void;
+    const completion = new Promise<void>((done) => {
+      resolve = done;
+    });
+    this.workStateLoads.set(workId, completion);
+    this.workStateLoadQueue.push({ workId, resolve });
+    this.pumpWorkStateLoadQueue();
+    return completion;
+  }
+
+  private pumpWorkStateLoadQueue(): void {
+    while (this.activeWorkStateLoads < 4 && this.workStateLoadQueue.length > 0) {
+      const next = this.workStateLoadQueue.shift()!;
+      this.activeWorkStateLoads += 1;
+      void this.fetchWorkState(next.workId).finally(() => {
+        this.activeWorkStateLoads -= 1;
+        this.workStateLoads.delete(next.workId);
+        next.resolve();
+        this.pumpWorkStateLoadQueue();
+      });
+    }
   }
 
   private async loadAccountCollections(): Promise<void> {
@@ -441,7 +461,7 @@ export class LibraryPageComponent {
     }
   }
 
-  private async loadWorkState(workId: string): Promise<void> {
+  private async fetchWorkState(workId: string): Promise<void> {
     this.setWorkStatePhase(workId, 'loading', null);
     try {
       const state = await this.api.getWorkState(workId);
@@ -476,16 +496,13 @@ export class LibraryPageComponent {
           'Trạng thái đã đổi trên thiết bị khác. Đã tải phiên bản mới; hãy kiểm tra lại lựa chọn.',
         );
       } else if (error instanceof LibraryApiError && (error.status === 0 || error.status >= 500)) {
-        try {
-          const latest = await this.api.getWorkState(workId);
-          this.workStates.update((items) => ({ ...items, [workId]: latest }));
+        await this.queueWorkStateLoad(workId);
+        if (this.workStatePhase(workId) === 'ready') {
           this.setWorkStatePhase(
             workId,
             'ready',
             'Chưa xác nhận được thao tác. Đã tải trạng thái mới nhất; hãy kiểm tra trước khi thử lại.',
           );
-        } catch (reloadError) {
-          this.setWorkStatePhase(workId, 'error', workErrorMessage(reloadError));
         }
       } else {
         this.setWorkStatePhase(workId, 'error', workErrorMessage(error));

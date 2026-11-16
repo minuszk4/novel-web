@@ -533,7 +533,7 @@ test('account library exposes a retry when collection loading fails', async ({ p
   await expectNoAxeViolations(page);
 });
 
-test('account library keeps work-state reads within four across overlapping page loads', async ({
+test('account library keeps work-state reads within four across overlapping page loads and retries', async ({
   page,
 }) => {
   const libraryId = '88888888-8888-4888-8888-888888888888';
@@ -547,11 +547,13 @@ test('account library keeps work-state reads within four across overlapping page
     chapterCount: 0,
     createdAt: '2026-11-10T00:00:00Z',
   }));
+  const firstWorkId = works[0]!.id;
   const secondPageWorkIds = new Set(works.slice(25, 49).map(({ id }) => id));
   let activeStateReads = 0;
   let maxActiveStateReads = 0;
   let completedStateReads = 0;
   let secondPageStateRead = false;
+  let failedFirstWorkRead = false;
 
   await page.setViewportSize({ width: 360, height: 800 });
   await page.addInitScript(() => localStorage.removeItem('novel.demo.library.v1'));
@@ -580,6 +582,14 @@ test('account library keeps work-state reads within four across overlapping page
     activeStateReads += 1;
     maxActiveStateReads = Math.max(maxActiveStateReads, activeStateReads);
     if (secondPageWorkIds.has(workId)) secondPageStateRead = true;
+    if (workId === firstWorkId && !failedFirstWorkRead) {
+      failedFirstWorkRead = true;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      await json(route, { code: 'LIBRARY_STATE_UNAVAILABLE' }, 503);
+      activeStateReads -= 1;
+      completedStateReads += 1;
+      return;
+    }
     await new Promise((resolve) => setTimeout(resolve, 200));
     await json(
       route,
@@ -600,12 +610,15 @@ test('account library keeps work-state reads within four across overlapping page
   await page.goto('/app/library');
   await expect(page.getByRole('heading', { name: 'Tác phẩm 1', exact: true })).toBeVisible();
   await expect.poll(() => activeStateReads).toBe(4);
+  await expect(page.getByRole('button', { name: 'Tải lại trạng thái' })).toBeVisible();
+  await page.getByRole('button', { name: 'Tải lại trạng thái' }).click();
   await page.getByRole('button', { name: 'Tải thêm tác phẩm' }).click();
   await expect(page.getByRole('heading', { name: 'Tác phẩm 26', exact: true })).toBeVisible();
   await expect.poll(() => secondPageStateRead).toBe(true);
-  await expect.poll(() => completedStateReads).toBe(49, { timeout: 20_000 });
+  await expect.poll(() => completedStateReads).toBe(50, { timeout: 20_000 });
   await expect(page.getByRole('button', { name: 'Tất cả 49', exact: true })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Tác phẩm 1', exact: true })).toHaveCount(1);
+  await expect(page.getByRole('button', { name: 'Tải lại trạng thái' })).toHaveCount(0);
 
   expect(maxActiveStateReads).toBeLessThanOrEqual(4);
 });
