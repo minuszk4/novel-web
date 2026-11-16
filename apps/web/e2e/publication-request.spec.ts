@@ -250,6 +250,160 @@ for (const viewport of [
   });
 }
 
+for (const viewport of [
+  { name: 'effective 200% width 180×400', width: 180, height: 400 },
+  { name: 'mobile 360×800', width: 360, height: 800 },
+  { name: 'tablet 768×1024', width: 768, height: 1024 },
+  { name: 'desktop 1280×900', width: 1280, height: 900 },
+] as const) {
+  test(`author explicitly withdraws a pending request and retries the exact attempt at ${viewport.name}`, async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    await installAccount(page);
+    await page.route(`**/api/v1/authoring/manuscripts/${workId}`, (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        headers: { 'Cache-Control': 'no-store', ETag: '"manuscript-metadata-1"' },
+        body: JSON.stringify({
+          id: workId,
+          title: 'Hành trình tu luyện',
+          author: 'Bút danh',
+          language: 'vi',
+          visibility: 'private',
+          publicationState: 'draft',
+          chapterCount: 1,
+          createdAt: '2026-11-15T12:00:00Z',
+          metadataVersion: 1,
+        }),
+      }),
+    );
+    await page.route(`**/api/v1/authoring/manuscripts/${workId}/chapters?**`, (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        headers: { 'Cache-Control': 'no-store', Pragma: 'no-cache' },
+        body: JSON.stringify(outline),
+      }),
+    );
+
+    let readinessReads = 0;
+    const withdrawnReadiness = {
+      ...readyReadiness,
+      currentRequestState: 'WITHDRAWN',
+      canSubmit: true,
+      blockerCodes: [],
+    };
+    const pendingReadiness = {
+      ...readyReadiness,
+      currentRequestState: 'PENDING_REVIEW',
+      canSubmit: false,
+      blockerCodes: ['PUBLICATION_REQUEST_ALREADY_PENDING'],
+    };
+    await page.route(
+      `**/api/v1/authoring/manuscripts/${workId}/publication/readiness`,
+      async (route) => {
+        readinessReads += 1;
+        const body = readinessReads === 1 ? pendingReadiness : withdrawnReadiness;
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          headers: { 'Cache-Control': 'no-store', Pragma: 'no-cache', ETag: readinessEtag },
+          body: JSON.stringify(body),
+        });
+      },
+    );
+
+    const attempts: Array<{
+      body: string | null;
+      ifMatch: string | undefined;
+      idempotencyKey: string | undefined;
+      csrfToken: string | undefined;
+    }> = [];
+    await page.route(
+      `**/api/v1/authoring/manuscripts/${workId}/publication/requests/withdrawal`,
+      async (route) => {
+        const request = route.request();
+        attempts.push({
+          body: request.postData(),
+          ifMatch: request.headers()['if-match'],
+          idempotencyKey: request.headers()['idempotency-key'],
+          csrfToken: request.headers()['x-csrf-token'],
+        });
+        if (attempts.length === 1) {
+          await route.fulfill({
+            status: 503,
+            contentType: 'application/problem+json',
+            body: JSON.stringify({ code: 'PUBLICATION_REQUEST_WITHDRAWAL_UNAVAILABLE' }),
+          });
+          return;
+        }
+        await route.fulfill({
+          status: 201,
+          contentType: 'application/json',
+          headers: { 'Cache-Control': 'no-store', Pragma: 'no-cache' },
+          body: JSON.stringify({
+            eventId: '44444444-4444-4444-8444-444444444444',
+            requestId,
+            requestVersion: 1,
+            state: 'WITHDRAWN',
+            withdrawnAt: '2026-11-17T01:00:00Z',
+          }),
+        });
+      },
+    );
+    await page.route('**/api/v1/auth/csrf', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ token: csrfToken }),
+      }),
+    );
+
+    await page.goto(`/app/authoring/${workId}/chapters`);
+    await page.getByRole('button', { name: 'Kiểm tra điều kiện xuất bản' }).click();
+    await expect(page.getByRole('button', { name: 'Rút yêu cầu duyệt' })).toBeVisible();
+    await expectNoAxeViolations(page);
+
+    await page.getByRole('button', { name: 'Rút yêu cầu duyệt' }).click();
+    const confirmation = page.getByRole('heading', { name: 'Xác nhận rút yêu cầu duyệt' });
+    await expect(confirmation).toBeFocused();
+    await expectNoAxeViolations(page);
+
+    await page.getByRole('button', { name: 'Xác nhận rút yêu cầu' }).click();
+    await expect(page.getByRole('button', { name: 'Thử lại cùng thao tác rút' })).toBeVisible();
+    await expectNoAxeViolations(page);
+    expect(attempts).toHaveLength(1);
+
+    await page.getByRole('button', { name: 'Thử lại cùng thao tác rút' }).click();
+    await expect(page.locator('.publication-readiness-summary dd').nth(2)).toHaveText(
+      'Yêu cầu đã được rút',
+    );
+    await expect(page.getByRole('button', { name: 'Rút yêu cầu duyệt' })).toHaveCount(0);
+    await expectNoAxeViolations(page);
+    expect(readinessReads).toBe(2);
+    expect(attempts).toHaveLength(2);
+    expect(attempts[0]).toEqual(attempts[1]);
+    expect(attempts[0]).toEqual({
+      body: null,
+      ifMatch: readinessEtag,
+      idempotencyKey: expect.stringMatching(/^[0-9a-f-]{36}$/),
+      csrfToken,
+    });
+
+    const widths = await page.evaluate(() => ({
+      client: document.documentElement.clientWidth,
+      scroll: document.documentElement.scrollWidth,
+    }));
+    expect(widths.scroll).toBeLessThanOrEqual(widths.client);
+    await page.screenshot({
+      path: testInfo.outputPath(`publication-withdrawal-${viewport.width}.png`),
+      fullPage: true,
+    });
+  });
+}
+
 async function installAccount(page: import('@playwright/test').Page): Promise<void> {
   await page.route('**/api/v1/system/status', (route) =>
     route.fulfill({

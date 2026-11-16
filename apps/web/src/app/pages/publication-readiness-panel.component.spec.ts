@@ -7,6 +7,7 @@ import {
   AuthoringApiService,
   PublicationReadiness,
   PublicationReleaseReceipt,
+  PublicationRequestWithdrawalReceipt,
 } from '../core/authoring-api.service';
 import { SystemStatusService } from '../core/system-status.service';
 import { ApiSystemStatus } from '../core/models';
@@ -70,11 +71,22 @@ function receipt(): PublicationReleaseReceipt {
   };
 }
 
+function withdrawalReceipt(): PublicationRequestWithdrawalReceipt {
+  return {
+    eventId: '44444444-4444-4444-8444-444444444444',
+    requestId: '55555555-5555-4555-8555-555555555555',
+    requestVersion: 2,
+    state: 'WITHDRAWN',
+    withdrawnAt: timestamp,
+  };
+}
+
 describe('PublicationReadinessPanelComponent', () => {
   let fixture: ComponentFixture<PublicationReadinessPanelComponent>;
   let api: {
     getPublicationReadiness: ReturnType<typeof vi.fn>;
     publishManuscriptNow: ReturnType<typeof vi.fn>;
+    withdrawPublicationRequest: ReturnType<typeof vi.fn>;
   };
   let status: WritableSignal<ApiSystemStatus | null>;
 
@@ -82,6 +94,7 @@ describe('PublicationReadinessPanelComponent', () => {
     api = {
       getPublicationReadiness: vi.fn().mockResolvedValue(readiness()),
       publishManuscriptNow: vi.fn().mockResolvedValue(receipt()),
+      withdrawPublicationRequest: vi.fn().mockResolvedValue(withdrawalReceipt()),
     };
     status = signal(serverStatus(false));
     TestBed.configureTestingModule({
@@ -160,6 +173,46 @@ describe('PublicationReadinessPanelComponent', () => {
       'Máy chủ đã xác nhận tác phẩm được công khai',
     );
     expect(button('Xuất bản ngay')).toBeNull();
+  });
+
+  it('requires an explicit withdrawal confirmation and retries the exact uncertain request', async () => {
+    const pendingReadiness = readiness({
+      canSubmit: false,
+      currentRequestState: 'PENDING_REVIEW',
+      blockerCodes: ['PUBLICATION_REQUEST_ALREADY_PENDING'],
+    });
+    api.getPublicationReadiness
+      .mockResolvedValueOnce(pendingReadiness)
+      .mockResolvedValueOnce(readiness({ currentRequestState: 'WITHDRAWN' }));
+    api.withdrawPublicationRequest
+      .mockRejectedValueOnce(
+        new AuthoringApiError(503, 'PUBLICATION_REQUEST_WITHDRAWAL_UNAVAILABLE'),
+      )
+      .mockResolvedValueOnce(withdrawalReceipt());
+
+    await clickButton('Kiểm tra điều kiện xuất bản');
+    await clickButton('Rút yêu cầu duyệt');
+    expect(fixture.nativeElement.textContent).toContain('Xác nhận rút yêu cầu duyệt');
+    expect(api.withdrawPublicationRequest).not.toHaveBeenCalled();
+
+    await clickButton('Xác nhận rút yêu cầu');
+    expect(fixture.nativeElement.textContent).toContain('Thử lại sẽ gửi đúng thao tác');
+    expect(fixture.nativeElement.textContent).toContain('Thử lại cùng thao tác rút');
+    expect(api.getPublicationReadiness).toHaveBeenCalledTimes(1);
+
+    await clickButton('Thử lại cùng thao tác rút');
+    expect(api.withdrawPublicationRequest).toHaveBeenCalledTimes(2);
+    expect(api.withdrawPublicationRequest.mock.calls[0]).toEqual(
+      api.withdrawPublicationRequest.mock.calls[1],
+    );
+    expect(api.withdrawPublicationRequest.mock.calls[0]).toMatchObject([
+      workId,
+      readinessEtag,
+      expect.any(String),
+    ]);
+    expect(api.getPublicationReadiness).toHaveBeenCalledTimes(2);
+    expect(fixture.nativeElement.textContent).toContain('Yêu cầu đã được rút');
+    expect(button('Rút yêu cầu duyệt')).toBeNull();
   });
 
   it('refreshes stale readiness and requires a new explicit confirmation', async () => {

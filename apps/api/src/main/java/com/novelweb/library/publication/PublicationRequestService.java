@@ -28,6 +28,8 @@ public class PublicationRequestService {
 
   private static final String KEY_DOMAIN = "publication-request-idempotency-v1";
   private static final String REQUEST_DOMAIN = "publication-request-body-v1";
+  private static final String WITHDRAWAL_KEY_DOMAIN = "publication-request-withdrawal-key-v1";
+  private static final String WITHDRAWAL_REQUEST_DOMAIN = "publication-request-withdrawal-v1";
   private static final Set<String> SUPERSEDEABLE_STATES =
       Set.of("NEEDS_INFORMATION", "REJECTED", "APPROVED_UNPUBLISHED");
 
@@ -197,6 +199,101 @@ public class PublicationRequestService {
     }
   }
 
+  /** Appends an owner withdrawal event for the current pending request. */
+  public WithdrawalResult withdraw(
+      UUID userId, UUID workId, String expectedSnapshotEtag, String idempotencyKey) {
+    Objects.requireNonNull(userId, "user id is required");
+    Objects.requireNonNull(workId, "work id is required");
+    Objects.requireNonNull(expectedSnapshotEtag, "snapshot ETag is required");
+    Objects.requireNonNull(idempotencyKey, "idempotency key is required");
+
+    byte[] keyDigest = withdrawalIdempotencyDigest(userId, workId, idempotencyKey);
+    byte[] requestDigest = withdrawalRequestDigest(userId, workId, expectedSnapshotEtag);
+    try (Connection connection = dataSource.getConnection()) {
+      connection.setAutoCommit(false);
+      try {
+        if (!lockEligibleWork(connection, userId, workId)) {
+          connection.commit();
+          return WithdrawalResult.workNotFound();
+        }
+
+        Optional<WithdrawalReceiptRow> prior =
+            findIdempotentWithdrawal(connection, userId, workId, keyDigest);
+        if (prior.isPresent()) {
+          WithdrawalReceiptRow row = prior.orElseThrow();
+          if (!MessageDigest.isEqual(row.requestDigest(), requestDigest)) {
+            connection.commit();
+            return WithdrawalResult.keyReused();
+          }
+          connection.commit();
+          return WithdrawalResult.replayed(row.receipt());
+        }
+
+        // Withdrawal stays available if the publication-rights policy expires or is removed.
+        // The current policy still participates in the readiness validator when one exists.
+        try (PreparedStatement lock =
+            connection.prepareStatement(
+                "LOCK TABLE publication_rights_policy_documents IN SHARE MODE")) {
+          lock.execute();
+        }
+        Optional<PolicyDocument> activePolicy = currentPolicy(connection);
+        Acceptance acceptance = null;
+        if (activePolicy.isPresent()) {
+          Optional<Acceptance> storedAcceptance =
+              findAcceptance(connection, userId, workId, activePolicy.orElseThrow().version());
+          if (storedAcceptance.isPresent()
+              && MessageDigest.isEqual(
+                  storedAcceptance.orElseThrow().policyDigest(),
+                  activePolicy.orElseThrow().sha256())) {
+            acceptance = storedAcceptance.orElseThrow();
+          }
+        }
+
+        WorkSnapshot workSnapshot = readWorkSnapshot(connection, workId);
+        Optional<RequestHistory> latest = latestRequest(connection, workId);
+        String currentState = latest.map(RequestHistory::state).orElse(null);
+        String metadataEtag =
+            PublicationSnapshotEtags.scope("PUBLIC_METADATA", workSnapshot.metadataSnapshot());
+        String chapterTextEtag =
+            PublicationSnapshotEtags.scope("CHAPTER_TEXT", workSnapshot.chapterTextSnapshot());
+        String commercialSaleEtag =
+            PublicationSnapshotEtags.scope(
+                "COMMERCIAL_SALE", workSnapshot.commercialSaleSnapshot());
+        String currentEtag =
+            PublicationSnapshotEtags.readiness(
+                workId,
+                workSnapshot.contentVersion(),
+                workSnapshot.readyChapterCount(),
+                activePolicy.map(PolicyDocument::version).orElse(null),
+                activePolicy
+                    .map(policy -> HexFormat.of().formatHex(policy.sha256()))
+                    .orElse("none"),
+                acceptance == null ? null : acceptance.acceptedAt(),
+                currentState,
+                List.of(metadataEtag, chapterTextEtag, commercialSaleEtag));
+        if (!currentEtag.equals(expectedSnapshotEtag)) {
+          connection.commit();
+          return WithdrawalResult.staleSnapshot(currentEtag);
+        }
+        if (latest.isEmpty() || !"PENDING_REVIEW".equals(currentState)) {
+          connection.commit();
+          return WithdrawalResult.notWithdrawable(currentState);
+        }
+
+        WithdrawalReceipt receipt =
+            appendWithdrawalEvent(
+                connection, userId, latest.orElseThrow(), keyDigest, requestDigest);
+        connection.commit();
+        return WithdrawalResult.created(receipt);
+      } catch (SQLException | RuntimeException exception) {
+        rollback(connection, exception);
+        throw exception;
+      }
+    } catch (SQLException exception) {
+      throw new IllegalStateException("Unable to withdraw publication request", exception);
+    }
+  }
+
   private static boolean lockEligibleWork(Connection connection, UUID userId, UUID workId)
       throws SQLException {
     try (PreparedStatement select =
@@ -238,6 +335,41 @@ public class PublicationRequestService {
       try (ResultSet row = select.executeQuery()) {
         if (!row.next()) return Optional.empty();
         return Optional.of(readRequestRow(row));
+      }
+    }
+  }
+
+  private static Optional<WithdrawalReceiptRow> findIdempotentWithdrawal(
+      Connection connection, UUID userId, UUID workId, byte[] keyDigest) throws SQLException {
+    try (PreparedStatement select =
+        connection.prepareStatement(
+            """
+                SELECT event.id AS event_id, request.id AS request_id,
+                       request.request_version, event.to_state, event.created_at,
+                       event.request_sha256
+                  FROM publication_review_events event
+                  JOIN publication_requests request ON request.id = event.request_id
+                 WHERE request.owner_user_id = ? AND request.work_id = ?
+                   AND event.actor_user_id = ? AND event.action_code = 'WITHDRAWN'
+                   AND event.idempotency_key_sha256 = ?
+                 ORDER BY request.request_version DESC, event.event_sequence DESC
+                 LIMIT 1
+                """)) {
+      select.setObject(1, userId);
+      select.setObject(2, workId);
+      select.setObject(3, userId);
+      select.setBytes(4, keyDigest);
+      try (ResultSet row = select.executeQuery()) {
+        if (!row.next()) return Optional.empty();
+        return Optional.of(
+            new WithdrawalReceiptRow(
+                row.getBytes("request_sha256"),
+                new WithdrawalReceipt(
+                    row.getObject("event_id", UUID.class),
+                    row.getObject("request_id", UUID.class),
+                    row.getInt("request_version"),
+                    row.getString("to_state"),
+                    row.getObject("created_at", OffsetDateTime.class).toInstant())));
       }
     }
   }
@@ -556,6 +688,43 @@ public class PublicationRequestService {
     }
   }
 
+  private static WithdrawalReceipt appendWithdrawalEvent(
+      Connection connection,
+      UUID ownerId,
+      RequestHistory request,
+      byte[] keyDigest,
+      byte[] requestDigest)
+      throws SQLException {
+    try (PreparedStatement insert =
+        connection.prepareStatement(
+            """
+                INSERT INTO publication_review_events (
+                    id, request_id, event_sequence, actor_user_id, actor_role_code,
+                    action_code, from_state, to_state, idempotency_key_sha256,
+                    request_sha256, snapshot_sha256)
+                VALUES (?, ?, ?, ?, 'author', 'WITHDRAWN', ?, 'WITHDRAWN', ?, ?, ?)
+                RETURNING id, request_id, to_state, created_at
+                """)) {
+      insert.setObject(1, UUID.randomUUID());
+      insert.setObject(2, request.id());
+      insert.setInt(3, request.eventSequence() + 1);
+      insert.setObject(4, ownerId);
+      insert.setString(5, request.state());
+      insert.setBytes(6, keyDigest);
+      insert.setBytes(7, requestDigest);
+      insert.setBytes(8, request.snapshotDigest());
+      try (ResultSet row = insert.executeQuery()) {
+        if (!row.next()) throw new SQLException("Withdrawal event insert returned no receipt");
+        return new WithdrawalReceipt(
+            row.getObject("id", UUID.class),
+            row.getObject("request_id", UUID.class),
+            request.requestVersion(),
+            row.getString("to_state"),
+            row.getObject("created_at", OffsetDateTime.class).toInstant());
+      }
+    }
+  }
+
   private static RequestRow readRequestRow(ResultSet row) throws SQLException {
     return new RequestRow(
         row.getObject("id", UUID.class),
@@ -600,6 +769,22 @@ public class PublicationRequestService {
                     .map(claim -> claim.scopeCode() + "=" + claim.rightsBasisCode())
                     .toList());
     return sha256(canonical);
+  }
+
+  private static byte[] withdrawalIdempotencyDigest(UUID userId, UUID workId, String key) {
+    return sha256(WITHDRAWAL_KEY_DOMAIN + "\n" + userId + "\n" + workId + "\n" + key);
+  }
+
+  private static byte[] withdrawalRequestDigest(
+      UUID userId, UUID workId, String expectedSnapshotEtag) {
+    return sha256(
+        WITHDRAWAL_REQUEST_DOMAIN
+            + "\n"
+            + userId
+            + "\n"
+            + workId
+            + "\nWITHDRAW_CURRENT_PENDING\n"
+            + expectedSnapshotEtag);
   }
 
   private static byte[] sha256(String value) {
@@ -667,6 +852,17 @@ public class PublicationRequestService {
     }
   }
 
+  private record WithdrawalReceiptRow(byte[] requestDigest, WithdrawalReceipt receipt) {
+    private WithdrawalReceiptRow {
+      requestDigest = requestDigest.clone();
+    }
+
+    @Override
+    public byte[] requestDigest() {
+      return requestDigest.clone();
+    }
+  }
+
   private record RequestRow(
       UUID id,
       int requestVersion,
@@ -729,6 +925,49 @@ public class PublicationRequestService {
       List<String> scopeCodes,
       Instant submittedAt,
       String state) {}
+
+  public record WithdrawalReceipt(
+      UUID eventId, UUID requestId, int requestVersion, String state, Instant withdrawnAt) {}
+
+  public enum WithdrawalOutcome {
+    CREATED,
+    REPLAYED,
+    WORK_NOT_FOUND,
+    KEY_REUSED,
+    STALE_SNAPSHOT,
+    NOT_WITHDRAWABLE
+  }
+
+  public record WithdrawalResult(
+      WithdrawalOutcome outcome,
+      WithdrawalReceipt receipt,
+      String currentSnapshotEtag,
+      String currentState) {
+    static WithdrawalResult created(WithdrawalReceipt receipt) {
+      return new WithdrawalResult(WithdrawalOutcome.CREATED, receipt, null, null);
+    }
+
+    static WithdrawalResult replayed(WithdrawalReceipt receipt) {
+      return new WithdrawalResult(WithdrawalOutcome.REPLAYED, receipt, null, null);
+    }
+
+    static WithdrawalResult workNotFound() {
+      return new WithdrawalResult(WithdrawalOutcome.WORK_NOT_FOUND, null, null, null);
+    }
+
+    static WithdrawalResult keyReused() {
+      return new WithdrawalResult(WithdrawalOutcome.KEY_REUSED, null, null, null);
+    }
+
+    static WithdrawalResult staleSnapshot(String currentSnapshotEtag) {
+      return new WithdrawalResult(
+          WithdrawalOutcome.STALE_SNAPSHOT, null, currentSnapshotEtag, null);
+    }
+
+    static WithdrawalResult notWithdrawable(String currentState) {
+      return new WithdrawalResult(WithdrawalOutcome.NOT_WITHDRAWABLE, null, null, currentState);
+    }
+  }
 
   public enum Outcome {
     CREATED,

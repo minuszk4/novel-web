@@ -44,6 +44,7 @@
 }
 
 .publication-readiness-trigger,
+.publication-readiness-withdraw,
 .publication-readiness-actions > .button,
 .publication-readiness-publish {
   min-height: 46px;
@@ -172,6 +173,12 @@
 }
 
 .publication-readiness-confirm h3:focus-visible {
+  border-radius: 3px;
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 4px;
+}
+
+.publication-readiness-summary dd:focus-visible {
   border-radius: 3px;
   outline: 3px solid var(--focus-ring);
   outline-offset: 4px;

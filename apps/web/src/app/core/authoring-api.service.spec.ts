@@ -71,6 +71,13 @@ const publicationRequestReceipt = {
   submittedAt: '2026-11-17T04:00:00Z',
   state: 'PENDING_REVIEW',
 };
+const publicationRequestWithdrawalReceipt = {
+  eventId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+  requestId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+  requestVersion: 2,
+  state: 'WITHDRAWN',
+  withdrawnAt: '2026-11-17T04:30:00Z',
+};
 const createdDraft = {
   id: workId,
   title: 'Hành trình tu luyện',
@@ -388,6 +395,84 @@ describe('AuthoringApiService', () => {
         headers: new HttpHeaders({ 'Cache-Control': 'no-store', Pragma: 'no-cache' }),
       });
     await expect(replay).resolves.toEqual(publicationRequestReceipt);
+  });
+
+  it('withdraws the current request with CSRF, strong readiness and exact-key replay', async () => {
+    const withdrawalKey = 'publication-withdrawal-key-0001';
+    const pending = api.withdrawPublicationRequest(workId, publicationEtag, withdrawalKey);
+    await flushCsrf(http);
+    const request = http.expectOne(
+      `/api/v1/authoring/manuscripts/${workId}/publication/requests/withdrawal`,
+    );
+    expect(request.request.method).toBe('POST');
+    expect(request.request.body).toBeNull();
+    expect(request.request.headers.get('X-CSRF-Token')).toBe(csrfToken);
+    expect(request.request.headers.get('If-Match')).toBe(publicationEtag);
+    expect(request.request.headers.get('Idempotency-Key')).toBe(withdrawalKey);
+    request.flush(publicationRequestWithdrawalReceipt, {
+      status: 201,
+      statusText: 'Created',
+      headers: new HttpHeaders({ 'Cache-Control': 'no-store', Pragma: 'no-cache' }),
+    });
+    await expect(pending).resolves.toEqual(publicationRequestWithdrawalReceipt);
+
+    const replay = api.withdrawPublicationRequest(workId, publicationEtag, withdrawalKey);
+    await flushCsrf(http);
+    http
+      .expectOne(`/api/v1/authoring/manuscripts/${workId}/publication/requests/withdrawal`)
+      .flush(publicationRequestWithdrawalReceipt, {
+        status: 201,
+        statusText: 'Created',
+        headers: new HttpHeaders({ 'Cache-Control': 'no-store', Pragma: 'no-cache' }),
+      });
+    await expect(replay).resolves.toEqual(publicationRequestWithdrawalReceipt);
+  });
+
+  it('rejects unsafe withdrawal inputs and malformed or cacheable receipts', async () => {
+    await expect(
+      api.withdrawPublicationRequest(workId, 'weak-etag', idempotencyKey),
+    ).rejects.toMatchObject({ status: 400, code: 'INVALID_PUBLICATION_REQUEST_WITHDRAWAL' });
+    await expect(
+      api.withdrawPublicationRequest(workId, publicationEtag, 'short'),
+    ).rejects.toMatchObject({ status: 400, code: 'INVALID_PUBLICATION_REQUEST_WITHDRAWAL' });
+    http.expectNone((request) => request.url.endsWith('/publication/requests/withdrawal'));
+
+    const malformed = api.withdrawPublicationRequest(
+      workId,
+      publicationEtag,
+      'publication-withdrawal-key-0001',
+    );
+    await flushCsrf(http);
+    http.expectOne(`/api/v1/authoring/manuscripts/${workId}/publication/requests/withdrawal`).flush(
+      { ...publicationRequestWithdrawalReceipt, actorUserId: 'must not be returned' },
+      {
+        status: 201,
+        statusText: 'Created',
+        headers: new HttpHeaders({ 'Cache-Control': 'no-store', Pragma: 'no-cache' }),
+      },
+    );
+    await expect(malformed).rejects.toMatchObject({
+      status: 502,
+      code: 'INVALID_PUBLICATION_REQUEST_WITHDRAWAL_RESPONSE',
+    });
+
+    const cacheable = api.withdrawPublicationRequest(
+      workId,
+      publicationEtag,
+      'publication-withdrawal-key-0002',
+    );
+    await flushCsrf(http);
+    http
+      .expectOne(`/api/v1/authoring/manuscripts/${workId}/publication/requests/withdrawal`)
+      .flush(publicationRequestWithdrawalReceipt, {
+        status: 201,
+        statusText: 'Created',
+        headers: new HttpHeaders({ 'Cache-Control': 'public', Pragma: 'no-cache' }),
+      });
+    await expect(cacheable).rejects.toMatchObject({
+      status: 502,
+      code: 'INVALID_PUBLICATION_REQUEST_WITHDRAWAL_RESPONSE',
+    });
   });
 
   it('rejects invalid publication claims and malformed or cacheable request receipts', async () => {

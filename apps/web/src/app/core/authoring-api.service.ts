@@ -124,6 +124,14 @@ export interface PublicationRequestReceipt {
   state: 'PENDING_REVIEW';
 }
 
+export interface PublicationRequestWithdrawalReceipt {
+  eventId: string;
+  requestId: string;
+  requestVersion: number;
+  state: 'WITHDRAWN';
+  withdrawnAt: string;
+}
+
 export interface PrivateManuscriptListPage {
   items: PrivateManuscriptListItem[];
   nextCursor: string | null;
@@ -490,6 +498,44 @@ export class AuthoringApiService {
         throw invalidPublicationRequestResponse();
       }
       return parsePublicationRequestReceipt(response.body, submission.policyVersion);
+    } catch (error) {
+      throw toAuthoringApiError(error);
+    }
+  }
+
+  async withdrawPublicationRequest(
+    workId: string,
+    readinessEtag: string,
+    idempotencyKey: string,
+  ): Promise<PublicationRequestWithdrawalReceipt> {
+    if (
+      !isUuid(workId) ||
+      !isPublicationReadinessEtag(readinessEtag) ||
+      !idempotencyKeyPattern.test(idempotencyKey)
+    ) {
+      throw new AuthoringApiError(400, 'INVALID_PUBLICATION_REQUEST_WITHDRAWAL');
+    }
+
+    try {
+      const headers = (await this.csrfHeaders())
+        .set('If-Match', readinessEtag)
+        .set('Idempotency-Key', idempotencyKey);
+      const response = await firstValueFrom(
+        this.http
+          .post<unknown>(`${manuscriptsUrl}/${workId}/publication/requests/withdrawal`, null, {
+            headers,
+            observe: 'response',
+          })
+          .pipe(timeout(requestTimeoutMs)),
+      );
+      if (
+        response.status !== 201 ||
+        response.headers.get('Cache-Control') !== 'no-store' ||
+        response.headers.get('Pragma') !== 'no-cache'
+      ) {
+        throw invalidPublicationRequestWithdrawalResponse();
+      }
+      return parsePublicationRequestWithdrawalReceipt(response.body);
     } catch (error) {
       throw toAuthoringApiError(error);
     }
@@ -1050,6 +1096,30 @@ function parsePublicationRequestReceipt(
   return value as unknown as PublicationRequestReceipt;
 }
 
+function parsePublicationRequestWithdrawalReceipt(
+  value: unknown,
+): PublicationRequestWithdrawalReceipt {
+  if (
+    !isRecord(value) ||
+    hasUnexpectedFields(value, [
+      'eventId',
+      'requestId',
+      'requestVersion',
+      'state',
+      'withdrawnAt',
+    ]) ||
+    !isUuid(value['eventId']) ||
+    !isUuid(value['requestId']) ||
+    !Number.isSafeInteger(value['requestVersion']) ||
+    (value['requestVersion'] as number) < 1 ||
+    value['state'] !== 'WITHDRAWN' ||
+    !isInstant(value['withdrawnAt'])
+  ) {
+    throw invalidPublicationRequestWithdrawalResponse();
+  }
+  return value as unknown as PublicationRequestWithdrawalReceipt;
+}
+
 function parseOutlineItem(value: unknown): PrivateChapterOutlineItem {
   if (
     !isRecord(value) ||
@@ -1427,6 +1497,10 @@ function invalidPublicationReleaseResponse(): AuthoringApiError {
 
 function invalidPublicationRequestResponse(): AuthoringApiError {
   return new AuthoringApiError(502, 'INVALID_PUBLICATION_REQUEST_RESPONSE');
+}
+
+function invalidPublicationRequestWithdrawalResponse(): AuthoringApiError {
+  return new AuthoringApiError(502, 'INVALID_PUBLICATION_REQUEST_WITHDRAWAL_RESPONSE');
 }
 
 function invalidChapterResponse(): AuthoringApiError {

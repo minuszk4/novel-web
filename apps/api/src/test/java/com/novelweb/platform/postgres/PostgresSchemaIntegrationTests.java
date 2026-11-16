@@ -1448,6 +1448,204 @@ class PostgresSchemaIntegrationTests {
       assertEquals(1, publicationRequestCount(workId));
       assertEquals(1, publicationReviewEventCount(workId));
 
+      String withdrawalPath = requestPath + "/withdrawal";
+      MvcResult pendingReadiness = mockMvc.perform(get(path).cookie(ownerCookie)).andReturn();
+      JsonNode pendingReadinessBody =
+          objectMapper.readTree(pendingReadiness.getResponse().getContentAsString());
+      assertEquals("PENDING_REVIEW", pendingReadinessBody.path("currentRequestState").asText());
+      String pendingReadinessEtag = pendingReadiness.getResponse().getHeader(HttpHeaders.ETAG);
+
+      MvcResult withdrawalMissingCsrf =
+          mockMvc
+              .perform(
+                  post(withdrawalPath)
+                      .cookie(ownerCookie)
+                      .header(HttpHeaders.IF_MATCH, pendingReadinessEtag)
+                      .header("Idempotency-Key", "publication-withdrawal-key-0001"))
+              .andReturn();
+      assertEquals(403, withdrawalMissingCsrf.getResponse().getStatus());
+      assertTrue(withdrawalMissingCsrf.getResponse().getContentAsString().contains("CSRF_FAILED"));
+
+      MvcResult withdrawalMissingEtag =
+          mockMvc
+              .perform(
+                  post(withdrawalPath)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header("Idempotency-Key", "publication-withdrawal-key-0001"))
+              .andReturn();
+      assertEquals(428, withdrawalMissingEtag.getResponse().getStatus());
+
+      MvcResult withdrawalBodyRejected =
+          mockMvc
+              .perform(
+                  post(withdrawalPath)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(HttpHeaders.IF_MATCH, pendingReadinessEtag)
+                      .header("Idempotency-Key", "publication-withdrawal-key-0001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{}"))
+              .andReturn();
+      assertEquals(400, withdrawalBodyRejected.getResponse().getStatus());
+      assertTrue(
+          withdrawalBodyRejected
+              .getResponse()
+              .getContentAsString()
+              .contains("REQUEST_BODY_NOT_ALLOWED"));
+
+      MvcResult foreignWithdrawal =
+          mockMvc
+              .perform(
+                  post(withdrawalPath)
+                      .cookie(outsiderCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, outsiderCsrf)
+                      .header(HttpHeaders.IF_MATCH, pendingReadinessEtag)
+                      .header("Idempotency-Key", "publication-withdrawal-key-0001"))
+              .andReturn();
+      assertEquals(404, foreignWithdrawal.getResponse().getStatus());
+      assertTrue(
+          foreignWithdrawal.getResponse().getContentAsString().contains("MANUSCRIPT_NOT_FOUND"));
+
+      MvcResult staleWithdrawal =
+          mockMvc
+              .perform(
+                  post(withdrawalPath)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(
+                          HttpHeaders.IF_MATCH, updated.getResponse().getHeader(HttpHeaders.ETAG))
+                      .header("Idempotency-Key", "publication-withdrawal-key-0001"))
+              .andReturn();
+      assertEquals(412, staleWithdrawal.getResponse().getStatus());
+      assertTrue(
+          staleWithdrawal
+              .getResponse()
+              .getContentAsString()
+              .contains("PUBLICATION_SNAPSHOT_STALE"));
+      assertNotNull(staleWithdrawal.getResponse().getHeader(HttpHeaders.ETAG));
+      assertEquals(1, publicationReviewEventCount(workId));
+
+      MvcResult withdrawn =
+          mockMvc
+              .perform(
+                  post(withdrawalPath)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(HttpHeaders.IF_MATCH, pendingReadinessEtag)
+                      .header("Idempotency-Key", "publication-withdrawal-key-0001"))
+              .andReturn();
+      assertEquals(201, withdrawn.getResponse().getStatus());
+      assertTrue(withdrawn.getResponse().getHeader(HttpHeaders.CACHE_CONTROL).contains("no-store"));
+      assertEquals("no-cache", withdrawn.getResponse().getHeader(HttpHeaders.PRAGMA));
+      JsonNode withdrawalReceipt =
+          objectMapper.readTree(withdrawn.getResponse().getContentAsString());
+      assertEquals(
+          receipt.path("requestId").asText(), withdrawalReceipt.path("requestId").asText());
+      assertEquals(1, withdrawalReceipt.path("requestVersion").asInt());
+      assertEquals("WITHDRAWN", withdrawalReceipt.path("state").asText());
+      assertTrue(withdrawalReceipt.path("withdrawnAt").isTextual());
+      assertEquals(2, publicationReviewEventCount(workId));
+      assertEquals("WITHDRAWN", publicationRequestCurrentState(workId));
+      assertEquals("private", publicationWorkVisibility(workId));
+
+      MvcResult withdrawalReplay =
+          mockMvc
+              .perform(
+                  post(withdrawalPath)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(HttpHeaders.IF_MATCH, pendingReadinessEtag)
+                      .header("Idempotency-Key", "publication-withdrawal-key-0001"))
+              .andReturn();
+      assertEquals(201, withdrawalReplay.getResponse().getStatus());
+      assertEquals(
+          withdrawalReceipt,
+          objectMapper.readTree(withdrawalReplay.getResponse().getContentAsString()));
+      assertEquals(2, publicationReviewEventCount(workId));
+
+      MvcResult withdrawalKeyReused =
+          mockMvc
+              .perform(
+                  post(withdrawalPath)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(
+                          HttpHeaders.IF_MATCH, updated.getResponse().getHeader(HttpHeaders.ETAG))
+                      .header("Idempotency-Key", "publication-withdrawal-key-0001"))
+              .andReturn();
+      assertEquals(409, withdrawalKeyReused.getResponse().getStatus());
+      assertTrue(
+          withdrawalKeyReused
+              .getResponse()
+              .getContentAsString()
+              .contains("IDEMPOTENCY_KEY_REUSED"));
+
+      MvcResult withdrawnReadiness = mockMvc.perform(get(path).cookie(ownerCookie)).andReturn();
+      JsonNode withdrawnReadinessBody =
+          objectMapper.readTree(withdrawnReadiness.getResponse().getContentAsString());
+      assertEquals("WITHDRAWN", withdrawnReadinessBody.path("currentRequestState").asText());
+      assertTrue(withdrawnReadinessBody.path("canSubmit").asBoolean());
+      MvcResult notPending =
+          mockMvc
+              .perform(
+                  post(withdrawalPath)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(
+                          HttpHeaders.IF_MATCH,
+                          withdrawnReadiness.getResponse().getHeader(HttpHeaders.ETAG))
+                      .header("Idempotency-Key", "publication-withdrawal-key-0002"))
+              .andReturn();
+      assertEquals(409, notPending.getResponse().getStatus());
+      assertTrue(
+          notPending
+              .getResponse()
+              .getContentAsString()
+              .contains("PUBLICATION_REQUEST_NOT_WITHDRAWABLE"));
+      assertEquals(2, publicationReviewEventCount(workId));
+
+      // Reset only the synthetic test bucket to model the author's later resubmission window.
+      deletePublicationRateLimitBucket(ownerId);
+      MvcResult resubmittedAfterWithdrawal =
+          mockMvc
+              .perform(
+                  post(requestPath)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(
+                          HttpHeaders.IF_MATCH,
+                          withdrawnReadiness.getResponse().getHeader(HttpHeaders.ETAG))
+                      .header("Idempotency-Key", "publication-request-key-0002")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(requestBody))
+              .andReturn();
+      assertEquals(201, resubmittedAfterWithdrawal.getResponse().getStatus());
+      assertEquals(
+          2,
+          objectMapper
+              .readTree(resubmittedAfterWithdrawal.getResponse().getContentAsString())
+              .path("requestVersion")
+              .asInt());
+      assertEquals(3, publicationReviewEventCount(workId));
+
+      // A delayed exact retry of the first withdrawal must not withdraw the new pending version.
+      MvcResult delayedWithdrawalReplay =
+          mockMvc
+              .perform(
+                  post(withdrawalPath)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(HttpHeaders.IF_MATCH, pendingReadinessEtag)
+                      .header("Idempotency-Key", "publication-withdrawal-key-0001"))
+              .andReturn();
+      assertEquals(201, delayedWithdrawalReplay.getResponse().getStatus());
+      assertEquals(
+          withdrawalReceipt,
+          objectMapper.readTree(delayedWithdrawalReplay.getResponse().getContentAsString()));
+      assertEquals(3, publicationReviewEventCount(workId));
+      assertEquals("PENDING_REVIEW", publicationRequestCurrentState(workId));
+
       secondWorkId =
           libraryService
               .createPrivateAuthoredWork(
@@ -3035,6 +3233,22 @@ class PostgresSchemaIntegrationTests {
       try (ResultSet rows = select.executeQuery()) {
         assertTrue(rows.next());
         return rows.getInt(1);
+      }
+    }
+  }
+
+  private String publicationRequestCurrentState(UUID workId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT state.current_state FROM publication_request_current_state state"
+                    + " JOIN publication_requests request ON request.id = state.request_id"
+                    + " WHERE request.work_id = ?"
+                    + " ORDER BY request.request_version DESC, request.id DESC LIMIT 1")) {
+      select.setObject(1, workId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getString(1);
       }
     }
   }

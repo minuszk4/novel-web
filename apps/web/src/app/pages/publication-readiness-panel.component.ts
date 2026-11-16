@@ -26,8 +26,15 @@ import { SystemStatusService } from '../core/system-status.service';
 import { PublicationRequestFormComponent } from './publication-request-form.component';
 
 type PanelState = 'idle' | 'loading' | 'ready' | 'error' | 'publishing' | 'uncertain' | 'published';
+type WithdrawalState = 'idle' | 'confirming' | 'submitting' | 'uncertain';
 
 interface ReleaseAttempt {
+  workId: string;
+  readinessEtag: string;
+  idempotencyKey: string;
+}
+
+interface WithdrawalAttempt {
   workId: string;
   readinessEtag: string;
   idempotencyKey: string;
@@ -56,18 +63,30 @@ export class PublicationReadinessPanelComponent implements OnChanges {
   protected readonly confirmationOpen = signal(false);
   protected readonly receipt = signal<PublicationReleaseReceipt | null>(null);
   protected readonly requestFlowActive = signal(false);
+  protected readonly withdrawalState = signal<WithdrawalState>('idle');
+  protected readonly withdrawalError = signal<AuthoringApiError | null>(null);
 
   private readonly api = inject(AuthoringApiService);
   private readonly systemStatus = inject(SystemStatusService);
   private readonly injector = inject(Injector);
   private requestToken = 0;
   private pendingRelease: ReleaseAttempt | null = null;
+  private pendingWithdrawal: WithdrawalAttempt | null = null;
 
   @ViewChild('confirmationHeading')
   private confirmationHeading?: ElementRef<HTMLHeadingElement>;
 
   @ViewChild('publishTrigger')
   private publishTrigger?: ElementRef<HTMLButtonElement>;
+
+  @ViewChild('withdrawalHeading')
+  private withdrawalHeading?: ElementRef<HTMLHeadingElement>;
+
+  @ViewChild('withdrawTrigger')
+  private withdrawTrigger?: ElementRef<HTMLButtonElement>;
+
+  @ViewChild('currentRequestState')
+  private currentRequestStateElement?: ElementRef<HTMLElement>;
 
   ngOnChanges(changes: SimpleChanges): void {
     if (changes['workId']) this.reset();
@@ -83,7 +102,21 @@ export class PublicationReadinessPanelComponent implements OnChanges {
   }
 
   protected get isBusy(): boolean {
-    return this.state() === 'loading' || this.state() === 'publishing';
+    return (
+      this.state() === 'loading' ||
+      this.state() === 'publishing' ||
+      this.withdrawalState() === 'submitting'
+    );
+  }
+
+  protected get canWithdrawCurrentRequest(): boolean {
+    return (
+      this.state() === 'ready' &&
+      !this.requestFlowActive() &&
+      this.readiness()?.currentRequestState === 'PENDING_REVIEW' &&
+      this.withdrawalState() !== 'uncertain' &&
+      this.withdrawalState() !== 'submitting'
+    );
   }
 
   protected get canPublishNow(): boolean {
@@ -138,6 +171,9 @@ export class PublicationReadinessPanelComponent implements OnChanges {
     this.announcement.set('');
     this.confirmationOpen.set(false);
     this.pendingRelease = null;
+    this.withdrawalState.set('idle');
+    this.withdrawalError.set(null);
+    this.pendingWithdrawal = null;
 
     try {
       const readiness = await this.api.getPublicationReadiness(this.workId);
@@ -244,6 +280,94 @@ export class PublicationReadinessPanelComponent implements OnChanges {
     await this.confirmRelease();
   }
 
+  protected openWithdrawalConfirmation(): void {
+    if (!this.canWithdrawCurrentRequest) return;
+    this.withdrawalState.set('confirming');
+    this.withdrawalError.set(null);
+    afterNextRender(() => this.withdrawalHeading?.nativeElement.focus({ preventScroll: true }), {
+      injector: this.injector,
+    });
+  }
+
+  protected cancelWithdrawalConfirmation(): void {
+    if (this.withdrawalState() === 'submitting' || this.withdrawalState() === 'uncertain') return;
+    this.withdrawalState.set('idle');
+    this.withdrawalError.set(null);
+    this.pendingWithdrawal = null;
+    afterNextRender(() => this.withdrawTrigger?.nativeElement.focus({ preventScroll: true }), {
+      injector: this.injector,
+    });
+  }
+
+  protected async confirmWithdrawal(): Promise<void> {
+    const readiness = this.readiness();
+    if (!readiness || !this.canWithdrawCurrentRequest) return;
+
+    let attempt = this.pendingWithdrawal;
+    if (
+      !attempt ||
+      attempt.workId !== this.workId ||
+      attempt.readinessEtag !== readiness.snapshotEtag
+    ) {
+      attempt = {
+        workId: this.workId,
+        readinessEtag: readiness.snapshotEtag,
+        idempotencyKey: newAuthoringIdempotencyKey(),
+      };
+      this.pendingWithdrawal = attempt;
+    }
+
+    const token = this.requestToken;
+    this.withdrawalState.set('submitting');
+    this.withdrawalError.set(null);
+    this.announcement.set('Đang rút yêu cầu duyệt…');
+    try {
+      const receipt = await this.api.withdrawPublicationRequest(
+        attempt.workId,
+        attempt.readinessEtag,
+        attempt.idempotencyKey,
+      );
+      if (token !== this.requestToken) return;
+      this.pendingWithdrawal = null;
+      this.withdrawalState.set('idle');
+      this.announcement.set(`Đã rút yêu cầu duyệt phiên bản ${receipt.requestVersion}.`);
+      await this.loadReadiness(
+        `Đã rút yêu cầu duyệt phiên bản ${receipt.requestVersion}. Bản thảo vẫn riêng tư.`,
+      );
+      afterNextRender(
+        () => this.currentRequestStateElement?.nativeElement.focus({ preventScroll: true }),
+        { injector: this.injector },
+      );
+    } catch (error) {
+      if (token !== this.requestToken) return;
+      const mapped = toAuthoringError(error);
+      if (mapped.status === 412 || mapped.status === 409) {
+        this.pendingWithdrawal = null;
+        this.withdrawalState.set('idle');
+        this.withdrawalError.set(null);
+        await this.loadReadiness(
+          'Trạng thái yêu cầu đã thay đổi. Checklist mới đã được tải; hãy rà soát lại trước khi tiếp tục.',
+        );
+        return;
+      }
+      if (mapped.status === 0 || mapped.status >= 500) {
+        this.withdrawalError.set(mapped);
+        this.withdrawalState.set('uncertain');
+        this.announcement.set('Chưa xác định được kết quả rút yêu cầu.');
+        return;
+      }
+      this.pendingWithdrawal = null;
+      this.withdrawalError.set(mapped);
+      this.withdrawalState.set('confirming');
+    }
+  }
+
+  protected async retryUncertainWithdrawal(): Promise<void> {
+    if (this.withdrawalState() !== 'uncertain' || !this.pendingWithdrawal) return;
+    this.withdrawalState.set('confirming');
+    await this.confirmWithdrawal();
+  }
+
   protected retryReadiness(): Promise<void> {
     if (this.recoveryUrl) return Promise.resolve();
     return this.loadReadiness();
@@ -338,6 +462,23 @@ export class PublicationReadinessPanelComponent implements OnChanges {
     return 'Chưa tải được trạng thái xuất bản. Kiểm tra kết nối rồi thử lại.';
   }
 
+  protected withdrawalErrorMessage(): string {
+    const error = this.withdrawalError();
+    if (!error) return '';
+    if (this.withdrawalState() === 'uncertain') {
+      return 'Có thể yêu cầu đã được rút. Thử lại sẽ gửi đúng thao tác với cùng mã an toàn.';
+    }
+    if (error.status === 401) return 'Phiên đăng nhập đã hết hạn. Hãy đăng nhập lại.';
+    if (error.status === 403 && error.code === 'CSRF_FAILED') {
+      return 'Phiên xác nhận đã hết hạn. Tải lại trạng thái rồi thử lại.';
+    }
+    if (error.status === 404) return 'Không tìm thấy bản thảo riêng tư này.';
+    if (error.status === 503) return 'Dịch vụ chưa sẵn sàng. Bản thảo vẫn riêng tư.';
+    if (error.status === 502)
+      return 'Máy chủ trả về biên nhận không hợp lệ. Hãy kiểm tra lại trạng thái.';
+    return 'Chưa rút được yêu cầu. Hãy kiểm tra trạng thái rồi thử lại.';
+  }
+
   protected publishedDate(value: string): string {
     return new Intl.DateTimeFormat('vi-VN', {
       dateStyle: 'medium',
@@ -356,6 +497,9 @@ export class PublicationReadinessPanelComponent implements OnChanges {
     this.receipt.set(null);
     this.requestFlowActive.set(false);
     this.pendingRelease = null;
+    this.withdrawalState.set('idle');
+    this.withdrawalError.set(null);
+    this.pendingWithdrawal = null;
   }
 }
 

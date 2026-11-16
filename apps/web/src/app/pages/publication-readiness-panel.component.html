@@ -11,7 +11,9 @@
     <button
       class="button button-outline publication-readiness-trigger"
       type="button"
-      [disabled]="isBusy || state() === 'uncertain' || state() === 'published'"
+      [disabled]="
+        isBusy || state() === 'uncertain' || state() === 'published' || withdrawalState() !== 'idle'
+      "
       (click)="loadReadiness()"
     >
       {{
@@ -86,9 +88,75 @@
       </div>
       <div>
         <dt>Yêu cầu duyệt hiện hành</dt>
-        <dd>{{ requestStateLabel(current.currentRequestState) }}</dd>
+        <dd #currentRequestState tabindex="-1">
+          {{ requestStateLabel(current.currentRequestState) }}
+        </dd>
       </div>
     </dl>
+
+    @if (canWithdrawCurrentRequest) {
+      <button
+        #withdrawTrigger
+        class="button button-outline publication-readiness-withdraw"
+        type="button"
+        [disabled]="isBusy || requestFlowActive() || withdrawalState() !== 'idle'"
+        (click)="openWithdrawalConfirmation()"
+      >
+        Rút yêu cầu duyệt
+      </button>
+    }
+
+    @if (withdrawalState() === 'uncertain') {
+      <div class="publication-readiness-error" role="alert">
+        <p>{{ withdrawalErrorMessage() }}</p>
+        <button class="button button-primary" type="button" (click)="retryUncertainWithdrawal()">
+          Thử lại cùng thao tác rút
+        </button>
+      </div>
+    }
+
+    @if (withdrawalState() === 'confirming' || withdrawalState() === 'submitting') {
+      <section
+        class="publication-readiness-confirm"
+        aria-labelledby="publication-withdrawal-confirm-title"
+      >
+        <h3 #withdrawalHeading id="publication-withdrawal-confirm-title" tabindex="-1">
+          Xác nhận rút yêu cầu duyệt
+        </h3>
+        <p>
+          Yêu cầu hiện tại sẽ chuyển sang trạng thái đã rút nếu người duyệt chưa đưa ra quyết định.
+          Thao tác này không xóa hoặc sửa bản thảo; bản thảo vẫn riêng tư.
+        </p>
+        @if (withdrawalError()) {
+          <p class="publication-readiness-error-copy" role="alert">
+            {{ withdrawalErrorMessage() }}
+          </p>
+        }
+        <div class="publication-readiness-actions">
+          <button
+            class="button button-outline"
+            type="button"
+            [disabled]="isBusy || withdrawalState() === 'uncertain'"
+            (click)="cancelWithdrawalConfirmation()"
+          >
+            Giữ yêu cầu
+          </button>
+          <button
+            class="button button-primary"
+            type="button"
+            [disabled]="isBusy"
+            (click)="confirmWithdrawal()"
+          >
+            {{ isBusy ? 'Đang rút yêu cầu…' : 'Xác nhận rút yêu cầu' }}
+          </button>
+        </div>
+        @if (withdrawalState() === 'submitting') {
+          <p class="publication-readiness-status" role="status" aria-live="polite">
+            Đang rút yêu cầu duyệt…
+          </p>
+        }
+      </section>
+    }
 
     <h3 class="publication-readiness-subheading">Phạm vi quyền</h3>
     <ul class="publication-readiness-scopes" aria-label="Trạng thái từng phạm vi quyền">
