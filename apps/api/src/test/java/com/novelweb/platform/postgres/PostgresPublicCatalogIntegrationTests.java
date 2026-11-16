@@ -23,6 +23,7 @@ import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -294,6 +295,45 @@ class PostgresPublicCatalogIntegrationTests {
     assertEquals(1, rateLimitBucketCount(activeHash));
     assertEquals(1, rateLimitBucketCount(recentHash));
     assertEquals(2, countRateLimitBuckets());
+  }
+
+  @Test
+  void cleanupSkipsAConcurrentActiveBucketAndPurgesOtherStaleBuckets() throws Exception {
+    byte[] activeHash = newRateLimitHash();
+    byte[] staleHash = newRateLimitHash();
+    insertRateLimitBucket(activeHash, 25);
+    insertRateLimitBucket(staleHash, 25);
+    var executor = Executors.newSingleThreadExecutor();
+
+    try (Connection activeRequest = dataSource.getConnection()) {
+      activeRequest.setAutoCommit(false);
+      try (PreparedStatement markActive =
+          activeRequest.prepareStatement(
+              """
+                  UPDATE public_catalog_rate_limits
+                  SET last_seen_at = clock_timestamp()
+                  WHERE rate_limit_key_hash = ?
+                  """)) {
+        markActive.setBytes(1, activeHash);
+        assertEquals(1, markActive.executeUpdate());
+      }
+
+      Future<Integer> cleanup = executor.submit(publicCatalogRateLimiter::purgeInactiveBuckets);
+      int deleted;
+      try {
+        deleted = cleanup.get(5, TimeUnit.SECONDS);
+      } finally {
+        activeRequest.commit();
+      }
+      assertEquals(1, deleted);
+    } finally {
+      executor.shutdown();
+      assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
+    }
+
+    assertEquals(1, rateLimitBucketCount(activeHash));
+    assertEquals(0, rateLimitBucketCount(staleHash));
+    assertEquals(0, countInactiveRateLimitBuckets());
   }
 
   private void insertRateLimitBucket(byte[] keyHash, int lastSeenHoursAgo) throws SQLException {
