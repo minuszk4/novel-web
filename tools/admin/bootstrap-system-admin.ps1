@@ -98,6 +98,7 @@ $psqlArguments = @(
     '-q',
     '-A',
     '-t',
+    '-w',
     '-v',
     'ON_ERROR_STOP=1',
     '-h',
@@ -117,9 +118,7 @@ $psqlArguments = @(
     '-v',
     "operator_identity=$operatorIdentity",
     '-v',
-    "ticket_reference=$Ticket",
-    '-c',
-    $sql
+    "ticket_reference=$Ticket"
 )
 $output = $sql | & $psqlCommand.Source @psqlArguments 2>&1
 if ($LASTEXITCODE -ne 0) {
