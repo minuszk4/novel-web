@@ -1,8 +1,10 @@
 package com.novelweb.platform.web;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletResponse;
 import java.nio.charset.StandardCharsets;
 import org.junit.jupiter.api.Test;
@@ -75,5 +77,43 @@ class ApiRequestLogFilterTests {
     assertTrue(logOutput.contains("route=unmatched"));
     assertTrue(logOutput.contains("status=404"));
     assertFalse(logOutput.contains("private-unmatched-path-19ef"));
+  }
+
+  @Test
+  void logsFailedRequestAsServerErrorWithoutExceptionOrRequestSecrets(CapturedOutput output) {
+    ApiRequestLogFilter filter = new ApiRequestLogFilter();
+    MockHttpServletRequest request =
+        new MockHttpServletRequest("POST", "/api/v1/auth/google/callback");
+    request.setServletPath("/api/v1/auth/google/callback");
+    request.setQueryString("code=oauth-code-secret-5ad9");
+    request.addHeader("Cookie", "SESSION=cookie-secret-0f62");
+    request.addHeader("Authorization", "Bearer access-token-secret-3e78");
+    request.setContent("provider response content-secret-718c".getBytes(StandardCharsets.UTF_8));
+    request.setAttribute(CorrelationIdFilter.REQUEST_ATTRIBUTE, CORRELATION_ID);
+    MockHttpServletResponse response = new MockHttpServletResponse();
+
+    assertThrows(
+        ServletException.class,
+        () ->
+            filter.doFilter(
+                request,
+                response,
+                (servletRequest, servletResponse) -> {
+                  servletRequest.setAttribute(
+                      HandlerMapping.BEST_MATCHING_PATTERN_ATTRIBUTE,
+                      "/api/v1/auth/google/callback");
+                  throw new ServletException("provider error-token-secret-982a");
+                }));
+
+    String logOutput = output.getAll();
+    assertTrue(logOutput.contains("method=POST"));
+    assertTrue(logOutput.contains("route=/api/v1/auth/google/callback"));
+    assertTrue(logOutput.contains("status=500"));
+    assertTrue(logOutput.contains("correlationId=" + CORRELATION_ID));
+    assertFalse(logOutput.contains("oauth-code-secret-5ad9"));
+    assertFalse(logOutput.contains("cookie-secret-0f62"));
+    assertFalse(logOutput.contains("access-token-secret-3e78"));
+    assertFalse(logOutput.contains("content-secret-718c"));
+    assertFalse(logOutput.contains("error-token-secret-982a"));
   }
 }
