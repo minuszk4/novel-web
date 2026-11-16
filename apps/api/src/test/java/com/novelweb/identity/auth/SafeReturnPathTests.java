@@ -26,7 +26,19 @@ class SafeReturnPathTests {
     assertEquals(
         SafeReturnPath.DEFAULT_PATH,
         SafeReturnPath.sanitize("/app/home\r\nLocation: https://attacker.example"));
-    assertEquals(SafeReturnPath.DEFAULT_PATH, SafeReturnPath.sanitize("/" + "a".repeat(512)));
+    String maximumLengthPath = "/" + "a".repeat(511);
+    assertEquals(512, maximumLengthPath.length());
+    assertEquals(maximumLengthPath, SafeReturnPath.sanitize(maximumLengthPath));
+    assertEquals(SafeReturnPath.DEFAULT_PATH, SafeReturnPath.sanitize(maximumLengthPath + "a"));
     assertEquals(SafeReturnPath.DEFAULT_PATH, SafeReturnPath.sanitize(null));
+  }
+
+  @Test
+  void rejectsEncodedTraversalBackslashAndHeaderControls() {
+    assertEquals(SafeReturnPath.DEFAULT_PATH, SafeReturnPath.sanitize("/app/%2e%2e/admin"));
+    assertEquals(SafeReturnPath.DEFAULT_PATH, SafeReturnPath.sanitize("/app/%5cadmin"));
+    assertEquals(
+        SafeReturnPath.DEFAULT_PATH,
+        SafeReturnPath.sanitize("/app/%0d%0aLocation%3a%20https://attacker.example"));
   }
 }
