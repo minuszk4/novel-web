@@ -174,6 +174,9 @@ class PostgresSchemaIntegrationTests {
   private static final Set<String> EXPECTED_APPLICATION_TABLES =
       Set.of(
           "users",
+          "security_role_assignments",
+          "security_role_assignment_events",
+          "security_role_assignment_idempotency",
           "external_identities",
           "sessions",
           "google_auth_attempts",
@@ -414,7 +417,7 @@ class PostgresSchemaIntegrationTests {
             connection.prepareStatement("SELECT COUNT(*) FROM databasechangelog");
         ResultSet changesets = changesetCount.executeQuery()) {
       changesets.next();
-      assertEquals(120, changesets.getInt(1), "unexpected number of applied changesets");
+      assertEquals(121, changesets.getInt(1), "unexpected number of applied changesets");
     }
 
     Set<String> actualTables = new HashSet<>();
@@ -14793,6 +14796,330 @@ class PostgresSchemaIntegrationTests {
         PreparedStatement delete =
             connection.prepareStatement("DELETE FROM credit_ledger_entries WHERE id = ?")) {
       delete.setObject(1, entryId);
+      delete.executeUpdate();
+    }
+  }
+
+  @Test
+  void publicationReviewerAssignmentsRequireAdminAndAppendAuditedIdempotentChanges()
+      throws Exception {
+    UUID adminId = createSessionTestUser("Synthetic role assignment admin");
+    UUID targetId = createSessionTestUser("Synthetic publication reviewer");
+    UUID outsiderId = createSessionTestUser("Synthetic role assignment outsider");
+    try {
+      insertBootstrapSecurityAdminFixture(adminId);
+      SessionService.IssuedSession adminSession = sessionService.create(adminId).orElseThrow();
+      SessionService.IssuedSession outsiderSession =
+          sessionService.create(outsiderId).orElseThrow();
+      var adminCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", adminSession.cookieValue());
+      var outsiderCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", outsiderSession.cookieValue());
+      String adminCsrf = csrfTokenService.tokenFor(adminSession.cookieValue());
+      String outsiderCsrf = csrfTokenService.tokenFor(outsiderSession.cookieValue());
+      String listRoute = "/api/v1/admin/security/role-assignments";
+      String grantRoute = "/api/v1/admin/security/users/{userId}/roles/publication_reviewer";
+
+      MvcResult anonymous =
+          mockMvc.perform(get(listRoute).param("role", "publication_reviewer")).andReturn();
+      assertEquals(401, anonymous.getResponse().getStatus());
+      assertTrue(anonymous.getResponse().getHeader("Cache-Control").contains("no-store"));
+
+      MvcResult nonAdmin =
+          mockMvc
+              .perform(get(listRoute).param("role", "publication_reviewer").cookie(outsiderCookie))
+              .andReturn();
+      assertEquals(403, nonAdmin.getResponse().getStatus());
+      assertTrue(nonAdmin.getResponse().getContentAsString().contains("ADMIN_REQUIRED"));
+      assertTrue(nonAdmin.getResponse().getHeader("Cache-Control").contains("no-store"));
+
+      MvcResult missingCsrf =
+          mockMvc
+              .perform(
+                  put(grantRoute, targetId)
+                      .cookie(adminCookie)
+                      .header("Idempotency-Key", "reviewer-grant-no-csrf")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"reasonCode\":\"REVIEW_CAPACITY\"}"))
+              .andReturn();
+      assertEquals(403, missingCsrf.getResponse().getStatus());
+
+      MvcResult selfGrant =
+          mockMvc
+              .perform(
+                  put(grantRoute, adminId)
+                      .cookie(adminCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, adminCsrf)
+                      .header("Idempotency-Key", "reviewer-self-grant-001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"reasonCode\":\"ROLE_CORRECTION\"}"))
+              .andReturn();
+      assertEquals(409, selfGrant.getResponse().getStatus());
+
+      MvcResult unknownField =
+          mockMvc
+              .perform(
+                  put(grantRoute, targetId)
+                      .cookie(adminCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, adminCsrf)
+                      .header("Idempotency-Key", "reviewer-unknown-field-001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"reasonCode\":\"REVIEW_CAPACITY\",\"role\":\"system_admin\"}"))
+              .andReturn();
+      assertEquals(400, unknownField.getResponse().getStatus());
+
+      String grantKey = "reviewer-grant-idempotent-001";
+      MvcResult granted =
+          mockMvc
+              .perform(
+                  put(grantRoute, targetId)
+                      .cookie(adminCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, adminCsrf)
+                      .header("Idempotency-Key", grantKey)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"reasonCode\":\"REVIEW_CAPACITY\"}"))
+              .andReturn();
+      assertEquals(201, granted.getResponse().getStatus());
+      assertTrue(granted.getResponse().getHeader("Cache-Control").contains("no-store"));
+      assertTrue(granted.getResponse().getContentAsString().contains("GRANTED"));
+      assertTrue(granted.getResponse().getContentAsString().contains(targetId.toString()));
+      String assignmentId =
+          objectMapper
+              .readTree(granted.getResponse().getContentAsString())
+              .path("assignment")
+              .path("assignmentId")
+              .asText();
+
+      MvcResult replay =
+          mockMvc
+              .perform(
+                  put(grantRoute, targetId)
+                      .cookie(adminCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, adminCsrf)
+                      .header("Idempotency-Key", grantKey)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"reasonCode\":\"REVIEW_CAPACITY\"}"))
+              .andReturn();
+      assertEquals(201, replay.getResponse().getStatus());
+      assertTrue(replay.getResponse().getContentAsString().contains("\"replayed\":true"));
+      assertTrue(replay.getResponse().getContentAsString().contains(assignmentId));
+
+      MvcResult changedReplay =
+          mockMvc
+              .perform(
+                  put(grantRoute, targetId)
+                      .cookie(adminCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, adminCsrf)
+                      .header("Idempotency-Key", grantKey)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"reasonCode\":\"TEMPORARY_COVERAGE\"}"))
+              .andReturn();
+      assertEquals(409, changedReplay.getResponse().getStatus());
+      assertTrue(
+          changedReplay.getResponse().getContentAsString().contains("IDEMPOTENCY_KEY_REUSED"));
+
+      MvcResult duplicateGrant =
+          mockMvc
+              .perform(
+                  put(grantRoute, targetId)
+                      .cookie(adminCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, adminCsrf)
+                      .header("Idempotency-Key", "reviewer-grant-duplicate-001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"reasonCode\":\"TEMPORARY_COVERAGE\"}"))
+              .andReturn();
+      assertEquals(200, duplicateGrant.getResponse().getStatus());
+      assertTrue(duplicateGrant.getResponse().getContentAsString().contains("ALREADY_ACTIVE"));
+      assertEquals(1, countSecurityRoleEvents(targetId));
+
+      MvcResult listed =
+          mockMvc
+              .perform(get(listRoute).param("role", "publication_reviewer").cookie(adminCookie))
+              .andReturn();
+      assertEquals(200, listed.getResponse().getStatus());
+      assertTrue(listed.getResponse().getHeader("Cache-Control").contains("no-store"));
+      assertTrue(listed.getResponse().getContentAsString().contains(targetId.toString()));
+
+      SessionService.IssuedSession reviewerSession = sessionService.create(targetId).orElseThrow();
+      MvcResult reviewerDenied =
+          mockMvc
+              .perform(
+                  get(listRoute)
+                      .param("role", "publication_reviewer")
+                      .cookie(
+                          new jakarta.servlet.http.Cookie(
+                              "__Host-novel_session", reviewerSession.cookieValue())))
+              .andReturn();
+      assertEquals(403, reviewerDenied.getResponse().getStatus());
+
+      String revokeKey = "reviewer-revoke-idempotent-001";
+      MvcResult revoked =
+          mockMvc
+              .perform(
+                  delete(grantRoute, targetId)
+                      .cookie(adminCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, adminCsrf)
+                      .header("Idempotency-Key", revokeKey)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"reasonCode\":\"ACCESS_ENDED\"}"))
+              .andReturn();
+      assertEquals(204, revoked.getResponse().getStatus());
+      assertTrue(revoked.getResponse().getHeader("Cache-Control").contains("no-store"));
+
+      MvcResult revokeReplay =
+          mockMvc
+              .perform(
+                  delete(grantRoute, targetId)
+                      .cookie(adminCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, adminCsrf)
+                      .header("Idempotency-Key", revokeKey)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"reasonCode\":\"ACCESS_ENDED\"}"))
+              .andReturn();
+      assertEquals(204, revokeReplay.getResponse().getStatus());
+      assertEquals(2, countSecurityRoleEvents(targetId));
+      assertEquals(0, countActiveReviewerAssignments(targetId));
+
+      MvcResult afterRevoke =
+          mockMvc
+              .perform(get(listRoute).param("role", "publication_reviewer").cookie(adminCookie))
+              .andReturn();
+      assertEquals(200, afterRevoke.getResponse().getStatus());
+      assertFalse(afterRevoke.getResponse().getContentAsString().contains(targetId.toString()));
+
+      setTestUserStatus(targetId, "suspended");
+      MvcResult inactiveTarget =
+          mockMvc
+              .perform(
+                  put(grantRoute, targetId)
+                      .cookie(adminCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, adminCsrf)
+                      .header("Idempotency-Key", "reviewer-inactive-target-001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"reasonCode\":\"REVIEW_CAPACITY\"}"))
+              .andReturn();
+      assertEquals(404, inactiveTarget.getResponse().getStatus());
+
+      SQLException eventMutation =
+          assertThrows(SQLException.class, () -> mutateSecurityRoleEvent(assignmentId));
+      assertTrue(eventMutation.getMessage().contains("append-only"));
+      assertThrows(SQLException.class, () -> deleteSecurityRoleReceipt(adminId, grantKey));
+      assertThrows(SQLException.class, this::truncateSecurityRoleEvents);
+      assertEquals(2, countSecurityRoleEvents(targetId));
+    } finally {
+      deleteSessionTestUser(adminId);
+      deleteSessionTestUser(targetId);
+      deleteSessionTestUser(outsiderId);
+    }
+  }
+
+  private void insertBootstrapSecurityAdminFixture(UUID adminId) throws SQLException {
+    UUID assignmentId = UUID.randomUUID();
+    try (Connection connection = dataSource.getConnection()) {
+      try (PreparedStatement insert =
+          connection.prepareStatement(
+              """
+                  INSERT INTO security_role_assignments
+                      (id, user_id, role_code, assigned_by_user_id, reason_code)
+                  VALUES (?, ?, 'system_admin', NULL, 'INITIAL_ADMIN_BOOTSTRAP')
+                  """)) {
+        insert.setObject(1, assignmentId);
+        insert.setObject(2, adminId);
+        assertEquals(1, insert.executeUpdate());
+      }
+      try (PreparedStatement event =
+          connection.prepareStatement(
+              """
+                  INSERT INTO security_role_assignment_events
+                      (id, assignment_id, target_user_id, role_code, action_code,
+                       operator_identity, ticket_reference, reason_code)
+                  VALUES (?, ?, ?, 'system_admin', 'BOOTSTRAPPED', 'test-fixture', 'TEST-BOOTSTRAP',
+                          'INITIAL_ADMIN_BOOTSTRAP')
+                  """)) {
+        event.setObject(1, UUID.randomUUID());
+        event.setObject(2, assignmentId);
+        event.setObject(3, adminId);
+        assertEquals(1, event.executeUpdate());
+      }
+    }
+  }
+
+  private int countSecurityRoleEvents(UUID targetUserId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT COUNT(*) FROM security_role_assignment_events WHERE target_user_id = ?")) {
+      select.setObject(1, targetUserId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getInt(1);
+      }
+    }
+  }
+
+  private int countActiveReviewerAssignments(UUID targetUserId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                """
+                    SELECT COUNT(*) FROM security_role_assignments
+                    WHERE user_id = ? AND role_code = 'publication_reviewer' AND revoked_at IS NULL
+                    """)) {
+      select.setObject(1, targetUserId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getInt(1);
+      }
+    }
+  }
+
+  private void mutateSecurityRoleEvent(String assignmentId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement update =
+            connection.prepareStatement(
+                "UPDATE security_role_assignment_events SET reason_code = reason_code WHERE assignment_id = ?")) {
+      update.setObject(1, UUID.fromString(assignmentId));
+      update.executeUpdate();
+    }
+  }
+
+  private void truncateSecurityRoleEvents() throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement truncate =
+            connection.prepareStatement("TRUNCATE TABLE security_role_assignment_events")) {
+      truncate.execute();
+    }
+  }
+
+  private void setTestUserStatus(UUID userId, String status) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement update =
+            connection.prepareStatement("UPDATE users SET status = ? WHERE id = ?")) {
+      update.setString(1, status);
+      update.setObject(2, userId);
+      assertEquals(1, update.executeUpdate());
+    }
+  }
+
+  private void deleteSecurityRoleReceipt(UUID actorUserId, String idempotencyKey)
+      throws SQLException {
+    byte[] keyHash;
+    try {
+      keyHash =
+          java.security.MessageDigest.getInstance("SHA-256")
+              .digest(idempotencyKey.getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+    } catch (java.security.NoSuchAlgorithmException exception) {
+      throw new IllegalStateException(exception);
+    }
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement delete =
+            connection.prepareStatement(
+                """
+                    DELETE FROM security_role_assignment_idempotency
+                    WHERE actor_user_id = ? AND idempotency_key_sha256 = ?
+                    """)) {
+      delete.setObject(1, actorUserId);
+      delete.setBytes(2, keyHash);
       delete.executeUpdate();
     }
   }

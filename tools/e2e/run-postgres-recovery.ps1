@@ -152,7 +152,13 @@ try {
         throw "Expected the immutable cultivation-v1 seed (one catalog and 18 Vietnamese ranks); found $rankCatalogSeeds catalogs/$rankEntrySeeds ranks."
     }
 
-    $seededDataTables = @('databasechangelog', 'databasechangeloglock', 'cultivation_rank_catalogs', 'cultivation_rank_catalog_entries')
+    $seededDataTables = @(
+        'databasechangelog',
+        'databasechangeloglock',
+        'cultivation_rank_catalogs',
+        'cultivation_rank_catalog_entries',
+        'security_role_assignment_events'
+    )
     foreach ($table in $tables) {
         if ($table -notmatch '^[a-z0-9_]+$') { throw "Unexpected public table name '$table'; stopping before destructive operations." }
         $count = Invoke-ScratchPsql -Database $databaseName -Sql "SELECT count(*) FROM public.`"$table`";"

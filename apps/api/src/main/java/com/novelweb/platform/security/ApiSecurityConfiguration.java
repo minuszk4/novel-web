@@ -149,6 +149,18 @@ public class ApiSecurityConfiguration {
                 authorize.requestMatchers(HttpMethod.GET, "/api/v1/auth/me").permitAll();
                 authorize.requestMatchers(HttpMethod.POST, "/api/v1/auth/logout").permitAll();
                 authorize
+                    .requestMatchers(HttpMethod.GET, "/api/v1/admin/security/role-assignments")
+                    .permitAll();
+                authorize
+                    .requestMatchers(
+                        HttpMethod.PUT, "/api/v1/admin/security/users/*/roles/publication_reviewer")
+                    .permitAll();
+                authorize
+                    .requestMatchers(
+                        HttpMethod.DELETE,
+                        "/api/v1/admin/security/users/*/roles/publication_reviewer")
+                    .permitAll();
+                authorize
                     .requestMatchers(
                         HttpMethod.POST,
                         "/api/v1/auth/logout-all/confirmation",

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 8.1.0
+  version: 8.2.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -16,7 +16,7 @@ info:
     Versioned cultivation catalogs, authenticated profile settings, private daily XP activity and bounded private Reader sessions with atomic XP awards are implemented in the PostgreSQL profile. The approved starting policy awards 1 XP per complete active Reader minute, capped at 120 XP per UTC day; same-day sub-minute remainder does not cross UTC midnight; top-ups and unlocks award none. Cultivation is feature-gated and off by default pending the rank-threshold pilot and release reviews.
     Scoped glossary storage, actor-scoped catalog listing/creation, active and writer-only latest-revision reads, version-checked immutable draft creation, authenticated diff/lint/match preview, lint-gated revision publication with append-only audit, strict JSON/CSV/TSV import preview and resolved atomic draft apply, and active/writer-only latest snapshot export are implemented in the PostgreSQL profile. Translation job enqueue/status/retry/cancel are available only as an explicit fake-local development preview and never call an external NMT provider. `features.translationFakePreviewEnabled` is true only when both required profiles and the provider/API/worker opt-in flags are active.
     The authenticated PostgreSQL profile also exposes the current actor's available paid and non-expired bonus credit totals from the rebuildable balance projection; the response is no-store and does not expose another account's ledger. When the MoMo TEST gate is explicitly enabled with valid TEST configuration, the profile also exposes server-priced public-chapter unlock quotes and an idempotent paid-credit unlock that commits the debit with an immutable entitlement; private/draft chapters remain unavailable and no production purchase is enabled.
-    An opt-in, metadata-only guest catalog endpoint is available in the PostgreSQL profile. It is disabled by default and returns only authored, active, explicitly public works owned by active users with at least one ready chapter; it does not return descriptions or chapter bodies. Rights review/publication, catalog UI, rate limiting at the edge, and reader access for guests remain separate work.
+    An opt-in, metadata-only guest catalog endpoint is available in the PostgreSQL profile. It is disabled by default and returns only authored, active, explicitly public works owned by active users with at least one ready chapter; it does not return descriptions or chapter bodies. Admin-only publication-reviewer role assignment is implemented in the PostgreSQL profile; it does not bootstrap system administrators or approve/publish work. Rights policy, review decisions, publication controls, catalog UI, rate limiting at the edge, and reader access for guests remain separate work.
 servers:
   - url: http://127.0.0.1:8080
 tags:
@@ -30,6 +30,9 @@ tags:
     x-implementation-status: partial
   - name: Catalog
     description: Opt-in metadata-only guest catalog; publication and rights-review workflows remain unavailable.
+    x-implementation-status: partial
+  - name: Admin security
+    description: Admin-only publication reviewer role assignment and audit routes; first-admin bootstrap uses a separate operator command, and publication itself remains unavailable.
     x-implementation-status: partial
   - name: Reader
     description: Source-only reader, progress, preferences, private bookmarks, source annotations and private reading history are available in the PostgreSQL profile.
@@ -50,6 +53,179 @@ tags:
     description: Actor-owned credit balance/history, MoMo TEST-only feature-gated pack checkout/order status/IPN settlement and paid-credit chapter unlock are implemented; payment-order history, missing-IPN reconciliation, purchase history UI and production payment remain unavailable.
     x-implementation-status: partial
 paths:
+  /api/v1/admin/security/role-assignments:
+    get:
+      operationId: listPublicationReviewerAssignments
+      tags: [Admin security]
+      x-implementation-status: implemented-postgres-profile
+      summary: List publication reviewer assignments
+      description: >-
+        Requires a current active system_admin assignment. Returns active publication_reviewer assignments only;
+        verified email addresses are included for account identification. The response is no-store. When no active
+        system administrator exists, the request is denied. This route cannot grant or reveal system_admin assignments.
+      security:
+        - appSession: []
+      parameters:
+        - name: role
+          in: query
+          required: true
+          schema:
+            type: string
+            const: publication_reviewer
+      responses:
+        '200':
+          description: Current reviewer assignments.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                pattern: '.*no-store.*'
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReviewerAssignmentList'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/admin/security/users/{userId}/roles/publication_reviewer:
+    parameters:
+      - name: userId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    put:
+      operationId: grantPublicationReviewerRole
+      tags: [Admin security]
+      x-implementation-status: implemented-postgres-profile
+      summary: Grant the publication reviewer role
+      description: >-
+        Requires a current active system_admin assignment, a CSRF token and a valid Idempotency-Key. Only an active
+        target account may receive the role. Self-assignment and request-supplied roles/actors are rejected. Grant
+        and audit event commit atomically; repeat requests replay or return the existing assignment. No system_admin
+        role can be granted through this API.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            minLength: 16
+            maxLength: 128
+            pattern: '^[A-Za-z0-9._~-]{16,128}$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GrantPublicationReviewerRequest'
+      responses:
+        '200':
+          description: The role was already active; no duplicate audit event was created.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                pattern: '.*no-store.*'
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoleAssignmentCommand'
+        '201':
+          description: The role was granted and an immutable audit event was appended.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                pattern: '.*no-store.*'
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoleAssignmentCommand'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+    delete:
+      operationId: revokePublicationReviewerRole
+      tags: [Admin security]
+      x-implementation-status: implemented-postgres-profile
+      summary: Revoke the publication reviewer role
+      description: >-
+        Requires a current active system_admin assignment, a CSRF token, a bounded revocation reason and a valid
+        Idempotency-Key. Revocation updates the current assignment and appends an immutable event in one transaction;
+        it takes effect before this route succeeds. Repeating the same request is safe.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            minLength: 16
+            maxLength: 128
+            pattern: '^[A-Za-z0-9._~-]{16,128}$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RevokePublicationReviewerRequest'
+      responses:
+        '204':
+          description: The reviewer role was revoked or was already inactive.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                pattern: '.*no-store.*'
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
   /api/v1/catalog/works:
     get:
       operationId: listPublicCatalogWorks
@@ -8256,6 +8432,83 @@ components:
           items:
             type: string
             maxLength: 512
+    GrantPublicationReviewerRequest:
+      type: object
+      additionalProperties: false
+      required: [reasonCode]
+      properties:
+        reasonCode:
+          type: string
+          enum: [REVIEW_CAPACITY, TEMPORARY_COVERAGE, ROLE_CORRECTION]
+    RevokePublicationReviewerRequest:
+      type: object
+      additionalProperties: false
+      required: [reasonCode]
+      properties:
+        reasonCode:
+          type: string
+          enum: [ACCESS_ENDED, ROLE_CHANGE, SECURITY_REVIEW]
+    ReviewerAssignmentList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReviewerAssignment'
+    ReviewerAssignment:
+      type: object
+      additionalProperties: false
+      required:
+        [assignmentId, userId, displayName, contactEmail, userStatus, assignedByUserId, assignedAt, reasonCode, revokedAt, revokedByUserId, revocationReasonCode]
+      properties:
+        assignmentId:
+          type: string
+          format: uuid
+        userId:
+          type: string
+          format: uuid
+        displayName:
+          type: string
+          maxLength: 200
+        contactEmail:
+          type: [string, 'null']
+          format: email
+          maxLength: 320
+        userStatus:
+          type: string
+          enum: [active, pending, suspended, deleted]
+        assignedByUserId:
+          type: [string, 'null']
+          format: uuid
+        assignedAt:
+          type: string
+          format: date-time
+        reasonCode:
+          type: string
+          enum: [REVIEW_CAPACITY, TEMPORARY_COVERAGE, ROLE_CORRECTION, INITIAL_ADMIN_BOOTSTRAP]
+        revokedAt:
+          type: [string, 'null']
+          format: date-time
+        revokedByUserId:
+          type: [string, 'null']
+          format: uuid
+        revocationReasonCode:
+          type: [string, 'null']
+          enum: [ACCESS_ENDED, ROLE_CHANGE, SECURITY_REVIEW]
+    RoleAssignmentCommand:
+      type: object
+      additionalProperties: false
+      required: [resultCode, assignment, replayed]
+      properties:
+        resultCode:
+          type: string
+          enum: [GRANTED, ALREADY_ACTIVE]
+        assignment:
+          $ref: '#/components/schemas/ReviewerAssignment'
+        replayed:
+          type: boolean
     Problem:
       type: object
       required: [type, title, status, detail, code, correlationId]
