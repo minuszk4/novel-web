@@ -160,6 +160,19 @@ test('private chapter outline reads and creates metadata through the real API an
   await expect(page.getByText('Có nội dung đọc được', { exact: true })).toBeVisible();
   await expect(page.getByText('Chỉ bạn có thể xem mục lục này')).toBeVisible();
   await expect(page.getByRole('link', { name: 'Viết chương' })).toHaveCount(24);
+  const rightsPolicyRead = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'GET' &&
+      new URL(response.url()).pathname ===
+        `/api/v1/authoring/manuscripts/${workId}/publication/rights-policy`,
+  );
+  await page.getByRole('button', { name: 'Kiểm tra chính sách quyền xuất bản' }).click();
+  const rightsPolicyResponse = await rightsPolicyRead;
+  expect(rightsPolicyResponse.status()).toBe(503);
+  expect(rightsPolicyResponse.headers()['cache-control']).toContain('no-store');
+  await expect(page.getByText(/chưa được cấu hình hoặc chưa thể xác minh/)).toBeVisible();
+  await expect(page.getByRole('checkbox')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Xác nhận đã đọc chính sách' })).toHaveCount(0);
   await expect(
     page.getByRole('listitem').filter({ hasText: 'Live Translation Chapter' }).getByRole('link'),
   ).toHaveCount(0);

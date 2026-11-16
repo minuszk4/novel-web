@@ -74,6 +74,8 @@ function manuscript(): PrivateManuscriptDetails {
 describe('AuthoringOutlinePageComponent', () => {
   let api: {
     getPrivateManuscript: ReturnType<typeof vi.fn>;
+    getCurrentPublicationRightsPolicy: ReturnType<typeof vi.fn>;
+    acceptCurrentPublicationRightsPolicy: ReturnType<typeof vi.fn>;
     updatePrivateManuscript: ReturnType<typeof vi.fn>;
     listPrivateChapters: ReturnType<typeof vi.fn>;
     createPrivateChapter: ReturnType<typeof vi.fn>;
@@ -84,6 +86,19 @@ describe('AuthoringOutlinePageComponent', () => {
   beforeEach(() => {
     api = {
       getPrivateManuscript: vi.fn().mockResolvedValue(manuscript()),
+      getCurrentPublicationRightsPolicy: vi.fn().mockResolvedValue({
+        version: 'rights-v1',
+        effectiveAt: timestamp,
+        displayText: 'Synthetic rights policy for test.',
+        policySha256: 'a'.repeat(64),
+        acceptedAt: null,
+      }),
+      acceptCurrentPublicationRightsPolicy: vi.fn().mockResolvedValue({
+        id: '55555555-5555-4555-8555-555555555555',
+        policyVersion: 'rights-v1',
+        policySha256: 'a'.repeat(64),
+        acceptedAt: timestamp,
+      }),
       updatePrivateManuscript: vi.fn().mockImplementation((_workId, values) =>
         Promise.resolve({
           ...manuscript(),
@@ -125,6 +140,31 @@ describe('AuthoringOutlinePageComponent', () => {
     expect(fixture.nativeElement.textContent).toContain('Chưa có chương nào');
     expect(fixture.nativeElement.querySelector('input')).toBeNull();
     expect(fixture.nativeElement.querySelector('a[href*="/reader/"]')).toBeNull();
+    expect(fixture.nativeElement.textContent).toContain('Bản thảo riêng tư · Chưa xuất bản');
+    expect(api.getCurrentPublicationRightsPolicy).not.toHaveBeenCalled();
+  });
+
+  it('shows the rights policy only after the author opens the policy step', async () => {
+    const fixture = TestBed.createComponent(AuthoringOutlinePageComponent);
+    fixture.detectChanges();
+    await settle(fixture);
+    fixture.detectChanges();
+
+    const openPolicy = [...fixture.nativeElement.querySelectorAll('button')].find((button) =>
+      button.textContent.includes('Kiểm tra chính sách quyền xuất bản'),
+    ) as HTMLButtonElement;
+    expect(openPolicy).toBeTruthy();
+    expect(api.getCurrentPublicationRightsPolicy).not.toHaveBeenCalled();
+
+    openPolicy.click();
+    fixture.detectChanges();
+    await settle(fixture);
+    fixture.detectChanges();
+
+    expect(api.getCurrentPublicationRightsPolicy).toHaveBeenCalledWith(workId);
+    expect(fixture.nativeElement.textContent).toContain('Synthetic rights policy for test.');
+    expect(fixture.nativeElement.textContent).toContain('Chưa xuất bản');
+    expect(fixture.nativeElement.querySelector('input[type="checkbox"]')).toBeTruthy();
   });
 
   it('edits only private manuscript metadata and returns focus after a confirmed save', async () => {

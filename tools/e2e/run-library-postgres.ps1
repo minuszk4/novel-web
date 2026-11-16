@@ -303,6 +303,9 @@ try {
     }
 
     $authoringOutlineFixtureSql = ''
+    $authoringOutlineCreationFixtureSql = if ($IncludeAuthoringOutline) {
+        "INSERT INTO authoring_manuscript_creations (actor_user_id, idempotency_key, request_sha256, work_id) VALUES ('$userId', 'live-outline-fixture-0001', decode(repeat('00', 32), 'hex'), '$secondWorkId');"
+    } else { '' }
     if ($IncludeAuthoringOutline -and $IncludeAuthoringChapterEditor) {
         $authoringOutlineFixtureSql = "INSERT INTO chapters (id, work_id, volume_id, ordinal, title, source_language, source_revision_id, status) SELECT gen_random_uuid(), '$secondWorkId', NULL, seed.ordinal, 'Live Outline Seed ' || seed.ordinal, 'en', NULL, 'draft' FROM generate_series(2, 25) AS seed(ordinal);`nINSERT INTO chapters (id, work_id, volume_id, ordinal, title, source_language, source_revision_id, status) VALUES ('$authoringEditorChapterId', '$secondWorkId', NULL, 26, 'Live Outline Seed 26', 'en', NULL, 'draft');"
     } elseif ($IncludeAuthoringOutline) {
@@ -383,6 +386,7 @@ INSERT INTO works (id, library_id, owner_user_id, title, author, source_language
 VALUES
 ('$firstWorkId', '$libraryId', '$userId', 'Live E2E Novel One', 'E2E Author', 'vi', 'imported', 'private', 'active'),
 ('$secondWorkId', '$libraryId', '$userId', 'Live E2E Novel Two', 'E2E Author', 'en', '$secondWorkSourceKind', 'private', 'active');
+$authoringOutlineCreationFixtureSql
 INSERT INTO volumes (id, work_id, ordinal, title)
 VALUES
 ('$readerVolumeId', '$firstWorkId', 1, 'Live E2E Volume'),

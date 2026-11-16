@@ -19,6 +19,7 @@ import {
   newAuthoringIdempotencyKey,
 } from '../core/authoring-api.service';
 import { PolicyOnboardingService } from '../core/policy-onboarding.service';
+import { PublicationRightsPolicyPanelComponent } from './publication-rights-policy-panel.component';
 
 type OutlinePageState = 'loading' | 'ready' | 'error';
 
@@ -36,7 +37,7 @@ type ManuscriptMetadataFieldErrors = Partial<Record<keyof UpdatePrivateManuscrip
 
 @Component({
   selector: 'app-authoring-outline-page',
-  imports: [RouterLink],
+  imports: [RouterLink, PublicationRightsPolicyPanelComponent],
   templateUrl: './authoring-outline-page.component.html',
   styleUrl: './authoring-outline-page.component.css',
 })

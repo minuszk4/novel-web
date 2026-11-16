@@ -10,7 +10,16 @@ const idempotencyKey = 'author-draft-create-key-0001';
 const createdAt = '2026-11-14T12:00:00Z';
 const chapterId = '22222222-2222-4222-8222-222222222222';
 const revisionId = '44444444-4444-4444-8444-444444444444';
+const policyAcceptanceId = '55555555-5555-4555-8555-555555555555';
+const policyIdempotencyKey = '66666666-6666-4666-8666-666666666666';
 const chapterCreatedAt = '2026-11-14T12:30:00Z';
+const rightsPolicy = {
+  version: 'rights-v1',
+  effectiveAt: '2026-11-15T00:00:00Z',
+  displayText: 'Chính sách quyền xuất bản kiểm thử.',
+  policySha256: 'a'.repeat(64),
+  acceptedAt: null,
+};
 const createdDraft = {
   id: workId,
   title: 'Hành trình tu luyện',
@@ -171,6 +180,174 @@ describe('AuthoringApiService', () => {
       publicationState: 'draft',
       metadataVersion: 1,
       etag: '"manuscript-metadata-1"',
+    });
+  });
+
+  it('reads only a strict no-store publication rights policy for the requested manuscript', async () => {
+    const pending = api.getCurrentPublicationRightsPolicy(workId);
+    const request = http.expectOne(
+      `/api/v1/authoring/manuscripts/${workId}/publication/rights-policy`,
+    );
+    expect(request.request.method).toBe('GET');
+    request.flush(rightsPolicy, {
+      status: 200,
+      statusText: 'OK',
+      headers: new HttpHeaders({ 'Cache-Control': 'no-store' }),
+    });
+
+    await expect(pending).resolves.toEqual(rightsPolicy);
+  });
+
+  it('rejects malformed, oversized, unexpected or cacheable publication policy responses', async () => {
+    const unexpected = api.getCurrentPublicationRightsPolicy(workId);
+    http.expectOne(`/api/v1/authoring/manuscripts/${workId}/publication/rights-policy`).flush(
+      { ...rightsPolicy, ownerUserId: 'must not be returned' },
+      {
+        status: 200,
+        statusText: 'OK',
+        headers: new HttpHeaders({ 'Cache-Control': 'no-store' }),
+      },
+    );
+    await expect(unexpected).rejects.toMatchObject({
+      status: 502,
+      code: 'INVALID_PUBLICATION_RIGHTS_POLICY_RESPONSE',
+    });
+
+    const oversized = api.getCurrentPublicationRightsPolicy(workId);
+    http.expectOne(`/api/v1/authoring/manuscripts/${workId}/publication/rights-policy`).flush(
+      { ...rightsPolicy, displayText: '界'.repeat(11_000) },
+      {
+        status: 200,
+        statusText: 'OK',
+        headers: new HttpHeaders({ 'Cache-Control': 'no-store' }),
+      },
+    );
+    await expect(oversized).rejects.toMatchObject({
+      status: 502,
+      code: 'INVALID_PUBLICATION_RIGHTS_POLICY_RESPONSE',
+    });
+
+    const cacheable = api.getCurrentPublicationRightsPolicy(workId);
+    http
+      .expectOne(`/api/v1/authoring/manuscripts/${workId}/publication/rights-policy`)
+      .flush(rightsPolicy, { status: 200, statusText: 'OK' });
+    await expect(cacheable).rejects.toMatchObject({
+      status: 502,
+      code: 'INVALID_PUBLICATION_RIGHTS_POLICY_RESPONSE',
+    });
+  });
+
+  it('posts explicit publication policy confirmation with CSRF and the supplied UUID idempotency key', async () => {
+    const pending = api.acceptCurrentPublicationRightsPolicy(
+      workId,
+      rightsPolicy.version,
+      rightsPolicy.policySha256,
+      policyIdempotencyKey,
+    );
+    await flushCsrf(http);
+
+    const request = http.expectOne(
+      `/api/v1/authoring/manuscripts/${workId}/publication/rights-policy/acceptance`,
+    );
+    expect(request.request.method).toBe('POST');
+    expect(request.request.headers.get('X-CSRF-Token')).toBe(csrfToken);
+    expect(request.request.headers.get('Idempotency-Key')).toBe(policyIdempotencyKey);
+    expect(request.request.body).toEqual({ policyVersion: rightsPolicy.version, confirmed: true });
+    request.flush(
+      {
+        id: policyAcceptanceId,
+        policyVersion: rightsPolicy.version,
+        policySha256: rightsPolicy.policySha256,
+        acceptedAt: '2026-11-15T12:30:00Z',
+      },
+      {
+        status: 200,
+        statusText: 'OK',
+        headers: new HttpHeaders({ 'Cache-Control': 'no-store' }),
+      },
+    );
+
+    await expect(pending).resolves.toMatchObject({
+      id: policyAcceptanceId,
+      policyVersion: rightsPolicy.version,
+      acceptedAt: '2026-11-15T12:30:00Z',
+    });
+  });
+
+  it('blocks malformed acceptance requests and rejects a receipt for a different policy digest', async () => {
+    await expect(
+      api.acceptCurrentPublicationRightsPolicy(
+        workId,
+        'bad version',
+        rightsPolicy.policySha256,
+        policyIdempotencyKey,
+      ),
+    ).rejects.toMatchObject({ status: 400, code: 'INVALID_PUBLICATION_RIGHTS_ACCEPTANCE' });
+    await expect(
+      api.acceptCurrentPublicationRightsPolicy(
+        workId,
+        rightsPolicy.version,
+        'bad-digest',
+        policyIdempotencyKey,
+      ),
+    ).rejects.toMatchObject({ status: 400, code: 'INVALID_PUBLICATION_RIGHTS_ACCEPTANCE' });
+    await expect(
+      api.acceptCurrentPublicationRightsPolicy(
+        workId,
+        rightsPolicy.version,
+        rightsPolicy.policySha256,
+        'not-a-uuid',
+      ),
+    ).rejects.toMatchObject({ status: 400, code: 'INVALID_PUBLICATION_RIGHTS_ACCEPTANCE' });
+    http.expectNone((request) => request.url.includes('/publication/rights-policy'));
+
+    const mismatch = api.acceptCurrentPublicationRightsPolicy(
+      workId,
+      rightsPolicy.version,
+      rightsPolicy.policySha256,
+      policyIdempotencyKey,
+    );
+    await flushCsrf(http);
+    http
+      .expectOne(
+        `${'/api/v1/authoring/manuscripts/' + workId}/publication/rights-policy/acceptance`,
+      )
+      .flush(
+        {
+          id: policyAcceptanceId,
+          policyVersion: rightsPolicy.version,
+          policySha256: 'b'.repeat(64),
+          acceptedAt: '2026-11-15T12:30:00Z',
+        },
+        {
+          status: 200,
+          statusText: 'OK',
+          headers: new HttpHeaders({ 'Cache-Control': 'no-store' }),
+        },
+      );
+    await expect(mismatch).rejects.toMatchObject({
+      status: 502,
+      code: 'INVALID_PUBLICATION_RIGHTS_ACCEPTANCE_RESPONSE',
+    });
+  });
+
+  it('preserves safe API problem codes for publication policy stale/version conflicts', async () => {
+    const pending = api.acceptCurrentPublicationRightsPolicy(
+      workId,
+      rightsPolicy.version,
+      rightsPolicy.policySha256,
+      policyIdempotencyKey,
+    );
+    await flushCsrf(http);
+    http
+      .expectOne(`/api/v1/authoring/manuscripts/${workId}/publication/rights-policy/acceptance`)
+      .flush(
+        { code: 'PUBLICATION_RIGHTS_POLICY_STALE', currentPolicyVersion: 'rights-v2' },
+        { status: 409, statusText: 'Conflict' },
+      );
+    await expect(pending).rejects.toMatchObject({
+      status: 409,
+      code: 'PUBLICATION_RIGHTS_POLICY_STALE',
     });
   });
 

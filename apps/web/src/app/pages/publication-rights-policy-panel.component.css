@@ -1,0 +1,236 @@
+:host {
+  display: block;
+  min-width: 0;
+}
+
+.authoring-rights-panel {
+  min-width: 0;
+  margin: 16px 0;
+  padding: 20px;
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow-soft);
+}
+
+.authoring-rights-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.authoring-rights-heading > div,
+.authoring-rights-content {
+  min-width: 0;
+}
+
+.authoring-rights-heading .eyebrow {
+  margin: 0 0 5px;
+}
+
+.authoring-rights-heading h2,
+.authoring-rights-content h3 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.authoring-rights-heading p:not(.eyebrow) {
+  max-width: 660px;
+  margin: 7px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.authoring-rights-toggle {
+  flex: 0 0 auto;
+  min-height: 46px;
+}
+
+.authoring-rights-content {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.authoring-rights-content h3:focus-visible {
+  border-radius: 3px;
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 4px;
+}
+
+.authoring-rights-status,
+.authoring-rights-help,
+.authoring-rights-disclaimer {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.authoring-rights-status {
+  margin: 12px 0;
+}
+
+.authoring-rights-metadata {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+  margin: 12px 0;
+}
+
+.authoring-rights-metadata > div {
+  min-width: 0;
+}
+
+.authoring-rights-metadata dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.authoring-rights-metadata dd {
+  margin: 2px 0 0;
+  font-size: 14px;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.authoring-rights-document {
+  max-height: 28rem;
+  overflow: auto;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-soft);
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  scrollbar-gutter: stable;
+  line-height: 1.65;
+}
+
+.authoring-rights-document:focus-visible,
+.authoring-rights-checkbox input:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 3px;
+}
+
+.authoring-rights-help {
+  margin: 14px 0 8px;
+}
+
+.authoring-rights-checkbox {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--surface-soft);
+  cursor: pointer;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.authoring-rights-checkbox input {
+  flex: 0 0 20px;
+  width: 20px;
+  height: 20px;
+  margin: 1px 0 0;
+  accent-color: var(--primary);
+}
+
+.authoring-rights-checkbox input:disabled {
+  cursor: not-allowed;
+}
+
+.authoring-rights-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 14px;
+}
+
+.authoring-rights-actions .button {
+  min-height: 46px;
+}
+
+.authoring-rights-success,
+.authoring-rights-unavailable,
+.authoring-rights-error {
+  margin: 14px 0 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.authoring-rights-success {
+  border-color: #cfe5d6;
+  color: #1b5b31;
+  background: var(--success-soft);
+  font-size: 13px;
+}
+
+.authoring-rights-disclaimer {
+  margin: 10px 0 0;
+}
+
+.authoring-rights-unavailable {
+  border-color: #e5d4b7;
+  background: var(--warning-soft);
+}
+
+.authoring-rights-unavailable p,
+.authoring-rights-error p {
+  margin: 0 0 8px;
+}
+
+.authoring-rights-unavailable .button {
+  min-height: 44px;
+  margin-top: 4px;
+}
+
+.authoring-rights-error {
+  border-color: #edc9ca;
+  color: var(--error);
+  background: #fff7f7;
+  font-size: 13px;
+}
+
+.authoring-rights-error a,
+.authoring-rights-error button {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  margin-top: 2px;
+  color: var(--primary-dark);
+  font-weight: 650;
+}
+
+@media (max-width: 680px) {
+  .authoring-rights-panel {
+    padding: 16px;
+  }
+
+  .authoring-rights-heading {
+    display: grid;
+    gap: 14px;
+  }
+
+  .authoring-rights-toggle,
+  .authoring-rights-actions,
+  .authoring-rights-actions .button {
+    width: 100%;
+  }
+
+  .authoring-rights-actions {
+    display: grid;
+  }
+}

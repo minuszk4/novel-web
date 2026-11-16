@@ -40,6 +40,21 @@ export interface UpdatePrivateManuscriptInput {
   language: string;
 }
 
+export interface PublicationRightsPolicy {
+  version: string;
+  effectiveAt: string;
+  displayText: string;
+  policySha256: string;
+  acceptedAt: string | null;
+}
+
+export interface PublicationRightsPolicyAcceptance {
+  id: string;
+  policyVersion: string;
+  policySha256: string;
+  acceptedAt: string;
+}
+
 export interface PrivateManuscriptListPage {
   items: PrivateManuscriptListItem[];
   nextCursor: string | null;
@@ -242,6 +257,63 @@ export class AuthoringApiService {
         throw invalidManuscriptDetailResponse();
       }
       return { ...details, etag };
+    } catch (error) {
+      throw toAuthoringApiError(error);
+    }
+  }
+
+  async getCurrentPublicationRightsPolicy(workId: string): Promise<PublicationRightsPolicy> {
+    if (!isUuid(workId)) throw new AuthoringApiError(400, 'INVALID_AUTHORING_QUERY');
+
+    try {
+      const response = await firstValueFrom(
+        this.http
+          .get<unknown>(`${manuscriptsUrl}/${workId}/publication/rights-policy`, {
+            observe: 'response',
+          })
+          .pipe(timeout(requestTimeoutMs)),
+      );
+      if (response.status !== 200 || response.headers.get('Cache-Control') !== 'no-store') {
+        throw invalidPublicationRightsPolicyResponse();
+      }
+      return parsePublicationRightsPolicy(response.body);
+    } catch (error) {
+      throw toAuthoringApiError(error);
+    }
+  }
+
+  async acceptCurrentPublicationRightsPolicy(
+    workId: string,
+    policyVersion: string,
+    policySha256: string,
+    idempotencyKey: string,
+  ): Promise<PublicationRightsPolicyAcceptance> {
+    if (
+      !isUuid(workId) ||
+      !isPublicationRightsPolicyVersion(policyVersion) ||
+      !isSha256(policySha256) ||
+      !isUuid(idempotencyKey)
+    ) {
+      throw new AuthoringApiError(400, 'INVALID_PUBLICATION_RIGHTS_ACCEPTANCE');
+    }
+
+    try {
+      const headers = (await this.csrfHeaders())
+        .set('Content-Type', 'application/json')
+        .set('Idempotency-Key', idempotencyKey);
+      const response = await firstValueFrom(
+        this.http
+          .post<unknown>(
+            `${manuscriptsUrl}/${workId}/publication/rights-policy/acceptance`,
+            { policyVersion, confirmed: true },
+            { headers, observe: 'response' },
+          )
+          .pipe(timeout(requestTimeoutMs)),
+      );
+      if (response.status !== 200 || response.headers.get('Cache-Control') !== 'no-store') {
+        throw invalidPublicationRightsAcceptanceResponse();
+      }
+      return parsePublicationRightsPolicyAcceptance(response.body, policyVersion, policySha256);
     } catch (error) {
       throw toAuthoringApiError(error);
     }
@@ -615,6 +687,46 @@ function parseManuscriptDetails(value: unknown): Omit<PrivateManuscriptDetails, 
   };
 }
 
+function parsePublicationRightsPolicy(value: unknown): PublicationRightsPolicy {
+  if (
+    !isRecord(value) ||
+    hasUnexpectedFields(value, [
+      'version',
+      'effectiveAt',
+      'displayText',
+      'policySha256',
+      'acceptedAt',
+    ]) ||
+    !isPublicationRightsPolicyVersion(value['version']) ||
+    !isInstant(value['effectiveAt']) ||
+    !isBoundedString(value['displayText'], 1, 32_768) ||
+    new TextEncoder().encode(value['displayText']).byteLength > 32_768 ||
+    !isSha256(value['policySha256']) ||
+    !(value['acceptedAt'] === null || isInstant(value['acceptedAt']))
+  ) {
+    throw invalidPublicationRightsPolicyResponse();
+  }
+  return value as unknown as PublicationRightsPolicy;
+}
+
+function parsePublicationRightsPolicyAcceptance(
+  value: unknown,
+  expectedVersion: string,
+  expectedSha256: string,
+): PublicationRightsPolicyAcceptance {
+  if (
+    !isRecord(value) ||
+    hasUnexpectedFields(value, ['id', 'policyVersion', 'policySha256', 'acceptedAt']) ||
+    !isUuid(value['id']) ||
+    value['policyVersion'] !== expectedVersion ||
+    value['policySha256'] !== expectedSha256 ||
+    !isInstant(value['acceptedAt'])
+  ) {
+    throw invalidPublicationRightsAcceptanceResponse();
+  }
+  return value as unknown as PublicationRightsPolicyAcceptance;
+}
+
 function parseOutlineItem(value: unknown): PrivateChapterOutlineItem {
   if (
     !isRecord(value) ||
@@ -837,6 +949,14 @@ function isAuthoringChapterStatus(value: unknown): value is AuthoringChapterStat
   return value === 'draft' || value === 'ready' || value === 'unavailable';
 }
 
+function isPublicationRightsPolicyVersion(value: unknown): value is string {
+  return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value);
+}
+
+function isSha256(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+}
+
 function isCursor(value: string): boolean {
   return value.length <= 2048 && cursorPattern.test(value);
 }
@@ -875,6 +995,14 @@ function invalidManuscriptListResponse(): AuthoringApiError {
 
 function invalidManuscriptDetailResponse(): AuthoringApiError {
   return new AuthoringApiError(502, 'INVALID_AUTHORING_MANUSCRIPT_RESPONSE');
+}
+
+function invalidPublicationRightsPolicyResponse(): AuthoringApiError {
+  return new AuthoringApiError(502, 'INVALID_PUBLICATION_RIGHTS_POLICY_RESPONSE');
+}
+
+function invalidPublicationRightsAcceptanceResponse(): AuthoringApiError {
+  return new AuthoringApiError(502, 'INVALID_PUBLICATION_RIGHTS_ACCEPTANCE_RESPONSE');
 }
 
 function invalidChapterResponse(): AuthoringApiError {

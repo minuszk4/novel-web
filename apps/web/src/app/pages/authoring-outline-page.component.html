@@ -243,6 +243,10 @@
       </div>
     </aside>
 
+    @if (manuscript(); as details) {
+      <app-publication-rights-policy-panel [workId]="details.id" [workTitle]="details.title" />
+    }
+
     @if (createAnnouncement()) {
       <p class="authoring-outline-announcement" role="status" aria-live="polite">
         {{ createAnnouncement() }}

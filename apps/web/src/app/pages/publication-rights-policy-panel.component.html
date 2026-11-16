@@ -1,0 +1,138 @@
+<section class="authoring-rights-panel" aria-labelledby="authoring-rights-title">
+  <div class="authoring-rights-heading">
+    <div>
+      <p class="eyebrow">QUYỀN XUẤT BẢN</p>
+      <h2 id="authoring-rights-title">Bản thảo riêng tư · Chưa xuất bản</h2>
+      <p>
+        Xem chính sách chỉ ghi nhận xác nhận của bạn. Việc này không xác minh quyền tác giả hoặc
+        giấy phép và không gửi bản thảo đi duyệt.
+      </p>
+    </div>
+    <button
+      class="button button-outline authoring-rights-toggle"
+      type="button"
+      [disabled]="isBusy || state() === 'uncertain'"
+      [attr.aria-expanded]="isOpen"
+      [attr.aria-controls]="isOpen ? 'authoring-rights-policy-content' : null"
+      (click)="togglePolicy()"
+    >
+      {{ isOpen ? 'Thu gọn chính sách' : 'Kiểm tra chính sách quyền xuất bản' }}
+    </button>
+  </div>
+
+  @if (isOpen) {
+    <div id="authoring-rights-policy-content" class="authoring-rights-content">
+      <h3 #policyHeading id="authoring-rights-policy-heading" tabindex="-1">
+        Chính sách quyền xuất bản
+      </h3>
+
+      @if (state() === 'loading') {
+        <p class="authoring-rights-status" role="status" aria-live="polite">
+          Đang tải chính sách hiện hành…
+        </p>
+      } @else if (state() === 'unavailable') {
+        <div class="authoring-rights-unavailable" role="status">
+          <p>{{ errorMessage() }}</p>
+          <p>Không thể gửi duyệt hoặc công khai khi chưa có chính sách được phê duyệt.</p>
+          <button class="button button-outline" type="button" (click)="retryPolicyRead()">
+            Kiểm tra lại chính sách
+          </button>
+        </div>
+      } @else if (state() === 'error') {
+        <div class="authoring-rights-error" role="alert">
+          <p>{{ errorMessage() }}</p>
+          @if (recoveryUrl; as url) {
+            <a [routerLink]="url" [queryParams]="recoveryQueryParams">{{ recoveryLabel }}</a>
+          } @else {
+            <button class="text-button" type="button" (click)="retryPolicyRead()">
+              Tải lại chính sách
+            </button>
+          }
+        </div>
+      } @else if (policy(); as current) {
+        @if (announcement() && state() !== 'accepted') {
+          <p class="authoring-rights-status" role="status" aria-live="polite">
+            {{ announcement() }}
+          </p>
+        }
+
+        <dl class="authoring-rights-metadata">
+          <div>
+            <dt>Phiên bản</dt>
+            <dd>{{ current.version }}</dd>
+          </div>
+          <div>
+            <dt>Hiệu lực từ</dt>
+            <dd>{{ formatEffectiveDate(current.effectiveAt) }} (UTC)</dd>
+          </div>
+        </dl>
+        <div
+          class="authoring-rights-document"
+          role="region"
+          tabindex="0"
+          [attr.aria-label]="'Nội dung chính sách phiên bản ' + current.version"
+        >
+          {{ current.displayText }}
+        </div>
+
+        @if (state() === 'accepted') {
+          <p class="authoring-rights-success" role="status" aria-live="polite">
+            {{ announcement() }}
+          </p>
+          <p class="authoring-rights-disclaimer">
+            Xác nhận này không xác minh quyền tác giả/giấy phép, không tạo quyền khai thác và không
+            làm bản thảo được duyệt hoặc công khai.
+          </p>
+        } @else {
+          <p id="authoring-rights-confirm-help" class="authoring-rights-help">
+            Đây chỉ là xác nhận bạn đã đọc chính sách phiên bản {{ current.version }} cho bản thảo
+            hiện tại. Không gửi nội dung chương hoặc tài liệu riêng tư khi xác nhận.
+          </p>
+          <label class="authoring-rights-checkbox">
+            <input
+              type="checkbox"
+              [checked]="confirmed()"
+              [disabled]="state() === 'submitting' || state() === 'uncertain'"
+              aria-describedby="authoring-rights-confirm-help"
+              (change)="updateConfirmation($event)"
+            />
+            <span>Tôi đã đọc và xác nhận chính sách này cho bản thảo {{ workTitle }}</span>
+          </label>
+
+          @if (errorMessage()) {
+            <div class="authoring-rights-error" role="alert" aria-live="assertive">
+              <p>{{ errorMessage() }}</p>
+              @if (recoveryUrl; as url) {
+                <a [routerLink]="url" [queryParams]="recoveryQueryParams">{{ recoveryLabel }}</a>
+              }
+            </div>
+          }
+          @if (state() === 'uncertain') {
+            <p class="authoring-rights-status" role="status" aria-live="polite">
+              Lần thử lại sẽ dùng đúng policy, nội dung xác nhận và mã an toàn như lần trước.
+            </p>
+          }
+
+          <div class="authoring-rights-actions">
+            <button
+              class="button button-primary"
+              type="button"
+              [disabled]="!confirmed() || state() === 'submitting'"
+              (click)="state() === 'uncertain' ? retryUncertainAcceptance() : confirmPolicy()"
+            >
+              @if (state() === 'submitting') {
+                Đang ghi nhận…
+              } @else if (state() === 'uncertain') {
+                Thử xác nhận lại
+              } @else if (errorMessage()) {
+                Xác nhận lại
+              } @else {
+                Xác nhận đã đọc chính sách
+              }
+            </button>
+          </div>
+        }
+      }
+    </div>
+  }
+</section>
