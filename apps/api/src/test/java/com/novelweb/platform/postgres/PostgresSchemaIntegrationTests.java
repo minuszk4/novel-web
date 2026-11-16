@@ -235,6 +235,10 @@ class PostgresSchemaIntegrationTests {
           "publication_rights_policy_acceptance_idempotency",
           "publication_scope_access_approvals",
           "publication_scope_access_revocations",
+          "publication_requests",
+          "publication_request_scope_snapshots",
+          "publication_request_scope_claims",
+          "publication_review_events",
           "import_jobs",
           "import_actor_rate_limits",
           "import_parse_jobs",
@@ -422,7 +426,7 @@ class PostgresSchemaIntegrationTests {
             connection.prepareStatement("SELECT COUNT(*) FROM databasechangelog");
         ResultSet changesets = changesetCount.executeQuery()) {
       changesets.next();
-      assertEquals(146, changesets.getInt(1), "unexpected number of applied changesets");
+      assertEquals(147, changesets.getInt(1), "unexpected number of applied changesets");
     }
 
     Set<String> actualTables = new HashSet<>();
@@ -616,7 +620,9 @@ class PostgresSchemaIntegrationTests {
                 try (Connection connection = dataSource.getConnection();
                     java.sql.Statement truncate = connection.createStatement()) {
                   truncate.execute(
-                      "TRUNCATE publication_rights_policy_acceptance_idempotency,"
+                      "TRUNCATE publication_review_events, publication_request_scope_claims,"
+                          + " publication_request_scope_snapshots, publication_requests,"
+                          + " publication_rights_policy_acceptance_idempotency,"
                           + " publication_rights_policy_acceptances");
                 }
               });

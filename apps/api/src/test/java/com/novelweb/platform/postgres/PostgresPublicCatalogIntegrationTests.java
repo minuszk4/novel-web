@@ -19,6 +19,7 @@ import java.security.NoSuchAlgorithmException;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
+import java.sql.Savepoint;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -364,6 +365,159 @@ class PostgresPublicCatalogIntegrationTests {
     assertFalse(publicationScopeIsCurrent(approvedWork));
     assertFalse(
         get("/api/v1/catalog/works?limit=50").body().toString().contains(approvedWork.toString()));
+  }
+
+  @Test
+  void publicationRequestLedgerBindsSnapshotsAndSerializesReviewerEvents() throws Exception {
+    UUID workId =
+        createWork(
+            "Private review request",
+            "Synthetic Author",
+            "vi",
+            "authored",
+            "private",
+            "active",
+            true);
+    try (Connection connection = dataSource.getConnection()) {
+      insertSyntheticRightsAcceptance(connection, workId);
+    }
+    UUID requestId = UUID.randomUUID();
+    byte[] requestKeyHash = sha256(UUID.randomUUID().toString().getBytes(StandardCharsets.UTF_8));
+    byte[] requestHash = sha256("synthetic-publication-request".getBytes(StandardCharsets.UTF_8));
+    String metadataSnapshot = publicationSnapshot(workId, "PUBLIC_METADATA");
+    String chapterSnapshot = publicationSnapshot(workId, "CHAPTER_TEXT");
+    byte[] metadataDigest = sha256(metadataSnapshot.getBytes(StandardCharsets.UTF_8));
+    byte[] chapterDigest = sha256(chapterSnapshot.getBytes(StandardCharsets.UTF_8));
+    byte[] snapshotDigest =
+        sha256(
+            ("PUBLIC_METADATA\n" + metadataSnapshot + "\nCHAPTER_TEXT\n" + chapterSnapshot)
+                .getBytes(StandardCharsets.UTF_8));
+
+    try (Connection connection = dataSource.getConnection()) {
+      connection.setAutoCommit(false);
+      try {
+        try (PreparedStatement insert =
+            connection.prepareStatement(
+                """
+                    INSERT INTO publication_requests (
+                        id, work_id, owner_user_id, request_version, policy_version,
+                        policy_sha256, snapshot_sha256, idempotency_key_sha256, request_sha256)
+                    VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?)
+                    """)) {
+          insert.setObject(1, requestId);
+          insert.setObject(2, workId);
+          insert.setObject(3, userId);
+          insert.setString(4, publicationPolicyVersion);
+          insert.setBytes(5, publicationPolicySha256);
+          insert.setBytes(6, snapshotDigest);
+          insert.setBytes(7, requestKeyHash);
+          insert.setBytes(8, requestHash);
+          assertEquals(1, insert.executeUpdate());
+        }
+        insertPublicationRequestScope(
+            connection, requestId, "PUBLIC_METADATA", metadataSnapshot, metadataDigest);
+        insertPublicationRequestScope(
+            connection, requestId, "CHAPTER_TEXT", chapterSnapshot, chapterDigest);
+        insertPublicationRequestClaim(connection, requestId, "PUBLIC_METADATA", "ORIGINAL_WORK");
+        insertPublicationRequestClaim(connection, requestId, "CHAPTER_TEXT", "NEEDS_REVIEW");
+        insertPublicationReviewEvent(
+            connection,
+            requestId,
+            1,
+            userId,
+            "SUBMITTED",
+            null,
+            "PENDING_REVIEW",
+            null,
+            requestKeyHash,
+            requestHash,
+            snapshotDigest);
+        try (var setConstraints = connection.createStatement()) {
+          setConstraints.execute("SET CONSTRAINTS trg_publication_request_complete IMMEDIATE");
+        }
+        assertEquals("PENDING_REVIEW", currentPublicationRequestState(connection, requestId));
+
+        Savepoint selfReviewAttempt = connection.setSavepoint();
+        SQLException selfReview =
+            assertThrows(
+                SQLException.class,
+                () ->
+                    insertPublicationReviewEvent(
+                        connection,
+                        requestId,
+                        2,
+                        userId,
+                        "NEEDS_INFORMATION",
+                        "PENDING_REVIEW",
+                        "NEEDS_INFORMATION",
+                        "MORE_INFORMATION",
+                        sha256("self-review-key".getBytes(StandardCharsets.UTF_8)),
+                        sha256("self-review-body".getBytes(StandardCharsets.UTF_8)),
+                        snapshotDigest));
+        assertEquals("23514", selfReview.getSQLState());
+        connection.rollback(selfReviewAttempt);
+
+        Savepoint unresolvedClaimAttempt = connection.setSavepoint();
+        SQLException unresolvedClaim =
+            assertThrows(
+                SQLException.class,
+                () ->
+                    insertPublicationReviewEvent(
+                        connection,
+                        requestId,
+                        2,
+                        reviewerId,
+                        "APPROVED",
+                        "PENDING_REVIEW",
+                        "APPROVED_UNPUBLISHED",
+                        "RIGHTS_REVIEWED",
+                        sha256("unresolved-claim-key".getBytes(StandardCharsets.UTF_8)),
+                        sha256("unresolved-claim-body".getBytes(StandardCharsets.UTF_8)),
+                        snapshotDigest));
+        assertEquals("23514", unresolvedClaim.getSQLState());
+        connection.rollback(unresolvedClaimAttempt);
+
+        insertPublicationReviewEvent(
+            connection,
+            requestId,
+            2,
+            reviewerId,
+            "NEEDS_INFORMATION",
+            "PENDING_REVIEW",
+            "NEEDS_INFORMATION",
+            "MORE_INFORMATION",
+            sha256("review-event-key".getBytes(StandardCharsets.UTF_8)),
+            sha256("review-event-body".getBytes(StandardCharsets.UTF_8)),
+            snapshotDigest);
+        assertEquals("NEEDS_INFORMATION", currentPublicationRequestState(connection, requestId));
+
+        Savepoint immutableEventAttempt = connection.setSavepoint();
+        SQLException immutableEvent =
+            assertThrows(
+                SQLException.class,
+                () ->
+                    execute(
+                        connection,
+                        "UPDATE publication_review_events SET reason_code = 'SCOPE_UNCLEAR' WHERE request_id = ?",
+                        requestId));
+        assertEquals("55000", immutableEvent.getSQLState());
+        connection.rollback(immutableEventAttempt);
+
+        Savepoint immutableRequestAttempt = connection.setSavepoint();
+        SQLException immutableRequest =
+            assertThrows(
+                SQLException.class,
+                () ->
+                    execute(
+                        connection,
+                        "UPDATE publication_requests SET request_version = 2 WHERE id = ?",
+                        requestId));
+        assertEquals("55000", immutableRequest.getSQLState());
+        connection.rollback(immutableRequestAttempt);
+      } finally {
+        connection.rollback();
+      }
+    }
   }
 
   @Test
@@ -871,6 +1025,95 @@ class PostgresPublicCatalogIntegrationTests {
       insert.setObject(6, reviewerId);
       insert.setTimestamp(7, requestedApprovalTime);
       assertEquals(1, insert.executeUpdate());
+    }
+  }
+
+  private void insertPublicationRequestScope(
+      Connection connection,
+      UUID requestId,
+      String scopeCode,
+      String snapshot,
+      byte[] snapshotDigest)
+      throws SQLException {
+    try (PreparedStatement insert =
+        connection.prepareStatement(
+            """
+                INSERT INTO publication_request_scope_snapshots (
+                    request_id, scope_code, scope_snapshot, snapshot_sha256)
+                VALUES (?, ?, CAST(? AS JSONB), ?)
+                """)) {
+      insert.setObject(1, requestId);
+      insert.setString(2, scopeCode);
+      insert.setString(3, snapshot);
+      insert.setBytes(4, snapshotDigest);
+      assertEquals(1, insert.executeUpdate());
+    }
+  }
+
+  private void insertPublicationRequestClaim(
+      Connection connection, UUID requestId, String scopeCode, String rightsBasisCode)
+      throws SQLException {
+    try (PreparedStatement insert =
+        connection.prepareStatement(
+            """
+                INSERT INTO publication_request_scope_claims (
+                    request_id, scope_code, rights_basis_code)
+                VALUES (?, ?, ?)
+                """)) {
+      insert.setObject(1, requestId);
+      insert.setString(2, scopeCode);
+      insert.setString(3, rightsBasisCode);
+      assertEquals(1, insert.executeUpdate());
+    }
+  }
+
+  private void insertPublicationReviewEvent(
+      Connection connection,
+      UUID requestId,
+      int eventSequence,
+      UUID actorUserId,
+      String actionCode,
+      String fromState,
+      String toState,
+      String reasonCode,
+      byte[] idempotencyKeyHash,
+      byte[] requestHash,
+      byte[] snapshotHash)
+      throws SQLException {
+    try (PreparedStatement insert =
+        connection.prepareStatement(
+            """
+                INSERT INTO publication_review_events (
+                    id, request_id, event_sequence, actor_user_id, actor_role_code,
+                    action_code, from_state, to_state, reason_code,
+                    idempotency_key_sha256, request_sha256, snapshot_sha256)
+                VALUES (?, ?, ?, ?, 'author', ?, ?, ?, ?, ?, ?, ?)
+                """)) {
+      insert.setObject(1, UUID.randomUUID());
+      insert.setObject(2, requestId);
+      insert.setInt(3, eventSequence);
+      insert.setObject(4, actorUserId);
+      insert.setString(5, actionCode);
+      insert.setString(6, fromState);
+      insert.setString(7, toState);
+      insert.setString(8, reasonCode);
+      insert.setBytes(9, idempotencyKeyHash);
+      insert.setBytes(10, requestHash);
+      insert.setBytes(11, snapshotHash);
+      assertEquals(1, insert.executeUpdate());
+    }
+  }
+
+  private String currentPublicationRequestState(Connection connection, UUID requestId)
+      throws SQLException {
+    try (PreparedStatement select =
+        connection.prepareStatement(
+            "SELECT current_state FROM publication_request_current_state WHERE request_id = ?")) {
+      select.setObject(1, requestId);
+      try (var row = select.executeQuery()) {
+        if (!row.next()) throw new SQLException("Publication request state returned no row");
+        return row.getString(1);
+      }
     }
   }
 
