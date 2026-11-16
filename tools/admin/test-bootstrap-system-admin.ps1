@@ -19,6 +19,7 @@ $containerName = 'novelweb-admin-bootstrap-test-' + [Guid]::NewGuid().ToString('
 $databasePassword = [Guid]::NewGuid().ToString('N')
 $databaseName = 'bootstrap_test'
 $activeUserId = [Guid]::NewGuid().ToString()
+$competingUserId = [Guid]::NewGuid().ToString()
 $inactiveUserId = [Guid]::NewGuid().ToString()
 $operatorTicket = 'TEST-BOOTSTRAP-' + [DateTime]::UtcNow.ToString('yyyyMMddHHmmss')
 $temporaryRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
@@ -90,7 +91,7 @@ exit $LASTEXITCODE
         throw 'The role-assignment migration failed in the disposable database.'
     }
 
-    $seedSql = "INSERT INTO users (id, display_name, status) VALUES ('$activeUserId', 'Synthetic bootstrap account', 'active'), ('$inactiveUserId', 'Synthetic suspended account', 'suspended')"
+    $seedSql = "INSERT INTO users (id, display_name, status) VALUES ('$activeUserId', 'Synthetic bootstrap account A', 'active'), ('$competingUserId', 'Synthetic bootstrap account B', 'active'), ('$inactiveUserId', 'Synthetic suspended account', 'suspended')"
     & $dockerCommand.Source exec $containerName psql -X -v ON_ERROR_STOP=1 -U postgres -d $databaseName -c $seedSql | Out-Null
     if ($LASTEXITCODE -ne 0) {
         throw 'Could not seed the synthetic test accounts.'
@@ -104,18 +105,53 @@ exit $LASTEXITCODE
         '-Ticket', $operatorTicket
     )
     $powershellPath = (Get-Process -Id $PID).Path
-    $validArguments = @('-UserId', $activeUserId, '-ConfirmUserId', $activeUserId) + $commonArguments
-    $successOutput = & $powershellPath -NoLogo -NoProfile -File $bootstrapScript @validArguments 2>&1
-    if ($LASTEXITCODE -ne 0 -or ($successOutput -join "`n") -notmatch 'First system administrator recorded') {
-        throw "The valid bootstrap invocation failed: $($successOutput -join ' ')"
+    $competingInvocations = @()
+    foreach ($targetUserId in @($activeUserId, $competingUserId)) {
+        $childArguments = @('-UserId', $targetUserId, '-ConfirmUserId', $targetUserId) + $commonArguments
+        $processInfo = [Diagnostics.ProcessStartInfo]::new($powershellPath)
+        $processInfo.UseShellExecute = $false
+        $processInfo.CreateNoWindow = $true
+        $processInfo.RedirectStandardOutput = $true
+        $processInfo.RedirectStandardError = $true
+        foreach ($argument in @('-NoLogo', '-NoProfile', '-File', $bootstrapScript) + $childArguments) {
+            $processInfo.ArgumentList.Add([string]$argument)
+        }
+        $process = [Diagnostics.Process]::Start($processInfo)
+        if (-not $process) {
+            throw 'Could not start a competing bootstrap process.'
+        }
+        $competingInvocations += [pscustomobject]@{
+            TargetUserId = $targetUserId
+            Process = $process
+            StandardOutput = $process.StandardOutput.ReadToEndAsync()
+            StandardError = $process.StandardError.ReadToEndAsync()
+        }
     }
 
-    $successCounts = & $dockerCommand.Source exec $containerName psql -X -A -t -U postgres -d $databaseName -c "SELECT (SELECT count(*) FROM security_role_assignments WHERE user_id = '$activeUserId' AND role_code = 'system_admin' AND revoked_at IS NULL)::text || '|' || (SELECT count(*) FROM security_role_assignment_events WHERE target_user_id = '$activeUserId' AND role_code = 'system_admin' AND action_code = 'BOOTSTRAPPED')::text"
+    foreach ($invocation in $competingInvocations) {
+        $invocation.Process.WaitForExit()
+        $invocation | Add-Member -NotePropertyName ExitCode -NotePropertyValue $invocation.Process.ExitCode
+        $invocation | Add-Member -NotePropertyName Output -NotePropertyValue $invocation.StandardOutput.GetAwaiter().GetResult()
+        $invocation | Add-Member -NotePropertyName Error -NotePropertyValue $invocation.StandardError.GetAwaiter().GetResult()
+        $invocation.Process.Dispose()
+    }
+    $successfulInvocations = @($competingInvocations | Where-Object {
+        $_.ExitCode -eq 0 -and $_.Output -match 'First system administrator recorded'
+    })
+    if ($successfulInvocations.Count -ne 1 -or @($competingInvocations | Where-Object { $_.ExitCode -ne 0 }).Count -ne 1) {
+        $outcomes = ($competingInvocations | ForEach-Object { "$($_.TargetUserId):$($_.ExitCode) $($_.Output) $($_.Error)" }) -join ' | '
+        throw "Expected exactly one concurrent bootstrap winner, observed: $outcomes"
+    }
+    $winningUserId = $successfulInvocations[0].TargetUserId
+    $losingUserId = if ($winningUserId -eq $activeUserId) { $competingUserId } else { $activeUserId }
+
+    $successCounts = & $dockerCommand.Source exec $containerName psql -X -A -t -U postgres -d $databaseName -c "SELECT (SELECT count(*) FROM security_role_assignments WHERE user_id = '$winningUserId' AND role_code = 'system_admin' AND revoked_at IS NULL)::text || '|' || (SELECT count(*) FROM security_role_assignment_events WHERE target_user_id = '$winningUserId' AND role_code = 'system_admin' AND action_code = 'BOOTSTRAPPED')::text"
     if ($LASTEXITCODE -ne 0 -or ($successCounts -join '').Trim() -ne '1|1') {
         throw "Expected one active assignment and one bootstrap event; observed: $($successCounts -join '')"
     }
 
-    $mismatchArguments = @('-UserId', $activeUserId, '-ConfirmUserId', $inactiveUserId) + $commonArguments
+    $validArguments = @('-UserId', $winningUserId, '-ConfirmUserId', $winningUserId) + $commonArguments
+    $mismatchArguments = @('-UserId', $winningUserId, '-ConfirmUserId', $losingUserId) + $commonArguments
     & $powershellPath -NoLogo -NoProfile -File $bootstrapScript @mismatchArguments *> $null
     if ($LASTEXITCODE -eq 0) {
         throw 'A mismatched confirmation UUID was unexpectedly accepted.'
@@ -138,6 +174,7 @@ exit $LASTEXITCODE
     }
 
     Write-Output 'PASS: valid bootstrap creates exactly one active admin and audit event.'
+    Write-Output 'PASS: two concurrent bootstrap invocations produce exactly one winner.'
     Write-Output 'PASS: mismatched UUID, replay, and suspended target are rejected.'
     Write-Output 'PASS: final database state remains one active admin and one bootstrap event.'
     Write-Output 'The disposable PostgreSQL 17 container contains synthetic accounts only.'
