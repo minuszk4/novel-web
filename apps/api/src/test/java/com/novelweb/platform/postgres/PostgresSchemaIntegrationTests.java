@@ -1799,6 +1799,352 @@ class PostgresSchemaIntegrationTests {
     }
   }
 
+  @Test
+  void publicationReviewerDecisionsAreAtomicIdempotentAndNeverPublish() throws Exception {
+    UUID unresolvedOwnerId = createSessionTestUser("Publication decision unresolved owner");
+    UUID approvableOwnerId = createSessionTestUser("Publication decision approvable owner");
+    UUID reviewerId = createSessionTestUser("Publication decision reviewer and self owner");
+    UUID blockedReviewerId = createSessionTestUser("Publication decision policy blocked reviewer");
+    UUID policyApproverId = createSessionTestUser("Publication decision policy approver");
+    List<UUID> userIds =
+        List.of(
+            unresolvedOwnerId, approvableOwnerId, reviewerId, blockedReviewerId, policyApproverId);
+    List<SubmittedPublicationFixture> fixtures = new ArrayList<>();
+    String policyVersion = "publication-decision-" + UUID.randomUUID().toString().replace("-", "");
+    String policyText = "Synthetic reviewer-decision policy; not legal text.";
+    byte[] policyDigest = sha256(policyText);
+    try {
+      for (UUID userId : userIds) {
+        if (!userId.equals(blockedReviewerId)) addCurrentPolicyAcceptances(userId);
+      }
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement insert =
+              connection.prepareStatement(
+                  """
+                      INSERT INTO publication_rights_policy_documents
+                          (version, effective_at, display_text, policy_sha256)
+                      VALUES (?, clock_timestamp() - INTERVAL '1 second', ?, ?)
+                      """)) {
+        insert.setString(1, policyVersion);
+        insert.setString(2, policyText);
+        insert.setBytes(3, policyDigest);
+        assertEquals(1, insert.executeUpdate());
+      }
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement approve =
+              connection.prepareStatement(
+                  """
+                      UPDATE publication_rights_policy_documents
+                         SET status = 'APPROVED', approved_at = clock_timestamp(), approved_by = ?
+                       WHERE version = ? AND status = 'DRAFT'
+                      """)) {
+        approve.setObject(1, policyApproverId);
+        approve.setString(2, policyVersion);
+        assertEquals(1, approve.executeUpdate());
+      }
+
+      insertPublicationReviewerAssignment(reviewerId, unresolvedOwnerId);
+      insertPublicationReviewerAssignment(blockedReviewerId, unresolvedOwnerId);
+      SessionService.IssuedSession unresolvedOwnerSession =
+          sessionService.create(unresolvedOwnerId).orElseThrow();
+      SessionService.IssuedSession approvableOwnerSession =
+          sessionService.create(approvableOwnerId).orElseThrow();
+      SessionService.IssuedSession reviewerSession =
+          sessionService.create(reviewerId).orElseThrow();
+      SessionService.IssuedSession blockedReviewerSession =
+          sessionService.create(blockedReviewerId).orElseThrow();
+      jakarta.servlet.http.Cookie reviewerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", reviewerSession.cookieValue());
+      jakarta.servlet.http.Cookie ownerCookie =
+          new jakarta.servlet.http.Cookie(
+              "__Host-novel_session", approvableOwnerSession.cookieValue());
+
+      SubmittedPublicationFixture unresolvedFixture =
+          submitPublicationRequestForReviewQueue(
+              fixtures,
+              unresolvedOwnerId,
+              unresolvedOwnerSession,
+              policyVersion,
+              policyDigest,
+              "Request with unresolved rights declaration");
+      SubmittedPublicationFixture approvableFixture =
+          submitPublicationRequestForReviewQueue(
+              fixtures,
+              approvableOwnerId,
+              approvableOwnerSession,
+              policyVersion,
+              policyDigest,
+              "Request with declared rights",
+              "ORIGINAL_WORK");
+      SubmittedPublicationFixture selfFixture =
+          submitPublicationRequestForReviewQueue(
+              fixtures,
+              reviewerId,
+              reviewerSession,
+              policyVersion,
+              policyDigest,
+              "Reviewer's own private request");
+
+      String csrf = csrfTokenService.tokenFor(reviewerSession.cookieValue());
+      String unresolvedPath =
+          "/api/v1/review/publications/" + unresolvedFixture.requestId() + "/decisions";
+      MvcResult unresolvedDetail =
+          mockMvc
+              .perform(
+                  get("/api/v1/review/publications/{requestId}", unresolvedFixture.requestId())
+                      .cookie(reviewerCookie))
+              .andReturn();
+      assertEquals(200, unresolvedDetail.getResponse().getStatus());
+      String unresolvedEtag = unresolvedDetail.getResponse().getHeader(HttpHeaders.ETAG);
+
+      String approvalBody = "{\"actionCode\":\"APPROVED\",\"reasonCode\":\"RIGHTS_REVIEWED\"}";
+      MvcResult missingCsrf =
+          mockMvc
+              .perform(
+                  post(unresolvedPath)
+                      .cookie(reviewerCookie)
+                      .header(HttpHeaders.IF_MATCH, unresolvedEtag)
+                      .header("Idempotency-Key", "publication-decision-no-csrf-01")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(approvalBody))
+              .andReturn();
+      assertEquals(403, missingCsrf.getResponse().getStatus());
+      assertEquals(1, publicationReviewEventCount(unresolvedFixture.workId()));
+
+      MvcResult unknownBodyField =
+          mockMvc
+              .perform(
+                  post(unresolvedPath)
+                      .cookie(reviewerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, csrf)
+                      .header(HttpHeaders.IF_MATCH, unresolvedEtag)
+                      .header("Idempotency-Key", "publication-decision-extra-field-01")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          "{\"actionCode\":\"NEEDS_INFORMATION\",\"reasonCode\":\"MORE_INFORMATION\",\"note\":\"hidden prose\"}"))
+              .andReturn();
+      assertEquals(400, unknownBodyField.getResponse().getStatus());
+      assertEquals(1, publicationReviewEventCount(unresolvedFixture.workId()));
+
+      MvcResult staleEtag =
+          mockMvc
+              .perform(
+                  post(unresolvedPath)
+                      .cookie(reviewerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, csrf)
+                      .header(HttpHeaders.IF_MATCH, "\"publication-review-" + "0".repeat(64) + "\"")
+                      .header("Idempotency-Key", "publication-decision-stale-etag-01")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(approvalBody))
+              .andReturn();
+      assertEquals(412, staleEtag.getResponse().getStatus());
+      assertEquals(unresolvedEtag, staleEtag.getResponse().getHeader(HttpHeaders.ETAG));
+      assertEquals(1, publicationReviewEventCount(unresolvedFixture.workId()));
+
+      MvcResult unresolvedApproval =
+          mockMvc
+              .perform(
+                  post(unresolvedPath)
+                      .cookie(reviewerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, csrf)
+                      .header(HttpHeaders.IF_MATCH, unresolvedEtag)
+                      .header("Idempotency-Key", "publication-decision-unresolved-01")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(approvalBody))
+              .andReturn();
+      assertEquals(409, unresolvedApproval.getResponse().getStatus());
+      assertTrue(
+          unresolvedApproval.getResponse().getContentAsString().contains("CLAIM_UNRESOLVED"));
+      assertTrue(
+          unresolvedApproval
+              .getResponse()
+              .getHeader(HttpHeaders.CACHE_CONTROL)
+              .contains("no-store"));
+      assertEquals(1, publicationReviewEventCount(unresolvedFixture.workId()));
+
+      String needsInformationBody =
+          "{\"actionCode\":\"NEEDS_INFORMATION\",\"reasonCode\":\"MORE_INFORMATION\"}";
+      String needsInformationKey = "publication-decision-needs-info-01";
+      MvcResult needsInformation =
+          mockMvc
+              .perform(
+                  post(unresolvedPath)
+                      .cookie(reviewerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, csrf)
+                      .header(HttpHeaders.IF_MATCH, unresolvedEtag)
+                      .header("Idempotency-Key", needsInformationKey)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(needsInformationBody))
+              .andReturn();
+      assertEquals(201, needsInformation.getResponse().getStatus());
+      assertTrue(
+          needsInformation.getResponse().getHeader(HttpHeaders.CACHE_CONTROL).contains("no-store"));
+      assertEquals("no-cache", needsInformation.getResponse().getHeader(HttpHeaders.PRAGMA));
+      JsonNode needsInformationReceipt =
+          objectMapper.readTree(needsInformation.getResponse().getContentAsString());
+      assertEquals("NEEDS_INFORMATION", needsInformationReceipt.path("actionCode").asText());
+      assertEquals("NEEDS_INFORMATION", needsInformationReceipt.path("toState").asText());
+      assertEquals(2, needsInformationReceipt.path("eventSequence").asInt());
+
+      MvcResult replayed =
+          mockMvc
+              .perform(
+                  post(unresolvedPath)
+                      .cookie(reviewerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, csrf)
+                      .header(HttpHeaders.IF_MATCH, unresolvedEtag)
+                      .header("Idempotency-Key", needsInformationKey)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(needsInformationBody))
+              .andReturn();
+      assertEquals(201, replayed.getResponse().getStatus());
+      assertEquals(
+          needsInformation.getResponse().getContentAsString(),
+          replayed.getResponse().getContentAsString());
+      assertEquals(2, publicationReviewEventCount(unresolvedFixture.workId()));
+
+      MvcResult keyReuse =
+          mockMvc
+              .perform(
+                  post(unresolvedPath)
+                      .cookie(reviewerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, csrf)
+                      .header(HttpHeaders.IF_MATCH, unresolvedEtag)
+                      .header("Idempotency-Key", needsInformationKey)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"actionCode\":\"REJECTED\",\"reasonCode\":\"OUT_OF_SCOPE\"}"))
+              .andReturn();
+      assertEquals(409, keyReuse.getResponse().getStatus());
+      assertTrue(keyReuse.getResponse().getContentAsString().contains("IDEMPOTENCY_KEY_REUSED"));
+      assertEquals(2, publicationReviewEventCount(unresolvedFixture.workId()));
+
+      MvcResult stateConflict =
+          mockMvc
+              .perform(
+                  post(unresolvedPath)
+                      .cookie(reviewerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, csrf)
+                      .header(
+                          HttpHeaders.IF_MATCH,
+                          needsInformation.getResponse().getHeader(HttpHeaders.ETAG))
+                      .header("Idempotency-Key", "publication-decision-after-needs-info-01")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"actionCode\":\"REJECTED\",\"reasonCode\":\"OUT_OF_SCOPE\"}"))
+              .andReturn();
+      assertEquals(409, stateConflict.getResponse().getStatus());
+      assertEquals(2, publicationReviewEventCount(unresolvedFixture.workId()));
+
+      MvcResult selfReview =
+          mockMvc
+              .perform(
+                  post("/api/v1/review/publications/{requestId}/decisions", selfFixture.requestId())
+                      .cookie(reviewerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, csrf)
+                      .header(HttpHeaders.IF_MATCH, unresolvedEtag)
+                      .header("Idempotency-Key", "publication-decision-self-0001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(needsInformationBody))
+              .andReturn();
+      assertEquals(404, selfReview.getResponse().getStatus());
+
+      jakarta.servlet.http.Cookie blockedReviewerCookie =
+          new jakarta.servlet.http.Cookie(
+              "__Host-novel_session", blockedReviewerSession.cookieValue());
+      MvcResult missingPolicyAcceptance =
+          mockMvc
+              .perform(
+                  post(unresolvedPath)
+                      .cookie(blockedReviewerCookie)
+                      .header(
+                          SessionCsrfTokenService.TOKEN_HEADER_NAME,
+                          csrfTokenService.tokenFor(blockedReviewerSession.cookieValue()))
+                      .header(HttpHeaders.IF_MATCH, unresolvedEtag)
+                      .header("Idempotency-Key", "publication-decision-policy-0001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(needsInformationBody))
+              .andReturn();
+      assertEquals(403, missingPolicyAcceptance.getResponse().getStatus());
+      assertTrue(
+          missingPolicyAcceptance
+              .getResponse()
+              .getContentAsString()
+              .contains("POLICY_ACCEPTANCE_REQUIRED"));
+
+      MvcResult approvalDetail =
+          mockMvc
+              .perform(
+                  get("/api/v1/review/publications/{requestId}", approvableFixture.requestId())
+                      .cookie(reviewerCookie))
+              .andReturn();
+      assertEquals(200, approvalDetail.getResponse().getStatus());
+      String approvalEtag = approvalDetail.getResponse().getHeader(HttpHeaders.ETAG);
+      MvcResult approved =
+          mockMvc
+              .perform(
+                  post(
+                          "/api/v1/review/publications/{requestId}/decisions",
+                          approvableFixture.requestId())
+                      .cookie(reviewerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, csrf)
+                      .header(HttpHeaders.IF_MATCH, approvalEtag)
+                      .header("Idempotency-Key", "publication-decision-approve-0001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(approvalBody))
+              .andReturn();
+      assertEquals(201, approved.getResponse().getStatus());
+      JsonNode approvalReceipt = objectMapper.readTree(approved.getResponse().getContentAsString());
+      assertEquals("APPROVED_UNPUBLISHED", approvalReceipt.path("toState").asText());
+      assertTrue(
+          approved
+              .getResponse()
+              .getHeader(HttpHeaders.ETAG)
+              .matches("\"publication-review-[a-f0-9]{64}\""));
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement selectApprovals =
+              connection.prepareStatement(
+                  "SELECT COUNT(*) FROM publication_scope_access_approvals WHERE work_id = ?");
+          PreparedStatement selectState =
+              connection.prepareStatement(
+                  "SELECT current_state FROM publication_request_current_state WHERE request_id = ?");
+          PreparedStatement selectVisibility =
+              connection.prepareStatement("SELECT visibility FROM works WHERE id = ?")) {
+        selectApprovals.setObject(1, approvableFixture.workId());
+        try (ResultSet row = selectApprovals.executeQuery()) {
+          assertTrue(row.next());
+          assertEquals(3, row.getInt(1));
+        }
+        selectState.setObject(1, approvableFixture.requestId());
+        try (ResultSet row = selectState.executeQuery()) {
+          assertTrue(row.next());
+          assertEquals("APPROVED_UNPUBLISHED", row.getString(1));
+        }
+        selectVisibility.setObject(1, approvableFixture.workId());
+        try (ResultSet row = selectVisibility.executeQuery()) {
+          assertTrue(row.next());
+          assertEquals("private", row.getString(1));
+        }
+      }
+      assertEquals(2, publicationReviewEventCount(approvableFixture.workId()));
+    } finally {
+      for (SubmittedPublicationFixture fixture : fixtures) {
+        deletePublicationRequestFixtures(fixture.workId());
+        deletePublicationRightsPolicyAcceptanceFixture(fixture.workId());
+        deletePublicationRateLimitBucket(fixture.ownerId());
+        deleteLibraryUserData(fixture.ownerId(), fixture.workId());
+      }
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement delete =
+              connection.prepareStatement(
+                  "DELETE FROM security_role_assignments WHERE user_id IN (?, ?)")) {
+        delete.setObject(1, reviewerId);
+        delete.setObject(2, blockedReviewerId);
+        delete.executeUpdate();
+      }
+      deletePublicationRightsPolicyFixture(policyVersion);
+      for (UUID userId : userIds) deleteSessionTestUser(userId);
+    }
+  }
+
   private SubmittedPublicationFixture submitPublicationRequestForReviewQueue(
       List<SubmittedPublicationFixture> fixtures,
       UUID ownerId,
@@ -1806,6 +2152,19 @@ class PostgresSchemaIntegrationTests {
       String policyVersion,
       byte[] policyDigest,
       String title)
+      throws Exception {
+    return submitPublicationRequestForReviewQueue(
+        fixtures, ownerId, ownerSession, policyVersion, policyDigest, title, "NEEDS_REVIEW");
+  }
+
+  private SubmittedPublicationFixture submitPublicationRequestForReviewQueue(
+      List<SubmittedPublicationFixture> fixtures,
+      UUID ownerId,
+      SessionService.IssuedSession ownerSession,
+      String policyVersion,
+      byte[] policyDigest,
+      String title,
+      String commercialRightsBasis)
       throws Exception {
     UUID workId =
         libraryService
@@ -1850,7 +2209,11 @@ class PostgresSchemaIntegrationTests {
                 List.of(
                     Map.of("scopeCode", "PUBLIC_METADATA", "rightsBasisCode", "ORIGINAL_WORK"),
                     Map.of("scopeCode", "CHAPTER_TEXT", "rightsBasisCode", "ORIGINAL_WORK"),
-                    Map.of("scopeCode", "COMMERCIAL_SALE", "rightsBasisCode", "NEEDS_REVIEW"))));
+                    Map.of(
+                        "scopeCode",
+                        "COMMERCIAL_SALE",
+                        "rightsBasisCode",
+                        commercialRightsBasis))));
     MvcResult submitted =
         mockMvc
             .perform(

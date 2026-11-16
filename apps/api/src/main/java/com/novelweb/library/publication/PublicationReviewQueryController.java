@@ -143,7 +143,7 @@ public class PublicationReviewQueryController {
       PublicationReviewQueryService.DetailResult result =
           reviewService.detail(principal.userId(), parsedRequestId);
       return switch (result.outcome()) {
-        case AVAILABLE -> ok(result.detail());
+        case AVAILABLE -> ok(result.detail(), result.etag());
         case REVIEWER_REQUIRED ->
             problem(
                 HttpStatus.FORBIDDEN,
@@ -186,6 +186,14 @@ public class PublicationReviewQueryController {
 
   private static ResponseEntity<?> ok(Object body) {
     return ResponseEntity.ok()
+        .cacheControl(CacheControl.noStore())
+        .header(HttpHeaders.PRAGMA, "no-cache")
+        .body(body);
+  }
+
+  private static ResponseEntity<?> ok(Object body, String etag) {
+    return ResponseEntity.ok()
+        .header(HttpHeaders.ETAG, etag)
         .cacheControl(CacheControl.noStore())
         .header(HttpHeaders.PRAGMA, "no-cache")
         .body(body);

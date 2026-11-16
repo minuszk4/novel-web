@@ -121,8 +121,7 @@ public class PublicationReviewQueryService {
         List<ScopePreview> scopes = readScopePreviews(connection, requestId);
         List<Claim> claims = readClaims(connection, requestId);
         List<ReviewEvent> events = readEvents(connection, requestId);
-        connection.commit();
-        return DetailResult.available(
+        ReviewDetail detail =
             new ReviewDetail(
                 header.id(),
                 header.requestVersion(),
@@ -132,7 +131,19 @@ public class PublicationReviewQueryService {
                 HexFormat.of().formatHex(header.snapshotDigest()),
                 scopes,
                 claims,
-                events));
+                events);
+        String etag =
+            PublicationReviewEtags.decision(
+                header.id(),
+                header.requestVersion(),
+                header.eventSequence(),
+                header.currentState(),
+                HexFormat.of().formatHex(header.snapshotDigest()),
+                header.currentContentVersion(),
+                header.currentPolicyVersion(),
+                header.currentPolicySha256());
+        connection.commit();
+        return DetailResult.available(detail, etag);
       } catch (SQLException | RuntimeException exception) {
         rollback(connection, exception);
         throw exception;
@@ -252,7 +263,10 @@ public class PublicationReviewQueryService {
         connection.prepareStatement(
             """
                 SELECT request.id, request.request_version, request.submitted_at,
-                       request.policy_version, request.snapshot_sha256, state.current_state
+                       request.policy_version, request.snapshot_sha256, state.current_state,
+                       state.event_sequence, work.publication_content_version,
+                       current_policy.version AS current_policy_version,
+                       current_policy.policy_sha256 AS current_policy_sha256
                   FROM publication_requests request
                   JOIN publication_request_current_state state ON state.request_id = request.id
                   JOIN works work
@@ -263,6 +277,14 @@ public class PublicationReviewQueryService {
                     ON library.id = work.library_id AND library.owner_user_id = work.owner_user_id
                   JOIN authoring_manuscript_creations creation
                     ON creation.work_id = work.id AND creation.actor_user_id = work.owner_user_id
+                  LEFT JOIN LATERAL (
+                       SELECT document.version, encode(document.policy_sha256, 'hex') AS policy_sha256
+                         FROM publication_rights_policy_documents document
+                        WHERE document.status = 'APPROVED'
+                          AND document.effective_at <= clock_timestamp()
+                        ORDER BY document.effective_at DESC, document.version DESC
+                        LIMIT 1
+                  ) current_policy ON TRUE
                  WHERE request.id = ? AND request.owner_user_id <> ?
                    AND work.source_kind = 'authored' AND work.visibility = 'private'
                    AND work.status = 'active' AND work.deleted_at IS NULL
@@ -279,7 +301,11 @@ public class PublicationReviewQueryService {
                 row.getObject("submitted_at", OffsetDateTime.class).toInstant(),
                 row.getString("policy_version"),
                 row.getBytes("snapshot_sha256"),
-                row.getString("current_state")));
+                row.getString("current_state"),
+                row.getInt("event_sequence"),
+                row.getLong("publication_content_version"),
+                row.getString("current_policy_version"),
+                row.getString("current_policy_sha256")));
       }
     }
   }
@@ -447,7 +473,11 @@ public class PublicationReviewQueryService {
       Instant submittedAt,
       String policyVersion,
       byte[] snapshotDigest,
-      String currentState) {
+      String currentState,
+      int eventSequence,
+      long currentContentVersion,
+      String currentPolicyVersion,
+      String currentPolicySha256) {
     private RequestHeader {
       snapshotDigest = snapshotDigest.clone();
     }
@@ -548,17 +578,17 @@ public class PublicationReviewQueryService {
     }
   }
 
-  public record DetailResult(Outcome outcome, ReviewDetail detail) {
-    static DetailResult available(ReviewDetail detail) {
-      return new DetailResult(Outcome.AVAILABLE, detail);
+  public record DetailResult(Outcome outcome, ReviewDetail detail, String etag) {
+    static DetailResult available(ReviewDetail detail, String etag) {
+      return new DetailResult(Outcome.AVAILABLE, detail, etag);
     }
 
     static DetailResult gated(Gate gate) {
-      return new DetailResult(PublicationReviewQueryService.outcome(gate), null);
+      return new DetailResult(PublicationReviewQueryService.outcome(gate), null, null);
     }
 
     static DetailResult notFound() {
-      return new DetailResult(Outcome.NOT_FOUND, null);
+      return new DetailResult(Outcome.NOT_FOUND, null, null);
     }
   }
 
