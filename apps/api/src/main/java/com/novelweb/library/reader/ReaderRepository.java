@@ -39,7 +39,9 @@ public class ReaderRepository {
                     LEFT JOIN chapters c
                       ON c.work_id = w.id AND c.deleted_at IS NULL
                     WHERE w.id = ? AND w.deleted_at IS NULL
-                      AND (can_access_library(w.library_id, ?, FALSE) OR w.visibility = 'public')
+                      AND (can_access_library(w.library_id, ?, FALSE)
+                           OR (w.visibility = 'public'
+                               AND publication_scope_access_is_current(w.id, 'PUBLIC_METADATA')))
                     GROUP BY w.id
                     """)) {
       select.setObject(1, workId);
@@ -64,11 +66,21 @@ public class ReaderRepository {
                            CASE
                              WHEN c.status = 'ready' AND c.source_revision_id IS NOT NULL
                                   AND (can_access_library(w.library_id, ?, FALSE)
-                                       OR EXISTS (
-                                           SELECT 1 FROM content_entitlements e
-                                           WHERE e.user_id = ? AND e.chapter_id = c.id))
+                                       OR (w.visibility = 'public'
+                                           AND publication_scope_access_is_current(
+                                               w.id, 'PUBLIC_METADATA')
+                                           AND publication_scope_access_is_current(
+                                               w.id, 'CHAPTER_TEXT')
+                                           AND EXISTS (
+                                               SELECT 1 FROM content_entitlements e
+                                               WHERE e.user_id = ? AND e.chapter_id = c.id)))
                                THEN 'readable'
-                             WHEN w.visibility = 'public' AND c.status = 'ready'
+                             WHEN w.visibility = 'public'
+                                  AND publication_scope_access_is_current(
+                                      w.id, 'PUBLIC_METADATA')
+                                  AND publication_scope_access_is_current(w.id, 'CHAPTER_TEXT')
+                                  AND publication_scope_access_is_current(w.id, 'COMMERCIAL_SALE')
+                                  AND c.status = 'ready'
                                   AND c.source_revision_id IS NOT NULL
                                THEN 'locked'
                              ELSE 'unavailable'
@@ -77,7 +89,9 @@ public class ReaderRepository {
                     JOIN works w ON w.id = c.work_id
                     WHERE c.work_id = ? AND c.ordinal > ? AND c.deleted_at IS NULL
                       AND w.deleted_at IS NULL
-                      AND (can_access_library(w.library_id, ?, FALSE) OR w.visibility = 'public')
+                      AND (can_access_library(w.library_id, ?, FALSE)
+                           OR (w.visibility = 'public'
+                               AND publication_scope_access_is_current(w.id, 'PUBLIC_METADATA')))
                     ORDER BY c.ordinal ASC
                     LIMIT ?
                     """)) {
@@ -114,9 +128,13 @@ public class ReaderRepository {
                     WHERE c.id = ? AND c.status = 'ready' AND c.deleted_at IS NULL
                       AND w.deleted_at IS NULL
                       AND (can_access_library(w.library_id, ?, FALSE)
-                           OR (w.visibility = 'public' AND EXISTS (
-                               SELECT 1 FROM content_entitlements e
-                               WHERE e.user_id = ? AND e.chapter_id = c.id)))
+                           OR (w.visibility = 'public'
+                               AND r.id = c.source_revision_id
+                               AND publication_scope_access_is_current(w.id, 'PUBLIC_METADATA')
+                               AND publication_scope_access_is_current(w.id, 'CHAPTER_TEXT')
+                               AND EXISTS (
+                                   SELECT 1 FROM content_entitlements e
+                                   WHERE e.user_id = ? AND e.chapter_id = c.id)))
                     """)) {
       select.setObject(1, requestedRevisionId);
       select.setObject(2, chapterId);
@@ -148,9 +166,13 @@ public class ReaderRepository {
                     WHERE c.id = ? AND r.id = ? AND s.ordinal > ?
                       AND c.status = 'ready' AND c.deleted_at IS NULL AND w.deleted_at IS NULL
                       AND (can_access_library(w.library_id, ?, FALSE)
-                           OR (w.visibility = 'public' AND EXISTS (
-                               SELECT 1 FROM content_entitlements e
-                               WHERE e.user_id = ? AND e.chapter_id = c.id)))
+                           OR (w.visibility = 'public'
+                               AND r.id = c.source_revision_id
+                               AND publication_scope_access_is_current(w.id, 'PUBLIC_METADATA')
+                               AND publication_scope_access_is_current(w.id, 'CHAPTER_TEXT')
+                               AND EXISTS (
+                                   SELECT 1 FROM content_entitlements e
+                                   WHERE e.user_id = ? AND e.chapter_id = c.id)))
                       AND s.segment_type IN ('paragraph', 'heading', 'quote')
                     ORDER BY s.ordinal ASC
                     LIMIT ?

@@ -8708,6 +8708,162 @@ class PostgresSchemaIntegrationTests {
     }
   }
 
+  private SyntheticPublicationScopeFixture approveSyntheticPublicationScopes(
+      UUID ownerId, UUID workId, String... scopeCodes) throws Exception {
+    UUID reviewerId = createSessionTestUser("Synthetic publication scope reviewer");
+    String policyVersion =
+        "synthetic-publication-access-" + UUID.randomUUID().toString().replace("-", "");
+    String policyText =
+        "Synthetic PostgreSQL fixture only; not legal terms and grants no real distribution rights.";
+    byte[] policyDigest = sha256(policyText);
+    String manuscriptKey = "publication-scope-" + UUID.randomUUID().toString().replace("-", "");
+
+    try (Connection connection = dataSource.getConnection()) {
+      connection.setAutoCommit(false);
+      try {
+        try (PreparedStatement update =
+            connection.prepareStatement(
+                "UPDATE works SET source_kind = 'authored', visibility = 'public' WHERE id = ?")) {
+          update.setObject(1, workId);
+          assertEquals(1, update.executeUpdate());
+        }
+        try (PreparedStatement insertManuscript =
+            connection.prepareStatement(
+                """
+                    INSERT INTO authoring_manuscript_creations (
+                        actor_user_id, idempotency_key, request_sha256, work_id)
+                    VALUES (?, ?, ?, ?)
+                    """)) {
+          insertManuscript.setObject(1, ownerId);
+          insertManuscript.setString(2, manuscriptKey);
+          insertManuscript.setBytes(3, sha256(manuscriptKey));
+          insertManuscript.setObject(4, workId);
+          assertEquals(1, insertManuscript.executeUpdate());
+        }
+        try (PreparedStatement insertReviewerRole =
+            connection.prepareStatement(
+                """
+                    INSERT INTO security_role_assignments (
+                        id, user_id, role_code, assigned_by_user_id, reason_code)
+                    VALUES (?, ?, 'publication_reviewer', ?, 'REVIEW_CAPACITY')
+                    """)) {
+          insertReviewerRole.setObject(1, UUID.randomUUID());
+          insertReviewerRole.setObject(2, reviewerId);
+          insertReviewerRole.setObject(3, ownerId);
+          assertEquals(1, insertReviewerRole.executeUpdate());
+        }
+        try (PreparedStatement insertPolicy =
+            connection.prepareStatement(
+                """
+                    INSERT INTO publication_rights_policy_documents (
+                        version, effective_at, display_text, policy_sha256)
+                    VALUES (?, clock_timestamp() - INTERVAL '1 second', ?, ?)
+                    """)) {
+          insertPolicy.setString(1, policyVersion);
+          insertPolicy.setString(2, policyText);
+          insertPolicy.setBytes(3, policyDigest);
+          assertEquals(1, insertPolicy.executeUpdate());
+        }
+        try (PreparedStatement approvePolicy =
+            connection.prepareStatement(
+                """
+                    UPDATE publication_rights_policy_documents
+                       SET status = 'APPROVED', approved_at = clock_timestamp(), approved_by = ?
+                     WHERE version = ? AND status = 'DRAFT'
+                    """)) {
+          approvePolicy.setObject(1, reviewerId);
+          approvePolicy.setString(2, policyVersion);
+          assertEquals(1, approvePolicy.executeUpdate());
+        }
+        try (PreparedStatement acceptPolicy =
+            connection.prepareStatement(
+                """
+                    INSERT INTO publication_rights_policy_acceptances (
+                        id, user_id, work_id, idempotency_key,
+                        policy_version, policy_sha256, source)
+                    VALUES (?, ?, ?, ?, ?, ?, 'web-authoring-publication')
+                    """)) {
+          acceptPolicy.setObject(1, UUID.randomUUID());
+          acceptPolicy.setObject(2, ownerId);
+          acceptPolicy.setObject(3, workId);
+          acceptPolicy.setObject(4, UUID.randomUUID());
+          acceptPolicy.setString(5, policyVersion);
+          acceptPolicy.setBytes(6, policyDigest);
+          assertEquals(1, acceptPolicy.executeUpdate());
+        }
+        for (String scopeCode : scopeCodes) {
+          String snapshot;
+          try (PreparedStatement readSnapshot =
+              connection.prepareStatement("SELECT publication_work_scope_snapshot(?, ?)::text")) {
+            readSnapshot.setObject(1, workId);
+            readSnapshot.setString(2, scopeCode);
+            try (ResultSet row = readSnapshot.executeQuery()) {
+              assertTrue(row.next());
+              snapshot = row.getString(1);
+              assertNotNull(snapshot);
+            }
+          }
+          try (PreparedStatement insertApproval =
+              connection.prepareStatement(
+                  """
+                      INSERT INTO publication_scope_access_approvals (
+                          id, work_id, scope_code, approved_snapshot,
+                          policy_version, policy_sha256, approved_by_user_id, reason_code)
+                      VALUES (?, ?, ?, CAST(? AS JSONB), ?, ?, ?, 'RIGHTS_REVIEWED')
+                      """)) {
+            insertApproval.setObject(1, UUID.randomUUID());
+            insertApproval.setObject(2, workId);
+            insertApproval.setString(3, scopeCode);
+            insertApproval.setString(4, snapshot);
+            insertApproval.setString(5, policyVersion);
+            insertApproval.setBytes(6, policyDigest);
+            insertApproval.setObject(7, reviewerId);
+            assertEquals(1, insertApproval.executeUpdate());
+          }
+        }
+        connection.commit();
+      } catch (Exception exception) {
+        connection.rollback();
+        deleteSessionTestUser(reviewerId);
+        throw exception;
+      }
+    }
+    return new SyntheticPublicationScopeFixture(reviewerId, policyVersion);
+  }
+
+  private void cleanupSyntheticPublicationScopeFixture(SyntheticPublicationScopeFixture fixture)
+      throws SQLException {
+    if (fixture == null) return;
+    deletePublicationRightsPolicyFixture(fixture.policyVersion());
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement deleteRole =
+            connection.prepareStatement(
+                "DELETE FROM security_role_assignments WHERE user_id = ?")) {
+      deleteRole.setObject(1, fixture.reviewerId());
+      deleteRole.executeUpdate();
+    }
+    deleteSessionTestUser(fixture.reviewerId());
+  }
+
+  private void revokeSyntheticPublicationScope(
+      UUID workId, SyntheticPublicationScopeFixture fixture, String scopeCode) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement insertRevocation =
+            connection.prepareStatement(
+                """
+                    INSERT INTO publication_scope_access_revocations (
+                        approval_id, revoked_by_user_id, reason_code)
+                    SELECT id, ?, 'RIGHTS_WITHDRAWN'
+                    FROM publication_scope_access_approvals
+                    WHERE work_id = ? AND scope_code = ?
+                    """)) {
+      insertRevocation.setObject(1, fixture.reviewerId());
+      insertRevocation.setObject(2, workId);
+      insertRevocation.setString(3, scopeCode);
+      assertEquals(1, insertRevocation.executeUpdate());
+    }
+  }
+
   @Test
   void authoringChapterOutlineListIsPrivatePagedAndCursorBound() throws Exception {
     UUID ownerId = createSessionTestUser("Authoring Outline Owner");
@@ -13802,6 +13958,7 @@ class PostgresSchemaIntegrationTests {
     UUID authorId = createSessionTestUser("Chapter Unlock Author");
     UUID buyerId = createSessionTestUser("Chapter Unlock Buyer");
     UUID underfundedId = createSessionTestUser("Chapter Unlock Underfunded Buyer");
+    SyntheticPublicationScopeFixture publicationFixture = null;
     try {
       LibraryRepository.LibraryRecord library =
           libraryService.createLibrary(authorId, "Unlock Fixture Shelf");
@@ -13836,7 +13993,9 @@ class PostgresSchemaIntegrationTests {
           "The second chapter body.",
           List.of(
               new LibraryService.NewSegment(1, "paragraph", "The second chapter body.", "c2-s1")));
-      setWorkVisibility(work.id(), "public");
+      publicationFixture =
+          approveSyntheticPublicationScopes(
+              authorId, work.id(), "PUBLIC_METADATA", "CHAPTER_TEXT", "COMMERCIAL_SALE");
       addCurrentPolicyAcceptances(buyerId);
       addCurrentPolicyAcceptances(underfundedId);
       inCreditLedgerTransaction(
@@ -14023,10 +14182,48 @@ class PostgresSchemaIntegrationTests {
       assertEquals(0, creditProjectedBalance(underfundedId, "PAID"));
       assertEquals(0, creditUnlockEntryCount(underfundedId));
       assertEquals(0, contentEntitlementCount(underfundedId));
+
+      revokeSyntheticPublicationScope(work.id(), publicationFixture, "CHAPTER_TEXT");
+      MvcResult revokedContent =
+          mockMvc
+              .perform(
+                  get("/api/v1/chapters/{chapterId}/content", firstChapter.id())
+                      .cookie(buyerCookie))
+              .andReturn();
+      assertEquals(404, revokedContent.getResponse().getStatus());
+      MvcResult revokedQuote =
+          mockMvc
+              .perform(
+                  get("/api/v1/chapters/{chapterId}/unlock-quote", secondChapter.id())
+                      .cookie(buyerCookie))
+              .andReturn();
+      assertEquals(404, revokedQuote.getResponse().getStatus());
+      MvcResult revokedManifest =
+          mockMvc
+              .perform(get("/api/v1/works/{workId}/reader-manifest", work.id()).cookie(buyerCookie))
+              .andReturn();
+      JsonNode revokedManifestBody =
+          objectMapper.readTree(revokedManifest.getResponse().getContentAsString());
+      assertEquals(200, revokedManifest.getResponse().getStatus());
+      assertEquals(
+          "unavailable", revokedManifestBody.path("chapters").get(0).path("accessState").asText());
+      MvcResult revokedUnlock =
+          mockMvc
+              .perform(
+                  post("/api/v1/chapters/{chapterId}/unlock", secondChapter.id())
+                      .cookie(buyerCookie)
+                      .header("X-CSRF-Token", buyerCsrf)
+                      .header("Idempotency-Key", "chapter-unlock-after-revoke-01")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"priceVersion\":1}"))
+              .andReturn();
+      assertEquals(404, revokedUnlock.getResponse().getStatus());
+      assertEquals(90, creditProjectedBalance(buyerId, "PAID"));
     } finally {
       deleteSessionTestUser(buyerId);
       deleteSessionTestUser(underfundedId);
       deleteLibraryTestData(authorId);
+      cleanupSyntheticPublicationScopeFixture(publicationFixture);
       deleteSessionTestUser(authorId);
     }
   }
@@ -14035,6 +14232,7 @@ class PostgresSchemaIntegrationTests {
   void concurrentChapterUnlocksCreateOneEntitlementAndOnePaidDebit() throws Exception {
     UUID authorId = createSessionTestUser("Concurrent Unlock Author");
     UUID buyerId = createSessionTestUser("Concurrent Unlock Buyer");
+    SyntheticPublicationScopeFixture publicationFixture = null;
     try {
       LibraryRepository.LibraryRecord library =
           libraryService.createLibrary(authorId, "Concurrent Unlock Shelf");
@@ -14057,7 +14255,9 @@ class PostgresSchemaIntegrationTests {
           "Concurrent chapter body.",
           List.of(
               new LibraryService.NewSegment(1, "paragraph", "Concurrent chapter body.", "c1-s1")));
-      setWorkVisibility(work.id(), "public");
+      publicationFixture =
+          approveSyntheticPublicationScopes(
+              authorId, work.id(), "PUBLIC_METADATA", "CHAPTER_TEXT", "COMMERCIAL_SALE");
       inCreditLedgerTransaction(
           connection ->
               creditLedgerService.grantPaidTopUp(connection, buyerId, UUID.randomUUID(), 10));
@@ -14100,6 +14300,7 @@ class PostgresSchemaIntegrationTests {
     } finally {
       deleteSessionTestUser(buyerId);
       deleteLibraryTestData(authorId);
+      cleanupSyntheticPublicationScopeFixture(publicationFixture);
       deleteSessionTestUser(authorId);
     }
   }
@@ -14879,6 +15080,7 @@ class PostgresSchemaIntegrationTests {
     UUID authorId = createSessionTestUser("Purchase History Author");
     UUID buyerId = createSessionTestUser("Purchase History Buyer");
     UUID otherBuyerId = createSessionTestUser("Purchase History Other Buyer");
+    SyntheticPublicationScopeFixture publicationFixture = null;
     try {
       addCurrentPolicyAcceptances(buyerId);
       addCurrentPolicyAcceptances(otherBuyerId);
@@ -14910,7 +15112,9 @@ class PostgresSchemaIntegrationTests {
           "plain_text",
           "Private test body two.",
           List.of(new LibraryService.NewSegment(1, "paragraph", "Private test body two.", "ph-2")));
-      setWorkVisibility(work.id(), "public");
+      publicationFixture =
+          approveSyntheticPublicationScopes(
+              authorId, work.id(), "PUBLIC_METADATA", "CHAPTER_TEXT", "COMMERCIAL_SALE");
       inCreditLedgerTransaction(
           connection ->
               creditLedgerService.grantPaidTopUp(connection, buyerId, UUID.randomUUID(), 20));
@@ -14977,6 +15181,12 @@ class PostgresSchemaIntegrationTests {
               .path("items")
               .size());
 
+      revokeSyntheticPublicationScope(work.id(), publicationFixture, "CHAPTER_TEXT");
+      MvcResult revokedReadAccess =
+          mockMvc.perform(get("/api/v1/me/purchases").cookie(buyerCookie)).andReturn();
+      assertEquals(200, revokedReadAccess.getResponse().getStatus());
+      assertTrue(revokedReadAccess.getResponse().getContentAsString().contains("UNAVAILABLE"));
+
       setWorkVisibility(work.id(), "private");
       MvcResult unavailableContent =
           mockMvc.perform(get("/api/v1/me/purchases").cookie(buyerCookie)).andReturn();
@@ -14989,6 +15199,7 @@ class PostgresSchemaIntegrationTests {
       deleteSessionTestUser(buyerId);
       deleteSessionTestUser(otherBuyerId);
       deleteLibraryTestData(authorId);
+      cleanupSyntheticPublicationScopeFixture(publicationFixture);
       deleteSessionTestUser(authorId);
     }
   }
@@ -16149,6 +16360,7 @@ class PostgresSchemaIntegrationTests {
   }
 
   private void deleteLibraryTestData(UUID ownerId) throws SQLException {
+    deleteAuthoredWorkTestArtifacts(ownerId);
     try (Connection connection = dataSource.getConnection()) {
       try (PreparedStatement deleteProgress =
           connection.prepareStatement(
@@ -16229,6 +16441,65 @@ class PostgresSchemaIntegrationTests {
           connection.prepareStatement("DELETE FROM libraries WHERE owner_user_id = ?")) {
         deleteLibraries.setObject(1, ownerId);
         deleteLibraries.executeUpdate();
+      }
+    }
+  }
+
+  private void deleteAuthoredWorkTestArtifacts(UUID ownerId) throws SQLException {
+    try (Connection connection = dataSource.getConnection()) {
+      connection.setAutoCommit(false);
+      try {
+        try (java.sql.Statement disable = connection.createStatement()) {
+          disable.execute(
+              "ALTER TABLE publication_rights_policy_acceptance_idempotency"
+                  + " DISABLE TRIGGER trg_publication_rights_idempotency_immutable");
+          disable.execute(
+              "ALTER TABLE publication_rights_policy_acceptances"
+                  + " DISABLE TRIGGER trg_publication_rights_acceptance_immutable");
+        }
+        try (PreparedStatement deleteIdempotency =
+            connection.prepareStatement(
+                """
+                    DELETE FROM publication_rights_policy_acceptance_idempotency
+                    WHERE work_id IN (SELECT id FROM works WHERE owner_user_id = ?)
+                    """)) {
+          deleteIdempotency.setObject(1, ownerId);
+          deleteIdempotency.executeUpdate();
+        }
+        try (PreparedStatement deleteAcceptances =
+            connection.prepareStatement(
+                "DELETE FROM publication_rights_policy_acceptances"
+                    + " WHERE work_id IN (SELECT id FROM works WHERE owner_user_id = ?)")) {
+          deleteAcceptances.setObject(1, ownerId);
+          deleteAcceptances.executeUpdate();
+        }
+        try (java.sql.Statement enable = connection.createStatement()) {
+          enable.execute(
+              "ALTER TABLE publication_rights_policy_acceptances"
+                  + " ENABLE TRIGGER trg_publication_rights_acceptance_immutable");
+          enable.execute(
+              "ALTER TABLE publication_rights_policy_acceptance_idempotency"
+                  + " ENABLE TRIGGER trg_publication_rights_idempotency_immutable");
+        }
+        for (String table :
+            List.of(
+                "authoring_chapter_revision_writes",
+                "authoring_chapter_creations",
+                "authoring_manuscript_creations")) {
+          try (PreparedStatement delete =
+              connection.prepareStatement(
+                  "DELETE FROM "
+                      + table
+                      + " WHERE work_id IN "
+                      + "(SELECT id FROM works WHERE owner_user_id = ?)")) {
+            delete.setObject(1, ownerId);
+            delete.executeUpdate();
+          }
+        }
+        connection.commit();
+      } catch (SQLException exception) {
+        connection.rollback();
+        throw exception;
       }
     }
   }
@@ -18243,4 +18514,6 @@ class PostgresSchemaIntegrationTests {
       insert.executeUpdate();
     }
   }
+
+  private record SyntheticPublicationScopeFixture(UUID reviewerId, String policyVersion) {}
 }

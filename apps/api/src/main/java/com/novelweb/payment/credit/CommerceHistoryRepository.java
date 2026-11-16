@@ -109,7 +109,11 @@ public class CommerceHistoryRepository {
                            WHEN w.deleted_at IS NULL AND c.deleted_at IS NULL
                                 AND c.status = 'ready' AND c.source_revision_id IS NOT NULL
                                 AND (can_access_library(w.library_id, actor.id, FALSE)
-                                     OR w.visibility = 'public')
+                                     OR (w.visibility = 'public'
+                                         AND publication_scope_access_is_current(
+                                             w.id, 'PUBLIC_METADATA')
+                                         AND publication_scope_access_is_current(
+                                             w.id, 'CHAPTER_TEXT')))
                              THEN 'READABLE'
                            ELSE 'UNAVAILABLE'
                        END AS current_read_access

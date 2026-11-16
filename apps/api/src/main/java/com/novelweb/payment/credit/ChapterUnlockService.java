@@ -160,6 +160,9 @@ public class ChapterUnlockService {
             WHERE c.id = ? AND c.status = 'ready' AND c.source_revision_id IS NOT NULL
               AND c.deleted_at IS NULL AND w.status = 'active' AND w.deleted_at IS NULL
               AND w.visibility = 'public'
+              AND publication_scope_access_is_current(w.id, 'PUBLIC_METADATA')
+              AND publication_scope_access_is_current(w.id, 'CHAPTER_TEXT')
+              AND publication_scope_access_is_current(w.id, 'COMMERCIAL_SALE')
             """
             + (lock ? " FOR UPDATE OF c, w" : "");
     try (PreparedStatement select = connection.prepareStatement(query)) {

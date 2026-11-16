@@ -134,6 +134,7 @@ $commerceOrderId = [guid]::NewGuid()
 $commerceRequestId = [guid]::NewGuid()
 $commerceOtherUserId = [guid]::NewGuid()
 $commerceAuthorId = [guid]::NewGuid()
+$commerceReviewerId = [guid]::NewGuid()
 $commerceLibraryId = [guid]::NewGuid()
 $commerceWorkId = [guid]::NewGuid()
 $commerceVolumeId = [guid]::NewGuid()
@@ -164,6 +165,11 @@ $translationSourceHash = [Convert]::ToHexString(
 $commerceSourceText = 'This paid chapter is released only after a server-confirmed credit unlock.'
 $commerceSourceHash = [Convert]::ToHexString(
     [System.Security.Cryptography.SHA256]::HashData([System.Text.Encoding]::UTF8.GetBytes($commerceSourceText))
+).ToLowerInvariant()
+$commerceRightsPolicyVersion = 'rights-commerce-' + [guid]::NewGuid().ToString('N')
+$commerceRightsPolicyText = 'Synthetic disposable commerce rights fixture only; not legal terms.'
+$commerceRightsPolicySha256 = [Convert]::ToHexString(
+    [System.Security.Cryptography.SHA256]::HashData([System.Text.Encoding]::UTF8.GetBytes($commerceRightsPolicyText))
 ).ToLowerInvariant()
 $screenshotPath = Join-Path $evidenceDirectory 'account-library-live.png'
 $readerScreenshotPath = Join-Path $evidenceDirectory 'account-reader-live.png'
@@ -363,10 +369,32 @@ INSERT INTO sessions (id_hash, user_id, expires_at)
 VALUES (decode('$commerceOtherSessionHash', 'hex'), '$commerceOtherUserId', clock_timestamp() + INTERVAL '1 day');
 INSERT INTO users (id, display_name, contact_email, email_verified_at, status)
 VALUES ('$commerceAuthorId', 'Live Commerce Author', 'commerce-author-$commerceAuthorId@example.test', clock_timestamp(), 'active');
+INSERT INTO users (id, display_name, contact_email, email_verified_at, status)
+VALUES ('$commerceReviewerId', 'Live Synthetic Commerce Reviewer', 'commerce-reviewer-$commerceReviewerId@example.test', clock_timestamp(), 'active');
+INSERT INTO security_role_assignments
+    (id, user_id, role_code, assigned_by_user_id, reason_code)
+VALUES
+    (gen_random_uuid(), '$commerceReviewerId', 'publication_reviewer', '$commerceAuthorId', 'REVIEW_CAPACITY');
+INSERT INTO publication_rights_policy_documents
+    (version, effective_at, display_text, policy_sha256)
+VALUES
+    ('$commerceRightsPolicyVersion', clock_timestamp() - INTERVAL '10 minutes', '$commerceRightsPolicyText', decode('$commerceRightsPolicySha256', 'hex'));
+UPDATE publication_rights_policy_documents
+   SET status = 'APPROVED', approved_at = clock_timestamp(), approved_by = '$commerceReviewerId'
+ WHERE version = '$commerceRightsPolicyVersion';
 INSERT INTO libraries (id, owner_user_id, name, visibility, is_default)
 VALUES ('$commerceLibraryId', '$commerceAuthorId', 'Live Public Commerce Shelf', 'private', FALSE);
 INSERT INTO works (id, library_id, owner_user_id, title, author, source_language, source_kind, visibility, status)
-VALUES ('$commerceWorkId', '$commerceLibraryId', '$commerceAuthorId', 'Live Public Commerce Story', 'Commerce Author', 'en', 'imported', 'public', 'active');
+VALUES ('$commerceWorkId', '$commerceLibraryId', '$commerceAuthorId', 'Live Public Commerce Story', 'Commerce Author', 'en', 'authored', 'public', 'active');
+INSERT INTO authoring_manuscript_creations
+    (actor_user_id, idempotency_key, request_sha256, work_id)
+VALUES
+    ('$commerceAuthorId', 'commerce-manuscript-$commerceWorkId', decode(repeat('11', 32), 'hex'), '$commerceWorkId');
+INSERT INTO publication_rights_policy_acceptances
+    (id, user_id, work_id, idempotency_key, policy_version, policy_sha256, source)
+VALUES
+    (gen_random_uuid(), '$commerceAuthorId', '$commerceWorkId', gen_random_uuid(),
+     '$commerceRightsPolicyVersion', decode('$commerceRightsPolicySha256', 'hex'), 'web-authoring-publication');
 INSERT INTO volumes (id, work_id, ordinal, title)
 VALUES ('$commerceVolumeId', '$commerceWorkId', 1, 'Live Commerce Volume');
 INSERT INTO chapters (id, work_id, volume_id, ordinal, title, source_language, source_revision_id, status)
@@ -375,6 +403,13 @@ INSERT INTO chapter_revisions (id, chapter_id, revision_no, source_format, norma
 VALUES ('$commerceRevisionId', '$commerceChapterId', 1, 'plain_text', '$commerceSourceText', decode('$commerceSourceHash', 'hex'), '$commerceAuthorId');
 INSERT INTO segments (id, chapter_revision_id, ordinal, segment_type, source_text, stable_anchor, checksum)
 VALUES ('$commerceSegmentId', '$commerceRevisionId', 1, 'paragraph', '$commerceSourceText', 'live-commerce-p1', decode('$commerceSourceHash', 'hex'));
+INSERT INTO publication_scope_access_approvals
+    (id, work_id, scope_code, approved_snapshot, policy_version, policy_sha256, approved_by_user_id, reason_code)
+SELECT gen_random_uuid(), '$commerceWorkId', scope.scope_code,
+       publication_work_scope_snapshot('$commerceWorkId', scope.scope_code),
+       '$commerceRightsPolicyVersion', decode('$commerceRightsPolicySha256', 'hex'),
+       '$commerceReviewerId', 'RIGHTS_REVIEWED'
+FROM (VALUES ('PUBLIC_METADATA'), ('CHAPTER_TEXT'), ('COMMERCIAL_SALE')) AS scope(scope_code);
 INSERT INTO credit_top_up_orders
     (id, user_id, request_id, idempotency_key, pack_id, pack_version, provider, environment,
      currency, amount_vnd, paid_credits, bonus_credits, status)
