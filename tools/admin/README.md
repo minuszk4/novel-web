@@ -55,3 +55,5 @@ The command is intentionally one-time and has no rollback option. If all active 
 ### Disposable verification
 
 The source launcher was exercised through a temporary `psql` adapter forwarding stdin to a disposable PostgreSQL 17 Docker container. The adapter, database and synthetic accounts were temporary; the persistent `novel-web-local` database and production were not used. See `.ai/evidence/first-admin-bootstrap-2026-11-16/result.md` for cases and results.
+
+To repeat the isolated integration check after changing the bootstrap command, run `pwsh -NoProfile -File tools/admin/test-bootstrap-system-admin.ps1` from the repository root. It requires Docker Desktop and pulls `postgres:17-alpine` if needed. The test uses a unique `--rm` container, applies the repository migrations and synthetic users, forwards the actual launcher stdin through a temporary `psql` adapter, then verifies success, mismatched UUID, replay and inactive-target behavior. It restores the caller's environment and removes only its verified temporary adapter directory.
