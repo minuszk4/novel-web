@@ -1,5 +1,6 @@
 package com.novelweb.identity.roles;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import java.security.MessageDigest;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -26,8 +27,9 @@ public class SecurityRoleAssignmentRepository {
     this.dataSource = Objects.requireNonNull(dataSource, "data source is required");
   }
 
-  public List<ReviewerAssignment> listActiveReviewers(UUID actorUserId) {
+  public List<ReviewerAssignment> listReviewerAssignments(UUID actorUserId, String status) {
     Objects.requireNonNull(actorUserId, "actor user id is required");
+    Objects.requireNonNull(status, "assignment status is required");
     try (Connection connection = dataSource.getConnection()) {
       connection.setAutoCommit(false);
       try {
@@ -40,13 +42,31 @@ public class SecurityRoleAssignmentRepository {
                            CASE WHEN target.email_verified_at IS NOT NULL THEN target.contact_email END AS contact_email,
                            target.status, assignment.assigned_by_user_id, assignment.assigned_at,
                            assignment.reason_code, assignment.revoked_at,
-                           assignment.revoked_by_user_id, assignment.revocation_reason_code
+                           assignment.revoked_by_user_id, assignment.revocation_reason_code,
+                           latest_event.id AS last_event_id,
+                           latest_event.action_code AS last_event_action_code,
+                           latest_event.actor_user_id AS last_event_actor_user_id,
+                           latest_event.occurred_at AS last_event_occurred_at,
+                           latest_event.reason_code AS last_event_reason_code
                     FROM security_role_assignments assignment
                     JOIN users target ON target.id = assignment.user_id
+                    LEFT JOIN LATERAL (
+                        SELECT event.id, event.action_code, event.actor_user_id,
+                               event.occurred_at, event.reason_code
+                        FROM security_role_assignment_events event
+                        WHERE event.assignment_id = assignment.id
+                        ORDER BY event.occurred_at DESC, event.id DESC
+                        LIMIT 1
+                    ) latest_event ON TRUE
                     WHERE assignment.role_code = 'publication_reviewer'
-                      AND assignment.revoked_at IS NULL
+                      AND (? = 'all'
+                           OR (? = 'active' AND assignment.revoked_at IS NULL)
+                           OR (? = 'revoked' AND assignment.revoked_at IS NOT NULL))
                     ORDER BY assignment.assigned_at DESC, assignment.id DESC
                     """)) {
+          select.setString(1, status);
+          select.setString(2, status);
+          select.setString(3, status);
           try (ResultSet rows = select.executeQuery()) {
             while (rows.next()) assignments.add(readAssignment(rows));
           }
@@ -62,6 +82,67 @@ public class SecurityRoleAssignmentRepository {
     } catch (SQLException exception) {
       throw new IllegalStateException("Unable to list publication reviewer assignments", exception);
     }
+  }
+
+  public List<ReviewerAccountCandidate> searchEligibleReviewerTargets(
+      UUID actorUserId, String emailPrefix, UUID exactUserId) {
+    Objects.requireNonNull(actorUserId, "actor user id is required");
+    Objects.requireNonNull(emailPrefix, "search prefix is required");
+    try (Connection connection = dataSource.getConnection()) {
+      connection.setAutoCommit(false);
+      try {
+        requireActiveAdmin(connection, actorUserId);
+        List<ReviewerAccountCandidate> candidates = new ArrayList<>();
+        try (PreparedStatement select =
+            connection.prepareStatement(
+                """
+                    SELECT target.id, target.display_name, target.contact_email, target.status
+                    FROM users target
+                    WHERE target.status = 'active'
+                      AND ((?::uuid IS NOT NULL AND target.id = ?::uuid)
+                           OR (target.email_verified_at IS NOT NULL
+                               AND left(lower(target.contact_email), char_length(?)) = lower(?)))
+                    ORDER BY lower(target.display_name), target.id
+                    LIMIT 20
+                    """)) {
+          select.setObject(1, exactUserId);
+          select.setObject(2, exactUserId);
+          select.setString(3, emailPrefix);
+          select.setString(4, emailPrefix);
+          try (ResultSet rows = select.executeQuery()) {
+            while (rows.next()) {
+              candidates.add(
+                  new ReviewerAccountCandidate(
+                      rows.getObject("id", UUID.class),
+                      rows.getString("display_name"),
+                      maskEmail(rows.getString("contact_email")),
+                      rows.getString("status")));
+            }
+          }
+        }
+        connection.commit();
+        return List.copyOf(candidates);
+      } catch (SQLException | RuntimeException exception) {
+        rollback(connection, exception);
+        throw exception;
+      }
+    } catch (NotSystemAdminException exception) {
+      throw exception;
+    } catch (SQLException exception) {
+      throw new IllegalStateException("Unable to search reviewer target accounts", exception);
+    }
+  }
+
+  private static String maskEmail(String email) {
+    if (email == null) return null;
+    int separator = email.lastIndexOf('@');
+    if (separator <= 0 || separator == email.length() - 1) return null;
+    String localPart = email.substring(0, separator);
+    String maskedLocalPart =
+        localPart.length() > 3
+            ? localPart.charAt(0) + "***" + localPart.charAt(localPart.length() - 1)
+            : localPart.charAt(0) + "***";
+    return maskedLocalPart + email.substring(separator);
   }
 
   public CommandResult grantReviewer(
@@ -369,9 +450,22 @@ public class SecurityRoleAssignmentRepository {
                        CASE WHEN target.email_verified_at IS NOT NULL THEN target.contact_email END AS contact_email,
                        target.status, assignment.assigned_by_user_id, assignment.assigned_at,
                        assignment.reason_code, assignment.revoked_at,
-                       assignment.revoked_by_user_id, assignment.revocation_reason_code
+                       assignment.revoked_by_user_id, assignment.revocation_reason_code,
+                       latest_event.id AS last_event_id,
+                       latest_event.action_code AS last_event_action_code,
+                       latest_event.actor_user_id AS last_event_actor_user_id,
+                       latest_event.occurred_at AS last_event_occurred_at,
+                       latest_event.reason_code AS last_event_reason_code
                 FROM security_role_assignments assignment
                 JOIN users target ON target.id = assignment.user_id
+                LEFT JOIN LATERAL (
+                    SELECT event.id, event.action_code, event.actor_user_id,
+                           event.occurred_at, event.reason_code
+                    FROM security_role_assignment_events event
+                    WHERE event.assignment_id = assignment.id
+                    ORDER BY event.occurred_at DESC, event.id DESC
+                    LIMIT 1
+                ) latest_event ON TRUE
                 WHERE assignment.id = ?
                 """)) {
       select.setObject(1, id);
@@ -386,14 +480,19 @@ public class SecurityRoleAssignmentRepository {
         row.getObject("id", UUID.class),
         row.getObject("user_id", UUID.class),
         row.getString("display_name"),
-        row.getString("contact_email"),
+        maskEmail(row.getString("contact_email")),
         row.getString("status"),
         row.getObject("assigned_by_user_id", UUID.class),
         row.getObject("assigned_at", OffsetDateTime.class),
         row.getString("reason_code"),
         row.getObject("revoked_at", OffsetDateTime.class),
         row.getObject("revoked_by_user_id", UUID.class),
-        row.getString("revocation_reason_code"));
+        row.getString("revocation_reason_code"),
+        row.getObject("last_event_id", UUID.class),
+        row.getString("last_event_action_code"),
+        row.getObject("last_event_actor_user_id", UUID.class),
+        row.getObject("last_event_occurred_at", OffsetDateTime.class),
+        row.getString("last_event_reason_code"));
   }
 
   private static void rollback(Connection connection, Exception originalException) {
@@ -412,18 +511,32 @@ public class SecurityRoleAssignmentRepository {
       UUID assignmentId,
       UUID userId,
       String displayName,
-      String contactEmail,
+      String maskedContactEmail,
       String userStatus,
       UUID assignedByUserId,
       OffsetDateTime assignedAt,
       String reasonCode,
       OffsetDateTime revokedAt,
       UUID revokedByUserId,
-      String revocationReasonCode) {
+      String revocationReasonCode,
+      UUID lastEventId,
+      String lastEventActionCode,
+      UUID lastEventActorUserId,
+      OffsetDateTime lastEventOccurredAt,
+      String lastEventReasonCode) {
     public boolean active() {
       return revokedAt == null;
     }
+
+    /** Backward-compatible response name; the value is masked just like maskedContactEmail. */
+    @JsonProperty("contactEmail")
+    public String contactEmail() {
+      return maskedContactEmail;
+    }
   }
+
+  public record ReviewerAccountCandidate(
+      UUID userId, String displayName, String maskedContactEmail, String status) {}
 
   public record CommandResult(
       String resultCode, int responseStatus, ReviewerAssignment assignment, boolean replayed) {}

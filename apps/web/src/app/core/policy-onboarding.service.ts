@@ -17,12 +17,14 @@ export interface CurrentPolicies {
 }
 
 export interface AccountIdentitySummary {
+  userId?: string;
   displayName: string | null;
   contactEmail: string | null;
 }
 
 interface CurrentUserResponse {
   user: { id: string; displayName: string | null; contactEmail: string | null };
+  roles?: unknown;
   policy: {
     termsAcceptedVersion: string | null;
     privacyNoticeAcknowledgedVersion: string | null;
@@ -48,6 +50,7 @@ export class PolicyOnboardingService {
 
   readonly status = signal<PolicyOnboardingStatus>('idle');
   readonly accountIdentity = signal<AccountIdentitySummary | null>(null);
+  readonly canManageReviewerRoles = signal(false);
   readonly currentPolicies = signal<CurrentPolicies | null>(null);
   readonly termsDocument = signal<string | null>(null);
   readonly privacyDocument = signal<string | null>(null);
@@ -150,9 +153,11 @@ export class PolicyOnboardingService {
     }
 
     this.accountIdentity.set({
+      userId: account.user.id,
       displayName: account.user.displayName,
       contactEmail: account.user.contactEmail,
     });
+    this.canManageReviewerRoles.set(hasReviewerRoleManagementCapability(account.roles));
 
     this.termsAcceptedVersion.set(account.policy.termsAcceptedVersion);
     this.privacyAcknowledgedVersion.set(account.policy.privacyNoticeAcknowledgedVersion);
@@ -213,6 +218,7 @@ export class PolicyOnboardingService {
 
   private enterDemoMode(httpStatus: number): void {
     this.accountIdentity.set(null);
+    this.canManageReviewerRoles.set(false);
     this.status.set('demo');
     if (httpStatus === 401) {
       this.demoNotice.set('Chưa có phiên đăng nhập trên máy chủ. Lựa chọn demo mất khi tải lại.');
@@ -222,6 +228,7 @@ export class PolicyOnboardingService {
   }
 
   private fail(message: string): void {
+    this.canManageReviewerRoles.set(false);
     this.status.set('error');
     this.errorMessage.set(message);
   }
@@ -250,6 +257,21 @@ function isCurrentUser(value: unknown): value is CurrentUserResponse {
       typeof candidate.policy.termsAcceptedVersion === 'string') &&
     (candidate.policy.privacyNoticeAcknowledgedVersion === null ||
       typeof candidate.policy.privacyNoticeAcknowledgedVersion === 'string')
+  );
+}
+
+function hasReviewerRoleManagementCapability(roles: unknown): boolean {
+  return (
+    Array.isArray(roles) &&
+    roles.some(
+      (role) =>
+        typeof role === 'object' &&
+        role !== null &&
+        !Array.isArray(role) &&
+        (role as { scope?: unknown }).scope === 'security' &&
+        Array.isArray((role as { permissions?: unknown }).permissions) &&
+        (role as { permissions: unknown[] }).permissions.includes('publication.reviewers.manage'),
+    )
   );
 }
 

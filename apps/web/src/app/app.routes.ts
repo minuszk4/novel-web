@@ -234,6 +234,14 @@ export const routes: Routes = [
           import('./pages/settings-page.component').then((page) => page.SettingsPageComponent),
         title: 'Cài đặt — Novel',
       },
+      {
+        path: 'admin/reviewers',
+        loadComponent: () =>
+          import('./pages/reviewer-admin-page.component').then(
+            (page) => page.ReviewerAdminPageComponent,
+          ),
+        title: 'Quản lý người duyệt — Novel',
+      },
     ],
   },
   { path: '**', redirectTo: '' },

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 8.2.0
+  version: 8.3.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -16,7 +16,7 @@ info:
     Versioned cultivation catalogs, authenticated profile settings, private daily XP activity and bounded private Reader sessions with atomic XP awards are implemented in the PostgreSQL profile. The approved starting policy awards 1 XP per complete active Reader minute, capped at 120 XP per UTC day; same-day sub-minute remainder does not cross UTC midnight; top-ups and unlocks award none. Cultivation is feature-gated and off by default pending the rank-threshold pilot and release reviews.
     Scoped glossary storage, actor-scoped catalog listing/creation, active and writer-only latest-revision reads, version-checked immutable draft creation, authenticated diff/lint/match preview, lint-gated revision publication with append-only audit, strict JSON/CSV/TSV import preview and resolved atomic draft apply, and active/writer-only latest snapshot export are implemented in the PostgreSQL profile. Translation job enqueue/status/retry/cancel are available only as an explicit fake-local development preview and never call an external NMT provider. `features.translationFakePreviewEnabled` is true only when both required profiles and the provider/API/worker opt-in flags are active.
     The authenticated PostgreSQL profile also exposes the current actor's available paid and non-expired bonus credit totals from the rebuildable balance projection; the response is no-store and does not expose another account's ledger. When the MoMo TEST gate is explicitly enabled with valid TEST configuration, the profile also exposes server-priced public-chapter unlock quotes and an idempotent paid-credit unlock that commits the debit with an immutable entitlement; private/draft chapters remain unavailable and no production purchase is enabled.
-    An opt-in, metadata-only guest catalog endpoint is available in the PostgreSQL profile. It is disabled by default and returns only authored, active, explicitly public works owned by active users with at least one ready chapter; it does not return descriptions or chapter bodies. Admin-only publication-reviewer role assignment is implemented in the PostgreSQL profile; it does not bootstrap system administrators or approve/publish work. Rights policy, review decisions, publication controls, catalog UI, rate limiting at the edge, and reader access for guests remain separate work.
+    An opt-in, metadata-only guest catalog endpoint is available in the PostgreSQL profile. It is disabled by default and returns only authored, active, explicitly public works owned by active users with at least one ready chapter; it does not return descriptions or chapter bodies. Admin-only publication-reviewer role assignment, bounded eligible-account search and status-filtered assignment history are implemented in the PostgreSQL profile; the current-user response exposes the caller's server-derived security capability for navigation only. These APIs do not bootstrap system administrators or approve/publish work. Rights policy, review decisions, publication controls, catalog UI, rate limiting at the edge, and reader access for guests remain separate work.
 servers:
   - url: http://127.0.0.1:8080
 tags:
@@ -32,7 +32,7 @@ tags:
     description: Opt-in metadata-only guest catalog; publication and rights-review workflows remain unavailable.
     x-implementation-status: partial
   - name: Admin security
-    description: Admin-only publication reviewer role assignment and audit routes; first-admin bootstrap uses a separate operator command, and publication itself remains unavailable.
+    description: Admin-only publication reviewer role assignment/search/history routes; first-admin bootstrap uses a separate operator command, and publication itself remains unavailable.
     x-implementation-status: partial
   - name: Reader
     description: Source-only reader, progress, preferences, private bookmarks, source annotations and private reading history are available in the PostgreSQL profile.
@@ -60,9 +60,9 @@ paths:
       x-implementation-status: implemented-postgres-profile
       summary: List publication reviewer assignments
       description: >-
-        Requires a current active system_admin assignment. Returns active publication_reviewer assignments only;
-        verified email addresses are included for account identification. The response is no-store. When no active
-        system administrator exists, the request is denied. This route cannot grant or reveal system_admin assignments.
+        Requires a current active system_admin assignment. Returns active, revoked or all publication_reviewer
+        assignments according to the bounded status filter. Verified email addresses are masked in the response.
+        The response is no-store. This route cannot grant or reveal system_admin assignments.
       security:
         - appSession: []
       parameters:
@@ -72,6 +72,14 @@ paths:
           schema:
             type: string
             const: publication_reviewer
+        - name: status
+          in: query
+          required: false
+          description: Assignment history filter; defaults to active.
+          schema:
+            type: string
+            enum: [active, revoked, all]
+            default: active
       responses:
         '200':
           description: Current reviewer assignments.
@@ -88,6 +96,50 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ReviewerAssignmentList'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/admin/security/users/search:
+    post:
+      operationId: searchEligibleReviewerAccounts
+      tags: [Admin security]
+      x-implementation-status: implemented-postgres-profile
+      summary: Search active accounts eligible for reviewer assignment
+      description: >-
+        Requires a current active system_admin assignment and session CSRF. Accepts an account UUID or a bounded
+        email prefix in the JSON body; only active users are returned and email addresses must be verified before
+        matching. Results are capped at 20 and returned with a masked email. The query is never placed in a URL.
+        The response is no-store and contains no manuscript or session data.
+      security:
+        - appSession: []
+          csrfToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReviewerAccountSearchRequest'
+      responses:
+        '200':
+          description: Matching active accounts, bounded to 20 results.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                pattern: '.*no-store.*'
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReviewerAccountSearchResult'
         '400':
           $ref: '#/components/responses/Problem'
         '401':
@@ -5827,6 +5879,10 @@ components:
     RoleScope:
       type: object
       additionalProperties: false
+      description: >-
+        Server-derived scope for the current account. The security scope contains the exact reviewer administration
+        capability only for an active system administrator and is intended for navigation/affordance display; every
+        protected API independently rechecks the role in PostgreSQL.
       required: [scope, permissions]
       properties:
         scope:
@@ -8457,11 +8513,49 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/ReviewerAssignment'
+    ReviewerAccountSearchRequest:
+      type: object
+      additionalProperties: false
+      required: [query]
+      properties:
+        query:
+          type: string
+          minLength: 3
+          maxLength: 320
+          description: Email prefix or an exact user UUID. Sent in the body, never a URL.
+    ReviewerAccountSearchResult:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          maxItems: 20
+          items:
+            $ref: '#/components/schemas/ReviewerAccountCandidate'
+    ReviewerAccountCandidate:
+      type: object
+      additionalProperties: false
+      required: [userId, displayName, maskedContactEmail, status]
+      properties:
+        userId:
+          type: string
+          format: uuid
+        displayName:
+          type: string
+          maxLength: 200
+        maskedContactEmail:
+          type: [string, 'null']
+          maxLength: 320
+          description: Masked verified email; null when the active account has no verified email.
+        status:
+          type: string
+          const: active
     ReviewerAssignment:
       type: object
       additionalProperties: false
       required:
-        [assignmentId, userId, displayName, contactEmail, userStatus, assignedByUserId, assignedAt, reasonCode, revokedAt, revokedByUserId, revocationReasonCode]
+        [assignmentId, userId, displayName, contactEmail, maskedContactEmail, userStatus, assignedByUserId, assignedAt, reasonCode, revokedAt, revokedByUserId, revocationReasonCode, lastEventId, lastEventActionCode, lastEventActorUserId, lastEventOccurredAt, lastEventReasonCode]
       properties:
         assignmentId:
           type: string
@@ -8476,6 +8570,13 @@ components:
           type: [string, 'null']
           format: email
           maxLength: 320
+          deprecated: true
+          description: Backward-compatible field containing the same masked value as maskedContactEmail.
+        maskedContactEmail:
+          type: [string, 'null']
+          format: email
+          maxLength: 320
+          description: Verified contact email masked for display.
         userStatus:
           type: string
           enum: [active, pending, suspended, deleted]
@@ -8497,6 +8598,21 @@ components:
         revocationReasonCode:
           type: [string, 'null']
           enum: [ACCESS_ENDED, ROLE_CHANGE, SECURITY_REVIEW]
+        lastEventId:
+          type: [string, 'null']
+          format: uuid
+        lastEventActionCode:
+          type: [string, 'null']
+          enum: [GRANTED, REVOKED]
+        lastEventActorUserId:
+          type: [string, 'null']
+          format: uuid
+        lastEventOccurredAt:
+          type: [string, 'null']
+          format: date-time
+        lastEventReasonCode:
+          type: [string, 'null']
+          enum: [REVIEW_CAPACITY, TEMPORARY_COVERAGE, ROLE_CORRECTION, ACCESS_ENDED, ROLE_CHANGE, SECURITY_REVIEW]
     RoleAssignmentCommand:
       type: object
       additionalProperties: false

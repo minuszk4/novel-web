@@ -47,6 +47,11 @@
         <span class="nav-symbol cultivation-symbol" aria-hidden="true">✧</span
         ><span>Hành trình tu luyện</span>
       </a>
+      @if (policy.canManageReviewerRoles()) {
+        <a routerLink="/app/admin/reviewers" routerLinkActive="selected">
+          <span class="nav-symbol" aria-hidden="true">✓</span><span>Quản lý người duyệt</span>
+        </a>
+      }
       <a routerLink="/app/settings" routerLinkActive="selected">
         <span class="nav-symbol" aria-hidden="true">⚙</span><span>Cài đặt</span>
       </a>

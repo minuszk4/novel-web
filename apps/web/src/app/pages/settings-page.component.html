@@ -115,10 +115,30 @@
       <section id="account-settings" class="settings-card account-demo-card">
         <div class="settings-card-heading">
           <p class="eyebrow">TÀI KHOẢN</p>
-          <h2>Chưa đăng nhập</h2>
-          <p>Bản demo không tạo hồ sơ, phiên đăng nhập hoặc kết nối Google.</p>
+          @if (policy.accountIdentity(); as account) {
+            <h2>{{ account.displayName || 'Tài khoản Novel' }}</h2>
+            <p>
+              Đang dùng phiên tài khoản trên máy chủ. Tùy chọn đọc ở trang này vẫn là dữ liệu demo.
+            </p>
+          } @else {
+            <h2>Chưa đăng nhập</h2>
+            <p>Bản demo không tạo hồ sơ, phiên đăng nhập hoặc kết nối Google.</p>
+          }
         </div>
-        <a class="text-link" routerLink="/sign-in">Xem trạng thái đăng nhập →</a>
+        @if (!policy.accountIdentity()) {
+          <a class="text-link" routerLink="/sign-in">Xem trạng thái đăng nhập →</a>
+        }
+        @if (policy.canManageReviewerRoles()) {
+          <p class="settings-inline-action">
+            <span>
+              <strong>Quản trị xuất bản</strong>
+              <small>Quản lý tài khoản được cấp vai trò người duyệt.</small>
+            </span>
+            <a class="button button-outline button-small" routerLink="/app/admin/reviewers">
+              Mở quản lý
+            </a>
+          </p>
+        }
       </section>
       <p class="settings-save-note" role="status">
         <span aria-hidden="true">i</span> Mọi thiết lập trên trang này chỉ nằm trong bộ nhớ của tab

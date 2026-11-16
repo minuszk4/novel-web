@@ -1,0 +1,391 @@
+<section class="reviewer-admin-page" aria-labelledby="reviewer-admin-title">
+  <header class="reviewer-page-heading">
+    <p class="eyebrow">QUẢN TRỊ HỆ THỐNG</p>
+    <h1 #pageTitle id="reviewer-admin-title" tabindex="-1">Người duyệt xuất bản</h1>
+    <p>Quản lý tài khoản được cấp quyền người duyệt. Mọi thay đổi đều được ghi lại.</p>
+  </header>
+
+  @if (accessDenied() === 'unauthenticated') {
+    <section class="reviewer-access-state" aria-labelledby="reviewer-access-title">
+      <h2 id="reviewer-access-title">Phiên đăng nhập không còn hiệu lực</h2>
+      <p>Đăng nhập lại để xác minh quyền quản trị trước khi xem danh sách.</p>
+      <a class="button button-primary" routerLink="/sign-in">Đăng nhập</a>
+    </section>
+  } @else if (accessDenied() === 'forbidden') {
+    <section class="reviewer-access-state" aria-labelledby="reviewer-access-title">
+      <h2 id="reviewer-access-title">Bạn không có quyền quản lý người duyệt</h2>
+      <p>Danh sách và thông tin tài khoản không được hiển thị.</p>
+    </section>
+  } @else {
+    <p class="reviewer-scope-notice" role="note">
+      Gán vai trò không tự công khai tác phẩm. Hàng đợi duyệt và luồng xuất bản chưa được bật.
+    </p>
+
+    <section class="reviewer-search-card" aria-labelledby="reviewer-search-title">
+      <div>
+        <p class="eyebrow">TÀI KHOẢN HIỆN CÓ</p>
+        <h2 id="reviewer-search-title">Tìm người cần cấp quyền</h2>
+        <p id="reviewer-search-help">
+          Nhập tiền tố email đã xác minh hoặc UUID tài khoản. Từ khóa chỉ gửi trong nội dung yêu
+          cầu, không đưa vào địa chỉ trang.
+        </p>
+      </div>
+      <form class="reviewer-search-form" (submit)="onSearchSubmit($event)">
+        <label for="reviewer-account-query">Email hoặc UUID</label>
+        <div class="reviewer-search-controls">
+          <input
+            id="reviewer-account-query"
+            type="search"
+            maxlength="320"
+            autocomplete="off"
+            spellcheck="false"
+            [value]="searchQuery()"
+            [disabled]="searchLoading()"
+            aria-describedby="reviewer-search-help"
+            (input)="searchQuery.set($any($event.target).value)"
+          />
+          <button
+            class="button button-primary"
+            type="submit"
+            [disabled]="searchLoading() || searchQuery().trim().length < 3"
+          >
+            {{ searchLoading() ? 'Đang tìm…' : 'Tìm tài khoản' }}
+          </button>
+        </div>
+      </form>
+
+      @if (searchError()) {
+        <p class="reviewer-inline-error" role="alert">{{ searchError() }}</p>
+      }
+      @if (searchLoading()) {
+        <p class="reviewer-loading" role="status">Đang tìm tài khoản phù hợp…</p>
+      } @else if (searchCompleted() && candidates().length === 0) {
+        <div class="reviewer-empty-search" role="status">
+          <p>Không tìm thấy tài khoản đang hoạt động phù hợp.</p>
+          <button class="button button-outline button-small" type="button" (click)="clearSearch()">
+            Xóa từ khóa
+          </button>
+        </div>
+      } @else if (candidates().length > 0) {
+        <ul class="reviewer-candidate-list" aria-label="Kết quả tìm tài khoản">
+          @for (candidate of candidates(); track candidate.userId) {
+            <li class="reviewer-candidate">
+              <div class="reviewer-candidate-identity">
+                <strong>{{ candidate.displayName }}</strong>
+                <span>{{ candidate.maskedContactEmail || 'Email chưa xác minh' }}</span>
+                <code>{{ candidate.userId }}</code>
+              </div>
+              <div class="reviewer-candidate-action">
+                @if (isSelf(candidate)) {
+                  <span class="reviewer-muted">Không thể tự cấp quyền</span>
+                } @else if (isAlreadyActiveReviewer(candidate)) {
+                  <span class="reviewer-status-badge">Đã là người duyệt</span>
+                } @else {
+                  <button
+                    class="button button-outline button-small"
+                    type="button"
+                    [attr.aria-label]="'Chọn ' + candidate.displayName + ' làm người duyệt'"
+                    [attr.aria-pressed]="selectedCandidate()?.userId === candidate.userId"
+                    [disabled]="!canChangeRoles()"
+                    (click)="selectCandidate(candidate)"
+                  >
+                    {{ selectedCandidate()?.userId === candidate.userId ? 'Đã chọn' : 'Chọn' }}
+                  </button>
+                }
+              </div>
+            </li>
+          }
+        </ul>
+      }
+
+      @if (selectedCandidate(); as candidate) {
+        <div class="reviewer-selected-account" aria-labelledby="selected-reviewer-title">
+          <div>
+            <p class="eyebrow">ĐÃ CHỌN MỘT TÀI KHOẢN</p>
+            <h3 id="selected-reviewer-title">{{ candidate.displayName }}</h3>
+            <p>{{ candidate.maskedContactEmail || 'Email chưa xác minh' }}</p>
+          </div>
+          <div class="reviewer-selected-actions">
+            <button
+              class="button button-primary"
+              type="button"
+              [disabled]="!canChangeRoles()"
+              (click)="prepareGrant(candidate, $event)"
+            >
+              Tiếp tục cấp quyền
+            </button>
+            <button class="button button-text" type="button" (click)="selectedCandidate.set(null)">
+              Bỏ chọn
+            </button>
+          </div>
+        </div>
+      }
+    </section>
+
+    <section class="reviewer-list-section" aria-labelledby="reviewer-list-title">
+      <div class="reviewer-list-heading">
+        <div>
+          <p class="eyebrow">QUYỀN TRUY CẬP</p>
+          <h2 id="reviewer-list-title">Danh sách người duyệt</h2>
+        </div>
+        <button
+          class="button button-outline button-small"
+          type="button"
+          [disabled]="listLoading()"
+          (click)="loadAssignments()"
+        >
+          Tải lại
+        </button>
+      </div>
+
+      <div class="reviewer-tabs" role="group" aria-label="Lọc trạng thái quyền người duyệt">
+        <button
+          id="active-reviewers-tab"
+          type="button"
+          [attr.aria-pressed]="selectedStatus() === 'active'"
+          [class.reviewer-tab-selected]="selectedStatus() === 'active'"
+          [disabled]="listLoading()"
+          (click)="selectStatus('active')"
+        >
+          Đang có quyền
+        </button>
+        <button
+          id="revoked-reviewers-tab"
+          type="button"
+          [attr.aria-pressed]="selectedStatus() === 'revoked'"
+          [class.reviewer-tab-selected]="selectedStatus() === 'revoked'"
+          [disabled]="listLoading()"
+          (click)="selectStatus('revoked')"
+        >
+          Đã thu hồi
+        </button>
+      </div>
+
+      <div id="reviewer-list-panel" class="reviewer-list-panel" tabindex="0">
+        @if (actionSuccess()) {
+          <p class="reviewer-success" role="status" aria-live="polite">{{ actionSuccess() }}</p>
+        }
+        @if (listLoading()) {
+          <p class="reviewer-loading" role="status">Đang tải danh sách quyền…</p>
+        } @else if (listError()) {
+          <div class="reviewer-error-state" role="alert">
+            <p>{{ listError() }}</p>
+            <button
+              class="button button-outline button-small"
+              type="button"
+              (click)="loadAssignments()"
+            >
+              Thử tải lại
+            </button>
+          </div>
+        } @else if (assignments().length === 0) {
+          <div class="reviewer-empty-list" role="status">
+            @if (selectedStatus() === 'active') {
+              <h3>Chưa có người duyệt nào được cấp quyền</h3>
+              <p>Tìm một tài khoản đang hoạt động ở phía trên để bắt đầu.</p>
+            } @else {
+              <h3>Chưa có quyền nào bị thu hồi</h3>
+              <p>Lịch sử thu hồi sẽ xuất hiện ở đây sau khi quản trị viên thực hiện.</p>
+            }
+          </div>
+        } @else {
+          <div class="reviewer-table-wrap">
+            <table class="reviewer-table">
+              <caption>
+                {{
+                  selectedStatus() === 'active'
+                    ? 'Các tài khoản đang có quyền người duyệt'
+                    : 'Các quyền người duyệt đã thu hồi'
+                }}
+              </caption>
+              <thead>
+                <tr>
+                  <th scope="col">Tài khoản</th>
+                  <th scope="col">Trạng thái</th>
+                  <th scope="col">Lý do</th>
+                  <th scope="col">Sự kiện kiểm toán gần nhất</th>
+                  <th scope="col"><span class="visually-hidden">Thao tác</span></th>
+                </tr>
+              </thead>
+              <tbody>
+                @for (assignment of assignments(); track assignment.assignmentId) {
+                  <tr>
+                    <td data-label="Tài khoản">
+                      <div class="reviewer-table-identity">
+                        <strong>{{ assignment.displayName }}</strong>
+                        <span>{{ assignment.maskedContactEmail || 'Email chưa xác minh' }}</span>
+                        <code>{{ assignment.userId }}</code>
+                      </div>
+                    </td>
+                    <td data-label="Trạng thái">
+                      <div class="reviewer-status-stack">
+                        <span
+                          class="reviewer-status-badge"
+                          [class.reviewer-status-revoked]="assignment.revokedAt !== null"
+                        >
+                          {{ assignment.revokedAt === null ? 'Đang có quyền' : 'Đã thu hồi' }}
+                        </span>
+                        @if (assignment.userStatus !== 'active') {
+                          <span class="reviewer-muted">Tài khoản {{ assignment.userStatus }}</span>
+                        }
+                        @if (assignment.revokedAt) {
+                          <span>{{ formatDate(assignment.revokedAt) }}</span>
+                        } @else {
+                          <span>Cấp {{ formatDate(assignment.assignedAt) }}</span>
+                        }
+                        <span>
+                          Cấp bởi
+                          <code>{{ assignment.assignedByUserId || 'Không có dữ liệu' }}</code>
+                        </span>
+                      </div>
+                    </td>
+                    <td data-label="Lý do">{{ reasonLabel(assignment.lastEventReasonCode) }}</td>
+                    <td data-label="Sự kiện kiểm toán gần nhất">
+                      <div class="reviewer-audit-details">
+                        <code [title]="assignment.lastEventId || undefined">{{
+                          assignment.lastEventId || 'Chưa có mã sự kiện'
+                        }}</code>
+                        @if (assignment.lastEventId) {
+                          <span>
+                            {{
+                              assignment.lastEventActionCode === 'GRANTED'
+                                ? 'Cấp bởi'
+                                : 'Thu hồi bởi'
+                            }}
+                            <code>{{ assignment.lastEventActorUserId }}</code>
+                          </span>
+                          <span>{{ formatDate(assignment.lastEventOccurredAt!) }}</span>
+                        }
+                      </div>
+                    </td>
+                    <td data-label="Thao tác">
+                      @if (assignment.revokedAt === null) {
+                        <button
+                          class="button button-danger button-small"
+                          type="button"
+                          [disabled]="assignment.userStatus !== 'active' || !canChangeRoles()"
+                          [attr.aria-label]="
+                            'Thu hồi quyền người duyệt của ' + assignment.displayName
+                          "
+                          (click)="prepareRevoke(assignment, $event)"
+                        >
+                          Thu hồi
+                        </button>
+                      } @else {
+                        <span class="reviewer-muted">Không có thao tác</span>
+                      }
+                    </td>
+                  </tr>
+                }
+              </tbody>
+            </table>
+          </div>
+        }
+      </div>
+    </section>
+  }
+
+  <dialog
+    #confirmDialog
+    class="reviewer-confirm-dialog"
+    aria-labelledby="reviewer-confirm-title"
+    aria-describedby="reviewer-confirm-description"
+    (cancel)="onDialogCancel($event)"
+    (close)="onDialogClosed()"
+  >
+    @if (confirmation(); as action) {
+      <div class="reviewer-dialog-content">
+        <p class="eyebrow">XÁC NHẬN THAY ĐỔI QUYỀN</p>
+        <h2 id="reviewer-confirm-title">
+          {{ action.kind === 'grant' ? 'Cấp quyền người duyệt?' : 'Thu hồi quyền người duyệt?' }}
+        </h2>
+        <p id="reviewer-confirm-description">
+          Vai trò chỉ cấp quyền hệ thống riêng. Thao tác này không công khai tác phẩm, không cấp
+          quyền quản trị và không cho phép tự duyệt tác phẩm của chính mình.
+        </p>
+        <div class="reviewer-dialog-target">
+          <strong>{{
+            action.kind === 'grant' ? action.candidate.displayName : action.assignment.displayName
+          }}</strong>
+          <span>
+            {{
+              action.kind === 'grant'
+                ? action.candidate.maskedContactEmail
+                : action.assignment.maskedContactEmail
+            }}
+          </span>
+        </div>
+
+        @if (action.kind === 'grant') {
+          <label for="reviewer-grant-reason">Lý do cấp quyền</label>
+          <select
+            id="reviewer-grant-reason"
+            [value]="grantReason()"
+            [disabled]="actionBusy() || !!pendingCommand()"
+            (change)="onGrantReasonChange($event)"
+          >
+            <option value="REVIEW_CAPACITY">Bổ sung năng lực duyệt</option>
+            <option value="TEMPORARY_COVERAGE">Thay thế tạm thời</option>
+            <option value="ROLE_CORRECTION">Điều chỉnh vai trò</option>
+          </select>
+        } @else {
+          <label for="reviewer-revoke-reason">Lý do thu hồi</label>
+          <select
+            id="reviewer-revoke-reason"
+            [value]="revokeReason()"
+            [disabled]="actionBusy() || !!pendingCommand()"
+            (change)="onRevokeReasonChange($event)"
+          >
+            <option value="ACCESS_ENDED">Kết thúc quyền truy cập</option>
+            <option value="ROLE_CHANGE">Thay đổi vai trò</option>
+            <option value="SECURITY_REVIEW">Rà soát bảo mật</option>
+          </select>
+        }
+
+        @if (actionError()) {
+          <p class="reviewer-inline-error" role="alert">{{ actionError() }}</p>
+        }
+        @if (pendingCommand()) {
+          <div class="reviewer-uncertain-actions">
+            <p role="status">Giữ nguyên yêu cầu đến khi máy chủ xác nhận trạng thái.</p>
+            <button
+              class="button button-outline button-small"
+              type="button"
+              [disabled]="actionBusy()"
+              (click)="checkPendingCommand()"
+            >
+              Kiểm tra trạng thái
+            </button>
+          </div>
+        }
+        <div class="reviewer-dialog-actions">
+          <button
+            class="button button-outline"
+            type="button"
+            data-dialog-initial-focus
+            [disabled]="actionBusy() || !!pendingCommand()"
+            (click)="closeDialog()"
+          >
+            Hủy
+          </button>
+          <button
+            class="button"
+            [class.button-danger]="action.kind === 'revoke'"
+            [class.button-primary]="action.kind === 'grant'"
+            type="button"
+            [disabled]="actionBusy() || (!pendingCommand() && !canChangeRoles())"
+            (click)="pendingCommand() ? retryPendingCommand() : confirmAction()"
+          >
+            @if (actionBusy()) {
+              Đang gửi…
+            } @else if (pendingCommand()) {
+              Thử lại cùng yêu cầu
+            } @else {
+              {{ action.kind === 'grant' ? 'Xác nhận cấp quyền' : 'Xác nhận thu hồi' }}
+            }
+          </button>
+        </div>
+      </div>
+    }
+  </dialog>
+</section>

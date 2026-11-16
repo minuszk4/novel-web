@@ -5,8 +5,10 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.regex.Pattern;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Service;
 
@@ -20,6 +22,7 @@ public class SecurityRoleAssignmentService {
       List.of("REVIEW_CAPACITY", "TEMPORARY_COVERAGE", "ROLE_CORRECTION");
   private static final List<String> REVOKE_REASONS =
       List.of("ACCESS_ENDED", "ROLE_CHANGE", "SECURITY_REVIEW");
+  private static final Pattern ACCOUNT_SEARCH_PATTERN = Pattern.compile("[A-Za-z0-9._+@-]{3,320}");
 
   private final SecurityRoleAssignmentRepository repository;
 
@@ -27,9 +30,33 @@ public class SecurityRoleAssignmentService {
     this.repository = Objects.requireNonNull(repository, "role assignment repository is required");
   }
 
-  public List<SecurityRoleAssignmentRepository.ReviewerAssignment> listActiveReviewers(
-      UUID actorUserId) {
-    return repository.listActiveReviewers(Objects.requireNonNull(actorUserId));
+  public List<SecurityRoleAssignmentRepository.ReviewerAssignment> listReviewerAssignments(
+      UUID actorUserId, String status) {
+    if (!List.of("active", "revoked", "all").contains(status)) {
+      throw new IllegalArgumentException("A supported reviewer assignment status is required");
+    }
+    return repository.listReviewerAssignments(Objects.requireNonNull(actorUserId), status);
+  }
+
+  public List<SecurityRoleAssignmentRepository.ReviewerAccountCandidate> searchEligibleTargets(
+      UUID actorUserId, String query) {
+    String normalized = query == null ? "" : query.trim();
+    if (normalized.length() > 320) {
+      throw new IllegalArgumentException("Account search query is too long");
+    }
+    UUID exactUserId = null;
+    try {
+      exactUserId = UUID.fromString(normalized);
+    } catch (IllegalArgumentException ignored) {
+      if (!ACCOUNT_SEARCH_PATTERN.matcher(normalized).matches()) {
+        throw new IllegalArgumentException("Account search requires an email prefix or UUID");
+      }
+    }
+    if (exactUserId == null && normalized.length() < 3) {
+      throw new IllegalArgumentException("Account search query must contain at least 3 characters");
+    }
+    return repository.searchEligibleReviewerTargets(
+        Objects.requireNonNull(actorUserId), normalized.toLowerCase(Locale.ROOT), exactUserId);
   }
 
   public SecurityRoleAssignmentRepository.CommandResult grantReviewer(

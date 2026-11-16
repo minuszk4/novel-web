@@ -17,6 +17,7 @@ import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
@@ -40,6 +41,7 @@ public class SecurityRoleAssignmentController {
   public ResponseEntity<?> listReviewerAssignments(
       Authentication authentication,
       @RequestParam(required = false) String role,
+      @RequestParam(defaultValue = "active") String status,
       HttpServletRequest request) {
     Optional<UUID> actor = actorUserId(authentication);
     if (actor.isEmpty()) {
@@ -56,9 +58,16 @@ public class SecurityRoleAssignmentController {
           "Request the publication_reviewer role assignment list.",
           request);
     }
+    if (!List.of("active", "revoked", "all").contains(status)) {
+      return problem(
+          HttpStatus.BAD_REQUEST,
+          "INVALID_ASSIGNMENT_STATUS",
+          "Request active, revoked or all reviewer assignments.",
+          request);
+    }
     try {
       List<SecurityRoleAssignmentRepository.ReviewerAssignment> items =
-          service.listActiveReviewers(actor.orElseThrow());
+          service.listReviewerAssignments(actor.orElseThrow(), status);
       return noStore(HttpStatus.OK, new ReviewerAssignmentListResponse(items));
     } catch (SecurityRoleAssignmentRepository.NotSystemAdminException exception) {
       return problem(
@@ -71,6 +80,51 @@ public class SecurityRoleAssignmentController {
           HttpStatus.SERVICE_UNAVAILABLE,
           "ROLE_STORE_UNAVAILABLE",
           "Reviewer access could not be loaded. Please try again.",
+          request);
+    }
+  }
+
+  @PostMapping("/users/search")
+  public ResponseEntity<?> searchEligibleReviewerTargets(
+      Authentication authentication,
+      @RequestBody(required = false) ReviewerAccountSearchRequest body,
+      HttpServletRequest request) {
+    Optional<UUID> actor = actorUserId(authentication);
+    if (actor.isEmpty()) {
+      return problem(
+          HttpStatus.UNAUTHORIZED,
+          "UNAUTHENTICATED",
+          "Sign in to search eligible accounts.",
+          request);
+    }
+    if (body == null || body.hasUnknownFields()) {
+      return problem(
+          HttpStatus.BAD_REQUEST,
+          "INVALID_ACCOUNT_SEARCH",
+          "Provide only a bounded email prefix or account UUID.",
+          request);
+    }
+    try {
+      List<SecurityRoleAssignmentRepository.ReviewerAccountCandidate> items =
+          service.searchEligibleTargets(actor.orElseThrow(), body.query());
+      return noStore(HttpStatus.OK, new ReviewerAccountSearchResponse(items));
+    } catch (IllegalArgumentException exception) {
+      return problem(
+          HttpStatus.BAD_REQUEST,
+          "INVALID_ACCOUNT_SEARCH",
+          "Provide an email prefix of at least 3 characters or an account UUID.",
+          request);
+    } catch (SecurityRoleAssignmentRepository.NotSystemAdminException exception) {
+      return problem(
+          HttpStatus.FORBIDDEN,
+          "ADMIN_REQUIRED",
+          "An active system administrator is required for this action.",
+          request);
+    } catch (IllegalStateException exception) {
+      return problem(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          "ROLE_STORE_UNAVAILABLE",
+          "Eligible accounts could not be loaded. Please try again.",
           request);
     }
   }
@@ -235,6 +289,13 @@ public class SecurityRoleAssignmentController {
     }
   }
 
+  public record ReviewerAccountSearchResponse(
+      List<SecurityRoleAssignmentRepository.ReviewerAccountCandidate> items) {
+    public ReviewerAccountSearchResponse {
+      items = List.copyOf(items);
+    }
+  }
+
   public record RoleAssignmentCommandResponse(
       String resultCode,
       SecurityRoleAssignmentRepository.ReviewerAssignment assignment,
@@ -259,6 +320,28 @@ public class SecurityRoleAssignmentController {
 
     public void setReasonCode(String reasonCode) {
       this.reasonCode = reasonCode;
+    }
+  }
+
+  public static final class ReviewerAccountSearchRequest {
+    private String query;
+    private boolean unknownFields;
+
+    public String query() {
+      return query;
+    }
+
+    public boolean hasUnknownFields() {
+      return unknownFields;
+    }
+
+    @JsonAnySetter
+    public void unknownField(String name, Object value) {
+      unknownFields = true;
+    }
+
+    public void setQuery(String query) {
+      this.query = query;
     }
   }
 }

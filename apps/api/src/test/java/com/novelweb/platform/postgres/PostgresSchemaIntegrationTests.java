@@ -14818,7 +14818,30 @@ class PostgresSchemaIntegrationTests {
       String adminCsrf = csrfTokenService.tokenFor(adminSession.cookieValue());
       String outsiderCsrf = csrfTokenService.tokenFor(outsiderSession.cookieValue());
       String listRoute = "/api/v1/admin/security/role-assignments";
+      String searchRoute = "/api/v1/admin/security/users/search";
       String grantRoute = "/api/v1/admin/security/users/{userId}/roles/publication_reviewer";
+
+      MvcResult currentAdmin =
+          mockMvc.perform(get("/api/v1/auth/me").cookie(adminCookie)).andReturn();
+      assertEquals(200, currentAdmin.getResponse().getStatus());
+      assertEquals(
+          "publication.reviewers.manage",
+          objectMapper
+              .readTree(currentAdmin.getResponse().getContentAsString())
+              .path("roles")
+              .get(1)
+              .path("permissions")
+              .get(0)
+              .asText());
+      MvcResult nonAdminCurrent =
+          mockMvc.perform(get("/api/v1/auth/me").cookie(outsiderCookie)).andReturn();
+      assertEquals(200, nonAdminCurrent.getResponse().getStatus());
+      assertEquals(
+          1,
+          objectMapper
+              .readTree(nonAdminCurrent.getResponse().getContentAsString())
+              .path("roles")
+              .size());
 
       MvcResult anonymous =
           mockMvc.perform(get(listRoute).param("role", "publication_reviewer")).andReturn();
@@ -14832,6 +14855,54 @@ class PostgresSchemaIntegrationTests {
       assertEquals(403, nonAdmin.getResponse().getStatus());
       assertTrue(nonAdmin.getResponse().getContentAsString().contains("ADMIN_REQUIRED"));
       assertTrue(nonAdmin.getResponse().getHeader("Cache-Control").contains("no-store"));
+
+      MvcResult searchMissingCsrf =
+          mockMvc
+              .perform(
+                  post(searchRoute)
+                      .cookie(adminCookie)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"query\":\"session-\"}"))
+              .andReturn();
+      assertEquals(403, searchMissingCsrf.getResponse().getStatus());
+
+      MvcResult eligibleSearch =
+          mockMvc
+              .perform(
+                  post(searchRoute)
+                      .cookie(adminCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, adminCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"query\":\"session-" + targetId + "@\"}"))
+              .andReturn();
+      assertEquals(200, eligibleSearch.getResponse().getStatus());
+      assertTrue(eligibleSearch.getResponse().getHeader("Cache-Control").contains("no-store"));
+      assertTrue(eligibleSearch.getResponse().getContentAsString().contains(targetId.toString()));
+      assertTrue(eligibleSearch.getResponse().getContentAsString().contains("s***"));
+      assertFalse(
+          eligibleSearch.getResponse().getContentAsString().contains("session-" + targetId));
+
+      MvcResult shortSearch =
+          mockMvc
+              .perform(
+                  post(searchRoute)
+                      .cookie(adminCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, adminCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"query\":\"ab\"}"))
+              .andReturn();
+      assertEquals(400, shortSearch.getResponse().getStatus());
+
+      MvcResult nonAdminSearch =
+          mockMvc
+              .perform(
+                  post(searchRoute)
+                      .cookie(outsiderCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, outsiderCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"query\":\"ses\"}"))
+              .andReturn();
+      assertEquals(403, nonAdminSearch.getResponse().getStatus());
 
       MvcResult missingCsrf =
           mockMvc
@@ -14939,6 +15010,17 @@ class PostgresSchemaIntegrationTests {
       assertEquals(200, listed.getResponse().getStatus());
       assertTrue(listed.getResponse().getHeader("Cache-Control").contains("no-store"));
       assertTrue(listed.getResponse().getContentAsString().contains(targetId.toString()));
+      assertTrue(listed.getResponse().getContentAsString().contains("maskedContactEmail"));
+      assertFalse(listed.getResponse().getContentAsString().contains("session-" + targetId));
+      var latestGrantEvent =
+          objectMapper.readTree(listed.getResponse().getContentAsString()).path("items").get(0);
+      assertEquals(
+          latestGrantEvent.path("maskedContactEmail").asText(),
+          latestGrantEvent.path("contactEmail").asText());
+      assertNotNull(latestGrantEvent.path("lastEventId").asText());
+      assertEquals("GRANTED", latestGrantEvent.path("lastEventActionCode").asText());
+      assertEquals(adminId.toString(), latestGrantEvent.path("lastEventActorUserId").asText());
+      assertEquals("REVIEW_CAPACITY", latestGrantEvent.path("lastEventReasonCode").asText());
 
       SessionService.IssuedSession reviewerSession = sessionService.create(targetId).orElseThrow();
       MvcResult reviewerDenied =
@@ -14986,6 +15068,35 @@ class PostgresSchemaIntegrationTests {
               .andReturn();
       assertEquals(200, afterRevoke.getResponse().getStatus());
       assertFalse(afterRevoke.getResponse().getContentAsString().contains(targetId.toString()));
+
+      MvcResult revokedHistory =
+          mockMvc
+              .perform(
+                  get(listRoute)
+                      .param("role", "publication_reviewer")
+                      .param("status", "revoked")
+                      .cookie(adminCookie))
+              .andReturn();
+      assertEquals(200, revokedHistory.getResponse().getStatus());
+      assertTrue(revokedHistory.getResponse().getContentAsString().contains(targetId.toString()));
+      assertTrue(revokedHistory.getResponse().getContentAsString().contains("ACCESS_ENDED"));
+      var latestRevocationEvent =
+          objectMapper
+              .readTree(revokedHistory.getResponse().getContentAsString())
+              .path("items")
+              .get(0);
+      assertEquals("REVOKED", latestRevocationEvent.path("lastEventActionCode").asText());
+      assertEquals(adminId.toString(), latestRevocationEvent.path("lastEventActorUserId").asText());
+
+      MvcResult invalidStatus =
+          mockMvc
+              .perform(
+                  get(listRoute)
+                      .param("role", "publication_reviewer")
+                      .param("status", "pending")
+                      .cookie(adminCookie))
+              .andReturn();
+      assertEquals(400, invalidStatus.getResponse().getStatus());
 
       setTestUserStatus(targetId, "suspended");
       MvcResult inactiveTarget =

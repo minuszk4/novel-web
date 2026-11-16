@@ -152,6 +152,9 @@ public class ApiSecurityConfiguration {
                     .requestMatchers(HttpMethod.GET, "/api/v1/admin/security/role-assignments")
                     .permitAll();
                 authorize
+                    .requestMatchers(HttpMethod.POST, "/api/v1/admin/security/users/search")
+                    .permitAll();
+                authorize
                     .requestMatchers(
                         HttpMethod.PUT, "/api/v1/admin/security/users/*/roles/publication_reviewer")
                     .permitAll();

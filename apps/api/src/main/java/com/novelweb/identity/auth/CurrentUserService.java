@@ -47,6 +47,13 @@ public class CurrentUserService {
             connection.prepareStatement(
                 """
                      SELECT u.id, u.display_name, u.contact_email, u.status,
+                            EXISTS (
+                                SELECT 1
+                                FROM security_role_assignments role_assignment
+                                WHERE role_assignment.user_id = u.id
+                                  AND role_assignment.role_code = 'system_admin'
+                                  AND role_assignment.revoked_at IS NULL
+                            ) AS can_manage_security_roles,
                             COALESCE((
                                 SELECT array_agg(e.provider ORDER BY e.provider)
                                 FROM external_identities e
@@ -113,13 +120,19 @@ public class CurrentUserService {
                 null,
                 row.getString("status"));
 
+        List<RoleScope> roles = new ArrayList<>();
+        roles.add(new RoleScope("personal", List.of()));
+        if (row.getBoolean("can_manage_security_roles")) {
+          roles.add(new RoleScope("security", List.of("publication.reviewers.manage")));
+        }
+
         return Optional.of(
             new CurrentUserResponse(
                 user,
                 identityProviders(row.getArray("identity_providers")),
                 new UserPolicyState(
                     acceptedTermsVersion, acknowledgedPrivacyVersion, requiredAcceptanceComplete),
-                List.of(new RoleScope("personal", List.of())),
+                List.copyOf(roles),
                 new UserFeatureFlags(
                     false, false, false, cultivationEnabled, commerceSandboxEnabled)));
       }
