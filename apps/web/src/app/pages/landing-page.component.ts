@@ -214,6 +214,11 @@ export class LandingPageComponent {
       return 'Không kết nối được với danh mục. Kiểm tra mạng rồi thử lại.';
     }
     if (error.status === 400) return 'Bộ lọc không hợp lệ. Hãy kiểm tra từ khóa và ngôn ngữ nguồn.';
+    if (error.status === 429) {
+      return error.retryAfterSeconds
+        ? `Bạn gửi yêu cầu quá nhanh. Hãy thử lại sau ${error.retryAfterSeconds} giây.`
+        : 'Bạn gửi yêu cầu quá nhanh. Hãy đợi một chút rồi thử lại.';
+    }
     if (error.status >= 500) return 'Danh mục đang tạm thời không khả dụng. Hãy thử lại sau.';
     return 'Chưa tải được danh mục. Hãy thử lại.';
   }

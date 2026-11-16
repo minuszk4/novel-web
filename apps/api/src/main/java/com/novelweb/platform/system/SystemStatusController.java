@@ -1,6 +1,7 @@
 package com.novelweb.platform.system;
 
 import com.novelweb.identity.auth.GoogleSignInConfiguration;
+import com.novelweb.library.PublicCatalogRateLimiter;
 import com.novelweb.payment.momo.MomoTestGatewaySettings;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
@@ -31,6 +32,7 @@ public class SystemStatusController {
       @Value("${novel.translation.fake.api-enabled:false}") boolean fakeTranslationApiEnabled,
       @Value("${novel.translation.fake.worker.enabled:false}") boolean fakeTranslationWorkerEnabled,
       ObjectProvider<MomoTestGatewaySettings> momoSettings,
+      ObjectProvider<PublicCatalogRateLimiter> publicCatalogRateLimiter,
       Environment springEnvironment) {
     this.environment = environment;
     this.googleSignInConfiguration = googleSignInConfiguration;
@@ -38,10 +40,13 @@ public class SystemStatusController {
     boolean postgresProfile = springEnvironment.acceptsProfiles(Profiles.of("postgres"));
     this.momoTestEnabled = postgresProfile && momoSettings.getIfAvailable() != null;
     this.commerceSandboxEnabled = postgresProfile && commerceSandboxRequested && momoTestEnabled;
+    PublicCatalogRateLimiter catalogRateLimiter = publicCatalogRateLimiter.getIfAvailable();
     this.publicCatalogEnabled =
         postgresProfile
             && springEnvironment.getProperty(
-                "novel.features.public-catalog-enabled", Boolean.class, false);
+                "novel.features.public-catalog-enabled", Boolean.class, false)
+            && catalogRateLimiter != null
+            && catalogRateLimiter.isConfigured();
     this.translationFakePreviewEnabled =
         springEnvironment.acceptsProfiles(Profiles.of("postgres & translation-fake"))
             && fakeTranslationEnabled

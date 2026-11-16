@@ -1,4 +1,4 @@
-import { provideHttpClient } from '@angular/common/http';
+import { HttpHeaders, provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -95,5 +95,23 @@ describe('PublicCatalogApiService', () => {
       );
 
     await expect(result).rejects.toEqual(new PublicCatalogApiError(503, 'PUBLIC_CATALOG_DISABLED'));
+  });
+
+  it('preserves a bounded Retry-After value for the rate-limit recovery message', async () => {
+    const result = api.listWorks();
+    http
+      .expectOne((candidate) => candidate.url === '/api/v1/catalog/works')
+      .flush(
+        { code: 'PUBLIC_CATALOG_RATE_LIMITED' },
+        {
+          status: 429,
+          statusText: 'Too Many Requests',
+          headers: new HttpHeaders({ 'Retry-After': '17' }),
+        },
+      );
+
+    await expect(result).rejects.toEqual(
+      new PublicCatalogApiError(429, 'PUBLIC_CATALOG_RATE_LIMITED', 17),
+    );
   });
 });

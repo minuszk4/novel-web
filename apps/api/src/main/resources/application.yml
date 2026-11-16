@@ -29,6 +29,13 @@ novel:
     cultivation-enabled: ${NOVEL_FEATURE_CULTIVATION_ENABLED:false}
     commerce-sandbox-enabled: ${NOVEL_FEATURE_COMMERCE_SANDBOX_ENABLED:false}
     public-catalog-enabled: ${NOVEL_FEATURE_PUBLIC_CATALOG_ENABLED:false}
+  public-catalog:
+    rate-limit:
+      hmac-key: ${NOVEL_PUBLIC_CATALOG_RATE_LIMIT_HMAC_KEY:}
+      trusted-proxies: ${NOVEL_PUBLIC_CATALOG_TRUSTED_PROXIES:}
+      capacity: ${NOVEL_PUBLIC_CATALOG_RATE_LIMIT_CAPACITY:60}
+      refill-interval: ${NOVEL_PUBLIC_CATALOG_RATE_LIMIT_REFILL_INTERVAL:1s}
+      cleanup-delay: ${NOVEL_PUBLIC_CATALOG_RATE_LIMIT_CLEANUP_DELAY:1h}
   translation:
     fake:
       enabled: ${NOVEL_TRANSLATION_FAKE_ENABLED:false}

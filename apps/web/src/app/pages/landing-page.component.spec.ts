@@ -172,4 +172,16 @@ describe('LandingPageComponent public catalog', () => {
     expect(page.textContent).toContain('Không kết nối được với danh mục');
     expect(page.querySelector('[role="alert"]')).not.toBeNull();
   });
+
+  it('explains the rate-limit wait while preserving catalog search controls', async () => {
+    configure(true);
+    api.listWorks.mockRejectedValue(
+      new PublicCatalogApiError(429, 'PUBLIC_CATALOG_RATE_LIMITED', 8),
+    );
+    const { page } = await render();
+
+    expect(page.querySelector('#public-catalog-query')).not.toBeNull();
+    expect(page.textContent).toContain('Hãy thử lại sau 8 giây');
+    expect(page.textContent).toContain('Thử tải lại');
+  });
 });

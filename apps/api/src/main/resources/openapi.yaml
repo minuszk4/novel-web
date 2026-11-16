@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 8.0.0
+  version: 8.1.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -61,8 +61,11 @@ paths:
         active and which have at least one ready chapter with a source revision. Private, unlisted, imported, archived,
         deleted and chapterless works are excluded. Search matches title and author only; it never searches chapter
         content. Results sort by createdAt descending and ID descending with a signed keyset cursor bound to the
-        normalized query and language filter. The server feature flag defaults off. Keep it off until rights review and
-        publication controls are approved. Responses are no-store; use edge rate limiting before enabling publicly.
+        normalized query and language filter. The server feature flag defaults off and readiness requires a valid
+        server-side per-client rate-limit HMAC key. The API token bucket allows 60 burst requests and refills at one
+        request per second; it returns 429 with Retry-After when exhausted and fails closed if the limiter is unavailable.
+        The limiter uses the socket peer unless X-Forwarded-For comes through configured trusted proxies. Keep the
+        feature off until rights review and publication controls are approved; deployment edge limits are still required.
       security: []
       parameters:
         - name: q
@@ -113,8 +116,19 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+        '429':
+          description: Per-client catalog request bucket is exhausted.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+                minimum: 1
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
         '503':
-          description: Feature disabled, database unavailable or cursor signing is not configured.
+          description: Feature disabled, limiter unavailable, database unavailable or cursor signing is not configured.
           content:
             application/problem+json:
               schema:
@@ -5526,7 +5540,7 @@ components:
               const: false
             publicCatalogEnabled:
               type: boolean
-              description: True only when the postgres profile is active and public catalog is explicitly enabled; does not attest rights approval.
+              description: True only when the postgres profile, public catalog flag and valid server rate-limit configuration are active; does not attest rights or edge protection approval.
             translationFakePreviewEnabled:
               type: boolean
               description: True only when the postgres and translation-fake profiles and provider, API and worker opt-in flags are active.

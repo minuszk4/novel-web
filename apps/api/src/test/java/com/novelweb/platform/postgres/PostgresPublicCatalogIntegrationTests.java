@@ -35,6 +35,10 @@ import tools.jackson.databind.ObjectMapper;
     webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
     properties = {
       "novel.features.public-catalog-enabled=true",
+      "novel.public-catalog.rate-limit.hmac-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "novel.public-catalog.trusted-proxies=127.0.0.1/32",
+      "novel.public-catalog.rate-limit.capacity=60",
+      "novel.public-catalog.rate-limit.refill-interval=1h",
       "novel.library.cursor.hmac-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
       "novel.auth.google.rate-limit-hmac-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
       "novel.auth.google.web-client-id=catalog-test.apps.googleusercontent.com",
@@ -84,8 +88,9 @@ class PostgresPublicCatalogIntegrationTests {
   void removeSyntheticFixtures() throws Exception {
     for (UUID workId : workIds) deleteWork(workId);
     workIds.clear();
-    if (libraryId != null) {
-      try (Connection connection = dataSource.getConnection()) {
+    try (Connection connection = dataSource.getConnection()) {
+      execute(connection, "DELETE FROM public_catalog_rate_limits");
+      if (libraryId != null) {
         execute(connection, "DELETE FROM libraries WHERE id = ?", libraryId);
         execute(connection, "DELETE FROM users WHERE id = ?", userId);
       }
@@ -206,6 +211,38 @@ class PostgresPublicCatalogIntegrationTests {
     assertEquals(400, get("/api/v1/catalog/works?language=vi%21").statusCode());
     assertEquals(400, get("/api/v1/catalog/works?limit=51").statusCode());
     assertEquals(400, get("/api/v1/catalog/works?q=" + "x".repeat(121)).statusCode());
+  }
+
+  @Test
+  void rateLimitsSearchAndCursorReadsPerTrustedClientAddress() throws Exception {
+    String clientAddress = testClientAddress();
+    String path = "/api/v1/catalog/works?q=rate-limit-sentinel&limit=1";
+
+    for (int request = 0; request < 60; request++) {
+      assertEquals(200, get(path, clientAddress).statusCode());
+    }
+    HttpResult limited = get(path, clientAddress);
+
+    assertEquals(429, limited.statusCode());
+    assertEquals("PUBLIC_CATALOG_RATE_LIMITED", limited.body().path("code").asText());
+    assertEquals("3600", limited.retryAfter());
+    assertTrue(limited.cacheControl().contains("no-store"));
+    assertEquals(200, get(path, testClientAddress()).statusCode());
+
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT rate_limit_key_hash FROM public_catalog_rate_limits")) {
+      try (var rows = select.executeQuery()) {
+        java.util.Set<String> observedBuckets = new java.util.HashSet<>();
+        while (rows.next()) {
+          byte[] hash = rows.getBytes(1);
+          assertEquals(32, hash.length);
+          observedBuckets.add(java.util.HexFormat.of().formatHex(hash));
+        }
+        assertEquals(2, observedBuckets.size());
+      }
+    }
   }
 
   private UUID createWork(
@@ -345,14 +382,32 @@ class PostgresPublicCatalogIntegrationTests {
   }
 
   private HttpResult get(String path) throws Exception {
+    return get(path, null);
+  }
+
+  private HttpResult get(String path, String forwardedFor) throws Exception {
+    HttpRequest.Builder request =
+        HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + apiPort + path)).GET();
+    if (forwardedFor != null) request.header("X-Forwarded-For", forwardedFor);
     HttpResponse<String> response =
-        httpClient.send(
-            HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + apiPort + path)).GET().build(),
-            HttpResponse.BodyHandlers.ofString());
+        httpClient.send(request.build(), HttpResponse.BodyHandlers.ofString());
     return new HttpResult(
         response.statusCode(),
         response.headers().firstValue("Cache-Control").orElse(""),
+        response.headers().firstValue("Retry-After").orElse(""),
         objectMapper.readTree(response.body()));
+  }
+
+  private static String testClientAddress() {
+    String random = UUID.randomUUID().toString().replace("-", "");
+    return "2001:db8:"
+        + random.substring(0, 4)
+        + ":"
+        + random.substring(4, 8)
+        + "::"
+        + random.substring(8, 12)
+        + ":"
+        + random.substring(12, 16);
   }
 
   private static void execute(Connection connection, String sql, Object... parameters)
@@ -365,5 +420,6 @@ class PostgresPublicCatalogIntegrationTests {
     }
   }
 
-  private record HttpResult(int statusCode, String cacheControl, JsonNode body) {}
+  private record HttpResult(
+      int statusCode, String cacheControl, String retryAfter, JsonNode body) {}
 }

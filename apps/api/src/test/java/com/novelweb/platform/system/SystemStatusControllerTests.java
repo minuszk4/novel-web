@@ -2,8 +2,11 @@ package com.novelweb.platform.system;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import com.novelweb.identity.auth.GoogleSignInConfiguration;
+import com.novelweb.library.PublicCatalogRateLimiter;
 import com.novelweb.payment.momo.MomoTestGatewaySettings;
 import java.net.URI;
 import java.util.Base64;
@@ -134,10 +137,12 @@ class SystemStatusControllerTests {
     ApiSystemStatus enabled = controllerWithCatalog(true, "postgres").status();
     ApiSystemStatus optInMissing = controllerWithCatalog(false, "postgres").status();
     ApiSystemStatus profileMissing = controllerWithCatalog(true).status();
+    ApiSystemStatus rateLimitKeyMissing = controllerWithCatalog(true, false, "postgres").status();
 
     assertTrue(enabled.features().publicCatalogEnabled());
     assertFalse(optInMissing.features().publicCatalogEnabled());
     assertFalse(profileMissing.features().publicCatalogEnabled());
+    assertFalse(rateLimitKeyMissing.features().publicCatalogEnabled());
   }
 
   private static SystemStatusController controller(
@@ -155,6 +160,8 @@ class SystemStatusControllerTests {
     if (momoSettingsPresent) beanFactory.addBean("momoTestSettings", momoSettings());
     ObjectProvider<MomoTestGatewaySettings> momoSettings =
         beanFactory.getBeanProvider(MomoTestGatewaySettings.class);
+    ObjectProvider<PublicCatalogRateLimiter> catalogRateLimiter =
+        beanFactory.getBeanProvider(PublicCatalogRateLimiter.class);
     return new SystemStatusController(
         "test",
         googleConfiguration,
@@ -164,11 +171,17 @@ class SystemStatusControllerTests {
         translationApiEnabled,
         translationWorkerEnabled,
         momoSettings,
+        catalogRateLimiter,
         environment);
   }
 
   private static SystemStatusController controllerWithCatalog(
       boolean publicCatalogRequested, String... activeProfiles) {
+    return controllerWithCatalog(publicCatalogRequested, true, activeProfiles);
+  }
+
+  private static SystemStatusController controllerWithCatalog(
+      boolean publicCatalogRequested, boolean rateLimitReady, String... activeProfiles) {
     MockEnvironment environment = new MockEnvironment();
     environment.setActiveProfiles(activeProfiles);
     environment.setProperty(
@@ -176,6 +189,13 @@ class SystemStatusControllerTests {
     StaticListableBeanFactory beanFactory = new StaticListableBeanFactory();
     ObjectProvider<MomoTestGatewaySettings> momoSettings =
         beanFactory.getBeanProvider(MomoTestGatewaySettings.class);
+    if (rateLimitReady) {
+      PublicCatalogRateLimiter limiter = mock(PublicCatalogRateLimiter.class);
+      when(limiter.isConfigured()).thenReturn(true);
+      beanFactory.addBean("publicCatalogRateLimiter", limiter);
+    }
+    ObjectProvider<PublicCatalogRateLimiter> catalogRateLimiter =
+        beanFactory.getBeanProvider(PublicCatalogRateLimiter.class);
     return new SystemStatusController(
         "test",
         new GoogleSignInConfiguration("", "", ""),
@@ -185,6 +205,7 @@ class SystemStatusControllerTests {
         false,
         false,
         momoSettings,
+        catalogRateLimiter,
         environment);
   }
 

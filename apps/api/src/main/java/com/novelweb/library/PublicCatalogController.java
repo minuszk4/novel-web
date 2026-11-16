@@ -22,12 +22,15 @@ import org.springframework.web.bind.annotation.RestController;
 public class PublicCatalogController {
 
   private final PublicCatalogService catalogService;
+  private final PublicCatalogRateLimiter rateLimiter;
   private final boolean enabled;
 
   public PublicCatalogController(
       PublicCatalogService catalogService,
+      PublicCatalogRateLimiter rateLimiter,
       @Value("${novel.features.public-catalog-enabled:false}") boolean enabled) {
     this.catalogService = catalogService;
+    this.rateLimiter = rateLimiter;
     this.enabled = enabled;
   }
 
@@ -44,6 +47,26 @@ public class PublicCatalogController {
           "PUBLIC_CATALOG_DISABLED",
           "The public catalog is not available.",
           request);
+    }
+    if (!rateLimiter.isConfigured()) {
+      return problem(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          "PUBLIC_CATALOG_RATE_LIMIT_UNAVAILABLE",
+          "The public catalog is not available right now.",
+          request);
+    }
+    PublicCatalogRateLimiter.Decision decision;
+    try {
+      decision = rateLimiter.tryAcquire(request);
+    } catch (IllegalStateException exception) {
+      return problem(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          "PUBLIC_CATALOG_RATE_LIMIT_UNAVAILABLE",
+          "The public catalog is not available right now.",
+          request);
+    }
+    if (!decision.allowed()) {
+      return rateLimited(decision.retryAfterSeconds(), request);
     }
     return ok(catalogService.list(q, language, cursor, parseLimit(limit)));
   }
@@ -106,6 +129,23 @@ public class PublicCatalogController {
     Object value = request.getAttribute(CorrelationIdFilter.REQUEST_ATTRIBUTE);
     body.setProperty("correlationId", value instanceof String id ? id : "unavailable");
     return ResponseEntity.status(status)
+        .cacheControl(CacheControl.noStore())
+        .header(HttpHeaders.PRAGMA, "no-cache")
+        .body(body);
+  }
+
+  private static ResponseEntity<ProblemDetail> rateLimited(
+      int retryAfterSeconds, HttpServletRequest request) {
+    ProblemDetail body =
+        ProblemDetail.forStatusAndDetail(
+            HttpStatus.TOO_MANY_REQUESTS,
+            "Too many catalog requests. Wait before searching or loading another page.");
+    body.setTitle(HttpStatus.TOO_MANY_REQUESTS.getReasonPhrase());
+    body.setProperty("code", "PUBLIC_CATALOG_RATE_LIMITED");
+    Object value = request.getAttribute(CorrelationIdFilter.REQUEST_ATTRIBUTE);
+    body.setProperty("correlationId", value instanceof String id ? id : "unavailable");
+    return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+        .header(HttpHeaders.RETRY_AFTER, Integer.toString(retryAfterSeconds))
         .cacheControl(CacheControl.noStore())
         .header(HttpHeaders.PRAGMA, "no-cache")
         .body(body);

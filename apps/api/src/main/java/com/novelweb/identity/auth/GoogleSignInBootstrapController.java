@@ -1,5 +1,6 @@
 package com.novelweb.identity.auth;
 
+import com.novelweb.platform.security.TrustedProxyClientAddressResolver;
 import com.novelweb.platform.web.CorrelationIdFilter;
 import jakarta.servlet.http.HttpServletRequest;
 import java.time.Instant;

@@ -1,4 +1,4 @@
-package com.novelweb.identity.auth;
+package com.novelweb.platform.security;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;

@@ -1,4 +1,4 @@
-package com.novelweb.identity.auth;
+package com.novelweb.platform.security;
 
 import jakarta.servlet.http.HttpServletRequest;
 import java.net.InetAddress;
@@ -9,18 +9,18 @@ import java.util.Enumeration;
 import java.util.List;
 
 /** Resolves a client IP without accepting forwarding headers from untrusted peers. */
-final class TrustedProxyClientAddressResolver {
+public final class TrustedProxyClientAddressResolver {
 
   private static final String FORWARDED_FOR_HEADER = "X-Forwarded-For";
   private static final int MAX_FORWARDED_HOPS = 20;
 
   private final List<Network> trustedProxies;
 
-  TrustedProxyClientAddressResolver(String trustedProxyCidrs) {
+  public TrustedProxyClientAddressResolver(String trustedProxyCidrs) {
     this.trustedProxies = parseNetworks(trustedProxyCidrs);
   }
 
-  byte[] resolve(HttpServletRequest request) {
+  public byte[] resolve(HttpServletRequest request) {
     InetAddress peer = parseAddress(request.getRemoteAddr());
     if (!isTrusted(peer)) {
       return peer.getAddress();

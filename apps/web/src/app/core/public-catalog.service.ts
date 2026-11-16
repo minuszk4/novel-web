@@ -30,6 +30,7 @@ export class PublicCatalogApiError extends Error {
   constructor(
     readonly status: number,
     readonly code: string,
+    readonly retryAfterSeconds?: number,
   ) {
     super(code);
     this.name = 'PublicCatalogApiError';
@@ -156,7 +157,12 @@ function toCatalogApiError(error: unknown): PublicCatalogApiError {
         : error.status === 0
           ? 'NETWORK_ERROR'
           : 'CATALOG_REQUEST_FAILED';
-    return new PublicCatalogApiError(error.status, code);
+    const retryAfter = error.headers.get('Retry-After');
+    const retryAfterSeconds =
+      retryAfter && /^\d{1,9}$/.test(retryAfter) && Number.isSafeInteger(Number(retryAfter))
+        ? Number(retryAfter)
+        : undefined;
+    return new PublicCatalogApiError(error.status, code, retryAfterSeconds);
   }
   return new PublicCatalogApiError(0, 'NETWORK_ERROR');
 }
