@@ -43,6 +43,7 @@ public class PublicCatalogRepository {
                   AND w.visibility = 'public'
                   AND w.status = 'active'
                   AND w.deleted_at IS NULL
+                  AND publication_scope_access_is_current(w.id, 'PUBLIC_METADATA')
                 """);
     if (!query.isEmpty()) {
       sql.append(" AND (lower(w.title) LIKE ? ESCAPE '!' OR lower(w.author) LIKE ? ESCAPE '!')");

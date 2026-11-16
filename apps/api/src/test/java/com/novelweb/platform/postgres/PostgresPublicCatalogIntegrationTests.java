@@ -3,6 +3,7 @@ package com.novelweb.platform.postgres;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.novelweb.library.PublicCatalogRateLimiter;
@@ -13,6 +14,8 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
@@ -61,6 +64,9 @@ class PostgresPublicCatalogIntegrationTests {
   private final List<UUID> workIds = new ArrayList<>();
   private UUID userId;
   private UUID libraryId;
+  private UUID reviewerId;
+  private String publicationPolicyVersion;
+  private byte[] publicationPolicySha256;
 
   @Autowired private DataSource dataSource;
 
@@ -76,6 +82,12 @@ class PostgresPublicCatalogIntegrationTests {
   void createSyntheticOwnerAndPrivateLibrary() throws Exception {
     userId = UUID.randomUUID();
     libraryId = UUID.randomUUID();
+    reviewerId = UUID.randomUUID();
+    publicationPolicyVersion = "catalog-test-" + UUID.randomUUID().toString().replace("-", "");
+    byte[] publicationPolicyText =
+        "Synthetic catalog integration policy; no legal text is represented."
+            .getBytes(StandardCharsets.UTF_8);
+    publicationPolicySha256 = sha256(publicationPolicyText);
     try (Connection connection = dataSource.getConnection()) {
       execute(
           connection,
@@ -88,6 +100,36 @@ class PostgresPublicCatalogIntegrationTests {
           libraryId,
           userId,
           "Synthetic private catalog fixture");
+      execute(
+          connection,
+          "INSERT INTO users (id, display_name) VALUES (?, ?)",
+          reviewerId,
+          "Synthetic catalog reviewer");
+      execute(
+          connection,
+          """
+              INSERT INTO security_role_assignments (
+                  id, user_id, role_code, assigned_by_user_id, reason_code)
+              VALUES (?, ?, 'publication_reviewer', ?, 'REVIEW_CAPACITY')
+              """,
+          UUID.randomUUID(),
+          reviewerId,
+          userId);
+      execute(
+          connection,
+          """
+              INSERT INTO publication_rights_policy_documents (
+                  version, effective_at, display_text, policy_sha256)
+              VALUES (?, clock_timestamp() - INTERVAL '1 second', ?, ?)
+              """,
+          publicationPolicyVersion,
+          new String(publicationPolicyText, StandardCharsets.UTF_8),
+          publicationPolicySha256);
+      execute(
+          connection,
+          "UPDATE publication_rights_policy_documents SET status = 'APPROVED', approved_at = clock_timestamp(), approved_by = ? WHERE version = ?",
+          reviewerId,
+          publicationPolicyVersion);
     }
   }
 
@@ -98,6 +140,22 @@ class PostgresPublicCatalogIntegrationTests {
     try (Connection connection = dataSource.getConnection()) {
       execute(connection, "DELETE FROM public_catalog_rate_limits");
       if (libraryId != null) {
+        execute(connection, "DELETE FROM security_role_assignments WHERE user_id = ?", reviewerId);
+        try (java.sql.Statement disable = connection.createStatement()) {
+          disable.execute(
+              "ALTER TABLE publication_rights_policy_documents"
+                  + " DISABLE TRIGGER trg_publication_rights_policy_immutable");
+        }
+        execute(
+            connection,
+            "DELETE FROM publication_rights_policy_documents WHERE version = ?",
+            publicationPolicyVersion);
+        try (java.sql.Statement enable = connection.createStatement()) {
+          enable.execute(
+              "ALTER TABLE publication_rights_policy_documents"
+                  + " ENABLE TRIGGER trg_publication_rights_policy_immutable");
+        }
+        execute(connection, "DELETE FROM users WHERE id = ?", reviewerId);
         execute(connection, "DELETE FROM libraries WHERE id = ?", libraryId);
         execute(connection, "DELETE FROM users WHERE id = ?", userId);
       }
@@ -218,6 +276,50 @@ class PostgresPublicCatalogIntegrationTests {
     assertEquals(400, get("/api/v1/catalog/works?language=vi%21").statusCode());
     assertEquals(400, get("/api/v1/catalog/works?limit=51").statusCode());
     assertEquals(400, get("/api/v1/catalog/works?q=" + "x".repeat(121)).statusCode());
+  }
+
+  @Test
+  void publicCatalogFailsClosedForMissingStaleAndRevokedScopeApproval() throws Exception {
+    UUID missingApproval =
+        createWork(
+            "No approval",
+            "Synthetic Author",
+            "vi",
+            "authored",
+            "public",
+            "active",
+            true,
+            Instant.now(),
+            false);
+    UUID staleApproval =
+        createWork(
+            "Stale snapshot", "Synthetic Author", "vi", "authored", "public", "active", true);
+    UUID revokedApproval =
+        createWork(
+            "Revoked approval", "Synthetic Author", "vi", "authored", "public", "active", true);
+    try (Connection connection = dataSource.getConnection()) {
+      SQLException missingOwnerAcceptance =
+          assertThrows(
+              SQLException.class,
+              () -> insertSyntheticPublicationApproval(connection, missingApproval));
+      assertEquals("23514", missingOwnerAcceptance.getSQLState());
+    }
+    revokeSyntheticPublicationApproval(revokedApproval);
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement update =
+            connection.prepareStatement(
+                "UPDATE works SET title = 'Edited after review' WHERE id = ?")) {
+      update.setObject(1, staleApproval);
+      assertEquals(1, update.executeUpdate());
+    }
+
+    HttpResult result = get("/api/v1/catalog/works?limit=50");
+
+    assertEquals(200, result.statusCode());
+    assertEquals(0, result.body().path("items").size());
+    assertFalse(result.body().toString().contains(missingApproval.toString()));
+    assertFalse(result.body().toString().contains(staleApproval.toString()));
+    assertFalse(result.body().toString().contains(revokedApproval.toString()));
   }
 
   @Test
@@ -427,6 +529,21 @@ class PostgresPublicCatalogIntegrationTests {
       boolean withReadyChapter,
       Instant createdAt)
       throws Exception {
+    return createWork(
+        title, author, language, sourceKind, visibility, status, withReadyChapter, createdAt, true);
+  }
+
+  private UUID createWork(
+      String title,
+      String author,
+      String language,
+      String sourceKind,
+      String visibility,
+      String status,
+      boolean withReadyChapter,
+      Instant createdAt,
+      boolean approvePublicMetadata)
+      throws Exception {
     UUID workId = UUID.randomUUID();
     workIds.add(workId);
     try (Connection connection = dataSource.getConnection()) {
@@ -452,9 +569,99 @@ class PostgresPublicCatalogIntegrationTests {
         insert.setString(11, status);
         insert.executeUpdate();
       }
+      if ("authored".equals(sourceKind)) insertSyntheticAuthoredWork(connection, workId);
       if (withReadyChapter) insertReadyChapter(connection, workId, title + " Chapter");
+      if (approvePublicMetadata
+          && "authored".equals(sourceKind)
+          && "public".equals(visibility)
+          && "active".equals(status)) {
+        insertSyntheticRightsAcceptance(connection, workId);
+        insertSyntheticPublicationApproval(connection, workId);
+      }
     }
     return workId;
+  }
+
+  private void insertSyntheticAuthoredWork(Connection connection, UUID workId) throws SQLException {
+    try (PreparedStatement insert =
+        connection.prepareStatement(
+            """
+                INSERT INTO authoring_manuscript_creations (
+                    actor_user_id, idempotency_key, request_sha256, work_id)
+                VALUES (?, ?, ?, ?)
+                """)) {
+      insert.setObject(1, userId);
+      insert.setString(2, "catalog-manuscript-" + UUID.randomUUID().toString().replace("-", ""));
+      insert.setBytes(3, sha256(UUID.randomUUID().toString().getBytes(StandardCharsets.UTF_8)));
+      insert.setObject(4, workId);
+      assertEquals(1, insert.executeUpdate());
+    }
+  }
+
+  private void insertSyntheticRightsAcceptance(Connection connection, UUID workId)
+      throws SQLException {
+    try (PreparedStatement insert =
+        connection.prepareStatement(
+            """
+                INSERT INTO publication_rights_policy_acceptances (
+                    id, user_id, work_id, idempotency_key, policy_version, policy_sha256, source)
+                VALUES (?, ?, ?, ?, ?, ?, 'web-authoring-publication')
+                """)) {
+      insert.setObject(1, UUID.randomUUID());
+      insert.setObject(2, userId);
+      insert.setObject(3, workId);
+      insert.setObject(4, UUID.randomUUID());
+      insert.setString(5, publicationPolicyVersion);
+      insert.setBytes(6, publicationPolicySha256);
+      assertEquals(1, insert.executeUpdate());
+    }
+  }
+
+  private void insertSyntheticPublicationApproval(Connection connection, UUID workId)
+      throws SQLException {
+    String snapshot;
+    try (PreparedStatement select =
+        connection.prepareStatement(
+            "SELECT publication_work_scope_snapshot(?, 'PUBLIC_METADATA')::text")) {
+      select.setObject(1, workId);
+      try (var row = select.executeQuery()) {
+        if (!row.next()) throw new SQLException("Synthetic publication snapshot returned no row");
+        snapshot = row.getString(1);
+      }
+    }
+    try (PreparedStatement insert =
+        connection.prepareStatement(
+            """
+                INSERT INTO publication_scope_access_approvals (
+                    id, work_id, scope_code, approved_snapshot, policy_version, policy_sha256,
+                    approved_by_user_id, reason_code)
+                VALUES (?, ?, 'PUBLIC_METADATA', CAST(? AS JSONB), ?, ?, ?, 'RIGHTS_REVIEWED')
+                """)) {
+      insert.setObject(1, UUID.randomUUID());
+      insert.setObject(2, workId);
+      insert.setString(3, snapshot);
+      insert.setString(4, publicationPolicyVersion);
+      insert.setBytes(5, publicationPolicySha256);
+      insert.setObject(6, reviewerId);
+      assertEquals(1, insert.executeUpdate());
+    }
+  }
+
+  private void revokeSyntheticPublicationApproval(UUID workId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement insert =
+            connection.prepareStatement(
+                """
+                    INSERT INTO publication_scope_access_revocations (
+                        approval_id, revoked_by_user_id, reason_code)
+                    SELECT id, ?, 'RIGHTS_WITHDRAWN'
+                    FROM publication_scope_access_approvals
+                    WHERE work_id = ? AND scope_code = 'PUBLIC_METADATA'
+                    """)) {
+      insert.setObject(1, reviewerId);
+      insert.setObject(2, workId);
+      assertEquals(1, insert.executeUpdate());
+    }
   }
 
   private void insertReadyChapter(Connection connection, UUID workId, String title)
@@ -523,6 +730,27 @@ class PostgresPublicCatalogIntegrationTests {
 
   private void deleteWork(UUID workId) throws SQLException {
     try (Connection connection = dataSource.getConnection()) {
+      try (PreparedStatement deleteManuscript =
+              connection.prepareStatement(
+                  "DELETE FROM authoring_manuscript_creations WHERE work_id = ?");
+          PreparedStatement deleteAcceptance =
+              connection.prepareStatement(
+                  "DELETE FROM publication_rights_policy_acceptances WHERE work_id = ?")) {
+        try (java.sql.Statement disable = connection.createStatement()) {
+          disable.execute(
+              "ALTER TABLE publication_rights_policy_acceptances"
+                  + " DISABLE TRIGGER trg_publication_rights_acceptance_immutable");
+        }
+        deleteAcceptance.setObject(1, workId);
+        deleteAcceptance.executeUpdate();
+        try (java.sql.Statement enable = connection.createStatement()) {
+          enable.execute(
+              "ALTER TABLE publication_rights_policy_acceptances"
+                  + " ENABLE TRIGGER trg_publication_rights_acceptance_immutable");
+        }
+        deleteManuscript.setObject(1, workId);
+        deleteManuscript.executeUpdate();
+      }
       try (PreparedStatement clearRevision =
           connection.prepareStatement(
               "UPDATE chapters SET source_revision_id = NULL WHERE work_id = ?")) {
@@ -567,6 +795,14 @@ class PostgresPublicCatalogIntegrationTests {
         + random.substring(8, 12)
         + ":"
         + random.substring(12, 16);
+  }
+
+  private static byte[] sha256(byte[] value) {
+    try {
+      return MessageDigest.getInstance("SHA-256").digest(value);
+    } catch (NoSuchAlgorithmException exception) {
+      throw new IllegalStateException("SHA-256 is unavailable", exception);
+    }
   }
 
   private static void execute(Connection connection, String sql, Object... parameters)
