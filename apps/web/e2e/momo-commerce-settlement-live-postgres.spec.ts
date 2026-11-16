@@ -71,7 +71,7 @@ test('synthetic signed settlement grants credits once and unlocks a public chapt
     `http://localhost:4300/app/payment/result?orderId=${encodeURIComponent(orderId!)}&resultCode=0`,
   );
   await expect(page.getByRole('heading', { name: 'Chưa xác nhận thanh toán' })).toBeVisible();
-  await expect(page.getByText(/100 credit chưa được cộng/)).toBeVisible();
+  await expect(page.getByText(/100 credit đã mua chưa được cộng/)).toBeVisible();
   const initialOrderResponse = apiResponses.find(
     (response) => new URL(response.url()).pathname === `/api/v1/payment-orders/${orderId}`,
   );

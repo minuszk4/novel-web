@@ -54,7 +54,7 @@ test('MoMo return reads a pending order from the real API and does not grant cre
     features: { commerceSandboxEnabled: true },
   });
   await expect(page.getByRole('heading', { name: 'Chưa xác nhận thanh toán' })).toBeVisible();
-  await expect(page.getByText(/100 credit chưa được cộng/)).toBeVisible();
+  await expect(page.getByText(/100 credit đã mua chưa được cộng/)).toBeVisible();
   await expect(page.getByText(/Đừng thanh toán lại/)).toBeVisible();
   await expect(page.getByText(/MoMo TEST — không dùng tiền thật/)).toBeVisible();
   await expect(page.getByText('Đang chờ xác nhận', { exact: true })).toBeVisible();

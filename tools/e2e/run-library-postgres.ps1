@@ -105,7 +105,13 @@ $commerceOtherSessionBytes = New-Object byte[] 32
 $commerceOtherSessionToken = [Convert]::ToBase64String($commerceOtherSessionBytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
 $commerceOtherSessionHash = [Convert]::ToHexString(
     [System.Security.Cryptography.SHA256]::HashData($commerceOtherSessionBytes))
+$paymentReturnSessionBytes = New-Object byte[] 32
+[System.Security.Cryptography.RandomNumberGenerator]::Fill($paymentReturnSessionBytes)
+$paymentReturnSessionToken = [Convert]::ToBase64String($paymentReturnSessionBytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+$paymentReturnSessionHash = [Convert]::ToHexString(
+    [System.Security.Cryptography.SHA256]::HashData($paymentReturnSessionBytes))
 $userId = [guid]::NewGuid()
+$paymentReturnUserId = [guid]::NewGuid()
 $libraryId = [guid]::NewGuid()
 $firstWorkId = [guid]::NewGuid()
 $secondWorkId = [guid]::NewGuid()
@@ -305,11 +311,18 @@ try {
     $paymentReturnFixtureSql = ''
     if ($IncludePaymentReturn) {
         $paymentReturnFixtureSql = @"
+INSERT INTO users (id, display_name, contact_email, email_verified_at, status)
+VALUES ('$paymentReturnUserId', 'Live Pending Payment Reader', 'payment-return-$paymentReturnUserId@example.test', clock_timestamp(), 'active');
+INSERT INTO policy_acceptances (id, user_id, policy_type, version, decision, recorded_at, source) VALUES
+(gen_random_uuid(), '$paymentReturnUserId', 'TERMS', 'terms-live-e2e-v1', 'TERMS_ACCEPTED', clock_timestamp(), 'e2e-fixture'),
+(gen_random_uuid(), '$paymentReturnUserId', 'PRIVACY_NOTICE', 'privacy-live-e2e-v1', 'PRIVACY_NOTICE_ACKNOWLEDGED', clock_timestamp(), 'e2e-fixture');
+INSERT INTO sessions (id_hash, user_id, expires_at)
+VALUES (decode('$paymentReturnSessionHash', 'hex'), '$paymentReturnUserId', clock_timestamp() + INTERVAL '1 day');
 INSERT INTO credit_top_up_orders
     (id, user_id, request_id, idempotency_key, pack_id, pack_version, provider, environment,
      currency, amount_vnd, paid_credits, bonus_credits, status)
 VALUES
-    ('$paymentReturnOrderId', '$userId', gen_random_uuid(), 'payment-return-$paymentReturnOrderId',
+    ('$paymentReturnOrderId', '$paymentReturnUserId', gen_random_uuid(), 'payment-return-$paymentReturnOrderId',
      'momo-test-credits-100', 1, 'MOMO', 'TEST', 'VND', 1000, 100, 0, 'PENDING');
 "@
     }
@@ -415,7 +428,7 @@ COMMIT;
     $env:LIBRARY_LIVE_TEST_SCREENSHOT = $screenshotPath
     $paymentReturnScreenshotPath = Join-Path $evidenceDirectory 'momo-payment-return-pending-live.png'
     if ($IncludePaymentReturn) {
-        $env:MOMO_PAYMENT_RETURN_LIVE_TEST_SESSION_TOKEN = $sessionToken
+        $env:MOMO_PAYMENT_RETURN_LIVE_TEST_SESSION_TOKEN = $paymentReturnSessionToken
         $env:MOMO_PAYMENT_RETURN_LIVE_TEST_ORDER_ID = [string]$paymentReturnOrderId
         $env:MOMO_PAYMENT_RETURN_LIVE_TEST_SCREENSHOT = $paymentReturnScreenshotPath
     }
@@ -500,7 +513,7 @@ COMMIT;
     if ($e2eExit -ne 0) { throw "Live FE/API/PostgreSQL Playwright journey failed (exit $e2eExit)." }
 
     if ($IncludePaymentReturn) {
-        $paymentReturnSummary = & $docker @composeArguments exec -T postgres psql -v ON_ERROR_STOP=1 -tA -U novelweb -d novelweb -c "SELECT o.status || '|' || o.paid_credits::text || '|' || (SELECT COUNT(*) FROM credit_ledger_entries e WHERE e.source_type = 'PAYMENT_ORDER' AND e.source_id = o.id)::text || '|' || COALESCE((SELECT SUM(p.balance) FROM credit_balance_projection p WHERE p.user_id = o.user_id), 0)::text FROM credit_top_up_orders o WHERE o.id = '$paymentReturnOrderId' AND o.user_id = '$userId';"
+        $paymentReturnSummary = & $docker @composeArguments exec -T postgres psql -v ON_ERROR_STOP=1 -tA -U novelweb -d novelweb -c "SELECT o.status || '|' || o.paid_credits::text || '|' || (SELECT COUNT(*) FROM credit_ledger_entries e WHERE e.source_type = 'PAYMENT_ORDER' AND e.source_id = o.id)::text || '|' || COALESCE((SELECT SUM(p.balance) FROM credit_balance_projection p WHERE p.user_id = o.user_id), 0)::text FROM credit_top_up_orders o WHERE o.id = '$paymentReturnOrderId' AND o.user_id = '$paymentReturnUserId';"
         if ($LASTEXITCODE -ne 0) { throw 'Could not verify the pending MoMo TEST order and credit ledger.' }
         $paymentReturnParts = ([string]$paymentReturnSummary).Trim() -split '\|'
         if ($paymentReturnParts.Count -ne 4 -or $paymentReturnParts[0] -ne 'PENDING' -or $paymentReturnParts[1] -ne '100' -or $paymentReturnParts[2] -ne '0' -or $paymentReturnParts[3] -ne '0') {
@@ -623,7 +636,7 @@ COMMIT;
         $(if ($authoringOutlineParts.Count -eq 5) { "- PostgreSQL authoring outline and metadata: blank chapter at ordinal 27 soft-deleted after UI confirmation, zero content revisions, one idempotency receipt after create replay, and persisted title/byline/language at metadata version 4 after explicit stale-conflict recovery" } else { '- PostgreSQL authoring outline and metadata: not requested' })
         $(if ($authoringEditorParts.Count -eq 6) { '- PostgreSQL authoring editor: three immutable revisions, three idempotency receipts, explicit local-version conflict resolution, latest revision pointer matches the saved content and chapter remains draft/unpublished' } else { '- PostgreSQL authoring editor: not requested' })
         $(if ($translationParts.Count -eq 4) { "- PostgreSQL fake-local translation: $($translationParts[0]) job, $($translationParts[2]) successful attempt and $($translationParts[3]) unpublished candidate segment verified with the fake marker" } else { '- PostgreSQL fake-local translation: not requested' })
-        $(if ($IncludePaymentReturn) { '- MoMo TEST return: resultCode=0 and synthetic signature were ignored; actor-scoped order remained PENDING after refresh; ledger and balance projection remained zero; browser made no create/IPN request; reconciliation worker was disabled; no MoMo network request was made' } else { '- MoMo TEST return: not requested' })
+        $(if ($IncludePaymentReturn) { '- MoMo TEST return: isolated synthetic actor/order remained PENDING after refresh; payment ledger and balance projection remained zero; browser made no create/IPN request; reconciliation worker was disabled; no MoMo network request was made' } else { '- MoMo TEST return: not requested' })
         $(if ($IncludeCommerceSettlement) { '- MoMo TEST commerce: a locally signed synthetic IPN was delivered twice to the real API; actor-owned order settled once, 100 paid credits were granted once, the Reader debited exactly 10 paid credits after explicit confirmation, one entitlement unlocked the public chapter and the saved balance is 90; a second actor received 404 for the order, empty histories/zero balance and no paid chapter body; no MoMo network request or reconciliation query was made' } else { '- MoMo TEST commerce settlement/unlock: not requested' })
         '- API route mocks: none'
         "- Elapsed: $duration seconds"
@@ -633,7 +646,7 @@ COMMIT;
         "- Logs: api-build.log, api-stdout.log, api-stderr.log, playwright.log$(if ($IncludeAuthoringDraftApi) { ', authoring-draft-api-test.log' } else { '' })$(if ($IncludeAuthoringEmptyChapterDelete) { ', authoring-empty-chapter-delete-api-test.log' } else { '' })"
         $(if ($failure) { "- Failure: $failure" } else { '- Failure: none' })
         ''
-        'The synthetic user, accepted test-only policy rows, session hash, library and works existed only in this randomly named disposable PostgreSQL project. The persistent novel-web-local project was not targeted.'
+        'Synthetic users, accepted test-only policy rows, session hashes, library and works existed only in this randomly named disposable PostgreSQL project. The persistent novel-web-local project was not targeted.'
     ) | Set-Content -LiteralPath (Join-Path $evidenceDirectory 'result.md') -Encoding utf8
     Write-Output "Cleanup: $cleanup"
     Write-Output "Evidence: $evidenceDirectory"
