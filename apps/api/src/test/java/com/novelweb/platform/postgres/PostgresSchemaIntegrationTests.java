@@ -172,6 +172,7 @@ import tools.jackson.databind.ObjectMapper;
       "novel.imports.staging.upload-rate-limit-refill-interval=1h",
       "novel.imports.staging.rate-limit-retention=24h",
       "novel.publication.requests.rate-limit-capacity=1",
+      "novel.publication.release-enabled=true",
       "novel.publication.purge.worker-enabled=false",
       "novel.publication.purge.required-targets=CDN",
       "novel.publication.purge.targets.cdn.endpoint=https://purge.example.test/v1/work",
@@ -267,6 +268,7 @@ class PostgresSchemaIntegrationTests {
           "content_entitlements",
           "public_catalog_rate_limits",
           "publication_work_takedown_events",
+          "publication_release_events",
           "publication_takedown_purge_requests",
           "publication_takedown_purge_attempts");
 
@@ -446,7 +448,7 @@ class PostgresSchemaIntegrationTests {
             connection.prepareStatement("SELECT COUNT(*) FROM databasechangelog");
         ResultSet changesets = changesetCount.executeQuery()) {
       changesets.next();
-      assertEquals(150, changesets.getInt(1), "unexpected number of applied changesets");
+      assertEquals(152, changesets.getInt(1), "unexpected number of applied changesets");
     }
 
     Set<String> actualTables = new HashSet<>();
@@ -643,6 +645,7 @@ class PostgresSchemaIntegrationTests {
                   truncate.execute(
                       "TRUNCATE publication_review_events, publication_request_scope_claims,"
                           + " publication_request_scope_snapshots, publication_requests,"
+                          + " publication_release_events,"
                           + " publication_rights_policy_acceptance_idempotency,"
                           + " publication_rights_policy_acceptances");
                 }
@@ -2292,6 +2295,202 @@ class PostgresSchemaIntegrationTests {
                   () -> mutatePublicationScopeApproval(approvableFixture.workId()))
               .getSQLState());
 
+      String readinessPath =
+          "/api/v1/authoring/manuscripts/" + approvableFixture.workId() + "/publication/readiness";
+      MvcResult readiness = mockMvc.perform(get(readinessPath).cookie(ownerCookie)).andReturn();
+      assertEquals(200, readiness.getResponse().getStatus());
+      String readinessEtag = readiness.getResponse().getHeader(HttpHeaders.ETAG);
+      JsonNode readinessBody = objectMapper.readTree(readiness.getResponse().getContentAsString());
+      long approvedContentVersion = readinessBody.path("publicationContentVersion").asLong();
+      assertEquals("APPROVED_UNPUBLISHED", readinessBody.path("currentRequestState").asText());
+      assertEquals("private", publicationWorkVisibility(approvableFixture.workId()));
+      assertEquals(0, publicationReleaseEventCount(approvableFixture.workId()));
+
+      String releasePath =
+          "/api/v1/authoring/manuscripts/" + approvableFixture.workId() + "/publication-actions";
+      String releaseBody = "{\"actionCode\":\"PUBLISH_NOW\"}";
+      String releaseKey = "publication-release-approved-0001";
+      MvcResult releaseWithoutCsrf =
+          mockMvc
+              .perform(
+                  post(releasePath)
+                      .cookie(ownerCookie)
+                      .header(HttpHeaders.IF_MATCH, readinessEtag)
+                      .header("Idempotency-Key", "publication-release-no-csrf-01")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(releaseBody))
+              .andReturn();
+      assertEquals(403, releaseWithoutCsrf.getResponse().getStatus());
+      assertTrue(releaseWithoutCsrf.getResponse().getContentAsString().contains("CSRF_FAILED"));
+
+      MvcResult outsiderRelease =
+          mockMvc
+              .perform(
+                  post(releasePath)
+                      .cookie(reviewerCookie)
+                      .header(
+                          SessionCsrfTokenService.TOKEN_HEADER_NAME,
+                          csrfTokenService.tokenFor(reviewerSession.cookieValue()))
+                      .header(HttpHeaders.IF_MATCH, readinessEtag)
+                      .header("Idempotency-Key", "publication-release-outsider-01")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(releaseBody))
+              .andReturn();
+      assertEquals(404, outsiderRelease.getResponse().getStatus());
+      assertEquals("private", publicationWorkVisibility(approvableFixture.workId()));
+
+      MvcResult releaseWithExtraField =
+          mockMvc
+              .perform(
+                  post(releasePath)
+                      .cookie(ownerCookie)
+                      .header(
+                          SessionCsrfTokenService.TOKEN_HEADER_NAME,
+                          csrfTokenService.tokenFor(approvableOwnerSession.cookieValue()))
+                      .header(HttpHeaders.IF_MATCH, readinessEtag)
+                      .header("Idempotency-Key", "publication-release-extra-field-01")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"actionCode\":\"PUBLISH_NOW\",\"title\":\"private prose\"}"))
+              .andReturn();
+      assertEquals(400, releaseWithExtraField.getResponse().getStatus());
+      assertFalse(
+          releaseWithExtraField.getResponse().getContentAsString().contains("private prose"));
+
+      MvcResult releaseWithDuplicateField =
+          mockMvc
+              .perform(
+                  post(releasePath)
+                      .cookie(ownerCookie)
+                      .header(
+                          SessionCsrfTokenService.TOKEN_HEADER_NAME,
+                          csrfTokenService.tokenFor(approvableOwnerSession.cookieValue()))
+                      .header(HttpHeaders.IF_MATCH, readinessEtag)
+                      .header("Idempotency-Key", "publication-release-duplicate-01")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"actionCode\":\"NOOP\",\"actionCode\":\"PUBLISH_NOW\"}"))
+              .andReturn();
+      assertEquals(400, releaseWithDuplicateField.getResponse().getStatus());
+
+      MvcResult releaseWithTrailingJson =
+          mockMvc
+              .perform(
+                  post(releasePath)
+                      .cookie(ownerCookie)
+                      .header(
+                          SessionCsrfTokenService.TOKEN_HEADER_NAME,
+                          csrfTokenService.tokenFor(approvableOwnerSession.cookieValue()))
+                      .header(HttpHeaders.IF_MATCH, readinessEtag)
+                      .header("Idempotency-Key", "publication-release-trailing-01")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"actionCode\":\"PUBLISH_NOW\"} {}"))
+              .andReturn();
+      assertEquals(400, releaseWithTrailingJson.getResponse().getStatus());
+
+      MvcResult staleReleaseEtag =
+          mockMvc
+              .perform(
+                  post(releasePath)
+                      .cookie(ownerCookie)
+                      .header(
+                          SessionCsrfTokenService.TOKEN_HEADER_NAME,
+                          csrfTokenService.tokenFor(approvableOwnerSession.cookieValue()))
+                      .header(
+                          HttpHeaders.IF_MATCH, "\"publication-snapshot-" + "0".repeat(64) + "\"")
+                      .header("Idempotency-Key", "publication-release-stale-etag-01")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(releaseBody))
+              .andReturn();
+      assertEquals(412, staleReleaseEtag.getResponse().getStatus());
+      assertEquals(readinessEtag, staleReleaseEtag.getResponse().getHeader(HttpHeaders.ETAG));
+
+      installFailingPublicationReleaseTrigger();
+      MvcResult interruptedRelease;
+      try {
+        interruptedRelease =
+            mockMvc
+                .perform(
+                    post(releasePath)
+                        .cookie(ownerCookie)
+                        .header(
+                            SessionCsrfTokenService.TOKEN_HEADER_NAME,
+                            csrfTokenService.tokenFor(approvableOwnerSession.cookieValue()))
+                        .header(HttpHeaders.IF_MATCH, readinessEtag)
+                        .header("Idempotency-Key", releaseKey)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(releaseBody))
+                .andReturn();
+      } finally {
+        dropFailingPublicationReleaseTrigger();
+      }
+      assertEquals(503, interruptedRelease.getResponse().getStatus());
+      assertEquals(0, publicationReleaseEventCount(approvableFixture.workId()));
+      assertEquals("private", publicationWorkVisibility(approvableFixture.workId()));
+
+      MvcResult published =
+          mockMvc
+              .perform(
+                  post(releasePath)
+                      .cookie(ownerCookie)
+                      .header(
+                          SessionCsrfTokenService.TOKEN_HEADER_NAME,
+                          csrfTokenService.tokenFor(approvableOwnerSession.cookieValue()))
+                      .header(HttpHeaders.IF_MATCH, readinessEtag)
+                      .header("Idempotency-Key", releaseKey)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(releaseBody))
+              .andReturn();
+      assertEquals(201, published.getResponse().getStatus());
+      assertTrue(published.getResponse().getHeader(HttpHeaders.CACHE_CONTROL).contains("no-store"));
+      assertEquals("no-cache", published.getResponse().getHeader(HttpHeaders.PRAGMA));
+      JsonNode releaseReceipt = objectMapper.readTree(published.getResponse().getContentAsString());
+      assertEquals("PUBLISHED", releaseReceipt.path("state").asText());
+      assertEquals(approvableFixture.workId().toString(), releaseReceipt.path("workId").asText());
+      assertEquals(
+          approvedContentVersion, releaseReceipt.path("publicationContentVersion").asLong());
+      assertEquals("public", publicationWorkVisibility(approvableFixture.workId()));
+      assertEquals(1, publicationReleaseEventCount(approvableFixture.workId()));
+      assertTrue(publicationScopeIsCurrent(approvableFixture.workId(), "PUBLIC_METADATA"));
+      assertTrue(publicationScopeIsCurrent(approvableFixture.workId(), "CHAPTER_TEXT"));
+      assertTrue(publicationScopeIsCurrent(approvableFixture.workId(), "COMMERCIAL_SALE"));
+
+      MvcResult releaseReplay =
+          mockMvc
+              .perform(
+                  post(releasePath)
+                      .cookie(ownerCookie)
+                      .header(
+                          SessionCsrfTokenService.TOKEN_HEADER_NAME,
+                          csrfTokenService.tokenFor(approvableOwnerSession.cookieValue()))
+                      .header(HttpHeaders.IF_MATCH, readinessEtag)
+                      .header("Idempotency-Key", releaseKey)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(releaseBody))
+              .andReturn();
+      assertEquals(200, releaseReplay.getResponse().getStatus());
+      assertEquals(
+          published.getResponse().getContentAsString(),
+          releaseReplay.getResponse().getContentAsString());
+      assertEquals(1, publicationReleaseEventCount(approvableFixture.workId()));
+
+      MvcResult releaseKeyReuse =
+          mockMvc
+              .perform(
+                  post(releasePath)
+                      .cookie(ownerCookie)
+                      .header(
+                          SessionCsrfTokenService.TOKEN_HEADER_NAME,
+                          csrfTokenService.tokenFor(approvableOwnerSession.cookieValue()))
+                      .header(
+                          HttpHeaders.IF_MATCH, "\"publication-snapshot-" + "1".repeat(64) + "\"")
+                      .header("Idempotency-Key", releaseKey)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(releaseBody))
+              .andReturn();
+      assertEquals(409, releaseKeyReuse.getResponse().getStatus());
+      assertTrue(
+          releaseKeyReuse.getResponse().getContentAsString().contains("IDEMPOTENCY_KEY_REUSED"));
+      assertEquals(1, publicationReleaseEventCount(approvableFixture.workId()));
+
       setPublicationWorkVisibility(approvableFixture.workId(), "public");
       insertCurrentSyntheticPublicationApprovals(
           approvableFixture.workId(),
@@ -2979,6 +3178,19 @@ class PostgresSchemaIntegrationTests {
     }
   }
 
+  private int publicationReleaseEventCount(UUID workId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT COUNT(*) FROM publication_release_events WHERE work_id = ?")) {
+      select.setObject(1, workId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getInt(1);
+      }
+    }
+  }
+
   private void setPublicationWorkVisibility(UUID workId, String visibility) throws SQLException {
     try (Connection connection = dataSource.getConnection();
         PreparedStatement update =
@@ -3059,6 +3271,38 @@ class PostgresSchemaIntegrationTests {
           "DROP TRIGGER IF EXISTS trg_test_fail_publication_scope_approval "
               + "ON publication_scope_access_approvals");
       statement.execute("DROP FUNCTION IF EXISTS test_fail_publication_scope_approval()");
+    }
+  }
+
+  private void installFailingPublicationReleaseTrigger() throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        java.sql.Statement statement = connection.createStatement()) {
+      statement.execute(
+          """
+              CREATE OR REPLACE FUNCTION test_fail_publication_release()
+              RETURNS trigger LANGUAGE plpgsql AS $$
+              BEGIN
+                  RAISE EXCEPTION 'synthetic publication release rollback check'
+                      USING ERRCODE = '55000';
+              END;
+              $$
+              """);
+      statement.execute(
+          """
+              CREATE TRIGGER trg_test_fail_publication_release
+                  BEFORE INSERT ON publication_release_events
+                  FOR EACH ROW EXECUTE FUNCTION test_fail_publication_release()
+              """);
+    }
+  }
+
+  private void dropFailingPublicationReleaseTrigger() throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        java.sql.Statement statement = connection.createStatement()) {
+      statement.execute(
+          "DROP TRIGGER IF EXISTS trg_test_fail_publication_release"
+              + " ON publication_release_events");
+      statement.execute("DROP FUNCTION IF EXISTS test_fail_publication_release()");
     }
   }
 
@@ -3209,6 +3453,9 @@ class PostgresSchemaIntegrationTests {
       try {
         try (java.sql.Statement disable = connection.createStatement()) {
           disable.execute(
+              "ALTER TABLE publication_release_events"
+                  + " DISABLE TRIGGER trg_publication_release_immutable");
+          disable.execute(
               "ALTER TABLE publication_review_events"
                   + " DISABLE TRIGGER trg_publication_review_event_immutable");
           disable.execute(
@@ -3221,7 +3468,10 @@ class PostgresSchemaIntegrationTests {
               "ALTER TABLE publication_requests"
                   + " DISABLE TRIGGER trg_publication_request_immutable");
         }
-        try (PreparedStatement deleteEvents =
+        try (PreparedStatement deleteReleaseEvents =
+                connection.prepareStatement(
+                    "DELETE FROM publication_release_events WHERE work_id = ?");
+            PreparedStatement deleteEvents =
                 connection.prepareStatement(
                     "DELETE FROM publication_review_events WHERE request_id IN"
                         + " (SELECT id FROM publication_requests WHERE work_id = ?)");
@@ -3235,6 +3485,8 @@ class PostgresSchemaIntegrationTests {
                         + " (SELECT id FROM publication_requests WHERE work_id = ?)");
             PreparedStatement deleteRequests =
                 connection.prepareStatement("DELETE FROM publication_requests WHERE work_id = ?")) {
+          deleteReleaseEvents.setObject(1, workId);
+          deleteReleaseEvents.executeUpdate();
           deleteEvents.setObject(1, workId);
           deleteEvents.executeUpdate();
           deleteClaims.setObject(1, workId);
@@ -3245,6 +3497,9 @@ class PostgresSchemaIntegrationTests {
           deleteRequests.executeUpdate();
         }
         try (java.sql.Statement enable = connection.createStatement()) {
+          enable.execute(
+              "ALTER TABLE publication_release_events"
+                  + " ENABLE TRIGGER trg_publication_release_immutable");
           enable.execute(
               "ALTER TABLE publication_requests"
                   + " ENABLE TRIGGER trg_publication_request_immutable");

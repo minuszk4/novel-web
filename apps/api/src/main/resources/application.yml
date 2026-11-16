@@ -37,6 +37,7 @@ novel:
       refill-interval: ${NOVEL_PUBLIC_CATALOG_RATE_LIMIT_REFILL_INTERVAL:1s}
       cleanup-delay: ${NOVEL_PUBLIC_CATALOG_RATE_LIMIT_CLEANUP_DELAY:1h}
   publication:
+    release-enabled: ${NOVEL_PUBLICATION_RELEASE_ENABLED:false}
     purge:
       worker-enabled: ${NOVEL_PUBLICATION_PURGE_WORKER_ENABLED:false}
       required-targets: ${NOVEL_PUBLICATION_PURGE_REQUIRED_TARGETS:}

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 9.0.0
+  version: 9.1.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -2046,6 +2046,89 @@ paths:
         '403':
           $ref: '#/components/responses/Problem'
         '404':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/authoring/manuscripts/{workId}/publication-actions:
+    post:
+      operationId: publishApprovedManuscriptNow
+      tags: [Authoring]
+      x-implementation-status: implemented-postgres-profile
+      summary: Let the owner release a currently approved manuscript
+      description: >-
+        Explicit owner action; reviewer approval never publishes automatically. Requires a live owner session,
+        current Terms and Privacy acceptance, session-bound CSRF, the exact current publication-readiness ETag in
+        If-Match, a 16–128 character Idempotency-Key and actionCode=PUBLISH_NOW. The active approved rights policy,
+        owner acceptance, latest APPROVED_UNPUBLISHED request, exact content/scope snapshots and current reviewer
+        approvals are revalidated and locked in PostgreSQL. Release audit and public visibility commit atomically.
+        Missing or stale approvals fail closed. Exact retries return the same safe receipt; changed use of a key is
+        409. Scheduled release and owner unpublish are not supported by this action. Runtime is disabled by default
+        with NOVEL_PUBLICATION_RELEASE_ENABLED=false; this does not provision policy text or approve legal rights.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - name: workId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: If-Match
+          in: header
+          required: true
+          description: Exact strong ETag from the current publication-readiness response.
+          schema:
+            type: string
+            pattern: '^"publication-snapshot-[a-f0-9]{64}"$'
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: Reuse the same key for an exact retry; use a new key for a different action.
+          schema:
+            type: string
+            minLength: 16
+            maxLength: 128
+            pattern: '^[A-Za-z0-9._~-]{16,128}$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PublicationActionRequest'
+      responses:
+        '201':
+          description: Release event and public visibility committed atomically.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicationReleaseReceipt'
+        '200':
+          description: Exact replay of the immutable release receipt.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicationReleaseReceipt'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '412':
+          $ref: '#/components/responses/Problem'
+        '428':
           $ref: '#/components/responses/Problem'
         '503':
           $ref: '#/components/responses/Problem'
@@ -7180,6 +7263,37 @@ components:
               - PUBLICATION_RIGHTS_POLICY_NOT_ACCEPTED
               - READY_CHAPTER_REQUIRED
               - PUBLICATION_REQUEST_ALREADY_PENDING
+    PublicationActionRequest:
+      type: object
+      additionalProperties: false
+      required: [actionCode]
+      properties:
+        actionCode:
+          type: string
+          const: PUBLISH_NOW
+    PublicationReleaseReceipt:
+      type: object
+      additionalProperties: false
+      required: [eventId, workId, requestId, state, publishedAt, publicationContentVersion]
+      properties:
+        eventId:
+          type: string
+          format: uuid
+        workId:
+          type: string
+          format: uuid
+        requestId:
+          type: string
+          format: uuid
+        state:
+          type: string
+          const: PUBLISHED
+        publishedAt:
+          type: string
+          format: date-time
+        publicationContentVersion:
+          type: integer
+          minimum: 1
     PublicationScopeReadiness:
       type: object
       additionalProperties: false
