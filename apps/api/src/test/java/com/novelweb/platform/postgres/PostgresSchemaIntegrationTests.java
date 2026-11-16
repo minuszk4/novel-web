@@ -232,6 +232,7 @@ class PostgresSchemaIntegrationTests {
           "import_rights_acceptances",
           "publication_rights_policy_documents",
           "publication_rights_policy_acceptances",
+          "publication_rights_policy_acceptance_idempotency",
           "import_jobs",
           "import_actor_rate_limits",
           "import_parse_jobs",
@@ -419,7 +420,7 @@ class PostgresSchemaIntegrationTests {
             connection.prepareStatement("SELECT COUNT(*) FROM databasechangelog");
         ResultSet changesets = changesetCount.executeQuery()) {
       changesets.next();
-      assertEquals(131, changesets.getInt(1), "unexpected number of applied changesets");
+      assertEquals(135, changesets.getInt(1), "unexpected number of applied changesets");
     }
 
     Set<String> actualTables = new HashSet<>();
@@ -612,7 +613,9 @@ class PostgresSchemaIntegrationTests {
               () -> {
                 try (Connection connection = dataSource.getConnection();
                     java.sql.Statement truncate = connection.createStatement()) {
-                  truncate.execute("TRUNCATE publication_rights_policy_acceptances");
+                  truncate.execute(
+                      "TRUNCATE publication_rights_policy_acceptance_idempotency,"
+                          + " publication_rights_policy_acceptances");
                 }
               });
       assertEquals("55000", truncatedAcceptances.getSQLState());
@@ -639,6 +642,420 @@ class PostgresSchemaIntegrationTests {
       deleteOwnerLibraries(ownerId);
       deleteSessionTestUser(ownerId);
       deleteSessionTestUser(approverId);
+    }
+  }
+
+  @Test
+  void publicationRightsPolicyHttpFlowIsFailClosedOwnerScopedAndRetrySafe() throws Exception {
+    UUID ownerId = createSessionTestUser("Synthetic publication policy API owner");
+    UUID outsiderId = createSessionTestUser("Synthetic publication policy API outsider");
+    UUID approverId = createSessionTestUser("Synthetic publication policy API approver");
+    UUID unacceptedAuthorId = createSessionTestUser("Synthetic publication policy API unaccepted");
+    addCurrentPolicyAcceptances(ownerId);
+    addCurrentPolicyAcceptances(outsiderId);
+    addCurrentPolicyAcceptances(unacceptedAuthorId);
+    String policyVersion = "publication-policy-api-" + UUID.randomUUID().toString().substring(0, 8);
+    String malformedDigestVersion =
+        "publication-policy-digest-" + UUID.randomUUID().toString().substring(0, 8);
+    String policyText = "Synthetic test-only publication policy served to its author.";
+    byte[] policyDigest = sha256(policyText);
+    UUID ownerWorkId = null;
+    UUID unacceptedWorkId = null;
+    try {
+      ownerWorkId =
+          libraryService
+              .createPrivateAuthoredWork(
+                  ownerId,
+                  "Publication Policy API Fixture",
+                  "Synthetic Author",
+                  "vi",
+                  "pub-policy-api-owner-0001")
+              .id();
+      unacceptedWorkId =
+          libraryService
+              .createPrivateAuthoredWork(
+                  unacceptedAuthorId,
+                  "Unaccepted Policy Fixture",
+                  "Synthetic Author",
+                  "vi",
+                  "pub-policy-api-unaccepted-001")
+              .id();
+
+      SessionService.IssuedSession ownerSession = sessionService.create(ownerId).orElseThrow();
+      jakarta.servlet.http.Cookie ownerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", ownerSession.cookieValue());
+      String ownerCsrf = csrfTokenService.tokenFor(ownerSession.cookieValue());
+      SessionService.IssuedSession outsiderSession =
+          sessionService.create(outsiderId).orElseThrow();
+      jakarta.servlet.http.Cookie outsiderCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", outsiderSession.cookieValue());
+      SessionService.IssuedSession unacceptedSession =
+          sessionService.create(unacceptedAuthorId).orElseThrow();
+      jakarta.servlet.http.Cookie unacceptedCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", unacceptedSession.cookieValue());
+
+      MvcResult noPolicy =
+          mockMvc
+              .perform(
+                  get(
+                          "/api/v1/authoring/manuscripts/{workId}/publication/rights-policy",
+                          ownerWorkId)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(503, noPolicy.getResponse().getStatus());
+      assertTrue(
+          noPolicy
+              .getResponse()
+              .getContentAsString()
+              .contains("PUBLICATION_RIGHTS_POLICY_NOT_CONFIGURED"));
+      assertTrue(noPolicy.getResponse().getHeader(HttpHeaders.CACHE_CONTROL).contains("no-store"));
+      assertEquals(0, publicationRightsPolicyAcceptanceCount(ownerId, ownerWorkId));
+
+      MvcResult foreignPolicyRead =
+          mockMvc
+              .perform(
+                  get(
+                          "/api/v1/authoring/manuscripts/{workId}/publication/rights-policy",
+                          ownerWorkId)
+                      .cookie(outsiderCookie))
+              .andReturn();
+      assertEquals(404, foreignPolicyRead.getResponse().getStatus());
+      assertTrue(
+          foreignPolicyRead.getResponse().getContentAsString().contains("MANUSCRIPT_NOT_FOUND"));
+
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement insert =
+              connection.prepareStatement(
+                  """
+                      INSERT INTO publication_rights_policy_documents
+                          (version, effective_at, display_text, policy_sha256)
+                      VALUES (?, clock_timestamp() - INTERVAL '1 second', ?, ?)
+                      """)) {
+        insert.setString(1, policyVersion);
+        insert.setString(2, policyText);
+        insert.setBytes(3, policyDigest);
+        assertEquals(1, insert.executeUpdate());
+      }
+
+      MvcResult draftPolicy =
+          mockMvc
+              .perform(
+                  get(
+                          "/api/v1/authoring/manuscripts/{workId}/publication/rights-policy",
+                          ownerWorkId)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(503, draftPolicy.getResponse().getStatus());
+
+      MvcResult noCsrf =
+          mockMvc
+              .perform(
+                  post(
+                          "/api/v1/authoring/manuscripts/{workId}/publication/rights-policy/acceptance",
+                          ownerWorkId)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          objectMapper.writeValueAsString(
+                              Map.of("policyVersion", policyVersion, "confirmed", true)))
+                      .header("Idempotency-Key", UUID.randomUUID().toString())
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(403, noCsrf.getResponse().getStatus());
+      assertTrue(noCsrf.getResponse().getContentAsString().contains("CSRF_FAILED"));
+
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement approve =
+              connection.prepareStatement(
+                  """
+                      UPDATE publication_rights_policy_documents
+                         SET status = 'APPROVED', approved_at = clock_timestamp(), approved_by = ?
+                       WHERE version = ? AND status = 'DRAFT'
+                      """)) {
+        approve.setObject(1, approverId);
+        approve.setString(2, policyVersion);
+        assertEquals(1, approve.executeUpdate());
+      }
+
+      MvcResult policyRead =
+          mockMvc
+              .perform(
+                  get(
+                          "/api/v1/authoring/manuscripts/{workId}/publication/rights-policy",
+                          ownerWorkId)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(200, policyRead.getResponse().getStatus());
+      assertTrue(
+          policyRead.getResponse().getHeader(HttpHeaders.CACHE_CONTROL).contains("no-store"));
+      JsonNode policyBody = objectMapper.readTree(policyRead.getResponse().getContentAsString());
+      assertEquals(policyVersion, policyBody.path("version").asText());
+      assertEquals(policyText, policyBody.path("displayText").asText());
+      assertEquals(
+          HexFormat.of().formatHex(policyDigest), policyBody.path("policySha256").asText());
+      assertTrue(policyBody.path("acceptedAt").isNull());
+
+      MvcResult anotherOwnerPolicyRead =
+          mockMvc
+              .perform(
+                  get(
+                          "/api/v1/authoring/manuscripts/{workId}/publication/rights-policy",
+                          unacceptedWorkId)
+                      .cookie(unacceptedCookie))
+              .andReturn();
+      assertEquals(200, anotherOwnerPolicyRead.getResponse().getStatus());
+      assertTrue(
+          objectMapper
+              .readTree(anotherOwnerPolicyRead.getResponse().getContentAsString())
+              .path("acceptedAt")
+              .isNull());
+
+      String acceptancePath =
+          "/api/v1/authoring/manuscripts/" + ownerWorkId + "/publication/rights-policy/acceptance";
+      String acceptedBody =
+          objectMapper.writeValueAsString(
+              Map.of("policyVersion", policyVersion, "confirmed", true));
+      UUID acceptanceKey = UUID.randomUUID();
+
+      MvcResult unchecked =
+          mockMvc
+              .perform(
+                  post(acceptancePath)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          objectMapper.writeValueAsString(
+                              Map.of("policyVersion", policyVersion, "confirmed", false)))
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .header("Idempotency-Key", acceptanceKey.toString())
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(422, unchecked.getResponse().getStatus());
+
+      MvcResult noIdempotencyKey =
+          mockMvc
+              .perform(
+                  post(acceptancePath)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(acceptedBody)
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(422, noIdempotencyKey.getResponse().getStatus());
+      assertTrue(
+          noIdempotencyKey.getResponse().getContentAsString().contains("IDEMPOTENCY_KEY_REQUIRED"));
+
+      MvcResult unknownField =
+          mockMvc
+              .perform(
+                  post(acceptancePath)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          objectMapper.writeValueAsString(
+                              Map.of(
+                                  "policyVersion",
+                                  policyVersion,
+                                  "confirmed",
+                                  true,
+                                  "rightsScope",
+                                  "ALL")))
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .header("Idempotency-Key", UUID.randomUUID().toString())
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(422, unknownField.getResponse().getStatus());
+
+      MvcResult stalePolicy =
+          mockMvc
+              .perform(
+                  post(acceptancePath)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          objectMapper.writeValueAsString(
+                              Map.of(
+                                  "policyVersion", "stale-publication-policy", "confirmed", true)))
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .header("Idempotency-Key", UUID.randomUUID().toString())
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(409, stalePolicy.getResponse().getStatus());
+      assertTrue(
+          stalePolicy
+              .getResponse()
+              .getContentAsString()
+              .contains("PUBLICATION_RIGHTS_POLICY_STALE"));
+      assertTrue(stalePolicy.getResponse().getContentAsString().contains(policyVersion));
+
+      MvcResult accepted =
+          mockMvc
+              .perform(
+                  post(acceptancePath)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(acceptedBody)
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .header("Idempotency-Key", acceptanceKey.toString())
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(200, accepted.getResponse().getStatus());
+      assertTrue(accepted.getResponse().getHeader(HttpHeaders.CACHE_CONTROL).contains("no-store"));
+      JsonNode receipt = objectMapper.readTree(accepted.getResponse().getContentAsString());
+      assertEquals(policyVersion, receipt.path("policyVersion").asText());
+      assertEquals(HexFormat.of().formatHex(policyDigest), receipt.path("policySha256").asText());
+      assertFalse(receipt.path("acceptedAt").asText().isBlank());
+
+      MvcResult exactRetry =
+          mockMvc
+              .perform(
+                  post(acceptancePath)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(acceptedBody)
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .header("Idempotency-Key", acceptanceKey.toString())
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(200, exactRetry.getResponse().getStatus());
+      assertEquals(
+          receipt.path("id").asText(),
+          objectMapper.readTree(exactRetry.getResponse().getContentAsString()).path("id").asText());
+
+      MvcResult changedBodyReplay =
+          mockMvc
+              .perform(
+                  post(acceptancePath)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          objectMapper.writeValueAsString(
+                              Map.of(
+                                  "policyVersion", "different-policy-version", "confirmed", true)))
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .header("Idempotency-Key", acceptanceKey.toString())
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(409, changedBodyReplay.getResponse().getStatus());
+      assertTrue(
+          changedBodyReplay.getResponse().getContentAsString().contains("IDEMPOTENCY_KEY_REUSED"));
+
+      MvcResult duplicateAcceptance =
+          mockMvc
+              .perform(
+                  post(acceptancePath)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(acceptedBody)
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .header("Idempotency-Key", UUID.randomUUID().toString())
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(200, duplicateAcceptance.getResponse().getStatus());
+      assertEquals(
+          receipt.path("id").asText(),
+          objectMapper
+              .readTree(duplicateAcceptance.getResponse().getContentAsString())
+              .path("id")
+              .asText());
+      assertEquals(1, publicationRightsPolicyAcceptanceCount(ownerId, ownerWorkId));
+      assertEquals(2, publicationRightsPolicyIdempotencyCount(ownerId, ownerWorkId));
+
+      MvcResult foreignAcceptance =
+          mockMvc
+              .perform(
+                  post(
+                          "/api/v1/authoring/manuscripts/{workId}/publication/rights-policy/acceptance",
+                          ownerWorkId)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(acceptedBody)
+                      .header(
+                          "X-CSRF-Token", csrfTokenService.tokenFor(outsiderSession.cookieValue()))
+                      .header("Idempotency-Key", UUID.randomUUID().toString())
+                      .cookie(outsiderCookie))
+              .andReturn();
+      assertEquals(404, foreignAcceptance.getResponse().getStatus());
+      assertEquals(1, publicationRightsPolicyAcceptanceCount(ownerId, ownerWorkId));
+
+      MvcResult acceptedPolicyRead =
+          mockMvc
+              .perform(
+                  get(
+                          "/api/v1/authoring/manuscripts/{workId}/publication/rights-policy",
+                          ownerWorkId)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(200, acceptedPolicyRead.getResponse().getStatus());
+      assertEquals(
+          receipt.path("acceptedAt").asText(),
+          objectMapper
+              .readTree(acceptedPolicyRead.getResponse().getContentAsString())
+              .path("acceptedAt")
+              .asText());
+
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement insert =
+              connection.prepareStatement(
+                  """
+                      INSERT INTO publication_rights_policy_documents
+                          (version, effective_at, display_text, policy_sha256)
+                      VALUES (?, clock_timestamp() - INTERVAL '100 milliseconds', ?, ?)
+                      """)) {
+        insert.setString(1, malformedDigestVersion);
+        insert.setString(2, policyText);
+        insert.setBytes(3, sha256("A different digest input."));
+        assertEquals(1, insert.executeUpdate());
+      }
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement approve =
+              connection.prepareStatement(
+                  """
+                      UPDATE publication_rights_policy_documents
+                         SET status = 'APPROVED', approved_at = clock_timestamp(), approved_by = ?
+                       WHERE version = ? AND status = 'DRAFT'
+                      """)) {
+        approve.setObject(1, approverId);
+        approve.setString(2, malformedDigestVersion);
+        assertEquals(1, approve.executeUpdate());
+      }
+      MvcResult digestMismatch =
+          mockMvc
+              .perform(
+                  get(
+                          "/api/v1/authoring/manuscripts/{workId}/publication/rights-policy",
+                          ownerWorkId)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(503, digestMismatch.getResponse().getStatus());
+      assertTrue(
+          digestMismatch
+              .getResponse()
+              .getContentAsString()
+              .contains("PUBLICATION_RIGHTS_POLICY_STORE_UNAVAILABLE"));
+      MvcResult mismatchAcceptance =
+          mockMvc
+              .perform(
+                  post(
+                          "/api/v1/authoring/manuscripts/{workId}/publication/rights-policy/acceptance",
+                          ownerWorkId)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          objectMapper.writeValueAsString(
+                              Map.of("policyVersion", malformedDigestVersion, "confirmed", true)))
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .header("Idempotency-Key", UUID.randomUUID().toString())
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(503, mismatchAcceptance.getResponse().getStatus());
+      assertEquals(1, publicationRightsPolicyAcceptanceCount(ownerId, ownerWorkId));
+    } finally {
+      if (ownerWorkId != null) {
+        deletePublicationRightsPolicyAcceptanceFixture(ownerWorkId);
+        deleteBareAuthoredWorkData(ownerId, ownerWorkId);
+      }
+      if (unacceptedWorkId != null) {
+        deleteBareAuthoredWorkData(unacceptedAuthorId, unacceptedWorkId);
+      }
+      deletePublicationRightsPolicyFixture(malformedDigestVersion);
+      deletePublicationRightsPolicyFixture(policyVersion);
+      deleteOwnerLibraries(ownerId);
+      deleteOwnerLibraries(unacceptedAuthorId);
+      deleteSessionTestUser(ownerId);
+      deleteSessionTestUser(outsiderId);
+      deleteSessionTestUser(approverId);
+      deleteSessionTestUser(unacceptedAuthorId);
     }
   }
 
@@ -11179,6 +11596,7 @@ class PostgresSchemaIntegrationTests {
             "import_rights_acceptances",
             "import_rights_statements",
             "publication_rights_policy_acceptances",
+            "publication_rights_policy_acceptance_idempotency",
             "publication_rights_policy_documents",
             "auth_events",
             "session_revoke_confirmations",
@@ -15886,10 +16304,42 @@ class PostgresSchemaIntegrationTests {
     }
   }
 
+  private int publicationRightsPolicyIdempotencyCount(UUID userId, UUID workId)
+      throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT COUNT(*) FROM publication_rights_policy_acceptance_idempotency"
+                    + " WHERE user_id = ? AND work_id = ?")) {
+      select.setObject(1, userId);
+      select.setObject(2, workId);
+      try (ResultSet rows = select.executeQuery()) {
+        assertTrue(rows.next());
+        return rows.getInt(1);
+      }
+    }
+  }
+
   private void deletePublicationRightsPolicyAcceptanceFixture(UUID workId) throws SQLException {
     try (Connection connection = dataSource.getConnection()) {
       connection.setAutoCommit(false);
       try {
+        try (java.sql.Statement disable = connection.createStatement()) {
+          disable.execute(
+              "ALTER TABLE publication_rights_policy_acceptance_idempotency"
+                  + " DISABLE TRIGGER trg_publication_rights_idempotency_immutable");
+        }
+        try (PreparedStatement delete =
+            connection.prepareStatement(
+                "DELETE FROM publication_rights_policy_acceptance_idempotency WHERE work_id = ?")) {
+          delete.setObject(1, workId);
+          delete.executeUpdate();
+        }
+        try (java.sql.Statement enable = connection.createStatement()) {
+          enable.execute(
+              "ALTER TABLE publication_rights_policy_acceptance_idempotency"
+                  + " ENABLE TRIGGER trg_publication_rights_idempotency_immutable");
+        }
         try (java.sql.Statement disable = connection.createStatement()) {
           disable.execute(
               "ALTER TABLE publication_rights_policy_acceptances"

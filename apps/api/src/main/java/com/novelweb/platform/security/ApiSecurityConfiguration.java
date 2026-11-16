@@ -197,6 +197,7 @@ public class ApiSecurityConfiguration {
                         HttpMethod.GET,
                         "/api/v1/authoring/manuscripts",
                         "/api/v1/authoring/manuscripts/*",
+                        "/api/v1/authoring/manuscripts/*/publication/rights-policy",
                         "/api/v1/authoring/manuscripts/*/chapters",
                         "/api/v1/authoring/manuscripts/*/chapters/*/draft")
                     .permitAll();
@@ -204,6 +205,7 @@ public class ApiSecurityConfiguration {
                     .requestMatchers(
                         HttpMethod.POST,
                         "/api/v1/authoring/manuscripts",
+                        "/api/v1/authoring/manuscripts/*/publication/rights-policy/acceptance",
                         "/api/v1/authoring/manuscripts/*/chapters",
                         "/api/v1/authoring/manuscripts/*/chapters/*/revisions")
                     .permitAll();

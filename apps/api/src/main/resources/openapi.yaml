@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 8.3.0
+  version: 8.4.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -16,7 +16,7 @@ info:
     Versioned cultivation catalogs, authenticated profile settings, private daily XP activity and bounded private Reader sessions with atomic XP awards are implemented in the PostgreSQL profile. The approved starting policy awards 1 XP per complete active Reader minute, capped at 120 XP per UTC day; same-day sub-minute remainder does not cross UTC midnight; top-ups and unlocks award none. Cultivation is feature-gated and off by default pending the rank-threshold pilot and release reviews.
     Scoped glossary storage, actor-scoped catalog listing/creation, active and writer-only latest-revision reads, version-checked immutable draft creation, authenticated diff/lint/match preview, lint-gated revision publication with append-only audit, strict JSON/CSV/TSV import preview and resolved atomic draft apply, and active/writer-only latest snapshot export are implemented in the PostgreSQL profile. Translation job enqueue/status/retry/cancel are available only as an explicit fake-local development preview and never call an external NMT provider. `features.translationFakePreviewEnabled` is true only when both required profiles and the provider/API/worker opt-in flags are active.
     The authenticated PostgreSQL profile also exposes the current actor's available paid and non-expired bonus credit totals from the rebuildable balance projection; the response is no-store and does not expose another account's ledger. When the MoMo TEST gate is explicitly enabled with valid TEST configuration, the profile also exposes server-priced public-chapter unlock quotes and an idempotent paid-credit unlock that commits the debit with an immutable entitlement; private/draft chapters remain unavailable and no production purchase is enabled.
-    An opt-in, metadata-only guest catalog endpoint is available in the PostgreSQL profile. It is disabled by default and returns only authored, active, explicitly public works owned by active users with at least one ready chapter; it does not return descriptions or chapter bodies. Admin-only publication-reviewer role assignment, bounded eligible-account search and status-filtered assignment history are implemented in the PostgreSQL profile; the current-user response exposes the caller's server-derived security capability for navigation only. These APIs do not bootstrap system administrators or approve/publish work. Rights policy, review decisions, publication controls, catalog UI, rate limiting at the edge, and reader access for guests remain separate work.
+    An opt-in, metadata-only guest catalog endpoint is available in the PostgreSQL profile. It is disabled by default and returns only authored, active, explicitly public works owned by active users with at least one ready chapter; it does not return descriptions or chapter bodies. Admin-only publication-reviewer role assignment, bounded eligible-account search and status-filtered assignment history are implemented in the PostgreSQL profile; the current-user response exposes the caller's server-derived security capability for navigation only. Author-owned private drafts can read the current effective publication-rights policy and record a work-scoped, idempotent policy acknowledgement. The API does not bootstrap system administrators, let authors define policy, collect publication scope claims, review, approve or publish work. Rights review decisions, publication controls, catalog UI, rate limiting at the edge, and reader access for guests remain separate work.
 servers:
   - url: http://127.0.0.1:8080
 tags:
@@ -1944,6 +1944,121 @@ paths:
               schema:
                 $ref: '#/components/schemas/Problem'
         '428':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/authoring/manuscripts/{workId}/publication/rights-policy:
+    get:
+      operationId: getCurrentPublicationRightsPolicyForManuscript
+      tags: [Authoring]
+      x-implementation-status: implemented-postgres-profile
+      summary: Read the current publication-rights policy for an owned private draft
+      description: >-
+        Returns only the current effective APPROVED policy and its exact text digest for an active authored manuscript
+        in the actor's personal private library. Current Terms and Privacy acceptance and a live session are required.
+        Foreign, imported, public, archived, deleted and workspace-backed works are hidden as 404. If no approved
+        effective publication-rights policy is configured, returns 503 and never supplies placeholder legal text.
+        acceptedAt is null until this actor accepts the exact policy for this manuscript. Reading or accepting this
+        policy is not a rights claim, review decision or permission to publish.
+      security:
+        - appSession: []
+      parameters:
+        - name: workId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Current approved text and this actor/work's acceptance state.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicationRightsPolicy'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/authoring/manuscripts/{workId}/publication/rights-policy/acceptance:
+    post:
+      operationId: acceptPublicationRightsPolicyForManuscript
+      tags: [Authoring]
+      x-implementation-status: implemented-postgres-profile
+      summary: Record an explicit work-scoped acknowledgement of the current policy
+      description: >-
+        Requires the exact current effective policy version, confirmed=true, current Terms and Privacy acceptance,
+        a live owner session, session-bound CSRF and a canonical UUID Idempotency-Key. The owner and eligible
+        private authored work are revalidated and locked in PostgreSQL. The immutable acknowledgement captures the
+        server's UTC timestamp and the digest of the exact approved policy text. Exact retries return the same
+        acceptance; reusing a key with another body is 409. Acknowledging policy text makes no claim about rights
+        scope and does not submit, review, approve or publish the work. No policy row is seeded; no available policy
+        returns 503 without creating an acceptance.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - name: workId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: Canonical UUID retained for exact retries; use a new UUID for a changed policy version/body.
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PublicationRightsAcceptanceRequest'
+      responses:
+        '200':
+          description: Existing or newly recorded immutable acceptance for this actor, work and policy version.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicationRightsAcceptance'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          description: Current policy changed or an Idempotency-Key was already used with another request.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
           $ref: '#/components/responses/Problem'
         '503':
           $ref: '#/components/responses/Problem'
@@ -6351,6 +6466,61 @@ components:
         sourceText:
           type: string
           maxLength: 20000
+    PublicationRightsPolicy:
+      type: object
+      additionalProperties: false
+      required: [version, effectiveAt, displayText, policySha256, acceptedAt]
+      properties:
+        version:
+          type: string
+          pattern: '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
+          maxLength: 64
+        effectiveAt:
+          type: string
+          format: date-time
+        displayText:
+          type: string
+          minLength: 1
+          maxLength: 32768
+          description: Exact approved policy text; source is capped at 32 KiB UTF-8 bytes.
+        policySha256:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+          description: SHA-256 of the exact UTF-8 bytes displayed by the server.
+        acceptedAt:
+          type: [string, 'null']
+          format: date-time
+          description: Server timestamp for this actor and manuscript, null until acknowledged.
+    PublicationRightsAcceptanceRequest:
+      type: object
+      additionalProperties: false
+      required: [policyVersion, confirmed]
+      properties:
+        policyVersion:
+          type: string
+          pattern: '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
+          maxLength: 64
+        confirmed:
+          type: boolean
+          const: true
+    PublicationRightsAcceptance:
+      type: object
+      additionalProperties: false
+      required: [id, policyVersion, policySha256, acceptedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        policyVersion:
+          type: string
+          pattern: '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
+          maxLength: 64
+        policySha256:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        acceptedAt:
+          type: string
+          format: date-time
     ImportRightsStatement:
       type: object
       additionalProperties: false
