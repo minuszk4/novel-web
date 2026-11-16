@@ -20,7 +20,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Service;
 
-/** Issues opaque, owner/filter-bound keyset cursors for private library lists. */
+/** Issues opaque, actor/filter-bound keyset cursors for private lists. */
 @Service
 @Profile("postgres")
 public class LibraryCursorCodec {
@@ -77,6 +77,17 @@ public class LibraryCursorCodec {
         normalizeTag(language),
         "",
         "public-catalog-v1");
+  }
+
+  public static CursorContext publicationReviewQueueContext(UUID reviewerUserId) {
+    return new CursorContext(
+        Kind.PUBLICATION_REVIEW_QUEUE,
+        reviewerUserId,
+        NO_SCOPE,
+        "",
+        "",
+        "PENDING_REVIEW",
+        "publication-review-queue-v1");
   }
 
   public void requireConfigured() {
@@ -229,7 +240,8 @@ public class LibraryCursorCodec {
   public enum Kind {
     LIBRARY(1),
     WORK(2),
-    PUBLIC_CATALOG(3);
+    PUBLIC_CATALOG(3),
+    PUBLICATION_REVIEW_QUEUE(4);
 
     private final int code;
 
@@ -277,6 +289,14 @@ public class LibraryCursorCodec {
               || !accessScopeFingerprint.equals("public-catalog-v1"))) {
         throw new IllegalArgumentException("Invalid public catalog cursor context");
       }
+      if (kind == Kind.PUBLICATION_REVIEW_QUEUE
+          && (!scopeId.equals(NO_SCOPE)
+              || !query.isEmpty()
+              || !tag.isEmpty()
+              || !status.equals("pending_review")
+              || !accessScopeFingerprint.equals("publication-review-queue-v1"))) {
+        throw new IllegalArgumentException("Invalid publication-review cursor context");
+      }
     }
 
     byte[] filterHash() {
@@ -285,7 +305,11 @@ public class LibraryCursorCodec {
         digest.update((byte) kind.code());
         updateUuid(digest, ownerUserId);
         updateUuid(digest, scopeId);
-        updateString(digest, "created_at_desc,id_desc");
+        updateString(
+            digest,
+            kind == Kind.PUBLICATION_REVIEW_QUEUE
+                ? "submitted_at_desc,id_desc"
+                : "created_at_desc,id_desc");
         updateString(digest, query);
         updateString(digest, tag);
         updateString(digest, status);

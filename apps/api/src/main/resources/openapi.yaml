@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 8.6.0
+  version: 8.7.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -16,7 +16,7 @@ info:
     Versioned cultivation catalogs, authenticated profile settings, private daily XP activity and bounded private Reader sessions with atomic XP awards are implemented in the PostgreSQL profile. The approved starting policy awards 1 XP per complete active Reader minute, capped at 120 XP per UTC day; same-day sub-minute remainder does not cross UTC midnight; top-ups and unlocks award none. Cultivation is feature-gated and off by default pending the rank-threshold pilot and release reviews.
     Scoped glossary storage, actor-scoped catalog listing/creation, active and writer-only latest-revision reads, version-checked immutable draft creation, authenticated diff/lint/match preview, lint-gated revision publication with append-only audit, strict JSON/CSV/TSV import preview and resolved atomic draft apply, and active/writer-only latest snapshot export are implemented in the PostgreSQL profile. Translation job enqueue/status/retry/cancel are available only as an explicit fake-local development preview and never call an external NMT provider. `features.translationFakePreviewEnabled` is true only when both required profiles and the provider/API/worker opt-in flags are active.
     The authenticated PostgreSQL profile also exposes the current actor's available paid and non-expired bonus credit totals from the rebuildable balance projection; the response is no-store and does not expose another account's ledger. When the MoMo TEST gate is explicitly enabled with valid TEST configuration, the profile also exposes server-priced public-chapter unlock quotes and an idempotent paid-credit unlock that commits the debit with an immutable entitlement; private/draft chapters remain unavailable and no production purchase is enabled.
-    An opt-in, metadata-only guest catalog endpoint is available in the PostgreSQL profile. It is disabled by default and returns only authored, active, explicitly public works owned by active users with at least one ready chapter; it does not return descriptions or chapter bodies. Admin-only publication-reviewer role assignment, bounded eligible-account search and status-filtered assignment history are implemented in the PostgreSQL profile; the current-user response exposes the caller's server-derived security capability for navigation only. Author-owned private drafts can read the current effective publication-rights policy, record a work-scoped acknowledgement and submit an immutable rights-review request with scoped declarations. Submission is owner-only, CSRF-protected, snapshot-checked, bounded and persistently rate-limited. The API does not bootstrap system administrators, let authors define policy, review, approve or publish work. Reviewer queues/decisions, public controls, catalog UI, edge rate limits and guest reader access remain separate work.
+    An opt-in, metadata-only guest catalog endpoint is available in the PostgreSQL profile. It is disabled by default and returns only authored, active, explicitly public works owned by active users with at least one ready chapter; it does not return descriptions or chapter bodies. Admin-only publication-reviewer role assignment, bounded eligible-account search and status-filtered assignment history are implemented in the PostgreSQL profile; the current-user response exposes the caller's server-derived security capability for navigation only. Author-owned private drafts can read the current effective publication-rights policy, record a work-scoped acknowledgement and submit an immutable rights-review request with scoped declarations. Submission is owner-only, CSRF-protected, snapshot-checked, bounded and persistently rate-limited. Active reviewers can read an actor-bound pending queue and a privacy-filtered request snapshot; review decisions and public publication remain disabled. The API does not bootstrap system administrators, let authors define policy, review, approve or publish work. Public controls, catalog UI, edge rate limits and guest reader access remain separate work.
 servers:
   - url: http://127.0.0.1:8080
 tags:
@@ -29,7 +29,7 @@ tags:
     description: Library/work listing, personal reading-state/collection, import-rights and local upload-staging operations are available in the PostgreSQL profile; parsing and other operations remain planned for G2.
     x-implementation-status: partial
   - name: Catalog
-    description: Opt-in metadata-only guest catalog; publication and rights-review workflows remain unavailable.
+    description: Opt-in metadata-only guest catalog; public release and guest chapter reading remain unavailable.
     x-implementation-status: partial
   - name: Admin security
     description: Admin-only publication reviewer role assignment/search/history routes; first-admin bootstrap uses a separate operator command, and publication itself remains unavailable.
@@ -47,7 +47,10 @@ tags:
     description: Explicitly opted-in fake-local translation job lifecycle; external providers, reviewer publication and paid usage are unavailable.
     x-implementation-status: local-preview
   - name: Authoring
-    description: Private-first owner manuscript drafts and content. Publication requests submit immutable rights-review records only; reviewer decisions and public release are not available.
+    description: Private-first owner manuscript drafts and content. Owners can submit immutable rights-review records.
+    x-implementation-status: partial
+  - name: Publication review
+    description: Assigned reviewers can read pending requests and a privacy-filtered immutable snapshot; decision and publishing APIs remain unavailable.
     x-implementation-status: partial
   - name: Commerce
     description: Actor-owned credit balance/history, MoMo TEST-only feature-gated pack checkout/order status/IPN settlement and paid-credit chapter unlock are implemented; payment-order history, missing-IPN reconciliation, purchase history UI and production payment remain unavailable.
@@ -2149,6 +2152,136 @@ paths:
                 $ref: '#/components/schemas/Problem'
         '503':
           $ref: '#/components/responses/Problem'
+  /api/v1/review/publications:
+    get:
+      operationId: listAssignedPublicationReviewRequests
+      tags: [Publication review]
+      x-implementation-status: implemented-postgres-profile
+      summary: List pending publication requests for the assigned reviewer
+      description: >-
+        Requires an active session, current Terms and Privacy acceptance and a current active publication_reviewer
+        assignment derived from the database. Returns pending requests for active, private, owner-authored works only.
+        The caller's own requests are excluded even if that caller has a reviewer assignment. The opaque HMAC-signed
+        cursor is bound to the reviewer and fixed queue filter; pages use submittedAt descending and requestId
+        descending keyset ordering. The page is bounded to 1–50 items (default 20), and every response is no-store.
+        Queue items include public metadata fields and scope codes, never owner IDs, email addresses, descriptions or
+        chapter body text. This route cannot make review decisions or publish.
+      security:
+        - appSession: []
+      parameters:
+        - name: cursor
+          in: query
+          description: Opaque reviewer-bound cursor returned as nextCursor by the previous page.
+          schema:
+            type: string
+            maxLength: 2048
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+      responses:
+        '200':
+          description: Pending reviewer queue page.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicationReviewQueuePage'
+        '400':
+          description: The cursor or page limit is invalid.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          description: The caller lacks a current reviewer assignment or required policy acceptance.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '503':
+          description: Required policy, signed cursor configuration or database storage is unavailable.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+  /api/v1/review/publications/{requestId}:
+    get:
+      operationId: getAssignedPublicationReviewRequest
+      tags: [Publication review]
+      x-implementation-status: implemented-postgres-profile
+      summary: Read a privacy-filtered publication request snapshot
+      description: >-
+        Requires the same current reviewer and policy gates as the queue. The work owner cannot read their own request;
+        an owner, non-reviewer or inaccessible request receives a privacy-safe 404 (non-reviewers receive 403 before
+        lookup). The reviewer receives scope declarations, an immutable metadata/chapter-structure preview and
+        reason-coded event history. Chapter prose, owner IDs, emails, descriptions, source revision IDs and internal
+        work/library IDs are never returned. Every response is no-store. This route is read-only and cannot decide,
+        approve or publish the request.
+      security:
+        - appSession: []
+      parameters:
+        - name: requestId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Privacy-filtered immutable request preview.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicationReviewDetail'
+        '400':
+          description: The request ID is not a UUID.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          description: The caller lacks a current reviewer assignment or required policy acceptance.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: Request is missing, inaccessible or owned by the current reviewer.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '503':
+          description: Required policy or database storage is unavailable.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
   /api/v1/authoring/manuscripts/{workId}/publication/rights-policy/acceptance:
     post:
       operationId: acceptPublicationRightsPolicyForManuscript
@@ -6789,6 +6922,237 @@ components:
         state:
           type: string
           const: PENDING_REVIEW
+    PublicationReviewQueuePage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/PublicationReviewQueueItem'
+        nextCursor:
+          type: [string, 'null']
+          maxLength: 2048
+    PublicationReviewQueueItem:
+      type: object
+      additionalProperties: false
+      required:
+        - requestId
+        - requestVersion
+        - submittedAt
+        - policyVersion
+        - snapshotSha256
+        - title
+        - author
+        - sourceLanguage
+        - scopeCodes
+      properties:
+        requestId:
+          type: string
+          format: uuid
+        requestVersion:
+          type: integer
+          minimum: 1
+        submittedAt:
+          type: string
+          format: date-time
+        policyVersion:
+          type: string
+          maxLength: 64
+        snapshotSha256:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        title:
+          type: string
+          maxLength: 500
+        author:
+          type: string
+          maxLength: 200
+        sourceLanguage:
+          type: string
+          maxLength: 35
+        scopeCodes:
+          type: array
+          minItems: 2
+          maxItems: 3
+          uniqueItems: true
+          items:
+            type: string
+            enum: [PUBLIC_METADATA, CHAPTER_TEXT, COMMERCIAL_SALE]
+    PublicationReviewDetail:
+      type: object
+      additionalProperties: false
+      required:
+        - requestId
+        - requestVersion
+        - submittedAt
+        - policyVersion
+        - state
+        - snapshotSha256
+        - scopes
+        - claims
+        - events
+      properties:
+        requestId:
+          type: string
+          format: uuid
+        requestVersion:
+          type: integer
+          minimum: 1
+        submittedAt:
+          type: string
+          format: date-time
+        policyVersion:
+          type: string
+          maxLength: 64
+        state:
+          type: string
+          enum:
+            - PENDING_REVIEW
+            - NEEDS_INFORMATION
+            - APPROVED_UNPUBLISHED
+            - REJECTED
+            - SUPERSEDED
+            - WITHDRAWN
+        snapshotSha256:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        scopes:
+          type: array
+          minItems: 2
+          maxItems: 3
+          items:
+            $ref: '#/components/schemas/PublicationReviewScopePreview'
+        claims:
+          type: array
+          minItems: 2
+          maxItems: 3
+          items:
+            $ref: '#/components/schemas/PublicationReviewClaim'
+        events:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/PublicationReviewEvent'
+    PublicationReviewScopePreview:
+      type: object
+      additionalProperties: false
+      required: [scopeCode, snapshotSha256, work, chapters]
+      properties:
+        scopeCode:
+          type: string
+          enum: [PUBLIC_METADATA, CHAPTER_TEXT, COMMERCIAL_SALE]
+        snapshotSha256:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        work:
+          $ref: '#/components/schemas/PublicationReviewWorkPreview'
+        chapters:
+          type: array
+          items:
+            $ref: '#/components/schemas/PublicationReviewChapterPreview'
+    PublicationReviewWorkPreview:
+      type: object
+      additionalProperties: false
+      required: [title, author, sourceLanguage]
+      properties:
+        title:
+          type: string
+          maxLength: 500
+        author:
+          type: string
+          maxLength: 200
+        sourceLanguage:
+          type: string
+          maxLength: 35
+    PublicationReviewChapterPreview:
+      type: object
+      additionalProperties: false
+      required: [ordinal, title, sourceLanguage, contentHash, segmentCount]
+      properties:
+        ordinal:
+          type: integer
+          minimum: 1
+        title:
+          type: string
+          maxLength: 500
+        sourceLanguage:
+          type: string
+          maxLength: 35
+        contentHash:
+          type: [string, 'null']
+          pattern: '^[a-f0-9]{64}$'
+        segmentCount:
+          type: [integer, 'null']
+          minimum: 0
+    PublicationReviewClaim:
+      type: object
+      additionalProperties: false
+      required: [scopeCode, rightsBasisCode]
+      properties:
+        scopeCode:
+          type: string
+          enum: [PUBLIC_METADATA, CHAPTER_TEXT, COMMERCIAL_SALE]
+        rightsBasisCode:
+          type: string
+          enum: [ORIGINAL_WORK, LICENSE_OR_PERMISSION, PUBLIC_DOMAIN, NEEDS_REVIEW]
+    PublicationReviewEvent:
+      type: object
+      additionalProperties: false
+      required:
+        - sequence
+        - actorRoleCode
+        - actionCode
+        - fromState
+        - toState
+        - reasonCode
+        - createdAt
+      properties:
+        sequence:
+          type: integer
+          minimum: 1
+        actorRoleCode:
+          type: string
+          enum: [author, publication_reviewer]
+        actionCode:
+          type: string
+          enum: [SUBMITTED, NEEDS_INFORMATION, APPROVED, REJECTED, SUPERSEDED, WITHDRAWN]
+        fromState:
+          type: [string, 'null']
+          enum:
+            - PENDING_REVIEW
+            - NEEDS_INFORMATION
+            - APPROVED_UNPUBLISHED
+            - REJECTED
+            - SUPERSEDED
+            - WITHDRAWN
+            - null
+        toState:
+          type: string
+          enum:
+            - PENDING_REVIEW
+            - NEEDS_INFORMATION
+            - APPROVED_UNPUBLISHED
+            - REJECTED
+            - SUPERSEDED
+            - WITHDRAWN
+        reasonCode:
+          type: [string, 'null']
+          enum:
+            - INCOMPLETE_CLAIM
+            - MORE_INFORMATION
+            - SCOPE_UNCLEAR
+            - RIGHTS_REVIEWED
+            - SCOPE_CONFIRMED
+            - RIGHTS_NOT_VERIFIED
+            - OUT_OF_SCOPE
+            - POLICY_MISMATCH
+            - null
+        createdAt:
+          type: string
+          format: date-time
     PublicationRightsAcceptanceRequest:
       type: object
       additionalProperties: false

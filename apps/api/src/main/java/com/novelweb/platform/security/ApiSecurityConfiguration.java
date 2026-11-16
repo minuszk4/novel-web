@@ -213,6 +213,12 @@ public class ApiSecurityConfiguration {
                     .permitAll();
                 authorize
                     .requestMatchers(
+                        HttpMethod.GET,
+                        "/api/v1/review/publications",
+                        "/api/v1/review/publications/*")
+                    .permitAll();
+                authorize
+                    .requestMatchers(
                         HttpMethod.DELETE, "/api/v1/authoring/manuscripts/*/chapters/*")
                     .permitAll();
                 authorize
