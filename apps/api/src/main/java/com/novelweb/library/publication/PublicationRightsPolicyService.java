@@ -11,6 +11,7 @@ import java.sql.SQLException;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
@@ -78,6 +79,106 @@ public class PublicationRightsPolicyService {
       }
     } catch (SQLException exception) {
       throw new IllegalStateException("Unable to load publication-rights policy", exception);
+    }
+  }
+
+  /**
+   * Returns an owner-only checklist and opaque snapshot validators without returning manuscript
+   * text.
+   */
+  public ReadinessResult readiness(UUID userId, UUID workId) {
+    Objects.requireNonNull(userId, "user id is required");
+    Objects.requireNonNull(workId, "work id is required");
+    try (Connection connection = dataSource.getConnection()) {
+      connection.setAutoCommit(false);
+      try {
+        if (!lockEligibleWorkForRead(connection, userId, workId)) {
+          connection.commit();
+          return ReadinessResult.workNotFound();
+        }
+
+        PolicyService.RequiredAcceptance acceptanceState = policyService.requiredAcceptance(userId);
+        if (acceptanceState == PolicyService.RequiredAcceptance.REQUIRED) {
+          connection.commit();
+          return ReadinessResult.policyRequired();
+        }
+        if (acceptanceState == PolicyService.RequiredAcceptance.NOT_CONFIGURED) {
+          connection.commit();
+          return ReadinessResult.policyNotConfigured();
+        }
+
+        // The selected rights-policy row and content snapshots stay stable for this response.
+        try (PreparedStatement lock =
+            connection.prepareStatement(
+                "LOCK TABLE publication_rights_policy_documents IN SHARE MODE")) {
+          lock.execute();
+        }
+        Optional<PolicyDocument> activePolicy = currentPolicy(connection);
+        Acceptance acceptedPolicy = null;
+        if (activePolicy.isPresent()) {
+          acceptedPolicy =
+              findAcceptance(connection, userId, workId, activePolicy.orElseThrow().version())
+                  .orElse(null);
+        }
+        ReadinessSnapshot snapshot = readReadinessSnapshot(connection, workId);
+        connection.commit();
+
+        List<String> blockers = new java.util.ArrayList<>();
+        if (activePolicy.isEmpty()) {
+          blockers.add("PUBLICATION_RIGHTS_POLICY_NOT_CONFIGURED");
+        } else if (acceptedPolicy == null) {
+          blockers.add("PUBLICATION_RIGHTS_POLICY_NOT_ACCEPTED");
+        }
+        if (snapshot.readyChapterCount() == 0) {
+          blockers.add("READY_CHAPTER_REQUIRED");
+        }
+        if ("PENDING_REVIEW".equals(snapshot.currentRequestState())) {
+          blockers.add("PUBLICATION_REQUEST_ALREADY_PENDING");
+        }
+
+        String policyVersion = activePolicy.map(PolicyDocument::version).orElse(null);
+        Instant policyEffectiveAt = activePolicy.map(PolicyDocument::effectiveAt).orElse(null);
+        String policyDigest =
+            activePolicy.map(policy -> HexFormat.of().formatHex(policy.sha256())).orElse("none");
+        Instant acceptedAt = acceptedPolicy == null ? null : acceptedPolicy.acceptedAt();
+        String metadataEtag = scopeEtag("PUBLIC_METADATA", snapshot.metadataSnapshot());
+        String chapterTextEtag = scopeEtag("CHAPTER_TEXT", snapshot.chapterTextSnapshot());
+        String commercialSaleEtag = scopeEtag("COMMERCIAL_SALE", snapshot.commercialSaleSnapshot());
+        String snapshotEtag =
+            readinessEtag(
+                workId,
+                snapshot,
+                policyVersion,
+                policyDigest,
+                acceptedAt,
+                metadataEtag,
+                chapterTextEtag,
+                commercialSaleEtag);
+        return ReadinessResult.available(
+            new PublicationReadiness(
+                workId,
+                blockers.isEmpty(),
+                activePolicy.isPresent(),
+                policyVersion,
+                policyEffectiveAt,
+                acceptedAt,
+                snapshot.contentVersion(),
+                snapshot.readyChapterCount(),
+                snapshot.currentRequestState(),
+                snapshotEtag,
+                List.of(
+                    new ScopeReadiness("PUBLIC_METADATA", true, metadataEtag),
+                    new ScopeReadiness(
+                        "CHAPTER_TEXT", snapshot.readyChapterCount() > 0, chapterTextEtag),
+                    new ScopeReadiness(
+                        "COMMERCIAL_SALE", snapshot.readyChapterCount() > 0, commercialSaleEtag)),
+                List.copyOf(blockers)));
+      } catch (SQLException | RuntimeException exception) {
+        rollback(connection, exception);
+        throw exception;
+      }
+    } catch (SQLException exception) {
+      throw new IllegalStateException("Unable to load publication readiness", exception);
     }
   }
 
@@ -182,6 +283,107 @@ public class PublicationRightsPolicyService {
         return row.next();
       }
     }
+  }
+
+  private boolean lockEligibleWorkForRead(Connection connection, UUID userId, UUID workId)
+      throws SQLException {
+    try (PreparedStatement select =
+        connection.prepareStatement(
+            """
+                SELECT 1
+                FROM users u
+                JOIN works w ON w.owner_user_id = u.id
+                JOIN libraries l ON l.id = w.library_id AND l.owner_user_id = w.owner_user_id
+                JOIN authoring_manuscript_creations creation
+                  ON creation.work_id = w.id AND creation.actor_user_id = w.owner_user_id
+                WHERE u.id = ? AND u.status = 'active'
+                  AND w.id = ? AND w.source_kind = 'authored' AND w.visibility = 'private'
+                  AND w.status = 'active' AND w.deleted_at IS NULL
+                  AND l.deleted_at IS NULL AND l.workspace_id IS NULL
+                FOR SHARE OF u, w, l, creation
+                """)) {
+      select.setObject(1, userId);
+      select.setObject(2, workId);
+      try (ResultSet row = select.executeQuery()) {
+        return row.next();
+      }
+    }
+  }
+
+  private ReadinessSnapshot readReadinessSnapshot(Connection connection, UUID workId)
+      throws SQLException {
+    try (PreparedStatement select =
+        connection.prepareStatement(
+            """
+                SELECT w.publication_content_version,
+                       (SELECT COUNT(*)
+                          FROM chapters chapter
+                         WHERE chapter.work_id = w.id
+                           AND chapter.status = 'ready'
+                           AND chapter.deleted_at IS NULL
+                           AND chapter.source_revision_id IS NOT NULL) AS ready_chapter_count,
+                       publication_work_scope_snapshot(w.id, 'PUBLIC_METADATA')::text
+                           AS metadata_snapshot,
+                       publication_work_scope_snapshot(w.id, 'CHAPTER_TEXT')::text
+                           AS chapter_text_snapshot,
+                       publication_work_scope_snapshot(w.id, 'COMMERCIAL_SALE')::text
+                           AS commercial_sale_snapshot,
+                       (SELECT state.current_state
+                          FROM publication_requests request
+                          JOIN publication_request_current_state state
+                            ON state.request_id = request.id
+                         WHERE request.work_id = w.id
+                         ORDER BY request.request_version DESC, request.id DESC
+                         LIMIT 1) AS current_request_state
+                  FROM works w
+                 WHERE w.id = ?
+                """)) {
+      select.setObject(1, workId);
+      try (ResultSet row = select.executeQuery()) {
+        if (!row.next()) {
+          throw new SQLException("Eligible manuscript disappeared during readiness read");
+        }
+        return new ReadinessSnapshot(
+            row.getLong("publication_content_version"),
+            row.getInt("ready_chapter_count"),
+            row.getString("metadata_snapshot"),
+            row.getString("chapter_text_snapshot"),
+            row.getString("commercial_sale_snapshot"),
+            row.getString("current_request_state"));
+      }
+    }
+  }
+
+  private static String scopeEtag(String scopeCode, String snapshot) {
+    return "\"publication-scope-"
+        + HexFormat.of().formatHex(sha256(scopeCode + "\n" + snapshot))
+        + "\"";
+  }
+
+  private static String readinessEtag(
+      UUID workId,
+      ReadinessSnapshot snapshot,
+      String policyVersion,
+      String policyDigest,
+      Instant acceptedAt,
+      String metadataEtag,
+      String chapterTextEtag,
+      String commercialSaleEtag) {
+    String canonical =
+        String.join(
+            "\n",
+            "publication-readiness-v1",
+            workId.toString(),
+            Long.toString(snapshot.contentVersion()),
+            Integer.toString(snapshot.readyChapterCount()),
+            Objects.toString(policyVersion, "none"),
+            policyDigest,
+            Objects.toString(acceptedAt, "none"),
+            Objects.toString(snapshot.currentRequestState(), "none"),
+            metadataEtag,
+            chapterTextEtag,
+            commercialSaleEtag);
+    return "\"publication-snapshot-" + HexFormat.of().formatHex(sha256(canonical)) + "\"";
   }
 
   private Optional<PolicyDocument> currentPolicy(Connection connection) throws SQLException {
@@ -371,12 +573,54 @@ public class PublicationRightsPolicyService {
     }
   }
 
+  private record ReadinessSnapshot(
+      long contentVersion,
+      int readyChapterCount,
+      String metadataSnapshot,
+      String chapterTextSnapshot,
+      String commercialSaleSnapshot,
+      String currentRequestState) {}
+
   public record CurrentPolicy(
       String version,
       Instant effectiveAt,
       String displayText,
       String policySha256,
       Instant acceptedAt) {}
+
+  public record PublicationReadiness(
+      UUID workId,
+      boolean canSubmit,
+      boolean publicationRightsPolicyAvailable,
+      String publicationRightsPolicyVersion,
+      Instant publicationRightsPolicyEffectiveAt,
+      Instant publicationRightsPolicyAcceptedAt,
+      long publicationContentVersion,
+      int readyChapterCount,
+      String currentRequestState,
+      String snapshotEtag,
+      List<ScopeReadiness> scopes,
+      List<String> blockerCodes) {}
+
+  public record ScopeReadiness(String scopeCode, boolean ready, String snapshotEtag) {}
+
+  public record ReadinessResult(Outcome outcome, PublicationReadiness readiness) {
+    static ReadinessResult available(PublicationReadiness readiness) {
+      return new ReadinessResult(Outcome.AVAILABLE, readiness);
+    }
+
+    static ReadinessResult policyRequired() {
+      return new ReadinessResult(Outcome.POLICY_REQUIRED, null);
+    }
+
+    static ReadinessResult policyNotConfigured() {
+      return new ReadinessResult(Outcome.POLICY_NOT_CONFIGURED, null);
+    }
+
+    static ReadinessResult workNotFound() {
+      return new ReadinessResult(Outcome.WORK_NOT_FOUND, null);
+    }
+  }
 
   public record Acceptance(
       UUID id, String policyVersion, String policySha256, Instant acceptedAt) {}

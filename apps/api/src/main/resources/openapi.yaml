@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 8.4.0
+  version: 8.5.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -1985,6 +1985,57 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/PublicationRightsPolicy'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/authoring/manuscripts/{workId}/publication/readiness:
+    get:
+      operationId: getPublicationReadinessForManuscript
+      tags: [Authoring]
+      x-implementation-status: implemented-postgres-profile
+      summary: Read the owner's publication checklist and current snapshot validators
+      description: >-
+        Requires a live session, current Terms and Privacy acceptance and an active owner-authored private manuscript
+        in the owner's personal library. Foreign, imported, public, archived, deleted and workspace-backed works are
+        concealed as 404. Returns blocker codes, scope readiness flags, policy version/acceptance metadata, ready
+        chapter count and opaque per-scope/current snapshot ETags. It never returns manuscript titles, metadata,
+        chapter text or snapshot JSON. A missing publication-rights policy is reported as a blocker in a 200 response;
+        corrupt or unavailable policy storage returns 503. This response does not submit, review, approve or publish.
+      security:
+        - appSession: []
+      parameters:
+        - name: workId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Owner-only readiness checklist with no manuscript content.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
+            ETag:
+              description: Strong validator for the complete readiness and publication scope snapshot.
+              schema:
+                type: string
+                pattern: '^"publication-snapshot-[a-f0-9]{64}"$'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicationReadiness'
         '401':
           $ref: '#/components/responses/Problem'
         '403':
@@ -6491,6 +6542,89 @@ components:
           type: [string, 'null']
           format: date-time
           description: Server timestamp for this actor and manuscript, null until acknowledged.
+    PublicationReadiness:
+      type: object
+      additionalProperties: false
+      required:
+        - workId
+        - canSubmit
+        - publicationRightsPolicyAvailable
+        - publicationRightsPolicyVersion
+        - publicationRightsPolicyEffectiveAt
+        - publicationRightsPolicyAcceptedAt
+        - publicationContentVersion
+        - readyChapterCount
+        - currentRequestState
+        - snapshotEtag
+        - scopes
+        - blockerCodes
+      properties:
+        workId:
+          type: string
+          format: uuid
+        canSubmit:
+          type: boolean
+          description: True only when policy, ready chapter and pending-request gates currently pass.
+        publicationRightsPolicyAvailable:
+          type: boolean
+        publicationRightsPolicyVersion:
+          type: [string, 'null']
+          maxLength: 64
+        publicationRightsPolicyEffectiveAt:
+          type: [string, 'null']
+          format: date-time
+        publicationRightsPolicyAcceptedAt:
+          type: [string, 'null']
+          format: date-time
+        publicationContentVersion:
+          type: integer
+          format: int64
+          minimum: 1
+        readyChapterCount:
+          type: integer
+          minimum: 0
+        currentRequestState:
+          type: [string, 'null']
+          enum:
+            - PENDING_REVIEW
+            - NEEDS_INFORMATION
+            - APPROVED_UNPUBLISHED
+            - REJECTED
+            - SUPERSEDED
+            - WITHDRAWN
+            - null
+        snapshotEtag:
+          type: string
+          pattern: '^"publication-snapshot-[a-f0-9]{64}"$'
+        scopes:
+          type: array
+          minItems: 3
+          maxItems: 3
+          items:
+            $ref: '#/components/schemas/PublicationScopeReadiness'
+        blockerCodes:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+            enum:
+              - PUBLICATION_RIGHTS_POLICY_NOT_CONFIGURED
+              - PUBLICATION_RIGHTS_POLICY_NOT_ACCEPTED
+              - READY_CHAPTER_REQUIRED
+              - PUBLICATION_REQUEST_ALREADY_PENDING
+    PublicationScopeReadiness:
+      type: object
+      additionalProperties: false
+      required: [scopeCode, ready, snapshotEtag]
+      properties:
+        scopeCode:
+          type: string
+          enum: [PUBLIC_METADATA, CHAPTER_TEXT, COMMERCIAL_SALE]
+        ready:
+          type: boolean
+        snapshotEtag:
+          type: string
+          pattern: '^"publication-scope-[a-f0-9]{64}"$'
     PublicationRightsAcceptanceRequest:
       type: object
       additionalProperties: false

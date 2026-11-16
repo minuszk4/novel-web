@@ -1068,6 +1068,161 @@ class PostgresSchemaIntegrationTests {
   }
 
   @Test
+  void publicationReadinessIsOwnerScopedContentFreeAndTracksCurrentSnapshots() throws Exception {
+    UUID ownerId = createSessionTestUser("Publication readiness owner");
+    UUID outsiderId = createSessionTestUser("Publication readiness outsider");
+    UUID approverId = createSessionTestUser("Publication readiness policy approver");
+    addCurrentPolicyAcceptances(ownerId);
+    addCurrentPolicyAcceptances(outsiderId);
+    String policyVersion = "publication-readiness-" + UUID.randomUUID().toString().replace("-", "");
+    String policyText = "Synthetic publication readiness policy; not legal text.";
+    byte[] policyDigest = sha256(policyText);
+    UUID workId = null;
+    try {
+      workId =
+          libraryService
+              .createPrivateAuthoredWork(
+                  ownerId,
+                  "Private readiness title that must not be returned",
+                  "Synthetic Author",
+                  "vi",
+                  "publication-readiness-work-" + UUID.randomUUID().toString().replace("-", ""))
+              .id();
+      SessionService.IssuedSession ownerSession = sessionService.create(ownerId).orElseThrow();
+      SessionService.IssuedSession outsiderSession =
+          sessionService.create(outsiderId).orElseThrow();
+      jakarta.servlet.http.Cookie ownerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", ownerSession.cookieValue());
+      jakarta.servlet.http.Cookie outsiderCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", outsiderSession.cookieValue());
+      String path = "/api/v1/authoring/manuscripts/" + workId + "/publication/readiness";
+
+      assertEquals(401, mockMvc.perform(get(path)).andReturn().getResponse().getStatus());
+      MvcResult foreign = mockMvc.perform(get(path).cookie(outsiderCookie)).andReturn();
+      assertEquals(404, foreign.getResponse().getStatus());
+      assertTrue(foreign.getResponse().getContentAsString().contains("MANUSCRIPT_NOT_FOUND"));
+
+      MvcResult unavailablePolicy = mockMvc.perform(get(path).cookie(ownerCookie)).andReturn();
+      assertEquals(200, unavailablePolicy.getResponse().getStatus());
+      assertTrue(
+          unavailablePolicy
+              .getResponse()
+              .getHeader(HttpHeaders.CACHE_CONTROL)
+              .contains("no-store"));
+      assertEquals("no-cache", unavailablePolicy.getResponse().getHeader(HttpHeaders.PRAGMA));
+      JsonNode unavailableBody =
+          objectMapper.readTree(unavailablePolicy.getResponse().getContentAsString());
+      assertFalse(unavailableBody.path("canSubmit").asBoolean());
+      assertFalse(unavailableBody.path("publicationRightsPolicyAvailable").asBoolean());
+      assertTrue(
+          unavailableBody
+              .path("blockerCodes")
+              .toString()
+              .contains("PUBLICATION_RIGHTS_POLICY_NOT_CONFIGURED"));
+      assertTrue(
+          unavailableBody.path("blockerCodes").toString().contains("READY_CHAPTER_REQUIRED"));
+      assertEquals(
+          unavailableBody.path("snapshotEtag").asText(),
+          unavailablePolicy.getResponse().getHeader(HttpHeaders.ETAG));
+      String unavailableBodyText = unavailablePolicy.getResponse().getContentAsString();
+      assertFalse(unavailableBodyText.contains("Private readiness title"));
+      assertFalse(unavailableBodyText.contains("snapshot JSON"));
+
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement insert =
+              connection.prepareStatement(
+                  """
+                      INSERT INTO publication_rights_policy_documents
+                          (version, effective_at, display_text, policy_sha256)
+                      VALUES (?, clock_timestamp() - INTERVAL '1 second', ?, ?)
+                      """)) {
+        insert.setString(1, policyVersion);
+        insert.setString(2, policyText);
+        insert.setBytes(3, policyDigest);
+        assertEquals(1, insert.executeUpdate());
+      }
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement approve =
+              connection.prepareStatement(
+                  """
+                      UPDATE publication_rights_policy_documents
+                         SET status = 'APPROVED', approved_at = clock_timestamp(), approved_by = ?
+                       WHERE version = ? AND status = 'DRAFT'
+                      """)) {
+        approve.setObject(1, approverId);
+        approve.setString(2, policyVersion);
+        assertEquals(1, approve.executeUpdate());
+      }
+
+      MvcResult acceptanceRequired = mockMvc.perform(get(path).cookie(ownerCookie)).andReturn();
+      assertEquals(200, acceptanceRequired.getResponse().getStatus());
+      JsonNode acceptanceRequiredBody =
+          objectMapper.readTree(acceptanceRequired.getResponse().getContentAsString());
+      assertTrue(
+          acceptanceRequiredBody
+              .path("blockerCodes")
+              .toString()
+              .contains("PUBLICATION_RIGHTS_POLICY_NOT_ACCEPTED"));
+
+      insertPublicationRightsPolicyAcceptance(
+          UUID.randomUUID(), ownerId, workId, UUID.randomUUID(), policyVersion, policyDigest);
+      LibraryRepository.VolumeRecord volume =
+          libraryService.createVolume(ownerId, workId, 1, "Private volume");
+      LibraryRepository.ChapterRecord chapter =
+          libraryService.createChapter(ownerId, workId, volume.id(), 1, "Private chapter", "vi");
+      libraryService.appendChapterRevision(
+          ownerId,
+          chapter.id(),
+          "plain_text",
+          "Private chapter prose that must not be returned.",
+          List.of(
+              new LibraryService.NewSegment(
+                  1,
+                  "paragraph",
+                  "Private chapter prose that must not be returned.",
+                  "readiness-c1-s1")));
+
+      MvcResult ready = mockMvc.perform(get(path).cookie(ownerCookie)).andReturn();
+      assertEquals(200, ready.getResponse().getStatus());
+      JsonNode readyBody = objectMapper.readTree(ready.getResponse().getContentAsString());
+      assertTrue(readyBody.path("canSubmit").asBoolean());
+      assertEquals(1, readyBody.path("readyChapterCount").asInt());
+      assertTrue(readyBody.path("blockerCodes").isEmpty());
+      assertEquals(3, readyBody.path("scopes").size());
+      assertEquals(
+          readyBody.path("snapshotEtag").asText(), ready.getResponse().getHeader(HttpHeaders.ETAG));
+      String readyResponseText = ready.getResponse().getContentAsString();
+      assertFalse(readyResponseText.contains("Private readiness title"));
+      assertFalse(readyResponseText.contains("Private chapter prose"));
+      assertFalse(readyResponseText.contains("Private chapter\""));
+
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement update =
+              connection.prepareStatement("UPDATE works SET title = ? WHERE id = ?")) {
+        update.setString(1, "Updated private readiness title");
+        update.setObject(2, workId);
+        assertEquals(1, update.executeUpdate());
+      }
+      MvcResult updated = mockMvc.perform(get(path).cookie(ownerCookie)).andReturn();
+      assertEquals(200, updated.getResponse().getStatus());
+      assertNotEquals(
+          ready.getResponse().getHeader(HttpHeaders.ETAG),
+          updated.getResponse().getHeader(HttpHeaders.ETAG));
+      assertFalse(
+          updated.getResponse().getContentAsString().contains("Updated private readiness title"));
+    } finally {
+      if (workId != null) {
+        deletePublicationRightsPolicyAcceptanceFixture(workId);
+        deleteLibraryUserData(ownerId, workId);
+      }
+      deletePublicationRightsPolicyFixture(policyVersion);
+      deleteSessionTestUser(ownerId);
+      deleteSessionTestUser(outsiderId);
+      deleteSessionTestUser(approverId);
+    }
+  }
+
+  @Test
   void glossaryRevisionsAndTermsAreImmutableScopedSnapshots() throws SQLException {
     UUID actorId = UUID.randomUUID();
     UUID glossaryId = UUID.randomUUID();
