@@ -716,7 +716,13 @@
         aria-labelledby="account-reader-paywall-title"
         tabindex="0"
       >
-        <span class="reader-state-mark" aria-hidden="true">⌑</span>
+        <span class="reader-state-mark" aria-hidden="true">
+          <svg class="reader-paywall-lock-icon" viewBox="0 0 24 24" focusable="false">
+            <path d="M7 10V7a5 5 0 0 1 10 0v3" />
+            <rect x="4" y="10" width="16" height="11" rx="2" />
+            <path d="M12 14v3" />
+          </svg>
+        </span>
         <p class="eyebrow">CHƯƠNG TRẢ PHÍ · MÔI TRƯỜNG TEST</p>
         <h1 id="account-reader-paywall-title" tabindex="-1">
           {{ activeChapter()?.title || 'Chương này cần mở khóa' }}

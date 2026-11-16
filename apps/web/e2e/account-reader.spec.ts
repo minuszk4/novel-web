@@ -1215,11 +1215,82 @@ test('requires explicit confirmation before paid-credit chapter unlock', async (
   await page.getByRole('button', { name: 'Xác nhận · 10 credit' }).click();
   await expect(page.locator('.account-reader-content')).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Bản nháp' })).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath('reader-unlocked-360x800.png') });
   await expect.poll(() => unlockRequests).toBe(2);
   await expect.poll(() => balanceRequests).toBe(2);
   expect(idempotencyKeys[0].length).toBeGreaterThanOrEqual(16);
   expect(idempotencyKeys[1]).toBe(idempotencyKeys[0]);
   expect(loadedChapters).toContain(chapterIds[1]);
+  await expectNoAxeViolations(page);
+});
+
+test('paid chapter confirmation stays keyboard-accessible at desktop width', async ({
+  page,
+}, testInfo) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await installReaderRoutes(page, 200, false);
+  await installPublicLockedManifest(page, true);
+  await page.route(`**/api/v1/chapters/${chapterIds[1]}/unlock-quote`, (route) =>
+    json(route, {
+      chapterId: chapterIds[1],
+      workId,
+      chapterTitle: 'Bản nháp',
+      workTitle: 'Gió qua núi công khai',
+      priceVersion: 1,
+      priceCredits: 10,
+      accessAlreadyGranted: false,
+    }),
+  );
+  await page.route('**/api/v1/me/credits/balance', (route) =>
+    json(route, {
+      paidCredits: 100,
+      bonusCredits: 0,
+      totalCredits: 100,
+      asOf: '2026-11-15T10:00:00Z',
+    }),
+  );
+  let unlockRequests = 0;
+  await page.route(`**/api/v1/chapters/${chapterIds[1]}/unlock`, async (route) => {
+    unlockRequests += 1;
+    await json(route, { code: 'UNEXPECTED_UNLOCK' }, 500);
+  });
+
+  await page.goto(`/app/reader/${workId}/${chapterIds[1]}`);
+  await expect(page.getByRole('heading', { name: 'Bản nháp' })).toBeVisible();
+  await expect(page.locator('.reader-paywall-lock-icon')).toBeVisible();
+  await expect(page.getByText('10 credit đã mua', { exact: true })).toBeVisible();
+  await expect(page.getByText('100', { exact: true })).toBeVisible();
+  let dimensions = await page.evaluate(() => ({
+    document: document.documentElement.scrollWidth,
+    viewport: document.documentElement.clientWidth,
+  }));
+  expect(dimensions.document).toBeLessThanOrEqual(dimensions.viewport);
+  await expectNoAxeViolations(page);
+  await page.screenshot({ path: testInfo.outputPath('reader-paywall-1280x900.png') });
+
+  const continueButton = page.getByRole('button', { name: 'Tiếp tục đến xác nhận' });
+  await continueButton.focus();
+  await page.keyboard.press('Enter');
+  const confirmationHeading = page.getByRole('heading', { name: 'Xác nhận mở chương' });
+  await expect(confirmationHeading).toBeFocused();
+  const confirmButton = page.getByRole('button', { name: 'Xác nhận · 10 credit' });
+  const confirmBounds = await confirmButton.boundingBox();
+  expect(confirmBounds).not.toBeNull();
+  expect(confirmBounds!.width).toBeGreaterThanOrEqual(44);
+  expect(confirmBounds!.height).toBeGreaterThanOrEqual(44);
+  dimensions = await page.evaluate(() => ({
+    document: document.documentElement.scrollWidth,
+    viewport: document.documentElement.clientWidth,
+  }));
+  expect(dimensions.document).toBeLessThanOrEqual(dimensions.viewport);
+  await expectNoAxeViolations(page);
+  await page.screenshot({ path: testInfo.outputPath('reader-confirmation-1280x900.png') });
+
+  const cancelButton = page.getByRole('button', { name: 'Hủy', exact: true });
+  await cancelButton.focus();
+  await page.keyboard.press('Enter');
+  await expect(continueButton).toBeFocused();
+  expect(unlockRequests).toBe(0);
   await expectNoAxeViolations(page);
 });
 

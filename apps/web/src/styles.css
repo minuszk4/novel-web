@@ -4512,6 +4512,16 @@ button.reader-chapter-nav {
   color: #92784e;
   font-size: 18px;
 }
+.reader-paywall-lock-icon {
+  width: 20px;
+  height: 20px;
+  display: block;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.75;
+}
 .library-reader-link {
   min-height: 44px;
   display: inline-flex;
