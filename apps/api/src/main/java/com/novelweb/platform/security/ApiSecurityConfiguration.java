@@ -224,6 +224,9 @@ public class ApiSecurityConfiguration {
                     .requestMatchers(HttpMethod.POST, "/api/v1/review/works/*/takedown")
                     .permitAll();
                 authorize
+                    .requestMatchers(HttpMethod.GET, "/api/v1/review/works/*/takedown-purge-status")
+                    .permitAll();
+                authorize
                     .requestMatchers(
                         HttpMethod.DELETE, "/api/v1/authoring/manuscripts/*/chapters/*")
                     .permitAll();

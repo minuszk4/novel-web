@@ -155,3 +155,6 @@ databaseChangeLog:
   - include:
       file: changes/052-publication-work-takedown.sql
       relativeToChangelogFile: true
+  - include:
+      file: changes/053-publication-takedown-purge-outbox.sql
+      relativeToChangelogFile: true

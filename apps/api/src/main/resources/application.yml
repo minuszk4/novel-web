@@ -36,6 +36,25 @@ novel:
       capacity: ${NOVEL_PUBLIC_CATALOG_RATE_LIMIT_CAPACITY:60}
       refill-interval: ${NOVEL_PUBLIC_CATALOG_RATE_LIMIT_REFILL_INTERVAL:1s}
       cleanup-delay: ${NOVEL_PUBLIC_CATALOG_RATE_LIMIT_CLEANUP_DELAY:1h}
+  publication:
+    purge:
+      worker-enabled: ${NOVEL_PUBLICATION_PURGE_WORKER_ENABLED:false}
+      required-targets: ${NOVEL_PUBLICATION_PURGE_REQUIRED_TARGETS:}
+      batch-size: ${NOVEL_PUBLICATION_PURGE_BATCH_SIZE:5}
+      poll-delay: ${NOVEL_PUBLICATION_PURGE_POLL_DELAY:30s}
+      targets:
+        cdn:
+          endpoint: ${NOVEL_PUBLICATION_PURGE_CDN_ENDPOINT:}
+          bearer-token: ${NOVEL_PUBLICATION_PURGE_CDN_TOKEN:}
+        search-index:
+          endpoint: ${NOVEL_PUBLICATION_PURGE_SEARCH_INDEX_ENDPOINT:}
+          bearer-token: ${NOVEL_PUBLICATION_PURGE_SEARCH_INDEX_TOKEN:}
+        feed-cache:
+          endpoint: ${NOVEL_PUBLICATION_PURGE_FEED_CACHE_ENDPOINT:}
+          bearer-token: ${NOVEL_PUBLICATION_PURGE_FEED_CACHE_TOKEN:}
+        signed-links:
+          endpoint: ${NOVEL_PUBLICATION_PURGE_SIGNED_LINKS_ENDPOINT:}
+          bearer-token: ${NOVEL_PUBLICATION_PURGE_SIGNED_LINKS_TOKEN:}
   translation:
     fake:
       enabled: ${NOVEL_TRANSLATION_FAKE_ENABLED:false}

@@ -40,6 +40,8 @@ import com.novelweb.library.WorkspaceService;
 import com.novelweb.library.imports.ImportParseService;
 import com.novelweb.library.imports.ImportStagingCleanupService;
 import com.novelweb.library.imports.ImportStagingRateLimiter;
+import com.novelweb.library.publication.PublicationTakedownPurgeService;
+import com.novelweb.library.publication.PublicationTakedownPurgeTransport;
 import com.novelweb.payment.credit.ChapterUnlockService;
 import com.novelweb.payment.credit.CreditBalanceRepository;
 import com.novelweb.payment.credit.CreditHistoryRepository;
@@ -170,6 +172,10 @@ import tools.jackson.databind.ObjectMapper;
       "novel.imports.staging.upload-rate-limit-refill-interval=1h",
       "novel.imports.staging.rate-limit-retention=24h",
       "novel.publication.requests.rate-limit-capacity=1",
+      "novel.publication.purge.worker-enabled=false",
+      "novel.publication.purge.required-targets=CDN",
+      "novel.publication.purge.targets.cdn.endpoint=https://purge.example.test/v1/work",
+      "novel.publication.purge.targets.cdn.bearer-token=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
       "novel.web.cors.allowed-origins=https://app.example.test"
     })
 class PostgresSchemaIntegrationTests {
@@ -260,9 +266,13 @@ class PostgresSchemaIntegrationTests {
           "momo_test_reconciliation_events",
           "content_entitlements",
           "public_catalog_rate_limits",
-          "publication_work_takedown_events");
+          "publication_work_takedown_events",
+          "publication_takedown_purge_requests",
+          "publication_takedown_purge_attempts");
 
   @Autowired private DataSource dataSource;
+
+  @Autowired private PublicationTakedownPurgeService publicationTakedownPurgeService;
 
   @Autowired private GoogleAuthAttemptService googleAuthAttemptService;
 
@@ -299,6 +309,8 @@ class PostgresSchemaIntegrationTests {
   @Autowired private CreditPackCatalog creditPackCatalog;
 
   @MockitoBean private CreditTopUpCheckoutService creditTopUpCheckoutService;
+
+  @MockitoBean private PublicationTakedownPurgeTransport purgeTransport;
 
   @Autowired private MomoTestIpnService momoTestIpnService;
 
@@ -434,7 +446,7 @@ class PostgresSchemaIntegrationTests {
             connection.prepareStatement("SELECT COUNT(*) FROM databasechangelog");
         ResultSet changesets = changesetCount.executeQuery()) {
       changesets.next();
-      assertEquals(149, changesets.getInt(1), "unexpected number of applied changesets");
+      assertEquals(150, changesets.getInt(1), "unexpected number of applied changesets");
     }
 
     Set<String> actualTables = new HashSet<>();
@@ -2355,8 +2367,31 @@ class PostgresSchemaIntegrationTests {
       assertEquals(503, interruptedTakedown.getResponse().getStatus());
       assertEquals(0, publicationScopeRevocationCount(approvableFixture.workId()));
       assertEquals(0, publicationWorkTakedownEventCount(approvableFixture.workId()));
+      assertEquals(0, publicationTakedownPurgeRequestCount(approvableFixture.workId()));
       assertEquals("public", publicationWorkVisibility(approvableFixture.workId()));
       assertTrue(publicationScopeIsCurrent(approvableFixture.workId(), "PUBLIC_METADATA"));
+
+      installFailingPublicationTakedownPurgeTrigger();
+      MvcResult interruptedPurgeEnqueue;
+      try {
+        interruptedPurgeEnqueue =
+            mockMvc
+                .perform(
+                    post(takedownPath)
+                        .cookie(reviewerCookie)
+                        .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, csrf)
+                        .header("Idempotency-Key", takedownKey)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(takedownBody))
+                .andReturn();
+      } finally {
+        dropFailingPublicationTakedownPurgeTrigger();
+      }
+      assertEquals(503, interruptedPurgeEnqueue.getResponse().getStatus());
+      assertEquals(0, publicationScopeRevocationCount(approvableFixture.workId()));
+      assertEquals(0, publicationWorkTakedownEventCount(approvableFixture.workId()));
+      assertEquals(0, publicationTakedownPurgeRequestCount(approvableFixture.workId()));
+      assertEquals("public", publicationWorkVisibility(approvableFixture.workId()));
 
       MvcResult takenDown =
           mockMvc
@@ -2374,7 +2409,7 @@ class PostgresSchemaIntegrationTests {
       JsonNode takedownReceipt =
           objectMapper.readTree(takenDown.getResponse().getContentAsString());
       assertEquals("ACCESS_REVOKED", takedownReceipt.path("accessState").asText());
-      assertEquals("NOT_CONFIGURED", takedownReceipt.path("externalCachePurgeStatus").asText());
+      assertEquals("REQUESTED", takedownReceipt.path("externalCachePurgeStatus").asText());
       assertEquals("publication_reviewer", takedownReceipt.path("actorRoleCode").asText());
       assertEquals("EMERGENCY_TAKEDOWN", takedownReceipt.path("reasonCode").asText());
       assertEquals(6, takedownReceipt.path("revokedApprovalCount").asInt());
@@ -2383,6 +2418,100 @@ class PostgresSchemaIntegrationTests {
       assertEquals("private", publicationWorkVisibility(approvableFixture.workId()));
       assertEquals(6, publicationScopeRevocationCount(approvableFixture.workId()));
       assertEquals(1, publicationWorkTakedownEventCount(approvableFixture.workId()));
+      assertEquals(1, publicationTakedownPurgeRequestCount(approvableFixture.workId()));
+
+      when(purgeTransport.purge(any(), any()))
+          .thenReturn(PublicationTakedownPurgeTransport.DeliveryResult.acknowledged());
+      assertEquals(
+          1, publicationTakedownPurgeService.processDueRequestsForWork(approvableFixture.workId()));
+      verify(purgeTransport).purge(any(), any());
+      MvcResult acknowledgedPurgeStatus =
+          mockMvc
+              .perform(
+                  get(
+                          "/api/v1/review/works/{workId}/takedown-purge-status",
+                          approvableFixture.workId())
+                      .cookie(reviewerCookie))
+              .andReturn();
+      assertEquals(200, acknowledgedPurgeStatus.getResponse().getStatus());
+      assertTrue(
+          acknowledgedPurgeStatus
+              .getResponse()
+              .getHeader(HttpHeaders.CACHE_CONTROL)
+              .contains("no-store"));
+      JsonNode purgeStatus =
+          objectMapper.readTree(acknowledgedPurgeStatus.getResponse().getContentAsString());
+      assertEquals("ACKNOWLEDGED", purgeStatus.path("status").asText());
+      assertEquals("CDN", purgeStatus.path("targets").get(0).path("targetCode").asText());
+      assertEquals("ACKNOWLEDGED", purgeStatus.path("targets").get(0).path("status").asText());
+      assertFalse(
+          acknowledgedPurgeStatus
+              .getResponse()
+              .getContentAsString()
+              .contains("purge.example.test"));
+      assertFalse(
+          acknowledgedPurgeStatus.getResponse().getContentAsString().contains("AAAAAAAAAAAAAAAA"));
+      MvcResult ownerPurgeStatus =
+          mockMvc
+              .perform(
+                  get(
+                          "/api/v1/review/works/{workId}/takedown-purge-status",
+                          approvableFixture.workId())
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(403, ownerPurgeStatus.getResponse().getStatus());
+      assertTrue(
+          ownerPurgeStatus
+              .getResponse()
+              .getContentAsString()
+              .contains("PUBLICATION_TAKEDOWN_ROLE_REQUIRED"));
+      MvcResult anonymousPurgeStatus =
+          mockMvc
+              .perform(
+                  get(
+                      "/api/v1/review/works/{workId}/takedown-purge-status",
+                      approvableFixture.workId()))
+              .andReturn();
+      assertEquals(401, anonymousPurgeStatus.getResponse().getStatus());
+
+      when(purgeTransport.purge(any(), any()))
+          .thenReturn(PublicationTakedownPurgeTransport.DeliveryResult.remoteRejected());
+      MvcResult retryableTakedown =
+          mockMvc
+              .perform(
+                  post(takedownPath)
+                      .cookie(reviewerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, csrf)
+                      .header("Idempotency-Key", "publication-takedown-retry-01")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(takedownBody))
+              .andReturn();
+      assertEquals(200, retryableTakedown.getResponse().getStatus());
+      assertEquals(
+          1, publicationTakedownPurgeService.processDueRequestsForWork(approvableFixture.workId()));
+      for (int retry = 1; retry < 8; retry++) {
+        setPublicationTakedownPurgeRequestsDue(approvableFixture.workId());
+        assertEquals(
+            1,
+            publicationTakedownPurgeService.processDueRequestsForWork(approvableFixture.workId()));
+      }
+      assertEquals(9, publicationTakedownPurgeAttemptCount(approvableFixture.workId()));
+      MvcResult failedPurgeStatus =
+          mockMvc
+              .perform(
+                  get(
+                          "/api/v1/review/works/{workId}/takedown-purge-status",
+                          approvableFixture.workId())
+                      .cookie(reviewerCookie))
+              .andReturn();
+      JsonNode failedStatus =
+          objectMapper.readTree(failedPurgeStatus.getResponse().getContentAsString());
+      assertEquals("FAILED", failedStatus.path("status").asText());
+      assertEquals(
+          "REMOTE_REJECTED",
+          failedStatus.path("targets").get(0).path("lastSafeFailureCode").asText());
+      assertEquals(
+          0, publicationTakedownPurgeService.processDueRequestsForWork(approvableFixture.workId()));
 
       MvcResult replayedTakedown =
           mockMvc
@@ -2399,7 +2528,7 @@ class PostgresSchemaIntegrationTests {
       assertEquals(
           takenDown.getResponse().getContentAsString(),
           replayedTakedown.getResponse().getContentAsString());
-      assertEquals(1, publicationWorkTakedownEventCount(approvableFixture.workId()));
+      assertEquals(2, publicationWorkTakedownEventCount(approvableFixture.workId()));
 
       MvcResult reusedTakedownKey =
           mockMvc
@@ -2752,6 +2881,47 @@ class PostgresSchemaIntegrationTests {
     }
   }
 
+  private long publicationTakedownPurgeRequestCount(UUID workId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT COUNT(*) FROM publication_takedown_purge_requests WHERE work_id = ?")) {
+      select.setObject(1, workId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getLong(1);
+      }
+    }
+  }
+
+  private long publicationTakedownPurgeAttemptCount(UUID workId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                """
+                    SELECT COUNT(*)
+                      FROM publication_takedown_purge_attempts attempt
+                      JOIN publication_takedown_purge_requests request ON request.id = attempt.request_id
+                     WHERE request.work_id = ?
+                    """)) {
+      select.setObject(1, workId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getLong(1);
+      }
+    }
+  }
+
+  private void setPublicationTakedownPurgeRequestsDue(UUID workId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement update =
+            connection.prepareStatement(
+                "UPDATE publication_takedown_purge_requests SET next_attempt_at = clock_timestamp() WHERE work_id = ? AND status = 'REQUESTED'")) {
+      update.setObject(1, workId);
+      update.executeUpdate();
+    }
+  }
+
   private boolean publicationScopeIsCurrent(UUID workId, String scopeCode) throws SQLException {
     try (Connection connection = dataSource.getConnection();
         PreparedStatement select =
@@ -2927,6 +3097,38 @@ class PostgresSchemaIntegrationTests {
           "DROP TRIGGER IF EXISTS trg_test_fail_publication_scope_revocation "
               + "ON publication_scope_access_revocations");
       statement.execute("DROP FUNCTION IF EXISTS test_fail_publication_scope_revocation()");
+    }
+  }
+
+  private void installFailingPublicationTakedownPurgeTrigger() throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        java.sql.Statement statement = connection.createStatement()) {
+      statement.execute(
+          """
+              CREATE OR REPLACE FUNCTION test_fail_publication_takedown_purge_request()
+              RETURNS trigger LANGUAGE plpgsql AS $$
+              BEGIN
+                  RAISE EXCEPTION 'synthetic takedown purge outbox rollback check'
+                      USING ERRCODE = '23514';
+              END;
+              $$
+              """);
+      statement.execute(
+          """
+              CREATE TRIGGER trg_test_fail_publication_takedown_purge_request
+                  BEFORE INSERT ON publication_takedown_purge_requests
+                  FOR EACH ROW EXECUTE FUNCTION test_fail_publication_takedown_purge_request()
+              """);
+    }
+  }
+
+  private void dropFailingPublicationTakedownPurgeTrigger() throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        java.sql.Statement statement = connection.createStatement()) {
+      statement.execute(
+          "DROP TRIGGER IF EXISTS trg_test_fail_publication_takedown_purge_request "
+              + "ON publication_takedown_purge_requests");
+      statement.execute("DROP FUNCTION IF EXISTS test_fail_publication_takedown_purge_request()");
     }
   }
 

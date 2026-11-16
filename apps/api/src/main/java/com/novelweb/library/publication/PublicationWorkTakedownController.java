@@ -16,6 +16,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -24,7 +25,7 @@ import tools.jackson.core.JacksonException;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
-/** Revokes public scope access; external cache purge is explicitly outside this API slice. */
+/** Revokes public scope access and reports external purge delivery separately. */
 @RestController
 @RequestMapping("/api/v1/review/works")
 @Profile("postgres")
@@ -37,12 +38,77 @@ public class PublicationWorkTakedownController {
       Set.of("RIGHTS_WITHDRAWN", "REVIEW_INVALIDATED", "POLICY_CHANGED", "EMERGENCY_TAKEDOWN");
 
   private final PublicationWorkTakedownService takedownService;
+  private final PublicationTakedownPurgeService purgeService;
   private final ObjectMapper objectMapper;
 
   public PublicationWorkTakedownController(
-      PublicationWorkTakedownService takedownService, ObjectMapper objectMapper) {
+      PublicationWorkTakedownService takedownService,
+      PublicationTakedownPurgeService purgeService,
+      ObjectMapper objectMapper) {
     this.takedownService = takedownService;
+    this.purgeService = purgeService;
     this.objectMapper = objectMapper;
+  }
+
+  @GetMapping("/{workId}/takedown-purge-status")
+  public ResponseEntity<?> purgeStatus(
+      Authentication authentication, @PathVariable String workId, HttpServletRequest request) {
+    UUID correlationId = correlationId(request);
+    SessionService.SessionPrincipal principal = principal(authentication);
+    if (principal == null) {
+      return problem(
+          HttpStatus.UNAUTHORIZED,
+          "UNAUTHENTICATED",
+          "Sign in with an assigned reviewer or system administrator account.",
+          correlationId);
+    }
+    final UUID parsedWorkId;
+    try {
+      parsedWorkId = UUID.fromString(workId);
+    } catch (IllegalArgumentException exception) {
+      return problem(
+          HttpStatus.BAD_REQUEST,
+          "PUBLICATION_WORK_ID_INVALID",
+          "workId must be a UUID.",
+          correlationId);
+    }
+    try {
+      PublicationTakedownPurgeService.StatusResult result =
+          purgeService.status(principal.userId(), parsedWorkId);
+      return switch (result.outcome()) {
+        case AVAILABLE -> noStore(HttpStatus.OK).body(result.status());
+        case REVIEWER_REQUIRED ->
+            problem(
+                HttpStatus.FORBIDDEN,
+                "PUBLICATION_TAKEDOWN_ROLE_REQUIRED",
+                "An active publication reviewer or system administrator role is required.",
+                correlationId);
+        case POLICY_REQUIRED ->
+            problem(
+                HttpStatus.FORBIDDEN,
+                "POLICY_ACCEPTANCE_REQUIRED",
+                "Accept the current Terms and acknowledge the Privacy Notice first.",
+                correlationId);
+        case POLICY_NOT_CONFIGURED ->
+            problem(
+                HttpStatus.SERVICE_UNAVAILABLE,
+                "POLICY_NOT_CONFIGURED",
+                "Current required policy documents are not available.",
+                correlationId);
+        case NOT_FOUND ->
+            problem(
+                HttpStatus.NOT_FOUND,
+                "PUBLICATION_WORK_NOT_FOUND",
+                "The publication work does not have an available takedown status.",
+                correlationId);
+      };
+    } catch (IllegalStateException exception) {
+      return problem(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          "PUBLICATION_TAKEDOWN_STATUS_UNAVAILABLE",
+          "The publication purge status could not be loaded.",
+          correlationId);
+    }
   }
 
   @PostMapping("/{workId}/takedown")

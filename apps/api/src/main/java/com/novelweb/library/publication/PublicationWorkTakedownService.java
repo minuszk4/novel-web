@@ -26,10 +26,19 @@ public class PublicationWorkTakedownService {
 
   private final DataSource dataSource;
   private final PolicyService policyService;
+  private final PublicationPurgeTargetRegistry purgeTargetRegistry;
+  private final PublicationTakedownPurgeService purgeService;
 
-  public PublicationWorkTakedownService(DataSource dataSource, PolicyService policyService) {
+  public PublicationWorkTakedownService(
+      DataSource dataSource,
+      PolicyService policyService,
+      PublicationPurgeTargetRegistry purgeTargetRegistry,
+      PublicationTakedownPurgeService purgeService) {
     this.dataSource = Objects.requireNonNull(dataSource, "data source is required");
     this.policyService = Objects.requireNonNull(policyService, "policy service is required");
+    this.purgeTargetRegistry =
+        Objects.requireNonNull(purgeTargetRegistry, "purge target registry is required");
+    this.purgeService = Objects.requireNonNull(purgeService, "purge service is required");
   }
 
   public TakedownResult takeDown(
@@ -98,7 +107,9 @@ public class PublicationWorkTakedownService {
                 reasonCode,
                 keyDigest,
                 requestDigest,
-                revokedCount);
+                revokedCount,
+                purgeTargetRegistry.targetCodes().isEmpty() ? "NOT_CONFIGURED" : "REQUESTED");
+        purgeService.enqueue(connection, receipt.id(), workId, receipt.createdAt());
         connection.commit();
         return TakedownResult.created(receipt.publicReceipt());
       } catch (SQLException | RuntimeException exception) {
@@ -176,7 +187,8 @@ public class PublicationWorkTakedownService {
         connection.prepareStatement(
             """
                 SELECT id, work_id, actor_role_code, reason_code, request_sha256,
-                       revoked_approval_count, previous_visibility, current_visibility, created_at
+                       revoked_approval_count, previous_visibility, current_visibility,
+                       external_cache_purge_status, created_at
                   FROM publication_work_takedown_events
                  WHERE actor_user_id = ? AND idempotency_key_sha256 = ?
                 """)) {
@@ -254,7 +266,8 @@ public class PublicationWorkTakedownService {
       String reasonCode,
       byte[] keyDigest,
       byte[] requestDigest,
-      int revokedCount)
+      int revokedCount,
+      String purgeStatus)
       throws SQLException {
     try (PreparedStatement insert =
         connection.prepareStatement(
@@ -262,10 +275,11 @@ public class PublicationWorkTakedownService {
                 INSERT INTO publication_work_takedown_events (
                     id, work_id, actor_user_id, actor_role_code, reason_code,
                     idempotency_key_sha256, request_sha256, revoked_approval_count,
-                    previous_visibility)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    previous_visibility, external_cache_purge_status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 RETURNING id, work_id, actor_role_code, reason_code, request_sha256,
-                          revoked_approval_count, previous_visibility, current_visibility, created_at
+                          revoked_approval_count, previous_visibility, current_visibility,
+                          external_cache_purge_status, created_at
                 """)) {
       insert.setObject(1, UUID.randomUUID());
       insert.setObject(2, work.id());
@@ -276,6 +290,7 @@ public class PublicationWorkTakedownService {
       insert.setBytes(7, requestDigest);
       insert.setInt(8, revokedCount);
       insert.setString(9, work.visibility());
+      insert.setString(10, purgeStatus);
       try (ResultSet row = insert.executeQuery()) {
         if (!row.next()) throw new SQLException("Publication takedown event returned no receipt");
         return readReceipt(row);
@@ -293,6 +308,7 @@ public class PublicationWorkTakedownService {
         row.getInt("revoked_approval_count"),
         row.getString("previous_visibility"),
         row.getString("current_visibility"),
+        row.getString("external_cache_purge_status"),
         row.getObject("created_at", OffsetDateTime.class).toInstant());
   }
 
@@ -337,6 +353,7 @@ public class PublicationWorkTakedownService {
       int revokedApprovalCount,
       String previousVisibility,
       String currentVisibility,
+      String externalCachePurgeStatus,
       Instant createdAt) {
     private TakedownReceipt {
       requestSha256 = requestSha256.clone();
@@ -352,7 +369,7 @@ public class PublicationWorkTakedownService {
           id,
           workId,
           "ACCESS_REVOKED",
-          "NOT_CONFIGURED",
+          externalCachePurgeStatus,
           actorRoleCode,
           reasonCode,
           revokedApprovalCount,

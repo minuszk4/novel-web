@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 8.10.0
+  version: 9.0.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -2422,11 +2422,13 @@ paths:
         session-bound CSRF, a strict JSON reasonCode and a safe Idempotency-Key. The work is locked; every currently
         unrevoked publication scope approval is revoked and visibility is changed to private in the same PostgreSQL
         transaction. Exact retries with the same key and body return the same immutable receipt; reuse for another
-        command is 409. The receipt reports ACCESS_REVOKED and externalCachePurgeStatus NOT_CONFIGURED deliberately:
-        this API does not claim that an external CDN/cache purge completed. Current Reader, catalog, quote and unlock
-        requests recheck PostgreSQL authorization, but old external signed links or caches require a separate purge
-        integration before public release. Existing credit balances and entitlements are not changed and no refund
-        is issued. Every response is no-store. This endpoint revokes access; it is not a publish or release API.
+        command is 409. The receipt reports ACCESS_REVOKED and either NOT_CONFIGURED or REQUESTED for external purge.
+        A REQUESTED status is not a purge acknowledgment. The configured CDN, search-index, feed-cache and signed-link
+        targets are queued atomically with the takedown event; inspect the private status route and require every
+        required target to acknowledge before considering external purge complete. The worker is disabled by default.
+        Current Reader, catalog, quote and unlock requests recheck PostgreSQL authorization. Existing credit balances
+        and entitlements are not changed and no refund is issued. Every response is no-store. This endpoint revokes
+        access; it is not a publish or release API.
       security:
         - appSession: []
           csrfToken: []
@@ -2484,7 +2486,7 @@ paths:
                   eventId: {type: string, format: uuid}
                   workId: {type: string, format: uuid}
                   accessState: {type: string, const: ACCESS_REVOKED}
-                  externalCachePurgeStatus: {type: string, const: NOT_CONFIGURED}
+                  externalCachePurgeStatus: {type: string, enum: [NOT_CONFIGURED, REQUESTED]}
                   actorRoleCode: {type: string, enum: [publication_reviewer, system_admin]}
                   reasonCode: {type: string, enum: [RIGHTS_WITHDRAWN, REVIEW_INVALIDATED, POLICY_CHANGED, EMERGENCY_TAKEDOWN]}
                   revokedApprovalCount: {type: integer, minimum: 0}
@@ -2527,6 +2529,88 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+  /api/v1/review/works/{workId}/takedown-purge-status:
+    get:
+      operationId: getPublicationTakedownPurgeStatus
+      tags: [Publication review]
+      x-implementation-status: implemented-postgres-profile
+      summary: Read safe status for every external takedown purge target
+      description: >-
+        Requires an authenticated active publication_reviewer or system_admin and current Terms and Privacy acceptance.
+        Returns only target codes, delivery states, bounded attempt counts and allow-listed failure codes; it never
+        returns configured URLs, credentials, provider response bodies or story content. ACKNOWLEDGED is returned only
+        after every required configured target has acknowledged. NOT_CONFIGURED never means the external purge completed.
+        Every response is no-store. Public release remains blocked by publication approval/revocation controls.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - name: workId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Latest takedown status with one row per configured purge target.
+          headers:
+            Cache-Control:
+              schema: {type: string, const: no-store}
+            Pragma:
+              schema: {type: string, const: no-cache}
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [eventId, workId, status, requestedAt, targets]
+                properties:
+                  eventId: {type: string, format: uuid}
+                  workId: {type: string, format: uuid}
+                  status: {type: string, enum: [NOT_CONFIGURED, REQUESTED, IN_PROGRESS, ACKNOWLEDGED, FAILED]}
+                  requestedAt: {type: string, format: date-time}
+                  targets:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required: [targetCode, status, attemptCount, requestedAt]
+                      properties:
+                        targetCode: {type: string, enum: [CDN, SEARCH_INDEX, FEED_CACHE, SIGNED_LINKS]}
+                        status: {type: string, enum: [REQUESTED, IN_PROGRESS, ACKNOWLEDGED, FAILED]}
+                        attemptCount: {type: integer, minimum: 0, maximum: 8}
+                        lastSafeFailureCode:
+                          anyOf:
+                            - {type: string, enum: [REMOTE_REJECTED, TRANSPORT_FAILED, DELIVERY_INTERRUPTED, LEASE_EXPIRED, TARGET_NOT_CONFIGURED]}
+                            - {type: 'null'}
+                        requestedAt: {type: string, format: date-time}
+                        acknowledgedAt:
+                          anyOf:
+                            - {type: string, format: date-time}
+                            - {type: 'null'}
+        '400':
+          description: The work ID is invalid.
+          content:
+            application/problem+json:
+              schema: {$ref: '#/components/schemas/Problem'}
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          description: The actor lacks an active reviewer/admin role or current Terms/Privacy acceptance.
+          content:
+            application/problem+json:
+              schema: {$ref: '#/components/schemas/Problem'}
+        '404':
+          description: Work is unavailable or has no takedown event.
+          content:
+            application/problem+json:
+              schema: {$ref: '#/components/schemas/Problem'}
+        '503':
+          description: Required policy documents or purge status storage is unavailable.
+          content:
+            application/problem+json:
+              schema: {$ref: '#/components/schemas/Problem'}
   /api/v1/authoring/manuscripts/{workId}/publication/rights-policy/acceptance:
     post:
       operationId: acceptPublicationRightsPolicyForManuscript

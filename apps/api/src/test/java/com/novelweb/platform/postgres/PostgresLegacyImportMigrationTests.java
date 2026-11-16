@@ -31,7 +31,7 @@ class PostgresLegacyImportMigrationTests {
 
   private static final int LEGACY_CHANGESET_COUNT = 55;
 
-  private static final int CURRENT_CHANGESET_COUNT = 149;
+  private static final int CURRENT_CHANGESET_COUNT = 150;
 
   private static final int UPGRADE_CHANGESET_COUNT =
       CURRENT_CHANGESET_COUNT - LEGACY_CHANGESET_COUNT;
@@ -75,6 +75,8 @@ class PostgresLegacyImportMigrationTests {
         assertFalse(tableExists(fixtureConnection, "publication_rights_policy_documents"));
         assertFalse(tableExists(fixtureConnection, "publication_rights_policy_acceptances"));
         assertFalse(tableExists(fixtureConnection, "publication_request_rate_limits"));
+        assertFalse(tableExists(fixtureConnection, "publication_takedown_purge_requests"));
+        assertFalse(tableExists(fixtureConnection, "publication_takedown_purge_attempts"));
         assertFalse(
             tableExists(fixtureConnection, "publication_rights_policy_acceptance_idempotency"));
         assertFalse(tableExists(fixtureConnection, "publication_scope_access_approvals"));
@@ -96,6 +98,8 @@ class PostgresLegacyImportMigrationTests {
         assertTrue(tableExists(fixtureConnection, "publication_rights_policy_documents"));
         assertTrue(tableExists(fixtureConnection, "publication_rights_policy_acceptances"));
         assertTrue(tableExists(fixtureConnection, "publication_request_rate_limits"));
+        assertTrue(tableExists(fixtureConnection, "publication_takedown_purge_requests"));
+        assertTrue(tableExists(fixtureConnection, "publication_takedown_purge_attempts"));
         assertTrue(
             tableExists(fixtureConnection, "publication_rights_policy_acceptance_idempotency"));
         assertTrue(tableExists(fixtureConnection, "publication_scope_access_approvals"));
