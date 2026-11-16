@@ -48,15 +48,22 @@ class SessionCsrfTokenServiceTests {
     assertFalse(service.matches(SESSION_TWO, token));
     assertFalse(service.matches(SESSION_ONE, "attacker-token"));
     assertFalse(service.matches("malformed-session", token));
+    assertNull(service.tokenFor(null));
+    assertFalse(service.matches(null, token));
+    assertFalse(service.matches(SESSION_ONE, null));
   }
 
   @Test
   void missingKeyFailsClosedWithoutIssuingOrAcceptingTokens() {
     SessionCsrfTokenService service = new SessionCsrfTokenService("");
+    SessionCsrfTokenService nullKeyService = new SessionCsrfTokenService(null);
 
     assertFalse(service.isConfigured());
     assertNull(service.tokenFor(SESSION_ONE));
     assertFalse(service.matches(SESSION_ONE, "A".repeat(43)));
+    assertFalse(nullKeyService.isConfigured());
+    assertNull(nullKeyService.tokenFor(SESSION_ONE));
+    assertFalse(nullKeyService.matches(SESSION_ONE, "A".repeat(43)));
   }
 
   @Test
@@ -64,5 +71,9 @@ class SessionCsrfTokenServiceTests {
     assertThrows(IllegalArgumentException.class, () -> new SessionCsrfTokenService("too-short"));
     String paddedKey = KEY + "=";
     assertThrows(IllegalArgumentException.class, () -> new SessionCsrfTokenService(paddedKey));
+    String nonCanonicalTrailingBits = KEY.substring(0, KEY.length() - 1) + "B";
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> new SessionCsrfTokenService(nonCanonicalTrailingBits));
   }
 }
