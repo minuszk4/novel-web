@@ -141,6 +141,11 @@ import tools.jackson.databind.ObjectMapper;
       "novel.security.csrf.hmac-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
       "novel.features.cultivation-enabled=true",
       "novel.features.commerce-sandbox-enabled=true",
+      "novel.features.public-catalog-enabled=true",
+      "novel.public-catalog.rate-limit.hmac-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "novel.public-catalog.trusted-proxies=127.0.0.1/32",
+      "novel.public-catalog.rate-limit.capacity=60",
+      "novel.public-catalog.rate-limit.refill-interval=1h",
       "novel.library.cursor.hmac-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
       "novel.payment.momo.test.enabled=true",
       "novel.payment.momo.test.environment=test",
@@ -15952,7 +15957,7 @@ class PostgresSchemaIntegrationTests {
   }
 
   @Test
-  void publicChapterUnlockQuotesServerPriceDebitsAtomicallyAndEnablesReaderContent()
+  void publicChapterUnlockTakedownRevokesAllPublicConsumersAndPreservesOwnerAccess()
       throws Exception {
     UUID authorId = createSessionTestUser("Chapter Unlock Author");
     UUID buyerId = createSessionTestUser("Chapter Unlock Buyer");
@@ -15995,6 +16000,8 @@ class PostgresSchemaIntegrationTests {
       publicationFixture =
           approveSyntheticPublicationScopes(
               authorId, work.id(), "PUBLIC_METADATA", "CHAPTER_TEXT", "COMMERCIAL_SALE");
+      addCurrentPolicyAcceptances(authorId);
+      addCurrentPolicyAcceptances(publicationFixture.reviewerId());
       addCurrentPolicyAcceptances(buyerId);
       addCurrentPolicyAcceptances(underfundedId);
       inCreditLedgerTransaction(
@@ -16005,9 +16012,28 @@ class PostgresSchemaIntegrationTests {
       jakarta.servlet.http.Cookie buyerCookie =
           new jakarta.servlet.http.Cookie("__Host-novel_session", buyerSession.cookieValue());
       String buyerCsrf = csrfTokenService.tokenFor(buyerSession.cookieValue());
+      SessionService.IssuedSession ownerSession = sessionService.create(authorId).orElseThrow();
+      jakarta.servlet.http.Cookie ownerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", ownerSession.cookieValue());
+      SessionService.IssuedSession reviewerSession =
+          sessionService.create(publicationFixture.reviewerId()).orElseThrow();
+      jakarta.servlet.http.Cookie reviewerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", reviewerSession.cookieValue());
+      String reviewerCsrf = csrfTokenService.tokenFor(reviewerSession.cookieValue());
       String unlockKey = "chapter-unlock-http-001";
       String staleKey = "chapter-unlock-stale-001";
       String underfundedKey = "chapter-unlock-empty-001";
+
+      MvcResult catalogBeforeTakedown =
+          mockMvc
+              .perform(
+                  get("/api/v1/catalog/works")
+                      .param("q", "Public Unlock Fixture")
+                      .param("limit", "10"))
+              .andReturn();
+      assertEquals(200, catalogBeforeTakedown.getResponse().getStatus());
+      assertTrue(
+          catalogBeforeTakedown.getResponse().getContentAsString().contains(work.id().toString()));
 
       MvcResult quote =
           mockMvc
@@ -16182,7 +16208,43 @@ class PostgresSchemaIntegrationTests {
       assertEquals(0, creditUnlockEntryCount(underfundedId));
       assertEquals(0, contentEntitlementCount(underfundedId));
 
-      revokeSyntheticPublicationScope(work.id(), publicationFixture, "CHAPTER_TEXT");
+      MvcResult historyBeforeTakedown =
+          mockMvc.perform(get("/api/v1/me/purchases").cookie(buyerCookie)).andReturn();
+      assertEquals(200, historyBeforeTakedown.getResponse().getStatus());
+      JsonNode historyBeforeTakedownBody =
+          objectMapper.readTree(historyBeforeTakedown.getResponse().getContentAsString());
+      assertEquals(1, historyBeforeTakedownBody.path("items").size());
+      assertEquals(
+          "READABLE",
+          historyBeforeTakedownBody.path("items").get(0).path("currentReadAccess").asText());
+
+      MvcResult takenDown =
+          mockMvc
+              .perform(
+                  post("/api/v1/review/works/{workId}/takedown", work.id())
+                      .cookie(reviewerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, reviewerCsrf)
+                      .header("Idempotency-Key", "cross-surface-takedown-0001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"reasonCode\":\"RIGHTS_WITHDRAWN\"}"))
+              .andReturn();
+      assertEquals(200, takenDown.getResponse().getStatus());
+      assertEquals("private", publicationWorkVisibility(work.id()));
+      assertFalse(publicationScopeIsCurrent(work.id(), "PUBLIC_METADATA"));
+      assertFalse(publicationScopeIsCurrent(work.id(), "CHAPTER_TEXT"));
+      assertFalse(publicationScopeIsCurrent(work.id(), "COMMERCIAL_SALE"));
+
+      MvcResult catalogAfterTakedown =
+          mockMvc
+              .perform(
+                  get("/api/v1/catalog/works")
+                      .param("q", "Public Unlock Fixture")
+                      .param("limit", "10"))
+              .andReturn();
+      assertEquals(200, catalogAfterTakedown.getResponse().getStatus());
+      assertFalse(
+          catalogAfterTakedown.getResponse().getContentAsString().contains(work.id().toString()));
+
       MvcResult revokedContent =
           mockMvc
               .perform(
@@ -16203,9 +16265,10 @@ class PostgresSchemaIntegrationTests {
               .andReturn();
       JsonNode revokedManifestBody =
           objectMapper.readTree(revokedManifest.getResponse().getContentAsString());
-      assertEquals(200, revokedManifest.getResponse().getStatus());
-      assertEquals(
-          "unavailable", revokedManifestBody.path("chapters").get(0).path("accessState").asText());
+      assertEquals(404, revokedManifest.getResponse().getStatus());
+      assertFalse(
+          revokedManifest.getResponse().getContentAsString().contains("purchased chapter body"));
+      assertEquals(0, revokedManifestBody.path("chapters").size());
       MvcResult revokedUnlock =
           mockMvc
               .perform(
@@ -16218,7 +16281,50 @@ class PostgresSchemaIntegrationTests {
               .andReturn();
       assertEquals(404, revokedUnlock.getResponse().getStatus());
       assertEquals(90, creditProjectedBalance(buyerId, "PAID"));
+      assertEquals(1, contentEntitlementCount(buyerId));
+
+      MvcResult historyAfterTakedown =
+          mockMvc.perform(get("/api/v1/me/purchases").cookie(buyerCookie)).andReturn();
+      assertEquals(200, historyAfterTakedown.getResponse().getStatus());
+      JsonNode historyAfterTakedownBody =
+          objectMapper.readTree(historyAfterTakedown.getResponse().getContentAsString());
+      assertEquals(1, historyAfterTakedownBody.path("items").size());
+      assertEquals(
+          "UNAVAILABLE",
+          historyAfterTakedownBody.path("items").get(0).path("currentReadAccess").asText());
+      assertEquals(90, creditProjectedBalance(buyerId, "PAID"));
+
+      MvcResult ownerManifestAfterTakedown =
+          mockMvc
+              .perform(get("/api/v1/works/{workId}/reader-manifest", work.id()).cookie(ownerCookie))
+              .andReturn();
+      assertEquals(200, ownerManifestAfterTakedown.getResponse().getStatus());
+      assertEquals(
+          "readable",
+          objectMapper
+              .readTree(ownerManifestAfterTakedown.getResponse().getContentAsString())
+              .path("chapters")
+              .get(0)
+              .path("accessState")
+              .asText());
+      MvcResult ownerContentAfterTakedown =
+          mockMvc
+              .perform(
+                  get("/api/v1/chapters/{chapterId}/content", firstChapter.id())
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(200, ownerContentAfterTakedown.getResponse().getStatus());
+      assertTrue(
+          ownerContentAfterTakedown
+              .getResponse()
+              .getContentAsString()
+              .contains("The purchased chapter body"));
     } finally {
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement delete =
+              connection.prepareStatement("DELETE FROM public_catalog_rate_limits")) {
+        delete.executeUpdate();
+      }
       deleteSessionTestUser(buyerId);
       deleteSessionTestUser(underfundedId);
       deleteLibraryTestData(authorId);
