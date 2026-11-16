@@ -2,7 +2,7 @@ import { defineConfig, devices } from '@playwright/test';
 
 export default defineConfig({
   testDir: './e2e',
-  testMatch: 'account-reader-performance.spec.ts',
+  testMatch: /(?:account-reader|library-search)-performance\.spec\.ts$/,
   fullyParallel: false,
   forbidOnly: true,
   workers: 1,
