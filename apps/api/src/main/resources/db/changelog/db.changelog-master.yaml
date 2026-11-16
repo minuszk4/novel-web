@@ -143,3 +143,6 @@ databaseChangeLog:
   - include:
       file: changes/048-publication-content-version-gates.sql
       relativeToChangelogFile: true
+  - include:
+      file: changes/049-publication-reviewer-decision-lock.sql
+      relativeToChangelogFile: true

@@ -24,6 +24,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
@@ -366,6 +367,157 @@ class PostgresPublicCatalogIntegrationTests {
   }
 
   @Test
+  void reviewerRevocationWinningTheLockPreventsConcurrentBackdatedApproval() throws Exception {
+    UUID workId =
+        createWork(
+            "Revocation wins", "Synthetic Author", "vi", "authored", "public", "active", true);
+    String snapshot = publicationSnapshot(workId, "PUBLIC_METADATA");
+    long approvalsBefore = publicationScopeApprovalCount(workId);
+    CompletableFuture<Integer> decisionBackendPid = new CompletableFuture<>();
+    var executor = Executors.newSingleThreadExecutor();
+
+    try (Connection revocationConnection = dataSource.getConnection()) {
+      revocationConnection.setAutoCommit(false);
+      try (PreparedStatement revoke =
+          revocationConnection.prepareStatement(
+              """
+                  UPDATE security_role_assignments
+                     SET revoked_by_user_id = ?, revoked_at = clock_timestamp(),
+                         revocation_reason_code = 'ACCESS_ENDED'
+                   WHERE user_id = ? AND role_code = 'publication_reviewer'
+                     AND revoked_at IS NULL
+                  """)) {
+        revoke.setObject(1, userId);
+        revoke.setObject(2, reviewerId);
+        assertEquals(1, revoke.executeUpdate());
+      }
+
+      Future<String> decision =
+          executor.submit(
+              () -> {
+                try (Connection connection = dataSource.getConnection()) {
+                  try (var pidQuery =
+                      connection.createStatement().executeQuery("SELECT pg_backend_pid()")) {
+                    if (!pidQuery.next())
+                      throw new SQLException("Decision backend PID is unavailable");
+                    decisionBackendPid.complete(pidQuery.getInt(1));
+                  }
+                  try {
+                    insertSyntheticScopeApproval(
+                        connection,
+                        workId,
+                        snapshot,
+                        Timestamp.from(Instant.now().minusSeconds(86_400)));
+                    return "INSERTED";
+                  } catch (SQLException exception) {
+                    return exception.getSQLState();
+                  }
+                } catch (SQLException exception) {
+                  decisionBackendPid.completeExceptionally(exception);
+                  return "CONNECTION_ERROR";
+                }
+              });
+
+      int decisionPid = decisionBackendPid.get(5, TimeUnit.SECONDS);
+      assertTrue(
+          awaitDatabaseLockWait(decisionPid, decision),
+          "Approval insert must wait on the reviewer assignment row locked by revocation");
+      revocationConnection.commit();
+      assertEquals("23514", decision.get(5, TimeUnit.SECONDS));
+      assertEquals(approvalsBefore, publicationScopeApprovalCount(workId));
+    } finally {
+      executor.shutdownNow();
+      assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
+    }
+
+    try (Connection connection = dataSource.getConnection()) {
+      SQLException backdatedDecision =
+          assertThrows(
+              SQLException.class,
+              () ->
+                  insertSyntheticScopeApproval(
+                      connection,
+                      workId,
+                      snapshot,
+                      Timestamp.from(Instant.now().minusSeconds(86_400))));
+      assertEquals("23514", backdatedDecision.getSQLState());
+    }
+  }
+
+  @Test
+  void decisionHoldingReviewerLockMustCommitBeforeRevocationCanSucceed() throws Exception {
+    UUID workId =
+        createWork("Decision wins", "Synthetic Author", "vi", "authored", "public", "active", true);
+    String snapshot = publicationSnapshot(workId, "PUBLIC_METADATA");
+    long approvalsBefore = publicationScopeApprovalCount(workId);
+    CompletableFuture<Integer> revocationBackendPid = new CompletableFuture<>();
+    var executor = Executors.newSingleThreadExecutor();
+
+    try (Connection decisionConnection = dataSource.getConnection()) {
+      decisionConnection.setAutoCommit(false);
+      insertSyntheticScopeApproval(
+          decisionConnection, workId, snapshot, Timestamp.from(Instant.now().minusSeconds(86_400)));
+
+      Future<String> revocation =
+          executor.submit(
+              () -> {
+                try (Connection connection = dataSource.getConnection()) {
+                  connection.setAutoCommit(false);
+                  try (var pidQuery =
+                      connection.createStatement().executeQuery("SELECT pg_backend_pid()")) {
+                    if (!pidQuery.next())
+                      throw new SQLException("Revocation backend PID is unavailable");
+                    revocationBackendPid.complete(pidQuery.getInt(1));
+                  }
+                  try (PreparedStatement revoke =
+                      connection.prepareStatement(
+                          """
+                              UPDATE security_role_assignments
+                                 SET revoked_by_user_id = ?, revoked_at = clock_timestamp(),
+                                     revocation_reason_code = 'ACCESS_ENDED'
+                               WHERE user_id = ? AND role_code = 'publication_reviewer'
+                                 AND revoked_at IS NULL
+                              """)) {
+                    revoke.setObject(1, userId);
+                    revoke.setObject(2, reviewerId);
+                    int affected = revoke.executeUpdate();
+                    connection.commit();
+                    return affected == 1 ? "REVOKED" : "NOT_REVOKED";
+                  }
+                } catch (SQLException exception) {
+                  revocationBackendPid.completeExceptionally(exception);
+                  return "SQL_" + exception.getSQLState();
+                }
+              });
+
+      int revocationPid = revocationBackendPid.get(5, TimeUnit.SECONDS);
+      assertTrue(
+          awaitDatabaseLockWait(revocationPid, revocation),
+          "Role revocation must wait until the in-flight approval transaction commits");
+      assertFalse(revocation.isDone());
+      decisionConnection.commit();
+      assertEquals("REVOKED", revocation.get(5, TimeUnit.SECONDS));
+      assertEquals(approvalsBefore + 1, publicationScopeApprovalCount(workId));
+    } finally {
+      executor.shutdownNow();
+      assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
+    }
+
+    try (Connection connection = dataSource.getConnection()) {
+      SQLException laterDecision =
+          assertThrows(
+              SQLException.class,
+              () ->
+                  insertSyntheticScopeApproval(
+                      connection,
+                      workId,
+                      snapshot,
+                      Timestamp.from(Instant.now().minusSeconds(86_400))));
+      assertEquals("23514", laterDecision.getSQLState());
+    }
+  }
+
+  @Test
   void rateLimitsSearchAndCursorReadsPerTrustedClientAddress() throws Exception {
     String clientAddress = testClientAddress();
     String path = "/api/v1/catalog/works?q=rate-limit-sentinel&limit=1";
@@ -662,16 +814,7 @@ class PostgresPublicCatalogIntegrationTests {
 
   private void insertSyntheticPublicationApproval(Connection connection, UUID workId)
       throws SQLException {
-    String snapshot;
-    try (PreparedStatement select =
-        connection.prepareStatement(
-            "SELECT publication_work_scope_snapshot(?, 'PUBLIC_METADATA')::text")) {
-      select.setObject(1, workId);
-      try (var row = select.executeQuery()) {
-        if (!row.next()) throw new SQLException("Synthetic publication snapshot returned no row");
-        snapshot = row.getString(1);
-      }
-    }
+    String snapshot = publicationSnapshot(connection, workId, "PUBLIC_METADATA");
     try (PreparedStatement insert =
         connection.prepareStatement(
             """
@@ -688,6 +831,79 @@ class PostgresPublicCatalogIntegrationTests {
       insert.setObject(6, reviewerId);
       assertEquals(1, insert.executeUpdate());
     }
+  }
+
+  private String publicationSnapshot(UUID workId, String scopeCode) throws SQLException {
+    try (Connection connection = dataSource.getConnection()) {
+      return publicationSnapshot(connection, workId, scopeCode);
+    }
+  }
+
+  private String publicationSnapshot(Connection connection, UUID workId, String scopeCode)
+      throws SQLException {
+    try (PreparedStatement select =
+        connection.prepareStatement("SELECT publication_work_scope_snapshot(?, ?)::text")) {
+      select.setObject(1, workId);
+      select.setString(2, scopeCode);
+      try (var row = select.executeQuery()) {
+        if (!row.next()) throw new SQLException("Synthetic publication snapshot returned no row");
+        return row.getString(1);
+      }
+    }
+  }
+
+  private void insertSyntheticScopeApproval(
+      Connection connection, UUID workId, String snapshot, Timestamp requestedApprovalTime)
+      throws SQLException {
+    try (PreparedStatement insert =
+        connection.prepareStatement(
+            """
+                INSERT INTO publication_scope_access_approvals (
+                    id, work_id, scope_code, approved_snapshot, policy_version, policy_sha256,
+                    approved_by_user_id, reason_code, approved_at)
+                VALUES (?, ?, 'PUBLIC_METADATA', CAST(? AS JSONB), ?, ?, ?, 'RIGHTS_REVIEWED', ?)
+                """)) {
+      insert.setObject(1, UUID.randomUUID());
+      insert.setObject(2, workId);
+      insert.setString(3, snapshot);
+      insert.setString(4, publicationPolicyVersion);
+      insert.setBytes(5, publicationPolicySha256);
+      insert.setObject(6, reviewerId);
+      insert.setTimestamp(7, requestedApprovalTime);
+      assertEquals(1, insert.executeUpdate());
+    }
+  }
+
+  private long publicationScopeApprovalCount(UUID workId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT count(*) FROM publication_scope_access_approvals "
+                    + "WHERE work_id = ? AND scope_code = 'PUBLIC_METADATA'")) {
+      select.setObject(1, workId);
+      try (var row = select.executeQuery()) {
+        if (!row.next()) throw new SQLException("Publication approval count returned no row");
+        return row.getLong(1);
+      }
+    }
+  }
+
+  private boolean awaitDatabaseLockWait(int backendPid, Future<?> operation) throws Exception {
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+    while (System.nanoTime() < deadline) {
+      if (operation.isDone()) return false;
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement select =
+              connection.prepareStatement(
+                  "SELECT wait_event_type = 'Lock' FROM pg_stat_activity WHERE pid = ?")) {
+        select.setInt(1, backendPid);
+        try (var row = select.executeQuery()) {
+          if (row.next() && row.getBoolean(1)) return true;
+        }
+      }
+      Thread.sleep(20);
+    }
+    return false;
   }
 
   private void revokeSyntheticPublicationApproval(UUID workId) throws SQLException {
