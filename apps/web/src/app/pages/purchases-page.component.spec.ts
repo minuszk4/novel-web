@@ -38,6 +38,7 @@ const activeStatus: ApiSystemStatus = {
     importProcessingEnabled: false,
     cultivationEnabled: false,
     commerceSandboxEnabled: true,
+    publicationReleaseEnabled: false,
     translationFakePreviewEnabled: false,
   },
 };

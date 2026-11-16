@@ -21,6 +21,7 @@ public class SystemStatusController {
   private final boolean momoTestEnabled;
   private final boolean commerceSandboxEnabled;
   private final boolean publicCatalogEnabled;
+  private final boolean publicationReleaseEnabled;
   private final boolean translationFakePreviewEnabled;
 
   public SystemStatusController(
@@ -47,6 +48,10 @@ public class SystemStatusController {
                 "novel.features.public-catalog-enabled", Boolean.class, false)
             && catalogRateLimiter != null
             && catalogRateLimiter.isConfigured();
+    this.publicationReleaseEnabled =
+        postgresProfile
+            && springEnvironment.getProperty(
+                "novel.publication.release-enabled", Boolean.class, false);
     this.translationFakePreviewEnabled =
         springEnvironment.acceptsProfiles(Profiles.of("postgres & translation-fake"))
             && fakeTranslationEnabled
@@ -66,6 +71,7 @@ public class SystemStatusController {
             cultivationEnabled,
             commerceSandboxEnabled,
             publicCatalogEnabled,
+            publicationReleaseEnabled,
             translationFakePreviewEnabled));
   }
 }

@@ -145,6 +145,41 @@ class SystemStatusControllerTests {
     assertFalse(rateLimitKeyMissing.features().publicCatalogEnabled());
   }
 
+  @Test
+  void publicationReleaseCapabilityRequiresPostgresAndExplicitOptIn() {
+    ApiSystemStatus enabled = controllerWithRelease(true, "postgres").status();
+    ApiSystemStatus optInMissing = controllerWithRelease(false, "postgres").status();
+    ApiSystemStatus profileMissing = controllerWithRelease(true).status();
+
+    assertTrue(enabled.features().publicationReleaseEnabled());
+    assertFalse(optInMissing.features().publicationReleaseEnabled());
+    assertFalse(profileMissing.features().publicationReleaseEnabled());
+  }
+
+  private static SystemStatusController controllerWithRelease(
+      boolean publicationReleaseRequested, String... activeProfiles) {
+    MockEnvironment environment = new MockEnvironment();
+    environment.setActiveProfiles(activeProfiles);
+    environment.setProperty(
+        "novel.publication.release-enabled", Boolean.toString(publicationReleaseRequested));
+    StaticListableBeanFactory beanFactory = new StaticListableBeanFactory();
+    ObjectProvider<MomoTestGatewaySettings> momoSettings =
+        beanFactory.getBeanProvider(MomoTestGatewaySettings.class);
+    ObjectProvider<PublicCatalogRateLimiter> catalogRateLimiter =
+        beanFactory.getBeanProvider(PublicCatalogRateLimiter.class);
+    return new SystemStatusController(
+        "test",
+        new GoogleSignInConfiguration("", "", ""),
+        false,
+        false,
+        false,
+        false,
+        false,
+        momoSettings,
+        catalogRateLimiter,
+        environment);
+  }
+
   private static SystemStatusController controller(
       GoogleSignInConfiguration googleConfiguration,
       boolean cultivation,

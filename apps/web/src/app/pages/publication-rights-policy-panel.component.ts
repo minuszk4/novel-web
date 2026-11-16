@@ -2,9 +2,11 @@ import {
   afterNextRender,
   Component,
   ElementRef,
+  EventEmitter,
   Injector,
   Input,
   OnChanges,
+  Output,
   SimpleChanges,
   ViewChild,
   inject,
@@ -47,6 +49,12 @@ export class PublicationRightsPolicyPanelComponent implements OnChanges {
   @Input()
   workTitle = '';
 
+  @Input()
+  openRequest = 0;
+
+  @Output()
+  policyAccepted = new EventEmitter<void>();
+
   protected readonly state = signal<PolicyPanelState>('closed');
   protected readonly policy = signal<PublicationRightsPolicy | null>(null);
   protected readonly confirmed = signal(false);
@@ -63,6 +71,9 @@ export class PublicationRightsPolicyPanelComponent implements OnChanges {
 
   ngOnChanges(changes: SimpleChanges): void {
     if (changes['workId']) this.reset();
+    if (changes['openRequest'] && !changes['openRequest'].firstChange && this.openRequest > 0) {
+      void this.loadPolicy();
+    }
   }
 
   protected get isBusy(): boolean {
@@ -161,6 +172,7 @@ export class PublicationRightsPolicyPanelComponent implements OnChanges {
       this.policy.set({ ...current, acceptedAt: receipt.acceptedAt });
       this.confirmed.set(false);
       this.state.set('accepted');
+      this.policyAccepted.emit();
       this.announcement.set(
         `Đã ghi nhận xác nhận policy phiên bản ${receipt.policyVersion} cho bản thảo này lúc ${this.formatEffectiveDate(receipt.acceptedAt)}. Xác nhận này không xác minh quyền tác giả hoặc giấy phép.`,
       );

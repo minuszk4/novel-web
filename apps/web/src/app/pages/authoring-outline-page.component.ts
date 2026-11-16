@@ -20,6 +20,7 @@ import {
 } from '../core/authoring-api.service';
 import { PolicyOnboardingService } from '../core/policy-onboarding.service';
 import { PublicationRightsPolicyPanelComponent } from './publication-rights-policy-panel.component';
+import { PublicationReadinessPanelComponent } from './publication-readiness-panel.component';
 
 type OutlinePageState = 'loading' | 'ready' | 'error';
 
@@ -37,7 +38,7 @@ type ManuscriptMetadataFieldErrors = Partial<Record<keyof UpdatePrivateManuscrip
 
 @Component({
   selector: 'app-authoring-outline-page',
-  imports: [RouterLink, PublicationRightsPolicyPanelComponent],
+  imports: [RouterLink, PublicationRightsPolicyPanelComponent, PublicationReadinessPanelComponent],
   templateUrl: './authoring-outline-page.component.html',
   styleUrl: './authoring-outline-page.component.css',
 })
@@ -74,6 +75,8 @@ export class AuthoringOutlinePageComponent {
   protected readonly chapterDeleteAnnouncement = signal('');
   protected readonly chapterDeleteNotice = signal<string | null>(null);
   protected readonly requestedWorkIdView = signal<string | null>(null);
+  protected readonly publicationPolicyOpenRequest = signal(0);
+  protected readonly readinessRefreshRequest = signal(0);
 
   private readonly route = inject(ActivatedRoute);
   private readonly api = inject(AuthoringApiService);
@@ -113,6 +116,8 @@ export class AuthoringOutlinePageComponent {
     this.route.paramMap.pipe(takeUntilDestroyed(this.destroyRef)).subscribe((params) => {
       this.requestedWorkId = params.get('workId');
       this.requestedWorkIdView.set(this.requestedWorkId);
+      this.publicationPolicyOpenRequest.set(0);
+      this.readinessRefreshRequest.set(0);
       this.manuscript.set(null);
       this.isMetadataFormOpen.set(false);
       this.metadataDraft.set(null);
@@ -146,6 +151,14 @@ export class AuthoringOutlinePageComponent {
 
   protected get returnTo(): string {
     return this.outlinePath(this.requestedWorkId);
+  }
+
+  protected openPublicationPolicy(): void {
+    this.publicationPolicyOpenRequest.update((count) => count + 1);
+  }
+
+  protected refreshPublicationReadiness(): void {
+    this.readinessRefreshRequest.update((count) => count + 1);
   }
 
   protected get chapterTitleLength(): number {
@@ -461,6 +474,7 @@ export class AuthoringOutlinePageComponent {
       if (manuscript) {
         this.manuscript.set({ ...manuscript, chapterCount: manuscript.chapterCount + 1 });
       }
+      this.refreshPublicationReadiness();
       this.createAnnouncement.set(
         `Đã thêm Chương ${chapter.ordinal}: ${chapter.title}. Chương hiện chưa có nội dung.`,
       );
@@ -555,6 +569,7 @@ export class AuthoringOutlinePageComponent {
       const chapterCount = Math.max(0, previousCount - 1);
       const manuscript = this.manuscript();
       if (manuscript) this.manuscript.set({ ...manuscript, chapterCount });
+      this.refreshPublicationReadiness();
       this.chapterDeleteFailure.set(null);
       this.chapterDeleteAnnouncement.set(
         `Đã xóa chương trống “${chapter.title}”. Dàn ý còn ${chapterCount} chương.`,
@@ -679,6 +694,7 @@ export class AuthoringOutlinePageComponent {
       const updated = await this.api.updatePrivateManuscript(workId, attempt.values, attempt.etag);
       if (token !== this.loadToken) return;
       this.manuscript.set(updated);
+      this.refreshPublicationReadiness();
       this.metadataDraft.set(null);
       this.metadataFieldErrors.set({});
       this.metadataConflict.set(null);

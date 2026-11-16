@@ -1,0 +1,210 @@
+:host {
+  display: block;
+}
+
+.publication-readiness-panel {
+  min-width: 0;
+  margin: 18px 0;
+  padding: 20px;
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow-soft);
+}
+
+.publication-readiness-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.publication-readiness-heading h2,
+.publication-readiness-confirm h3 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.publication-readiness-heading .eyebrow {
+  margin: 0 0 5px;
+}
+
+.publication-readiness-heading p:last-child,
+.publication-readiness-confirm > p {
+  max-width: 690px;
+  margin: 7px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.publication-readiness-trigger,
+.publication-readiness-actions > .button,
+.publication-readiness-publish {
+  min-height: 46px;
+}
+
+.publication-readiness-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 18px 0;
+}
+
+.publication-readiness-summary > div,
+.publication-readiness-scopes > li {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  background: var(--surface-soft);
+}
+
+.publication-readiness-summary dt {
+  margin-bottom: 5px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.publication-readiness-summary dd {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.publication-readiness-subheading {
+  margin: 18px 0 8px;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.publication-readiness-scopes,
+.publication-readiness-blockers {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.publication-readiness-scopes > li {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.publication-readiness-scopes strong {
+  text-align: right;
+}
+
+.publication-readiness-blockers > li {
+  padding: 10px 12px;
+  border-left: 3px solid var(--warning, #a66b00);
+  border-radius: 4px;
+  color: var(--text);
+  background: var(--surface-soft);
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.publication-readiness-note,
+.publication-readiness-status,
+.publication-readiness-success,
+.publication-readiness-error > p,
+.publication-readiness-error-copy {
+  margin: 12px 0 0;
+  font-size: 13px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.publication-readiness-status {
+  color: var(--muted);
+}
+
+.publication-readiness-error {
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid #e5c8ca;
+  border-radius: 8px;
+  color: var(--error);
+  background: #fff8f8;
+}
+
+.publication-readiness-error > .button {
+  margin-top: 10px;
+  min-height: 44px;
+}
+
+.publication-readiness-success {
+  padding: 12px;
+  border: 1px solid #cfe5d6;
+  border-radius: 8px;
+  color: #1b5b31;
+  background: var(--success-soft);
+}
+
+.publication-readiness-confirm {
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid #d8c9a4;
+  border-radius: 9px;
+  background: #fffdf7;
+}
+
+.publication-readiness-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.publication-readiness-confirm h3:focus-visible {
+  border-radius: 3px;
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 4px;
+}
+
+@media (max-width: 680px) {
+  .publication-readiness-panel {
+    padding: 16px;
+  }
+
+  .publication-readiness-heading {
+    display: grid;
+  }
+
+  .publication-readiness-trigger {
+    width: 100%;
+  }
+
+  .publication-readiness-summary {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .publication-readiness-scopes > li {
+    display: grid;
+    gap: 3px;
+  }
+
+  .publication-readiness-scopes strong {
+    text-align: left;
+  }
+
+  .publication-readiness-actions > .button {
+    flex: 1 1 100%;
+    white-space: normal;
+  }
+}

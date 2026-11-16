@@ -20,6 +20,7 @@ const fakeStatus = (enabled: boolean) => ({
     importProcessingEnabled: false,
     cultivationEnabled: false,
     commerceSandboxEnabled: false,
+    publicationReleaseEnabled: false,
     translationFakePreviewEnabled: enabled,
   },
 });

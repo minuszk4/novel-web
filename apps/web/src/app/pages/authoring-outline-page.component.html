@@ -244,7 +244,17 @@
     </aside>
 
     @if (manuscript(); as details) {
-      <app-publication-rights-policy-panel [workId]="details.id" [workTitle]="details.title" />
+      <app-publication-rights-policy-panel
+        [workId]="details.id"
+        [workTitle]="details.title"
+        [openRequest]="publicationPolicyOpenRequest()"
+        (policyAccepted)="refreshPublicationReadiness()"
+      />
+      <app-publication-readiness-panel
+        [workId]="details.id"
+        [refreshRequest]="readinessRefreshRequest()"
+        (requestPolicyReview)="openPublicationPolicy()"
+      />
     }
 
     @if (createAnnouncement()) {

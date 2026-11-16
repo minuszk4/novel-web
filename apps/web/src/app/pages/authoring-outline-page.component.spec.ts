@@ -13,6 +13,7 @@ import {
 } from '../core/authoring-api.service';
 import { PolicyOnboardingService } from '../core/policy-onboarding.service';
 import { AuthoringOutlinePageComponent } from './authoring-outline-page.component';
+import { SystemStatusService } from '../core/system-status.service';
 
 const workId = '11111111-1111-4111-8111-111111111111';
 const firstChapterId = '22222222-2222-4222-8222-222222222222';
@@ -122,6 +123,7 @@ describe('AuthoringOutlinePageComponent', () => {
         },
         { provide: AuthoringApiService, useValue: api },
         { provide: PolicyOnboardingService, useValue: { status: policyStatus } },
+        { provide: SystemStatusService, useValue: { status: signal(null) } },
       ],
     });
   });

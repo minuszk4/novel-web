@@ -55,6 +55,52 @@ export interface PublicationRightsPolicyAcceptance {
   acceptedAt: string;
 }
 
+export type PublicationRequestState =
+  | 'PENDING_REVIEW'
+  | 'NEEDS_INFORMATION'
+  | 'APPROVED_UNPUBLISHED'
+  | 'REJECTED'
+  | 'SUPERSEDED'
+  | 'WITHDRAWN';
+
+export type PublicationScopeCode = 'PUBLIC_METADATA' | 'CHAPTER_TEXT' | 'COMMERCIAL_SALE';
+
+export interface PublicationScopeReadiness {
+  scopeCode: PublicationScopeCode;
+  ready: boolean;
+  snapshotEtag: string;
+}
+
+export type PublicationReadinessBlocker =
+  | 'PUBLICATION_RIGHTS_POLICY_NOT_CONFIGURED'
+  | 'PUBLICATION_RIGHTS_POLICY_NOT_ACCEPTED'
+  | 'READY_CHAPTER_REQUIRED'
+  | 'PUBLICATION_REQUEST_ALREADY_PENDING';
+
+export interface PublicationReadiness {
+  workId: string;
+  canSubmit: boolean;
+  publicationRightsPolicyAvailable: boolean;
+  publicationRightsPolicyVersion: string | null;
+  publicationRightsPolicyEffectiveAt: string | null;
+  publicationRightsPolicyAcceptedAt: string | null;
+  publicationContentVersion: number;
+  readyChapterCount: number;
+  currentRequestState: PublicationRequestState | null;
+  snapshotEtag: string;
+  scopes: PublicationScopeReadiness[];
+  blockerCodes: PublicationReadinessBlocker[];
+}
+
+export interface PublicationReleaseReceipt {
+  eventId: string;
+  workId: string;
+  requestId: string;
+  state: 'PUBLISHED';
+  publishedAt: string;
+  publicationContentVersion: number;
+}
+
 export interface PrivateManuscriptListPage {
   items: PrivateManuscriptListItem[];
   nextCursor: string | null;
@@ -135,6 +181,8 @@ const idempotencyKeyPattern = /^[A-Za-z0-9._~-]{16,128}$/;
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const cursorPattern = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
 const draftEtagPattern = /^"draft-(0|[1-9][0-9]*)"$/;
+const publicationReadinessEtagPattern = /^"publication-snapshot-[a-f0-9]{64}"$/;
+const publicationScopeEtagPattern = /^"publication-scope-[a-f0-9]{64}"$/;
 const draftAnchorPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;
 const draftFormats = new Set<PrivateDraftSourceFormat>([
   'plain_text',
@@ -314,6 +362,70 @@ export class AuthoringApiService {
         throw invalidPublicationRightsAcceptanceResponse();
       }
       return parsePublicationRightsPolicyAcceptance(response.body, policyVersion, policySha256);
+    } catch (error) {
+      throw toAuthoringApiError(error);
+    }
+  }
+
+  async getPublicationReadiness(workId: string): Promise<PublicationReadiness> {
+    if (!isUuid(workId)) throw new AuthoringApiError(400, 'INVALID_AUTHORING_QUERY');
+
+    try {
+      const response = await firstValueFrom(
+        this.http
+          .get<unknown>(`${manuscriptsUrl}/${workId}/publication/readiness`, {
+            observe: 'response',
+          })
+          .pipe(timeout(requestTimeoutMs)),
+      );
+      if (
+        response.status !== 200 ||
+        response.headers.get('Cache-Control') !== 'no-store' ||
+        response.headers.get('Pragma') !== 'no-cache'
+      ) {
+        throw invalidPublicationReadinessResponse();
+      }
+      return parsePublicationReadiness(response.body, workId, response.headers.get('ETag'));
+    } catch (error) {
+      throw toAuthoringApiError(error);
+    }
+  }
+
+  async publishManuscriptNow(
+    workId: string,
+    readinessEtag: string,
+    idempotencyKey: string,
+  ): Promise<PublicationReleaseReceipt> {
+    if (
+      !isUuid(workId) ||
+      !isPublicationReadinessEtag(readinessEtag) ||
+      !idempotencyKeyPattern.test(idempotencyKey)
+    ) {
+      throw new AuthoringApiError(400, 'INVALID_PUBLICATION_ACTION');
+    }
+
+    try {
+      const headers = (await this.csrfHeaders())
+        .set('Content-Type', 'application/json')
+        .set('If-Match', readinessEtag)
+        .set('Idempotency-Key', idempotencyKey);
+      const response = await firstValueFrom(
+        this.http
+          .post<unknown>(
+            `${manuscriptsUrl}/${workId}/publication-actions`,
+            { actionCode: 'PUBLISH_NOW' },
+            { headers, observe: 'response' },
+          )
+          .pipe(timeout(requestTimeoutMs)),
+      );
+      if (
+        (response.status !== 201 && response.status !== 200) ||
+        response.headers.get('Cache-Control') !== 'no-store' ||
+        response.headers.get('Pragma') !== 'no-cache'
+      ) {
+        throw invalidPublicationReleaseResponse();
+      }
+      return parsePublicationReleaseReceipt(response.body, workId);
     } catch (error) {
       throw toAuthoringApiError(error);
     }
@@ -727,6 +839,117 @@ function parsePublicationRightsPolicyAcceptance(
   return value as unknown as PublicationRightsPolicyAcceptance;
 }
 
+function parsePublicationReadiness(
+  value: unknown,
+  expectedWorkId: string,
+  etag: string | null,
+): PublicationReadiness {
+  if (
+    !isRecord(value) ||
+    hasUnexpectedFields(value, [
+      'workId',
+      'canSubmit',
+      'publicationRightsPolicyAvailable',
+      'publicationRightsPolicyVersion',
+      'publicationRightsPolicyEffectiveAt',
+      'publicationRightsPolicyAcceptedAt',
+      'publicationContentVersion',
+      'readyChapterCount',
+      'currentRequestState',
+      'snapshotEtag',
+      'scopes',
+      'blockerCodes',
+    ]) ||
+    value['workId'] !== expectedWorkId ||
+    typeof value['canSubmit'] !== 'boolean' ||
+    typeof value['publicationRightsPolicyAvailable'] !== 'boolean' ||
+    !isNullablePublicationRightsPolicyVersion(value['publicationRightsPolicyVersion']) ||
+    !isNullableInstant(value['publicationRightsPolicyEffectiveAt']) ||
+    !isNullableInstant(value['publicationRightsPolicyAcceptedAt']) ||
+    !Number.isSafeInteger(value['publicationContentVersion']) ||
+    (value['publicationContentVersion'] as number) < 1 ||
+    !isNullablePublicationRequestState(value['currentRequestState']) ||
+    !isPublicationReadinessEtag(value['snapshotEtag']) ||
+    !isPublicationReadinessEtag(etag) ||
+    etag !== value['snapshotEtag'] ||
+    !Array.isArray(value['scopes']) ||
+    value['scopes'].length !== 3 ||
+    !Array.isArray(value['blockerCodes']) ||
+    value['blockerCodes'].length > 4 ||
+    value['blockerCodes'].some((code) => !isPublicationReadinessBlocker(code)) ||
+    new Set(value['blockerCodes']).size !== value['blockerCodes'].length ||
+    value['canSubmit'] !== (value['blockerCodes'].length === 0) ||
+    value['publicationRightsPolicyAvailable'] !==
+      (value['publicationRightsPolicyVersion'] !== null) ||
+    (!value['publicationRightsPolicyAvailable'] &&
+      (value['publicationRightsPolicyEffectiveAt'] !== null ||
+        value['publicationRightsPolicyAcceptedAt'] !== null)) ||
+    (!value['publicationRightsPolicyAvailable'] &&
+      value['blockerCodes'].includes('PUBLICATION_RIGHTS_POLICY_NOT_CONFIGURED')) ||
+    (value['publicationRightsPolicyAvailable'] &&
+      value['blockerCodes'].includes('PUBLICATION_RIGHTS_POLICY_NOT_CONFIGURED'))
+  ) {
+    throw invalidPublicationReadinessResponse();
+  }
+
+  const parsedScopes = value['scopes'].map(parsePublicationScopeReadiness);
+  const scopes = parsedScopes.filter((scope): scope is PublicationScopeReadiness => scope !== null);
+  const requiredScopes: PublicationScopeCode[] = [
+    'PUBLIC_METADATA',
+    'CHAPTER_TEXT',
+    'COMMERCIAL_SALE',
+  ];
+  if (
+    scopes.length !== parsedScopes.length ||
+    new Set(scopes.map((scope) => scope?.scopeCode)).size !== requiredScopes.length ||
+    requiredScopes.some((scopeCode) => !scopes.some((scope) => scope?.scopeCode === scopeCode))
+  ) {
+    throw invalidPublicationReadinessResponse();
+  }
+
+  return { ...(value as unknown as PublicationReadiness), scopes };
+}
+
+function parsePublicationScopeReadiness(value: unknown): PublicationScopeReadiness | null {
+  if (
+    !isRecord(value) ||
+    hasUnexpectedFields(value, ['scopeCode', 'ready', 'snapshotEtag']) ||
+    !isPublicationScopeCode(value['scopeCode']) ||
+    typeof value['ready'] !== 'boolean' ||
+    !isPublicationScopeEtag(value['snapshotEtag'])
+  ) {
+    return null;
+  }
+  return value as unknown as PublicationScopeReadiness;
+}
+
+function parsePublicationReleaseReceipt(
+  value: unknown,
+  expectedWorkId: string,
+): PublicationReleaseReceipt {
+  if (
+    !isRecord(value) ||
+    hasUnexpectedFields(value, [
+      'eventId',
+      'workId',
+      'requestId',
+      'state',
+      'publishedAt',
+      'publicationContentVersion',
+    ]) ||
+    !isUuid(value['eventId']) ||
+    value['workId'] !== expectedWorkId ||
+    !isUuid(value['requestId']) ||
+    value['state'] !== 'PUBLISHED' ||
+    !isInstant(value['publishedAt']) ||
+    !Number.isSafeInteger(value['publicationContentVersion']) ||
+    (value['publicationContentVersion'] as number) < 1
+  ) {
+    throw invalidPublicationReleaseResponse();
+  }
+  return value as unknown as PublicationReleaseReceipt;
+}
+
 function parseOutlineItem(value: unknown): PrivateChapterOutlineItem {
   if (
     !isRecord(value) ||
@@ -953,6 +1176,49 @@ function isPublicationRightsPolicyVersion(value: unknown): value is string {
   return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value);
 }
 
+function isNullablePublicationRightsPolicyVersion(value: unknown): value is string | null {
+  return value === null || isPublicationRightsPolicyVersion(value);
+}
+
+function isNullableInstant(value: unknown): value is string | null {
+  return value === null || isInstant(value);
+}
+
+function isPublicationReadinessEtag(value: unknown): value is string {
+  return typeof value === 'string' && publicationReadinessEtagPattern.test(value);
+}
+
+function isPublicationScopeEtag(value: unknown): value is string {
+  return typeof value === 'string' && publicationScopeEtagPattern.test(value);
+}
+
+function isNullablePublicationRequestState(
+  value: unknown,
+): value is PublicationRequestState | null {
+  return (
+    value === null ||
+    value === 'PENDING_REVIEW' ||
+    value === 'NEEDS_INFORMATION' ||
+    value === 'APPROVED_UNPUBLISHED' ||
+    value === 'REJECTED' ||
+    value === 'SUPERSEDED' ||
+    value === 'WITHDRAWN'
+  );
+}
+
+function isPublicationScopeCode(value: unknown): value is PublicationScopeCode {
+  return value === 'PUBLIC_METADATA' || value === 'CHAPTER_TEXT' || value === 'COMMERCIAL_SALE';
+}
+
+function isPublicationReadinessBlocker(value: unknown): value is PublicationReadinessBlocker {
+  return (
+    value === 'PUBLICATION_RIGHTS_POLICY_NOT_CONFIGURED' ||
+    value === 'PUBLICATION_RIGHTS_POLICY_NOT_ACCEPTED' ||
+    value === 'READY_CHAPTER_REQUIRED' ||
+    value === 'PUBLICATION_REQUEST_ALREADY_PENDING'
+  );
+}
+
 function isSha256(value: unknown): value is string {
   return typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 }
@@ -1003,6 +1269,14 @@ function invalidPublicationRightsPolicyResponse(): AuthoringApiError {
 
 function invalidPublicationRightsAcceptanceResponse(): AuthoringApiError {
   return new AuthoringApiError(502, 'INVALID_PUBLICATION_RIGHTS_ACCEPTANCE_RESPONSE');
+}
+
+function invalidPublicationReadinessResponse(): AuthoringApiError {
+  return new AuthoringApiError(502, 'INVALID_PUBLICATION_READINESS_RESPONSE');
+}
+
+function invalidPublicationReleaseResponse(): AuthoringApiError {
+  return new AuthoringApiError(502, 'INVALID_PUBLICATION_RELEASE_RESPONSE');
 }
 
 function invalidChapterResponse(): AuthoringApiError {

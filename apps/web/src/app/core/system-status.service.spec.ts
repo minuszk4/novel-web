@@ -17,6 +17,7 @@ const validStatus = {
     cultivationEnabled: false,
     commerceSandboxEnabled: false,
     publicCatalogEnabled: false,
+    publicationReleaseEnabled: false,
     translationFakePreviewEnabled: false,
   },
 };

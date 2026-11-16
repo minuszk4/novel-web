@@ -1,0 +1,202 @@
+<section class="publication-readiness-panel" aria-labelledby="publication-readiness-title">
+  <div class="publication-readiness-heading">
+    <div>
+      <p class="eyebrow">CHECKLIST RIÊNG TƯ</p>
+      <h2 id="publication-readiness-title">Điều kiện xuất bản</h2>
+      <p>
+        Chỉ kiểm tra khi bạn chọn nút bên dưới. Checklist phản ánh trạng thái máy chủ tại thời điểm
+        tải; nó không xác minh quyền tác giả hay giấy phép.
+      </p>
+    </div>
+    <button
+      class="button button-outline publication-readiness-trigger"
+      type="button"
+      [disabled]="isBusy || state() === 'uncertain' || state() === 'published'"
+      (click)="loadReadiness()"
+    >
+      {{
+        state() === 'idle'
+          ? 'Kiểm tra điều kiện xuất bản'
+          : state() === 'loading'
+            ? 'Đang kiểm tra…'
+            : state() === 'error' || state() === 'uncertain'
+              ? 'Tải lại trạng thái'
+              : state() === 'published'
+                ? 'Đã công khai'
+                : 'Kiểm tra lại'
+      }}
+    </button>
+  </div>
+
+  <p class="visually-hidden" role="status" aria-live="polite" aria-atomic="true">
+    {{ announcement() }}
+  </p>
+
+  @if (state() === 'loading') {
+    <p class="publication-readiness-status" role="status" aria-live="polite" aria-busy="true">
+      Đang kiểm tra bản thảo…
+    </p>
+  } @else if (state() === 'error') {
+    <div class="publication-readiness-error" role="alert">
+      <p>{{ errorMessage() }}</p>
+      @if (recoveryUrl; as url) {
+        <a class="button button-outline" [routerLink]="url" [queryParams]="recoveryQueryParams">
+          {{
+            url === '/sign-in'
+              ? 'Đăng nhập lại'
+              : url === '/app/setup'
+                ? 'Xem chính sách tài khoản'
+                : 'Về thư viện'
+          }}
+        </a>
+      } @else {
+        <button class="button button-outline" type="button" (click)="retryReadiness()">
+          Thử tải lại
+        </button>
+      }
+    </div>
+  } @else if (state() === 'uncertain') {
+    <div class="publication-readiness-error" role="alert">
+      <p>{{ errorMessage() }}</p>
+      <button class="button button-primary" type="button" (click)="retryUncertainRelease()">
+        Thử lại cùng thao tác
+      </button>
+    </div>
+  } @else if (state() === 'published') {
+    <p class="publication-readiness-success" role="status">
+      {{ announcement() }}
+    </p>
+  } @else if (readiness(); as current) {
+    <dl class="publication-readiness-summary">
+      <div>
+        <dt>Chính sách quyền xuất bản</dt>
+        <dd>
+          @if (!current.publicationRightsPolicyAvailable) {
+            Chưa được cấu hình
+          } @else if (current.publicationRightsPolicyAcceptedAt) {
+            Đã xác nhận phiên bản {{ current.publicationRightsPolicyVersion }}
+          } @else {
+            Chưa xác nhận phiên bản {{ current.publicationRightsPolicyVersion }}
+          }
+        </dd>
+      </div>
+      <div>
+        <dt>Chương có nội dung sẵn sàng</dt>
+        <dd>{{ current.readyChapterCount }}</dd>
+      </div>
+      <div>
+        <dt>Yêu cầu duyệt hiện hành</dt>
+        <dd>{{ requestStateLabel(current.currentRequestState) }}</dd>
+      </div>
+    </dl>
+
+    <h3 class="publication-readiness-subheading">Phạm vi quyền</h3>
+    <ul class="publication-readiness-scopes" aria-label="Trạng thái từng phạm vi quyền">
+      @for (scope of current.scopes; track scope.scopeCode) {
+        <li>
+          <span>{{ scopeLabel(scope.scopeCode) }}</span>
+          <strong>{{ scope.ready ? 'Đủ điều kiện dữ liệu' : 'Chưa đủ điều kiện dữ liệu' }}</strong>
+        </li>
+      }
+    </ul>
+
+    @if (current.blockerCodes.length > 0) {
+      <h3 class="publication-readiness-subheading">Việc cần xử lý</h3>
+      <ul class="publication-readiness-blockers">
+        @for (blocker of current.blockerCodes; track blocker) {
+          <li>{{ blockerLabel(blocker) }}</li>
+        }
+      </ul>
+      @if (showPolicyAction) {
+        <button class="button button-outline" type="button" (click)="openRightsPolicy()">
+          Xem và xác nhận chính sách quyền xuất bản
+        </button>
+      }
+    } @else if (current.currentRequestState === 'APPROVED_UNPUBLISHED') {
+      @if (canPublishNow) {
+        <button
+          #publishTrigger
+          class="button button-primary publication-readiness-publish"
+          type="button"
+          (click)="openReleaseConfirmation()"
+        >
+          Xuất bản ngay
+        </button>
+      } @else if (!releaseFeatureEnabled) {
+        <p class="publication-readiness-note">
+          Yêu cầu đã được duyệt nhưng chưa công khai. Tác vụ xuất bản ngay đang tắt trong môi trường
+          này.
+        </p>
+      }
+    } @else if (current.canSubmit) {
+      <p class="publication-readiness-note">
+        Các điều kiện dữ liệu hiện đã đạt. Tác phẩm vẫn riêng tư; checklist này chưa gửi yêu cầu
+        duyệt.
+      </p>
+    }
+
+    @if (error()) {
+      <div class="publication-readiness-error" role="alert">
+        <p>{{ errorMessage() }}</p>
+        @if (recoveryUrl; as url) {
+          <a class="button button-outline" [routerLink]="url" [queryParams]="recoveryQueryParams">
+            {{
+              url === '/sign-in'
+                ? 'Đăng nhập lại'
+                : url === '/app/setup'
+                  ? 'Xem chính sách tài khoản'
+                  : 'Về thư viện'
+            }}
+          </a>
+        } @else {
+          <button class="button button-outline" type="button" (click)="retryReadiness()">
+            Tải lại trạng thái
+          </button>
+        }
+      </div>
+    }
+
+    @if (confirmationOpen()) {
+      <section
+        class="publication-readiness-confirm"
+        aria-labelledby="publication-release-confirm-title"
+      >
+        <h3 #confirmationHeading id="publication-release-confirm-title" tabindex="-1">
+          Xác nhận xuất bản ngay
+        </h3>
+        <p>
+          Tác phẩm sẽ trở thành công khai ngay theo các phạm vi metadata, nội dung chương và thương
+          mại đã được duyệt hiện tại. Thao tác này không lên lịch xuất bản và không tự hỗ trợ gỡ
+          xuất bản.
+        </p>
+        <p>Không có nội dung chương nào được đưa vào bước xác nhận này.</p>
+        @if (error()) {
+          <p class="publication-readiness-error-copy" role="alert">{{ errorMessage() }}</p>
+        }
+        <div class="publication-readiness-actions">
+          <button
+            class="button button-outline"
+            type="button"
+            [disabled]="isBusy"
+            (click)="cancelReleaseConfirmation()"
+          >
+            Hủy
+          </button>
+          <button
+            class="button button-primary"
+            type="button"
+            [disabled]="isBusy"
+            (click)="confirmRelease()"
+          >
+            {{ isBusy ? 'Đang xuất bản…' : 'Xác nhận xuất bản ngay' }}
+          </button>
+        </div>
+        @if (state() === 'publishing') {
+          <p class="publication-readiness-status" role="status" aria-live="polite">
+            Đang xác nhận xuất bản…
+          </p>
+        }
+      </section>
+    }
+  }
+</section>

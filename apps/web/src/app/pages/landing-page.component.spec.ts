@@ -48,6 +48,7 @@ describe('LandingPageComponent public catalog', () => {
           cultivationEnabled: false,
           commerceSandboxEnabled: false,
           publicCatalogEnabled: enabled,
+          publicationReleaseEnabled: false,
           translationFakePreviewEnabled: false,
         },
       }),

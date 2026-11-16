@@ -12,6 +12,9 @@ const chapterId = '22222222-2222-4222-8222-222222222222';
 const revisionId = '44444444-4444-4444-8444-444444444444';
 const policyAcceptanceId = '55555555-5555-4555-8555-555555555555';
 const policyIdempotencyKey = '66666666-6666-4666-8666-666666666666';
+const publicationEtag = `"publication-snapshot-${'a'.repeat(64)}"`;
+const publicationScopeEtag = `"publication-scope-${'b'.repeat(64)}"`;
+const releaseIdempotencyKey = 'publication-release-test-key-0001';
 const chapterCreatedAt = '2026-11-14T12:30:00Z';
 const rightsPolicy = {
   version: 'rights-v1',
@@ -19,6 +22,32 @@ const rightsPolicy = {
   displayText: 'Chính sách quyền xuất bản kiểm thử.',
   policySha256: 'a'.repeat(64),
   acceptedAt: null,
+};
+const publicationReadiness = {
+  workId,
+  canSubmit: true,
+  publicationRightsPolicyAvailable: true,
+  publicationRightsPolicyVersion: 'rights-v1',
+  publicationRightsPolicyEffectiveAt: '2026-11-15T00:00:00Z',
+  publicationRightsPolicyAcceptedAt: '2026-11-16T12:00:00Z',
+  publicationContentVersion: 7,
+  readyChapterCount: 3,
+  currentRequestState: 'APPROVED_UNPUBLISHED',
+  snapshotEtag: publicationEtag,
+  scopes: [
+    { scopeCode: 'PUBLIC_METADATA', ready: true, snapshotEtag: publicationScopeEtag },
+    { scopeCode: 'CHAPTER_TEXT', ready: true, snapshotEtag: publicationScopeEtag },
+    { scopeCode: 'COMMERCIAL_SALE', ready: true, snapshotEtag: publicationScopeEtag },
+  ],
+  blockerCodes: [],
+};
+const publicationReceipt = {
+  eventId: '77777777-7777-4777-8777-777777777777',
+  workId,
+  requestId: '88888888-8888-4888-8888-888888888888',
+  state: 'PUBLISHED',
+  publishedAt: '2026-11-16T12:30:00Z',
+  publicationContentVersion: 7,
 };
 const createdDraft = {
   id: workId,
@@ -196,6 +225,135 @@ describe('AuthoringApiService', () => {
     });
 
     await expect(pending).resolves.toEqual(rightsPolicy);
+  });
+
+  it('reads an owner publication checklist bound to the work and strong no-store ETag', async () => {
+    const pending = api.getPublicationReadiness(workId);
+    const request = http.expectOne(`/api/v1/authoring/manuscripts/${workId}/publication/readiness`);
+    expect(request.request.method).toBe('GET');
+    request.flush(publicationReadiness, {
+      status: 200,
+      statusText: 'OK',
+      headers: new HttpHeaders({
+        'Cache-Control': 'no-store',
+        Pragma: 'no-cache',
+        ETag: publicationEtag,
+      }),
+    });
+
+    await expect(pending).resolves.toMatchObject({
+      workId,
+      canSubmit: true,
+      currentRequestState: 'APPROVED_UNPUBLISHED',
+      snapshotEtag: publicationEtag,
+      scopes: expect.arrayContaining([
+        expect.objectContaining({ scopeCode: 'PUBLIC_METADATA', ready: true }),
+      ]),
+    });
+  });
+
+  it('rejects unexpected, incomplete or cacheable publication readiness responses', async () => {
+    const unexpected = api.getPublicationReadiness(workId);
+    http.expectOne(`/api/v1/authoring/manuscripts/${workId}/publication/readiness`).flush(
+      { ...publicationReadiness, chapterText: 'must not be returned' },
+      {
+        status: 200,
+        statusText: 'OK',
+        headers: new HttpHeaders({
+          'Cache-Control': 'no-store',
+          Pragma: 'no-cache',
+          ETag: publicationEtag,
+        }),
+      },
+    );
+    await expect(unexpected).rejects.toMatchObject({
+      status: 502,
+      code: 'INVALID_PUBLICATION_READINESS_RESPONSE',
+    });
+
+    const mismatchedEtag = api.getPublicationReadiness(workId);
+    http
+      .expectOne(`/api/v1/authoring/manuscripts/${workId}/publication/readiness`)
+      .flush(publicationReadiness, {
+        status: 200,
+        statusText: 'OK',
+        headers: new HttpHeaders({
+          'Cache-Control': 'no-store',
+          Pragma: 'no-cache',
+          ETag: `"publication-snapshot-${'b'.repeat(64)}"`,
+        }),
+      });
+    await expect(mismatchedEtag).rejects.toMatchObject({
+      status: 502,
+      code: 'INVALID_PUBLICATION_READINESS_RESPONSE',
+    });
+
+    const cacheable = api.getPublicationReadiness(workId);
+    http
+      .expectOne(`/api/v1/authoring/manuscripts/${workId}/publication/readiness`)
+      .flush(publicationReadiness, {
+        status: 200,
+        statusText: 'OK',
+        headers: new HttpHeaders({ Pragma: 'no-cache', ETag: publicationEtag }),
+      });
+    await expect(cacheable).rejects.toMatchObject({
+      status: 502,
+      code: 'INVALID_PUBLICATION_READINESS_RESPONSE',
+    });
+  });
+
+  it('publishes only the explicit owner action with current readiness, CSRF and idempotency', async () => {
+    const pending = api.publishManuscriptNow(workId, publicationEtag, releaseIdempotencyKey);
+    await flushCsrf(http);
+    const request = http.expectOne(`/api/v1/authoring/manuscripts/${workId}/publication-actions`);
+    expect(request.request.method).toBe('POST');
+    expect(request.request.headers.get('X-CSRF-Token')).toBe(csrfToken);
+    expect(request.request.headers.get('If-Match')).toBe(publicationEtag);
+    expect(request.request.headers.get('Idempotency-Key')).toBe(releaseIdempotencyKey);
+    expect(request.request.body).toEqual({ actionCode: 'PUBLISH_NOW' });
+    request.flush(publicationReceipt, {
+      status: 201,
+      statusText: 'Created',
+      headers: new HttpHeaders({ 'Cache-Control': 'no-store', Pragma: 'no-cache' }),
+    });
+    await expect(pending).resolves.toEqual(publicationReceipt);
+
+    const replay = api.publishManuscriptNow(workId, publicationEtag, releaseIdempotencyKey);
+    await flushCsrf(http);
+    http
+      .expectOne(`/api/v1/authoring/manuscripts/${workId}/publication-actions`)
+      .flush(publicationReceipt, {
+        status: 200,
+        statusText: 'OK',
+        headers: new HttpHeaders({ 'Cache-Control': 'no-store', Pragma: 'no-cache' }),
+      });
+    await expect(replay).resolves.toEqual(publicationReceipt);
+  });
+
+  it('validates release inputs and keeps API conflict codes for safe recovery', async () => {
+    await expect(api.getPublicationReadiness('not-a-uuid')).rejects.toMatchObject({
+      status: 400,
+      code: 'INVALID_AUTHORING_QUERY',
+    });
+    await expect(
+      api.publishManuscriptNow(workId, 'weak-etag', releaseIdempotencyKey),
+    ).rejects.toMatchObject({
+      status: 400,
+      code: 'INVALID_PUBLICATION_ACTION',
+    });
+
+    const pending = api.publishManuscriptNow(workId, publicationEtag, releaseIdempotencyKey);
+    await flushCsrf(http);
+    http
+      .expectOne(`/api/v1/authoring/manuscripts/${workId}/publication-actions`)
+      .flush(
+        { code: 'PUBLICATION_SNAPSHOT_STALE' },
+        { status: 412, statusText: 'Precondition Failed' },
+      );
+    await expect(pending).rejects.toMatchObject({
+      status: 412,
+      code: 'PUBLICATION_SNAPSHOT_STALE',
+    });
   });
 
   it('rejects malformed, oversized, unexpected or cacheable publication policy responses', async () => {

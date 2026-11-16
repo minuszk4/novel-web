@@ -11,5 +11,6 @@ public record ApiSystemStatus(
       boolean cultivationEnabled,
       boolean commerceSandboxEnabled,
       boolean publicCatalogEnabled,
+      boolean publicationReleaseEnabled,
       boolean translationFakePreviewEnabled) {}
 }
