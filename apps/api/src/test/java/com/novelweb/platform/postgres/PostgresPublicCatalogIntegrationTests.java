@@ -5,11 +5,13 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.novelweb.library.PublicCatalogRateLimiter;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -60,6 +62,8 @@ class PostgresPublicCatalogIntegrationTests {
   private UUID libraryId;
 
   @Autowired private DataSource dataSource;
+
+  @Autowired private PublicCatalogRateLimiter publicCatalogRateLimiter;
 
   @Autowired private ObjectMapper objectMapper;
 
@@ -255,6 +259,109 @@ class PostgresPublicCatalogIntegrationTests {
         assertEquals(2, observedBuckets.size());
       }
     }
+  }
+
+  @Test
+  void purgesAtMost500InactiveBucketsAndRetainsBucketsSeenWithin24Hours() throws Exception {
+    byte[] activeHash = newRateLimitHash();
+    byte[] recentHash = newRateLimitHash();
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement insertStale =
+            connection.prepareStatement(
+                """
+                    INSERT INTO public_catalog_rate_limits (
+                        rate_limit_key_hash, available_tokens, refilled_at, last_seen_at)
+                    VALUES (?, 0, clock_timestamp(), clock_timestamp() - INTERVAL '25 hours')
+                    """)) {
+      for (int index = 0; index < 502; index++) {
+        byte[] staleHash = newRateLimitHash();
+        insertStale.setBytes(1, staleHash);
+        insertStale.addBatch();
+      }
+      int[] inserted = insertStale.executeBatch();
+      assertEquals(502, inserted.length);
+      assertTrue(java.util.Arrays.stream(inserted).allMatch(rows -> rows == 1));
+    }
+    insertRateLimitBucket(activeHash, 0);
+    insertRateLimitBucket(recentHash, 23);
+
+    assertEquals(500, publicCatalogRateLimiter.purgeInactiveBuckets());
+    assertEquals(2, countInactiveRateLimitBuckets());
+    assertEquals(4, countRateLimitBuckets());
+
+    assertEquals(2, publicCatalogRateLimiter.purgeInactiveBuckets());
+    assertEquals(0, countInactiveRateLimitBuckets());
+    assertEquals(1, rateLimitBucketCount(activeHash));
+    assertEquals(1, rateLimitBucketCount(recentHash));
+    assertEquals(2, countRateLimitBuckets());
+  }
+
+  private void insertRateLimitBucket(byte[] keyHash, int lastSeenHoursAgo) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement insert =
+            connection.prepareStatement(
+                """
+                    INSERT INTO public_catalog_rate_limits (
+                        rate_limit_key_hash, available_tokens, refilled_at, last_seen_at)
+                    VALUES (?, 0, clock_timestamp(), clock_timestamp() - (? * INTERVAL '1 hour'))
+                    """)) {
+      insert.setBytes(1, keyHash);
+      insert.setInt(2, lastSeenHoursAgo);
+      assertEquals(1, insert.executeUpdate());
+    }
+  }
+
+  private int countRateLimitBuckets() throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement("SELECT count(*) FROM public_catalog_rate_limits");
+        var row = select.executeQuery()) {
+      if (!row.next()) throw new SQLException("Rate-limit bucket count returned no row");
+      return row.getInt(1);
+    }
+  }
+
+  private int countInactiveRateLimitBuckets() throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                """
+                    SELECT count(*)
+                    FROM public_catalog_rate_limits
+                    WHERE last_seen_at < clock_timestamp() - INTERVAL '24 hours'
+                    """);
+        var row = select.executeQuery()) {
+      if (!row.next()) throw new SQLException("Inactive rate-limit bucket count returned no row");
+      return row.getInt(1);
+    }
+  }
+
+  private int rateLimitBucketCount(byte[] keyHash) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                """
+                    SELECT count(*)
+                    FROM public_catalog_rate_limits
+                    WHERE rate_limit_key_hash = ?
+                    """)) {
+      select.setBytes(1, keyHash);
+      try (var row = select.executeQuery()) {
+        if (!row.next()) throw new SQLException("Rate-limit bucket count returned no row");
+        return row.getInt(1);
+      }
+    }
+  }
+
+  private static byte[] newRateLimitHash() {
+    UUID first = UUID.randomUUID();
+    UUID second = UUID.randomUUID();
+    return ByteBuffer.allocate(32)
+        .putLong(first.getMostSignificantBits())
+        .putLong(first.getLeastSignificantBits())
+        .putLong(second.getMostSignificantBits())
+        .putLong(second.getLeastSignificantBits())
+        .array();
   }
 
   private UUID createWork(
