@@ -2,6 +2,7 @@ param(
     [int]$PostgresPortStart = 55432,
     [int]$PostgresPortEnd = 55480,
     [switch]$IncludeTranslationPreview,
+    [switch]$IncludeTranslationReviewWorkspace,
     [switch]$IncludeAuthoringOutline,
     [switch]$IncludeAuthoringChapterEditor,
     [switch]$IncludeAuthoringDraftApi,
@@ -17,6 +18,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 if ($IncludeNotificationInbox) { $IncludePublicationReviewWorkspace = $true }
+if ($IncludeTranslationReviewWorkspace) {
+    $IncludeTranslationPreview = $true
+    $IncludePublicationReviewWorkspace = $true
+}
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $apiDirectory = Join-Path $repoRoot 'apps\api'
 $webDirectory = Join-Path $repoRoot 'apps\web'
@@ -60,7 +65,8 @@ $environmentNames = @(
     'NOVEL_FEATURE_COMMERCE_SANDBOX_ENABLED', 'NOVEL_NOTIFICATIONS_DELIVERY_ENABLED',
     'NOVEL_NOTIFICATIONS_DELIVERY_POLL_DELAY',
     'NOVEL_TRANSLATION_FAKE_ENABLED', 'NOVEL_TRANSLATION_FAKE_API_ENABLED',
-    'NOVEL_TRANSLATION_FAKE_WORKER_ENABLED',
+    'NOVEL_TRANSLATION_FAKE_WORKER_ENABLED', 'NOVEL_TRANSLATION_REVIEW_ENABLED',
+    'NOVEL_TRANSLATION_PUBLICATION_ENABLED',
     'NOVEL_MOMO_TEST_ENABLED', 'NOVEL_MOMO_TEST_RECONCILIATION_ENABLED', 'MOMO_ENV',
     'MOMO_TEST_PARTNER_CODE', 'MOMO_TEST_ACCESS_KEY', 'MOMO_TEST_SECRET_KEY',
     'MOMO_TEST_BASE_URL', 'MOMO_TEST_IPN_URL', 'MOMO_TEST_REDIRECT_URL',
@@ -85,6 +91,8 @@ $environmentNames = @(
     'AUTHORING_EDITOR_LIVE_TEST_WORK_ID', 'AUTHORING_EDITOR_LIVE_TEST_CHAPTER_ID',
     'AUTHORING_EDITOR_LIVE_TEST_SCREENSHOT',
     'TRANSLATION_LIVE_TEST_WORK_ID', 'TRANSLATION_LIVE_TEST_CHAPTER_ID', 'TRANSLATION_LIVE_TEST_SCREENSHOT',
+    'TRANSLATION_REVIEW_LIVE_TEST_REVIEWER_SESSION_TOKEN', 'TRANSLATION_REVIEW_LIVE_TEST_STAGE',
+    'TRANSLATION_REVIEW_LIVE_TEST_SUBMISSION_ID', 'TRANSLATION_REVIEW_LIVE_TEST_SNAPSHOT_DIGEST',
     'READER_LIVE_TEST_CHAPTER_ID', 'READER_LIVE_TEST_SCREENSHOT',
     'CULTIVATION_LIVE_TEST_RANK_UP', 'CULTIVATION_LIVE_TEST_SCREENSHOT', 'CULTIVATION_LIVE_TEST_TRACE',
     'WORK_DETAIL_LIVE_TEST_SCREENSHOT', 'PRIVATE_IMPORT_LIVE_TEST_SCREENSHOT', 'NOTIFICATION_LIVE_TEST_SCREENSHOT',
@@ -107,6 +115,7 @@ $cultivationLedgerEntries = 0
 $glossaryParts = @()
 $publicationRightsParts = @()
 $publicationReviewParts = @()
+$translationReviewParts = @()
 $notificationParts = @()
 $authoringEditorParts = @()
 $databaseRestartSummary = @()
@@ -243,6 +252,8 @@ try {
     $env:NOVEL_TRANSLATION_FAKE_ENABLED = 'false'
     $env:NOVEL_TRANSLATION_FAKE_API_ENABLED = 'false'
     $env:NOVEL_TRANSLATION_FAKE_WORKER_ENABLED = 'false'
+    $env:NOVEL_TRANSLATION_REVIEW_ENABLED = 'false'
+    $env:NOVEL_TRANSLATION_PUBLICATION_ENABLED = 'false'
     $env:NOVEL_MOMO_TEST_ENABLED = 'false'
     $env:NOVEL_MOMO_TEST_RECONCILIATION_ENABLED = 'false'
     if ($IncludeNotificationInbox) {
@@ -254,6 +265,11 @@ try {
         $env:NOVEL_TRANSLATION_FAKE_ENABLED = 'true'
         $env:NOVEL_TRANSLATION_FAKE_API_ENABLED = 'true'
         $env:NOVEL_TRANSLATION_FAKE_WORKER_ENABLED = 'true'
+    }
+    if ($IncludeTranslationReviewWorkspace) {
+        # These feature gates are enabled only for this random disposable PostgreSQL API process.
+        $env:NOVEL_TRANSLATION_REVIEW_ENABLED = 'true'
+        $env:NOVEL_TRANSLATION_PUBLICATION_ENABLED = 'true'
     }
     if ($IncludePaymentReturn -or $IncludeCommerceSettlement) {
         # Synthetic secrets exist only for the disposable process; this journey issues no provider request.
@@ -652,6 +668,9 @@ COMMIT;
         $env:PUBLICATION_REVIEW_LIVE_TEST_SCREENSHOT = $publicationReviewScreenshotPath
         $env:PUBLICATION_REVIEW_LIVE_TEST_CHAPTER_SCREENSHOT = $publicationChapterReleaseScreenshotPath
     }
+    if ($IncludeTranslationReviewWorkspace) {
+        $env:TRANSLATION_REVIEW_LIVE_TEST_REVIEWER_SESSION_TOKEN = $publicationReviewSessionToken
+    }
     if ($IncludeAuthoringChapterEditor) {
         $env:AUTHORING_EDITOR_LIVE_TEST_WORK_ID = [string]$secondWorkId
         $env:AUTHORING_EDITOR_LIVE_TEST_CHAPTER_ID = [string]$authoringEditorChapterId
@@ -797,9 +816,9 @@ COMMIT;
             'e2e/cultivation-live-postgres.spec.ts'
         )
         if ($IncludePublicationRightsAcceptance) { $e2eSpecs += 'e2e/publication-rights-policy-live-postgres.spec.ts' }
-        if ($IncludePublicationReviewWorkspace) { $e2eSpecs += 'e2e/publication-review-live-postgres.spec.ts' }
-        if ($IncludeNotificationInbox) { $e2eSpecs += 'e2e/publication-review-notifications-live-postgres.spec.ts' }
-        if ($IncludeTranslationPreview -and -not $translationBeforeOutline) {
+        if ($IncludePublicationReviewWorkspace -and -not $IncludeTranslationReviewWorkspace) { $e2eSpecs += 'e2e/publication-review-live-postgres.spec.ts' }
+        if ($IncludeNotificationInbox -and -not $IncludeTranslationReviewWorkspace) { $e2eSpecs += 'e2e/publication-review-notifications-live-postgres.spec.ts' }
+        if ($IncludeTranslationPreview -and -not $translationBeforeOutline -and -not $IncludeTranslationReviewWorkspace) {
             $e2eSpecs += 'e2e/translation-live-postgres.spec.ts'
         }
         if ($IncludeAuthoringChapterEditor) { $e2eSpecs += 'e2e/authoring-chapter-editor-live-postgres.spec.ts' }
@@ -811,6 +830,35 @@ COMMIT;
         $e2eExit = $LASTEXITCODE
     } finally { Pop-Location }
     if ($e2eExit -ne 0) { throw "Live FE/API/PostgreSQL Playwright journey failed (exit $e2eExit)." }
+
+    if ($IncludeTranslationReviewWorkspace) {
+        # Review a private submitted snapshot before the work is public. The publication journey
+        # then grants current rights, after which a separate pass confirms the owner release.
+        $env:TRANSLATION_REVIEW_LIVE_TEST_STAGE = 'accept'
+        Push-Location $webDirectory
+        try {
+            & npm.cmd run test:e2e:postgres -- 'e2e/translation-live-postgres.spec.ts' *>&1 |
+                Tee-Object -FilePath $e2eLog -Append
+            $translationAcceptE2eExit = $LASTEXITCODE
+        } finally { Pop-Location }
+        if ($translationAcceptE2eExit -ne 0) {
+            throw "Manual translation submission/reviewer acceptance live journey failed (exit $translationAcceptE2eExit)."
+        }
+
+        Push-Location $webDirectory
+        try {
+            $rightsJourneySpecs = @('e2e/publication-review-live-postgres.spec.ts')
+            if ($IncludeNotificationInbox) {
+                $rightsJourneySpecs += 'e2e/publication-review-notifications-live-postgres.spec.ts'
+            }
+            & npm.cmd run test:e2e:postgres -- $rightsJourneySpecs *>&1 |
+                Tee-Object -FilePath $e2eLog -Append
+            $translationRightsE2eExit = $LASTEXITCODE
+        } finally { Pop-Location }
+        if ($translationRightsE2eExit -ne 0) {
+            throw "Publication-rights and staged-chapter live journey failed before translation release (exit $translationRightsE2eExit)."
+        }
+    }
 
     if ($IncludePublicationRightsAcceptance) {
         $publicationRightsSummary = & $docker @composeArguments exec -T postgres psql -v ON_ERROR_STOP=1 -tA -U novelweb -d novelweb -c "SELECT (SELECT COUNT(*) FROM publication_rights_policy_acceptances WHERE user_id = '$userId' AND work_id = '$secondWorkId')::text || '|' || (SELECT COUNT(*) FROM publication_rights_policy_acceptance_idempotency WHERE user_id = '$userId' AND work_id = '$secondWorkId')::text || '|' || COALESCE((SELECT encode(policy_sha256, 'hex') FROM publication_rights_policy_acceptances WHERE user_id = '$userId' AND work_id = '$secondWorkId' AND policy_version = '$publicationRightsPolicyVersion'), 'missing');"
@@ -825,14 +873,14 @@ COMMIT;
         $publicationReviewSummary = & $docker @composeArguments exec -T postgres psql -v ON_ERROR_STOP=1 -tA -U novelweb -d novelweb -c "SELECT state.current_state || '|' || (SELECT COUNT(*) FROM publication_review_events event WHERE event.request_id = request.id)::text || '|' || (SELECT COUNT(*) FROM publication_scope_access_approvals approval WHERE approval.work_id = request.work_id)::text || '|' || work.visibility || '|' || (SELECT event.action_code || ':' || event.reason_code FROM publication_review_events event WHERE event.request_id = request.id AND event.actor_user_id = '$publicationReviewReviewerId' ORDER BY event.event_sequence DESC LIMIT 1) FROM publication_requests request JOIN publication_request_current_state state ON state.request_id = request.id JOIN works work ON work.id = request.work_id WHERE request.owner_user_id = '$userId' AND request.work_id = '$secondWorkId' AND request.target_chapter_id IS NULL;"
         if ($LASTEXITCODE -ne 0) { throw 'Could not verify the reviewer decision in disposable PostgreSQL.' }
         $publicationReviewParts = ([string]$publicationReviewSummary).Trim() -split '\|'
-        if ($publicationReviewParts.Count -ne 5 -or $publicationReviewParts[0] -ne 'APPROVED_UNPUBLISHED' -or $publicationReviewParts[1] -ne '2' -or $publicationReviewParts[2] -ne '6' -or $publicationReviewParts[3] -ne 'public' -or $publicationReviewParts[4] -ne 'APPROVED:RIGHTS_REVIEWED') {
+        if ($publicationReviewParts.Count -ne 5 -or $publicationReviewParts[0] -ne 'APPROVED_UNPUBLISHED' -or $publicationReviewParts[1] -ne '2' -or $publicationReviewParts[2] -ne '8' -or $publicationReviewParts[3] -ne 'public' -or $publicationReviewParts[4] -ne 'APPROVED:RIGHTS_REVIEWED') {
             throw "PostgreSQL reviewer workspace invariants failed after the browser decision: $publicationReviewSummary"
         }
 
         $chapterReleaseSummary = & $docker @composeArguments exec -T postgres psql -v ON_ERROR_STOP=1 -tA -U novelweb -d novelweb -c "SELECT state.current_state || '|' || chapter.status || '|' || (SELECT COUNT(*) FROM publication_review_events event WHERE event.request_id = request.id)::text || '|' || (SELECT COUNT(*) FROM chapter_publication_release_events released WHERE released.request_id = request.id)::text || '|' || (SELECT COUNT(*) FROM chapter_published_outbox_events outbox WHERE outbox.work_id = request.work_id AND outbox.chapter_id = chapter.id)::text || '|' || work.visibility || '|' || (SELECT COUNT(*) FROM publication_scope_access_approvals approval WHERE approval.work_id = request.work_id)::text FROM publication_requests request JOIN publication_request_current_state state ON state.request_id = request.id JOIN chapters chapter ON chapter.id = request.target_chapter_id AND chapter.work_id = request.work_id JOIN works work ON work.id = request.work_id WHERE request.owner_user_id = '$userId' AND request.work_id = '$secondWorkId' AND chapter.title = 'Live E2E Staged Chapter' ORDER BY request.submitted_at DESC LIMIT 1;"
         if ($LASTEXITCODE -ne 0) { throw 'Could not verify the staged chapter review and release in disposable PostgreSQL.' }
         $chapterReleaseParts = ([string]$chapterReleaseSummary).Trim() -split '\|'
-        if ($chapterReleaseParts.Count -ne 7 -or $chapterReleaseParts[0] -ne 'APPROVED_UNPUBLISHED' -or $chapterReleaseParts[1] -ne 'ready' -or $chapterReleaseParts[2] -ne '2' -or $chapterReleaseParts[3] -ne '1' -or $chapterReleaseParts[4] -ne '1' -or $chapterReleaseParts[5] -ne 'public' -or $chapterReleaseParts[6] -ne '6') {
+        if ($chapterReleaseParts.Count -ne 7 -or $chapterReleaseParts[0] -ne 'APPROVED_UNPUBLISHED' -or $chapterReleaseParts[1] -ne 'ready' -or $chapterReleaseParts[2] -ne '2' -or $chapterReleaseParts[3] -ne '1' -or $chapterReleaseParts[4] -ne '1' -or $chapterReleaseParts[5] -ne 'public' -or $chapterReleaseParts[6] -ne '8') {
             throw "PostgreSQL staged chapter publication invariants failed after the browser journey: $chapterReleaseSummary"
         }
     }
@@ -864,6 +912,28 @@ COMMIT;
         }
     }
 
+    if ($IncludeTranslationReviewWorkspace) {
+        $acceptedTranslation = & $docker @composeArguments exec -T postgres psql -v ON_ERROR_STOP=1 -tA -U novelweb -d novelweb -c "SELECT submission.id::text || '|' || encode(submission.snapshot_sha256, 'hex') FROM translation_candidate_review_submissions submission WHERE submission.submitted_by_user_id = '$userId' AND submission.chapter_id = '$translationChapterId' AND submission.status = 'accepted' ORDER BY submission.submitted_at DESC, submission.id DESC LIMIT 1;"
+        if ($LASTEXITCODE -ne 0) { throw 'Could not read the accepted immutable translation snapshot from disposable PostgreSQL.' }
+        $acceptedTranslationParts = ([string]$acceptedTranslation).Trim() -split '\|'
+        if ($acceptedTranslationParts.Count -ne 2 -or $acceptedTranslationParts[0] -notmatch '^[0-9a-f-]{36}$' -or $acceptedTranslationParts[1] -notmatch '^[0-9a-f]{64}$') {
+            throw "Expected one accepted translation snapshot before owner release; found $acceptedTranslation."
+        }
+        $env:TRANSLATION_REVIEW_LIVE_TEST_SUBMISSION_ID = $acceptedTranslationParts[0]
+        $env:TRANSLATION_REVIEW_LIVE_TEST_SNAPSHOT_DIGEST = $acceptedTranslationParts[1]
+        $env:TRANSLATION_REVIEW_LIVE_TEST_STAGE = 'release'
+
+        Push-Location $webDirectory
+        try {
+            & npm.cmd run test:e2e:postgres -- 'e2e/translation-live-postgres.spec.ts' *>&1 |
+                Tee-Object -FilePath $e2eLog -Append
+            $translationReleaseE2eExit = $LASTEXITCODE
+        } finally { Pop-Location }
+        if ($translationReleaseE2eExit -ne 0) {
+            throw "Rights-bound owner translation release and Reader journey failed (exit $translationReleaseE2eExit)."
+        }
+    }
+
     $authoringSummary = & $docker @composeArguments exec -T postgres psql -v ON_ERROR_STOP=1 -tA -U novelweb -d novelweb -c "SELECT COUNT(*)::text || '|' || COALESCE(bool_and(w.source_kind = 'authored' AND w.visibility = 'private' AND w.status = 'active' AND w.author = 'E2E Pen Name' AND w.source_language = 'vi' AND l.owner_user_id = w.owner_user_id AND l.visibility = 'private' AND l.workspace_id IS NULL), FALSE)::text || '|' || COALESCE(SUM((SELECT COUNT(*) FROM authoring_manuscript_creations c WHERE c.actor_user_id = '$userId' AND c.work_id = w.id)), 0)::text || '|' || COALESCE(SUM((SELECT COUNT(*) FROM chapters ch WHERE ch.work_id = w.id)), 0)::text || '|' || COALESCE(SUM((SELECT COUNT(*) FROM volumes v WHERE v.work_id = w.id)), 0)::text FROM works w JOIN libraries l ON l.id = w.library_id WHERE w.owner_user_id = '$userId' AND w.title = '$authoringTitle';"
     if ($LASTEXITCODE -ne 0) { throw 'Could not verify the authored private draft in disposable PostgreSQL.' }
     $authoringParts = ([string]$authoringSummary).Trim() -split '\|'
@@ -892,6 +962,15 @@ COMMIT;
         $translationParts = ([string]$translationSummary).Trim() -split '\|'
         if ($translationParts.Count -ne 4 -or $translationParts[0] -ne '1' -or $translationParts[1] -notin @('t', 'true') -or $translationParts[2] -ne '1' -or $translationParts[3] -ne '1') {
             throw "PostgreSQL fake-local translation invariants failed after browser journey: $translationSummary"
+        }
+    }
+
+    if ($IncludeTranslationReviewWorkspace) {
+        $translationReviewSummary = & $docker @composeArguments exec -T postgres psql -v ON_ERROR_STOP=1 -tA -U novelweb -d novelweb -c "SELECT submission.status || '|' || decision.action_code || '|' || version.status || '|' || event.action_code || '|' || (SELECT COUNT(*) FROM translation_version_segments segment WHERE segment.translation_version_id = version.id)::text || '|' || approval.scope_code || '|' || publication_scope_access_is_current(approval.work_id, approval.scope_code)::text FROM translation_candidate_review_submissions submission JOIN translation_candidate_review_decisions decision ON decision.submission_id = submission.id JOIN translation_versions version ON version.review_submission_id = submission.id JOIN translation_release_events event ON event.translation_version_id = version.id JOIN publication_scope_access_approvals approval ON approval.id = event.rights_approval_id WHERE submission.submitted_by_user_id = '$userId' AND submission.chapter_id = '$translationChapterId' AND version.status = 'current';"
+        if ($LASTEXITCODE -ne 0) { throw 'Could not verify the manual translation submission, reviewer decision and owner release in disposable PostgreSQL.' }
+        $translationReviewParts = ([string]$translationReviewSummary).Trim() -split '\|'
+        if ($translationReviewParts.Count -ne 7 -or $translationReviewParts[0] -ne 'accepted' -or $translationReviewParts[1] -ne 'ACCEPT' -or $translationReviewParts[2] -ne 'current' -or $translationReviewParts[3] -ne 'PUBLISH' -or $translationReviewParts[4] -ne '1' -or $translationReviewParts[5] -ne 'TRANSLATION_ADAPTATION' -or $translationReviewParts[6] -notin @('t', 'true')) {
+            throw "PostgreSQL translation review/publication invariants failed: $translationReviewSummary"
         }
     }
     if ($IncludeAuthoringOutline) {
@@ -970,6 +1049,7 @@ COMMIT;
         $(if ($IncludeCultivationRankUp) { '- Cultivation rank-up: synthetic enabled profile started at 99 XP / Phàm nhân, one real Reader award reached 100 XP / Luyện Khí tầng 1; fixture session closed before browser journey; response correlation IDs saved in cultivation-rank-up-trace.json' } else { '- Cultivation rank-up boundary journey: not requested' })
         $(if ($IncludeDatabaseRestartRecovery) { '- PostgreSQL restart recovery: live API health reported DOWN while its disposable PostgreSQL service was stopped, then returned UP after restart; an authenticated Reader manifest returned HTTP 200 with the same persisted chapter before and after; probes and stop/start logs are saved in database-restart-probes.txt and postgres-*.log' } else { '- PostgreSQL restart recovery: not requested' })
         $(if ($IncludeTranslationPreview) { '- Translation feature/provider/API/worker flags: fake-local only, enabled only in this random disposable API process; no external NMT provider was configured or called; prior process values restored during cleanup' } else { '- Translation fake-local flags: forced false for this disposable API process; prior process values restored during cleanup' })
+        $(if ($translationReviewParts.Count -eq 7) { "- Manual translation review/publication: real readiness snapshot, author submission, assigned reviewer acceptance, owner-confirmed release and translated Reader access passed; PostgreSQL confirms $($translationReviewParts[0])/$($translationReviewParts[1])/$($translationReviewParts[3]) with one immutable segment and current TRANSLATION_ADAPTATION approval" } else { '- Manual translation review/publication: not requested' })
         "- PostgreSQL cultivation ledger: $cultivationLedgerXp XP across $cultivationLedgerEntries entries for the synthetic user"
         $(if ($glossaryParts.Count -eq 8) { "- PostgreSQL glossary import/editor after revision preview: version $($glossaryParts[0]), active revision $($glossaryParts[1]), latest draft $($glossaryParts[2]), $($glossaryParts[3]) immutable term rows, $($glossaryParts[4]) aliases, one idempotency receipt and one apply row; preview did not create a revision or change the active pointer" } else { '- PostgreSQL glossary import/editor: not verified' })
         $(if ($authoringOutlineParts.Count -eq 5) { "- PostgreSQL authoring outline and metadata: blank chapter at ordinal 27 soft-deleted after UI confirmation, zero content revisions, one idempotency receipt after create replay, and persisted title/byline/language at metadata version 4 after explicit stale-conflict recovery" } else { '- PostgreSQL authoring outline and metadata: not requested' })

@@ -22,7 +22,7 @@ const queueItem = {
   title: 'The Quiet Mountain',
   author: 'An Example',
   sourceLanguage: 'vi',
-  scopeCodes: ['PUBLIC_METADATA', 'CHAPTER_TEXT'],
+  scopeCodes: ['PUBLIC_METADATA', 'CHAPTER_TEXT', 'COMMERCIAL_SALE', 'TRANSLATION_ADAPTATION'],
 };
 
 const detail = {
@@ -55,10 +55,33 @@ const detail = {
         },
       ],
     },
+    {
+      scopeCode: 'COMMERCIAL_SALE',
+      snapshotSha256: sha256,
+      work: { title: 'The Quiet Mountain', author: 'An Example', sourceLanguage: 'vi' },
+      chapters: [],
+    },
+    {
+      scopeCode: 'TRANSLATION_ADAPTATION',
+      snapshotSha256: sha256,
+      work: { title: 'The Quiet Mountain', author: 'An Example', sourceLanguage: 'vi' },
+      chapters: [
+        {
+          chapterId: '22222222-2222-4222-8222-222222222222',
+          ordinal: 1,
+          title: 'First Steps',
+          sourceLanguage: 'vi',
+          contentHash: sha256,
+          segmentCount: 8,
+        },
+      ],
+    },
   ],
   claims: [
     { scopeCode: 'PUBLIC_METADATA', rightsBasisCode: 'ORIGINAL_WORK' },
     { scopeCode: 'CHAPTER_TEXT', rightsBasisCode: 'ORIGINAL_WORK' },
+    { scopeCode: 'COMMERCIAL_SALE', rightsBasisCode: 'ORIGINAL_WORK' },
+    { scopeCode: 'TRANSLATION_ADAPTATION', rightsBasisCode: 'ORIGINAL_WORK' },
   ],
   events: [
     {

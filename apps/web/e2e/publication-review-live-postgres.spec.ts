@@ -78,6 +78,10 @@ test('reviewer approval and owner-confirmed staged chapter release use the real 
   await page.locator('#publication-request-chapter-basis').selectOption('ORIGINAL_WORK');
   await page.getByLabel(/Tôi cũng yêu cầu xem xét quyền thương mại/).check();
   await page.locator('#publication-request-commercial-basis').selectOption('ORIGINAL_WORK');
+  await page.getByLabel(/Tôi cũng yêu cầu xem xét quyền chuyển ngữ/).check();
+  await page
+    .locator('#publication-request-translation-adaptation-basis')
+    .selectOption('ORIGINAL_WORK');
   await page.getByLabel(/Tôi đã rà soát các phạm vi/).check();
 
   const submissionResponse = page.waitForResponse(
@@ -96,6 +100,7 @@ test('reviewer approval and owner-confirmed staged chapter release use the real 
       { scopeCode: 'PUBLIC_METADATA', rightsBasisCode: 'ORIGINAL_WORK' },
       { scopeCode: 'CHAPTER_TEXT', rightsBasisCode: 'ORIGINAL_WORK' },
       { scopeCode: 'COMMERCIAL_SALE', rightsBasisCode: 'ORIGINAL_WORK' },
+      { scopeCode: 'TRANSLATION_ADAPTATION', rightsBasisCode: 'ORIGINAL_WORK' },
     ],
   });
   expect(submissionRequest.headers()['if-match']).toMatch(/^"publication-snapshot-[a-f0-9]{64}"$/);
@@ -226,6 +231,10 @@ test('reviewer approval and owner-confirmed staged chapter release use the real 
   await page.locator('#publication-request-chapter-basis').selectOption('ORIGINAL_WORK');
   await page.getByLabel(/Tôi cũng yêu cầu xem xét quyền thương mại/).check();
   await page.locator('#publication-request-commercial-basis').selectOption('ORIGINAL_WORK');
+  await page.getByLabel(/Tôi cũng yêu cầu xem xét quyền chuyển ngữ/).check();
+  await page
+    .locator('#publication-request-translation-adaptation-basis')
+    .selectOption('ORIGINAL_WORK');
   await page.getByLabel(/Tôi đã rà soát các phạm vi/).check();
   const chapterSubmissionResponse = page.waitForResponse(
     (response) =>

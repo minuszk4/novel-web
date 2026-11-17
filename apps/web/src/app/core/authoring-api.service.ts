@@ -1849,7 +1849,7 @@ function isValidPublicationRequestSubmission(
     !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value['policyVersion']) ||
     !Array.isArray(value['scopeClaims']) ||
     value['scopeClaims'].length < 2 ||
-    value['scopeClaims'].length > 3
+    value['scopeClaims'].length > 4
   ) {
     return false;
   }

@@ -285,10 +285,10 @@ function parseDetail(value: unknown): PublicationReviewDetail {
     !isSha256(value['snapshotSha256']) ||
     !Array.isArray(value['scopes']) ||
     value['scopes'].length < 2 ||
-    value['scopes'].length > 3 ||
+    value['scopes'].length > 4 ||
     !Array.isArray(value['claims']) ||
     value['claims'].length < 2 ||
-    value['claims'].length > 3 ||
+    value['claims'].length > 4 ||
     !Array.isArray(value['events']) ||
     value['events'].length < 1 ||
     value['events'].length > maxReviewEvents
@@ -482,7 +482,7 @@ function isScopeList(value: unknown): value is PublicationReviewScope[] {
   return (
     Array.isArray(value) &&
     value.length >= 2 &&
-    value.length <= 3 &&
+    value.length <= 4 &&
     value.every(isScope) &&
     new Set(value).size === value.length
   );

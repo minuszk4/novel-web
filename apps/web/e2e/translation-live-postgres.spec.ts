@@ -12,6 +12,8 @@ test('fake-local Reader preview reaches a private candidate through real API and
   const workId = process.env['TRANSLATION_LIVE_TEST_WORK_ID'];
   const chapterId = process.env['TRANSLATION_LIVE_TEST_CHAPTER_ID'];
   const screenshotPath = process.env['TRANSLATION_LIVE_TEST_SCREENSHOT'];
+  const reviewerSessionToken = process.env['TRANSLATION_REVIEW_LIVE_TEST_REVIEWER_SESSION_TOKEN'];
+  const translationStage = process.env['TRANSLATION_REVIEW_LIVE_TEST_STAGE'] ?? 'all';
   const auditScreenshot = (state: string): string =>
     screenshotPath!.replace(/\.png$/i, `-${state}.png`);
 
@@ -51,7 +53,98 @@ test('fake-local Reader preview reaches a private candidate through real API and
   await page.goto(`${baseUrl}/app/reader/${workId}/${chapterId}`);
   const systemStatus = await systemStatusPromise;
   expect(systemStatus.status()).toBe(200);
-  expect((await systemStatus.json()).features.translationFakePreviewEnabled).toBe(true);
+  const systemStatusBody = (await systemStatus.json()) as {
+    features: {
+      translationFakePreviewEnabled: boolean;
+      translationManualSubmissionEnabled: boolean;
+      translationPublicationEnabled: boolean;
+    };
+  };
+  expect(systemStatusBody.features.translationFakePreviewEnabled).toBe(true);
+  if (reviewerSessionToken) {
+    expect(systemStatusBody.features).toMatchObject({
+      translationManualSubmissionEnabled: true,
+      translationPublicationEnabled: true,
+    });
+  }
+
+  if (translationStage === 'release') {
+    const submissionId = process.env['TRANSLATION_REVIEW_LIVE_TEST_SUBMISSION_ID'];
+    const snapshotDigest = process.env['TRANSLATION_REVIEW_LIVE_TEST_SNAPSHOT_DIGEST'];
+    expect(reviewerSessionToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(submissionId).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(snapshotDigest).toMatch(/^[0-9a-f]{64}$/);
+    const acceptedPath = `/api/v1/authoring/manuscripts/${workId}/translations/accepted`;
+    const acceptedResponse = await page.request.get(`${baseUrl}${acceptedPath}?limit=20`);
+    expect(acceptedResponse.status()).toBe(200);
+    const accepted = (await acceptedResponse.json()) as {
+      items: { submissionId: string; snapshotDigest: string; rightsCurrent: boolean }[];
+    };
+    expect(accepted.items).toContainEqual(
+      expect.objectContaining({
+        submissionId,
+        snapshotDigest,
+        rightsCurrent: true,
+      }),
+    );
+
+    await page.goto(`${baseUrl}/app/authoring/${workId}/translations`);
+    await expect(page.getByRole('heading', { name: 'Bản dịch đã được duyệt' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Phát hành bản dịch' })).toBeVisible();
+    await page.getByRole('button', { name: 'Phát hành bản dịch' }).click();
+    await expect(page.getByRole('heading', { name: 'Xác nhận phát hành' })).toBeVisible();
+    const releaseResponsePromise = page.waitForResponse(
+      (response) =>
+        response.request().method() === 'POST' &&
+        new URL(response.url()).pathname ===
+          `/api/v1/authoring/translations/review-submissions/${submissionId}/release`,
+    );
+    await page.getByRole('button', { name: 'Xác nhận phát hành' }).click();
+    const releaseResponse = await releaseResponsePromise;
+    expect(releaseResponse.status()).toBe(201);
+    expect(releaseResponse.headers()['cache-control']).toContain('no-store');
+    expect(releaseResponse.request().postData()).toBeNull();
+    expect(releaseResponse.request().headers()['x-csrf-token']).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(releaseResponse.request().headers()['if-match']).toBe(
+      `"translation-review-${snapshotDigest}"`,
+    );
+    expect(releaseResponse.request().headers()['idempotency-key']).toMatch(
+      /^[A-Za-z0-9._~-]{16,128}$/,
+    );
+    const releaseBody = (await releaseResponse.json()) as {
+      versionId: string;
+      versionNo: number;
+      snapshotDigest: string;
+      replayed: boolean;
+    };
+    expect(releaseBody).toMatchObject({ versionNo: 1, snapshotDigest, replayed: false });
+    expect(releaseBody.versionId).toMatch(/^[0-9a-f-]{36}$/i);
+    await expect(
+      page.getByRole('heading', { name: 'Bản dịch phiên bản 1 đã được phát hành' }),
+    ).toBeVisible();
+
+    const languagesResponse = await page.request.get(
+      `${baseUrl}/api/v1/chapters/${chapterId}/translations`,
+    );
+    expect(languagesResponse.status()).toBe(200);
+    expect(languagesResponse.headers()['cache-control']).toContain('no-store');
+    expect(await languagesResponse.json()).toEqual({ languages: ['vi'] });
+    const translatedContentResponse = await page.request.get(
+      `${baseUrl}/api/v1/chapters/${chapterId}/translations/vi/content?limit=10`,
+    );
+    expect(translatedContentResponse.status()).toBe(200);
+    expect(translatedContentResponse.headers()['cache-control']).toContain('no-store');
+    expect(await translatedContentResponse.json()).toMatchObject({
+      chapterId,
+      workId,
+      translationVersionId: releaseBody.versionId,
+      translationVersionNo: 1,
+      targetLanguage: 'vi',
+      segments: [{ translatedText: 'Writer correction persisted through the private edit API.' }],
+      nextSegmentCursor: null,
+    });
+    return;
+  }
   await expect(page.getByRole('heading', { name: 'Live Translation Chapter' })).toBeVisible();
   await expect(page.getByText(sourceText, { exact: true })).toBeVisible();
   await expect(page.getByText('BẢN THỬ · KẾT QUẢ GIẢ')).toBeVisible();
@@ -460,5 +553,230 @@ test('fake-local Reader preview reaches a private candidate through real API and
     await narrowPage.screenshot({ path: auditScreenshot('candidate-effective-200-180x400-dpr2') });
   } finally {
     await narrowContext.close();
+  }
+
+  if (reviewerSessionToken) {
+    expect(reviewerSessionToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    const setSession = async (token: string) => {
+      await page.context().clearCookies({ name: '__Host-novel_session' });
+      await page.context().addCookies([
+        {
+          name: '__Host-novel_session',
+          value: token,
+          domain: 'localhost',
+          path: '/',
+          httpOnly: true,
+          secure: true,
+          sameSite: 'Lax',
+        },
+      ]);
+    };
+    const getCsrf = async (): Promise<string> => {
+      const response = await page.request.get(`${baseUrl}/api/v1/auth/csrf`);
+      expect(response.status()).toBe(200);
+      const body = (await response.json()) as { token: string };
+      expect(body.token).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      return body.token;
+    };
+
+    const readinessPath = `/api/v1/translation/jobs/${enqueueBody.jobId}/candidate/review-readiness`;
+    const readinessResponse = await page.request.get(`${baseUrl}${readinessPath}`);
+    expect(readinessResponse.status()).toBe(200);
+    expect(readinessResponse.headers()['cache-control']).toContain('no-store');
+    const readiness = (await readinessResponse.json()) as {
+      readyForSubmission: boolean;
+      editedSegments: number;
+      totalSegments: number;
+      pendingReview: boolean;
+      missingSegmentOrdinals: number[];
+    };
+    expect(readiness).toMatchObject({
+      readyForSubmission: true,
+      editedSegments: 1,
+      totalSegments: 1,
+      pendingReview: false,
+      missingSegmentOrdinals: [],
+    });
+    const ownerCsrf = await getCsrf();
+    const submissionResponse = await page.request.post(
+      `${baseUrl}${readinessPath.replace('/review-readiness', '/review-submissions')}`,
+      {
+        headers: {
+          'X-CSRF-Token': ownerCsrf,
+          'If-Match': readinessResponse.headers().etag!,
+          'Idempotency-Key': `translation-review-${enqueueBody.jobId}`,
+        },
+      },
+    );
+    expect(submissionResponse.status()).toBe(201);
+    expect(submissionResponse.headers()['cache-control']).toContain('no-store');
+    const submissionBody = (await submissionResponse.json()) as {
+      submissionId: string;
+      status: string;
+      segmentCount: number;
+      snapshotDigest: string;
+    };
+    expect(submissionBody).toMatchObject({ status: 'pending_review', segmentCount: 1 });
+    expect(submissionBody.submissionId).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(submissionBody.snapshotDigest).toMatch(/^[0-9a-f]{64}$/);
+
+    await setSession(reviewerSessionToken);
+    const queueResponse = await page.request.get(`${baseUrl}/api/v1/review/translations`);
+    expect(queueResponse.status()).toBe(200);
+    expect(queueResponse.headers()['cache-control']).toContain('no-store');
+    const queue = (await queueResponse.json()) as {
+      items: { submissionId: string; sourceCurrent: boolean; segmentCount: number }[];
+      nextCursor: string | null;
+    };
+    expect(queue.items).toContainEqual({
+      submissionId: submissionBody.submissionId,
+      sourceCurrent: true,
+      segmentCount: 1,
+      workTitle: expect.any(String),
+      chapterTitle: 'Live Translation Chapter',
+      sourceLanguage: 'en',
+      targetLanguage: 'vi',
+      submitterDisplayName: expect.any(String),
+      submittedAt: expect.any(String),
+    });
+    expect(queue.nextCursor).toBeNull();
+    await page.goto(`${baseUrl}/app/review/translations`);
+    await expect(page.getByRole('heading', { name: 'Hàng đợi duyệt bản dịch' })).toBeVisible();
+    await expect(
+      page.getByRole('link', { name: /Live E2E Novel Two · Live Translation Chapter/ }),
+    ).toBeVisible();
+    await page.getByRole('link', { name: 'Đối chiếu' }).click();
+    await expect(page.getByRole('heading', { name: 'Live E2E Novel Two' })).toBeVisible();
+    await expect(page.getByText(editText, { exact: true })).toBeVisible();
+    await expect(page.getByText('Chấp thuận không xuất bản')).toBeVisible();
+    await expectNoAxeViolations(page);
+
+    const detailPath = `/api/v1/review/translations/${submissionBody.submissionId}`;
+    const detailResponse = await page.request.get(`${baseUrl}${detailPath}`);
+    expect(detailResponse.status()).toBe(200);
+    expect(detailResponse.headers()['cache-control']).toContain('no-store');
+    expect(detailResponse.headers().etag).toBe(
+      `"translation-review-${submissionBody.snapshotDigest}"`,
+    );
+    const detail = (await detailResponse.json()) as {
+      status: string;
+      canDecide: boolean;
+      segments: { sourceText: string; submittedText: string }[];
+    };
+    expect(detail).toMatchObject({
+      status: 'pending_review',
+      canDecide: true,
+      segments: [{ sourceText, submittedText: editText }],
+    });
+    const reviewerCsrf = await getCsrf();
+    const decisionResponse = await page.request.post(`${baseUrl}${detailPath}/decisions`, {
+      headers: {
+        'X-CSRF-Token': reviewerCsrf,
+        'If-Match': detailResponse.headers().etag!,
+        'Idempotency-Key': `translation-decision-${submissionBody.submissionId}`,
+        'Content-Type': 'application/json',
+      },
+      data: { actionCode: 'ACCEPT', reasonCode: 'ACCURATE' },
+    });
+    expect(decisionResponse.status()).toBe(201);
+    expect(decisionResponse.headers()['cache-control']).toContain('no-store');
+    expect(await decisionResponse.json()).toMatchObject({
+      submissionId: submissionBody.submissionId,
+      actionCode: 'ACCEPT',
+      reasonCode: 'ACCURATE',
+      snapshotDigest: submissionBody.snapshotDigest,
+      replayed: false,
+    });
+    await page.reload();
+    await expect(page.getByText('Đã duyệt · chưa xuất bản')).toBeVisible();
+
+    if (translationStage === 'accept') return;
+
+    await setSession(sessionToken!);
+    const acceptedPath = `/api/v1/authoring/manuscripts/${workId}/translations/accepted`;
+    const acceptedResponse = await page.request.get(`${baseUrl}${acceptedPath}?limit=20`);
+    expect(acceptedResponse.status()).toBe(200);
+    expect(acceptedResponse.headers()['cache-control']).toContain('no-store');
+    const accepted = (await acceptedResponse.json()) as {
+      items: {
+        submissionId: string;
+        chapterId: string;
+        snapshotDigest: string;
+        rightsCurrent: boolean;
+      }[];
+    };
+    expect(accepted.items).toContainEqual({
+      submissionId: submissionBody.submissionId,
+      chapterId,
+      snapshotDigest: submissionBody.snapshotDigest,
+      rightsCurrent: true,
+      segmentCount: 1,
+      workTitle: expect.any(String),
+      chapterTitle: 'Live Translation Chapter',
+      targetLanguage: 'vi',
+      submittedAt: expect.any(String),
+      currentVersionId: null,
+      currentVersionNo: null,
+    });
+    await page.goto(`${baseUrl}/app/authoring/${workId}/translations`);
+    await expect(page.getByRole('heading', { name: 'Bản dịch đã được duyệt' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Phát hành bản dịch' })).toBeVisible();
+    await page.getByRole('button', { name: 'Phát hành bản dịch' }).click();
+    await expect(page.getByRole('heading', { name: 'Xác nhận phát hành' })).toBeVisible();
+
+    const releaseResponsePromise = page.waitForResponse(
+      (response) =>
+        response.request().method() === 'POST' &&
+        new URL(response.url()).pathname ===
+          `/api/v1/authoring/translations/review-submissions/${submissionBody.submissionId}/release`,
+    );
+    await page.getByRole('button', { name: 'Xác nhận phát hành' }).click();
+    const releaseResponse = await releaseResponsePromise;
+    expect(releaseResponse.status()).toBe(201);
+    expect(releaseResponse.headers()['cache-control']).toContain('no-store');
+    expect(releaseResponse.request().postData()).toBeNull();
+    expect(releaseResponse.request().headers()['x-csrf-token']).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(releaseResponse.request().headers()['if-match']).toBe(
+      `"translation-review-${submissionBody.snapshotDigest}"`,
+    );
+    expect(releaseResponse.request().headers()['idempotency-key']).toMatch(
+      /^[A-Za-z0-9._~-]{16,128}$/,
+    );
+    const releaseBody = (await releaseResponse.json()) as {
+      versionId: string;
+      versionNo: number;
+      snapshotDigest: string;
+      replayed: boolean;
+    };
+    expect(releaseBody).toMatchObject({
+      versionNo: 1,
+      snapshotDigest: submissionBody.snapshotDigest,
+      replayed: false,
+    });
+    expect(releaseBody.versionId).toMatch(/^[0-9a-f-]{36}$/i);
+    await expect(
+      page.getByRole('heading', { name: 'Bản dịch phiên bản 1 đã được phát hành' }),
+    ).toBeVisible();
+
+    const languagesResponse = await page.request.get(
+      `${baseUrl}/api/v1/chapters/${chapterId}/translations`,
+    );
+    expect(languagesResponse.status()).toBe(200);
+    expect(languagesResponse.headers()['cache-control']).toContain('no-store');
+    expect(await languagesResponse.json()).toEqual({ languages: ['vi'] });
+    const translatedContentResponse = await page.request.get(
+      `${baseUrl}/api/v1/chapters/${chapterId}/translations/vi/content?limit=10`,
+    );
+    expect(translatedContentResponse.status()).toBe(200);
+    expect(translatedContentResponse.headers()['cache-control']).toContain('no-store');
+    expect(await translatedContentResponse.json()).toMatchObject({
+      chapterId,
+      workId,
+      translationVersionId: releaseBody.versionId,
+      translationVersionNo: 1,
+      targetLanguage: 'vi',
+      segments: [{ translatedText: editText }],
+      nextSegmentCursor: null,
+    });
   }
 });
