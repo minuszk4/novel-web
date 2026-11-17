@@ -174,15 +174,23 @@ test('chapter editor saves plain text with CSRF and version headers without brow
     },
   );
 
+  await page.clock.install();
   await page.goto(`/app/authoring/${workId}/chapters/${chapterId}`);
   await expect(page.getByRole('heading', { name: 'Chương mở đầu' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Chương mở đầu' })).toBeFocused();
+  // Pause slightly in the future to avoid crossing the real browser clock between navigation and this call.
+  await page.clock.pauseAt(new Date(Date.now() + 5_000));
   const editor = page.getByLabel('Văn bản bản thảo');
   await page.keyboard.press('Tab');
   await expect(editor).toBeFocused();
   await page.keyboard.insertText('Đêm xuống.\n\nÁnh trăng hiện ra.');
+  // Flush Angular input updates without reaching the 900 ms autosave deadline.
+  await page.clock.runFor(100);
+  const saveButton = page.getByRole('button', { name: 'Lưu ngay' });
+  await expect(saveButton).toBeEnabled();
+  expect(savedRequest).toBeNull();
   await page.keyboard.press('Tab');
-  await expect(page.getByRole('button', { name: 'Lưu ngay' })).toBeFocused();
+  await expect(saveButton).toBeFocused();
   const csrfResponse = page.waitForResponse(
     (response) =>
       response.request().method() === 'GET' &&
@@ -221,6 +229,7 @@ test('chapter editor saves plain text with CSRF and version headers without brow
     csrf: csrfToken,
     idempotencyKey: expect.stringMatching(/^[A-Za-z0-9._~-]{16,128}$/),
   });
+  await page.clock.resume();
   await expect(page.getByRole('status').filter({ hasText: 'Đã lưu · phiên bản 1' })).toBeVisible();
   const storedContent = await page.evaluate(() =>
     JSON.stringify({ local: Object.values(localStorage), session: Object.values(sessionStorage) }),
