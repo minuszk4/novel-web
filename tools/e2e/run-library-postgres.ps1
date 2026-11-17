@@ -237,6 +237,9 @@ try {
     if ($IncludePublicationReviewWorkspace -and $IncludeCommerceSettlement) {
         throw 'Run -IncludePublicationReviewWorkspace separately from -IncludeCommerceSettlement because each seeds a different effective synthetic publication-rights policy.'
     }
+    if ($IncludeAuthoringOutline -and $IncludeCommerceSettlement) {
+        throw 'Run -IncludeAuthoringOutline separately from -IncludeCommerceSettlement because the commerce fixture creates an active synthetic rights policy while the outline journey verifies the fail-closed unconfigured-policy state.'
+    }
 
     $env:POSTGRES_PORT = [string]$hostPort
     $env:POSTGRES_PASSWORD = $postgresPassword
