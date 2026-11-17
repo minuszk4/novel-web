@@ -1,5 +1,6 @@
 import { expect, test } from './support';
 import type { Response } from '@playwright/test';
+import { writeFile } from 'node:fs/promises';
 
 const baseUrl = 'http://localhost:4300';
 
@@ -9,6 +10,12 @@ test('account Reader awards cultivation XP through the real API and PostgreSQL',
   const sessionToken = process.env['LIBRARY_LIVE_TEST_SESSION_TOKEN'];
   const workId = process.env['READER_LIVE_TEST_WORK_ID'];
   const chapterId = process.env['READER_LIVE_TEST_CHAPTER_ID'];
+  const rankUpJourney = process.env['CULTIVATION_LIVE_TEST_RANK_UP'] === 'true';
+  const correlationIds: string[] = [];
+  const rememberCorrelationId = (value: string | undefined): string | undefined => {
+    if (value) correlationIds.push(value);
+    return value;
+  };
 
   test.skip(
     !sessionToken || !workId || !chapterId,
@@ -47,21 +54,34 @@ test('account Reader awards cultivation XP through the real API and PostgreSQL',
     systemStatusPromise,
     initialProfilePromise,
   ]);
+  rememberCorrelationId(systemStatus.headers()['x-correlation-id']);
+  rememberCorrelationId(initialProfile.headers()['x-correlation-id']);
   expect(systemStatus.status()).toBe(200);
   expect((await systemStatus.json()).features.cultivationEnabled).toBe(true);
   expect(initialProfile.status()).toBe(200);
-  expect((await initialProfile.json()).enabled).toBe(false);
-  await expect(page.getByRole('button', { name: 'Bật hành trình' })).toBeVisible();
+  const initialProfileBody = await initialProfile.json();
+  expect(initialProfileBody.enabled).toBe(rankUpJourney);
+  if (rankUpJourney) {
+    expect(initialProfileBody.totalXp).toBe(99);
+    expect(initialProfileBody.todayXpEarned).toBe(99);
+    expect(initialProfileBody.currentRank).toMatchObject({ key: 'mortal', name: 'Phàm nhân' });
+    expect(initialProfileBody.nextRank).toMatchObject({ key: 'qi-1', name: 'Luyện Khí tầng 1' });
+    expect(initialProfileBody.xpToNextRank).toBe(1);
+    await expect(page.getByRole('heading', { name: 'Phàm nhân' })).toBeVisible();
+  } else {
+    await expect(page.getByRole('button', { name: 'Bật hành trình' })).toBeVisible();
 
-  const enableProfilePromise = page.waitForResponse(
-    (response) =>
-      response.request().method() === 'PUT' &&
-      new URL(response.url()).pathname === '/api/v1/me/cultivation/settings',
-  );
-  await page.getByRole('button', { name: 'Bật hành trình' }).click();
-  const enableProfile = await enableProfilePromise;
-  expect(enableProfile.status()).toBe(200);
-  expect((await enableProfile.json()).enabled).toBe(true);
+    const enableProfilePromise = page.waitForResponse(
+      (response) =>
+        response.request().method() === 'PUT' &&
+        new URL(response.url()).pathname === '/api/v1/me/cultivation/settings',
+    );
+    await page.getByRole('button', { name: 'Bật hành trình' }).click();
+    const enableProfile = await enableProfilePromise;
+    rememberCorrelationId(enableProfile.headers()['x-correlation-id']);
+    expect(enableProfile.status()).toBe(200);
+    expect((await enableProfile.json()).enabled).toBe(true);
+  }
   await expect(page.getByRole('heading', { name: 'Hành trình tu luyện đang bật' })).toBeVisible();
 
   const baseSessionPath = '/api/v1/me/reading-sessions';
@@ -80,6 +100,7 @@ test('account Reader awards cultivation XP through the real API and PostgreSQL',
     replayed: boolean;
     awardedXp: number;
     totalActiveSeconds: number;
+    correlationId: string | undefined;
   }> = [];
   let loseFirstCommittedHeartbeatResponse = true;
 
@@ -98,6 +119,7 @@ test('account Reader awards cultivation XP through the real API and PostgreSQL',
       awardedXp: number;
       totalActiveSeconds: number;
     };
+    const correlationId = rememberCorrelationId(upstream.headers()['x-correlation-id']);
     heartbeatBackendResponses.push({
       ...requestBody,
       idempotencyKey: request.headers()['idempotency-key'],
@@ -105,6 +127,7 @@ test('account Reader awards cultivation XP through the real API and PostgreSQL',
       replayed: upstream.headers()['idempotency-replayed'] === 'true',
       awardedXp: heartbeatBody.awardedXp,
       totalActiveSeconds: heartbeatBody.totalActiveSeconds,
+      correlationId,
     });
 
     if (loseFirstCommittedHeartbeatResponse) {
@@ -157,6 +180,7 @@ test('account Reader awards cultivation XP through the real API and PostgreSQL',
     page.getByText('Live E2E source text is served from PostgreSQL.', { exact: true }),
   ).toBeVisible();
   const start = await startPromise;
+  rememberCorrelationId(start.headers()['x-correlation-id']);
   expect(start.status()).toBe(201);
   const startBody = await start.json();
   expect(startBody.state).toBe('active');
@@ -175,11 +199,19 @@ test('account Reader awards cultivation XP through the real API and PostgreSQL',
     replayed: false,
     awardedXp: 0,
   });
-  expect(heartbeatBackendResponses[1]).toEqual({
-    ...heartbeatBackendResponses[0],
+  const firstHeartbeatBackendResponse = heartbeatBackendResponses[0];
+  expect(heartbeatBackendResponses[1]).toMatchObject({
+    sequence: firstHeartbeatBackendResponse?.sequence,
+    active: firstHeartbeatBackendResponse?.active,
+    idempotencyKey: firstHeartbeatBackendResponse?.idempotencyKey,
     status: 200,
     replayed: true,
+    awardedXp: firstHeartbeatBackendResponse?.awardedXp,
+    totalActiveSeconds: firstHeartbeatBackendResponse?.totalActiveSeconds,
   });
+  expect(heartbeatBackendResponses[1]?.correlationId).not.toBe(
+    heartbeatBackendResponses[0]?.correlationId,
+  );
   await expect.poll(() => heartbeatClientStatuses.length).toBeGreaterThanOrEqual(2);
   expect(heartbeatClientStatuses.slice(0, 2)).toEqual([503, 200]);
   await expect
@@ -203,6 +235,7 @@ test('account Reader awards cultivation XP through the real API and PostgreSQL',
   );
   await page.getByRole('link', { name: 'Quay lại chi tiết tác phẩm' }).click();
   const close = await closePromise;
+  rememberCorrelationId(close.headers()['x-correlation-id']);
   expect(close.status()).toBe(200);
   expect((await close.json()).state).toBe('closed');
 
@@ -213,9 +246,62 @@ test('account Reader awards cultivation XP through the real API and PostgreSQL',
   );
   await page.goto(`${baseUrl}/app/cultivation`);
   const persistedProfileResponse = await persistedProfilePromise;
+  rememberCorrelationId(persistedProfileResponse.headers()['x-correlation-id']);
   expect(persistedProfileResponse.status()).toBe(200);
   const persistedProfile = await persistedProfileResponse.json();
   expect(persistedProfile.enabled).toBe(true);
-  expect(persistedProfile.totalXp).toBeGreaterThan(0);
-  expect(persistedProfile.todayXpEarned).toBeGreaterThan(0);
+  if (rankUpJourney) {
+    expect(persistedProfile.totalXp).toBe(100);
+    expect(persistedProfile.todayXpEarned).toBe(100);
+    expect(persistedProfile.currentRank).toMatchObject({ key: 'qi-1', name: 'Luyện Khí tầng 1' });
+    expect(persistedProfile.nextRank).toMatchObject({ key: 'qi-2', name: 'Luyện Khí tầng 2' });
+    expect(persistedProfile.xpToNextRank).toBe(100);
+    await expect(page.getByRole('heading', { name: 'Luyện Khí tầng 1' })).toBeVisible();
+    const screenshotPath = process.env['CULTIVATION_LIVE_TEST_SCREENSHOT'];
+    if (screenshotPath) await page.screenshot({ path: screenshotPath, fullPage: true });
+    expect(correlationIds.length).toBeGreaterThanOrEqual(7);
+    expect(
+      correlationIds.every((id) =>
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id),
+      ),
+    ).toBe(true);
+    expect(new Set(correlationIds).size).toBe(correlationIds.length);
+    const tracePath = process.env['CULTIVATION_LIVE_TEST_TRACE'];
+    if (tracePath) {
+      await writeFile(
+        tracePath,
+        `${JSON.stringify(
+          {
+            rankBefore: {
+              totalXp: initialProfileBody.totalXp,
+              rank: initialProfileBody.currentRank.name,
+              nextRank: initialProfileBody.nextRank.name,
+            },
+            rankAfter: {
+              totalXp: persistedProfile.totalXp,
+              rank: persistedProfile.currentRank.name,
+              nextRank: persistedProfile.nextRank.name,
+            },
+            heartbeatResponses: heartbeatBackendResponses.map(
+              ({ sequence, status, replayed, awardedXp, totalActiveSeconds, correlationId }) => ({
+                sequence,
+                status,
+                replayed,
+                awardedXp,
+                totalActiveSeconds,
+                correlationId,
+              }),
+            ),
+            correlationIds,
+          },
+          null,
+          2,
+        )}\n`,
+        'utf8',
+      );
+    }
+  } else {
+    expect(persistedProfile.totalXp).toBeGreaterThan(0);
+    expect(persistedProfile.todayXpEarned).toBeGreaterThan(0);
+  }
 });

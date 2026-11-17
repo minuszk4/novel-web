@@ -9,7 +9,8 @@ param(
     [switch]$IncludePublicationRightsAcceptance,
     [switch]$IncludePublicationReviewWorkspace,
     [switch]$IncludePaymentReturn,
-    [switch]$IncludeCommerceSettlement
+    [switch]$IncludeCommerceSettlement,
+    [switch]$IncludeCultivationRankUp
 )
 
 $ErrorActionPreference = 'Stop'
@@ -80,6 +81,7 @@ $environmentNames = @(
     'AUTHORING_EDITOR_LIVE_TEST_SCREENSHOT',
     'TRANSLATION_LIVE_TEST_WORK_ID', 'TRANSLATION_LIVE_TEST_CHAPTER_ID', 'TRANSLATION_LIVE_TEST_SCREENSHOT',
     'READER_LIVE_TEST_CHAPTER_ID', 'READER_LIVE_TEST_SCREENSHOT',
+    'CULTIVATION_LIVE_TEST_RANK_UP', 'CULTIVATION_LIVE_TEST_SCREENSHOT', 'CULTIVATION_LIVE_TEST_TRACE',
     'WORK_DETAIL_LIVE_TEST_SCREENSHOT', 'PRIVATE_IMPORT_LIVE_TEST_SCREENSHOT',
     'GLOSSARY_LIVE_TEST_GLOSSARY_ID', 'GLOSSARY_LIVE_TEST_SCREENSHOT', 'GLOSSARY_EDITOR_LIVE_TEST_SCREENSHOT'
 )
@@ -186,6 +188,8 @@ $commerceRightsPolicySha256 = [Convert]::ToHexString(
 ).ToLowerInvariant()
 $screenshotPath = Join-Path $evidenceDirectory 'account-library-live.png'
 $readerScreenshotPath = Join-Path $evidenceDirectory 'account-reader-live.png'
+$cultivationRankUpScreenshotPath = Join-Path $evidenceDirectory 'cultivation-rank-up-live.png'
+$cultivationRankUpTracePath = Join-Path $evidenceDirectory 'cultivation-rank-up-trace.json'
 $workDetailScreenshotPath = Join-Path $evidenceDirectory 'account-work-detail-live.png'
 $privateImportScreenshotPath = Join-Path $evidenceDirectory 'private-import-commit-live.png'
 $glossaryImportScreenshotPath = Join-Path $evidenceDirectory 'glossary-import-live.png'
@@ -461,6 +465,38 @@ VALUES
 "@
     }
 
+    $cultivationRankUpFixtureSql = ''
+    if ($IncludeCultivationRankUp) {
+        $cultivationRankSeedSessionId = [guid]::NewGuid()
+        $cultivationRankUpFixtureSql = @"
+INSERT INTO cultivation_profiles (user_id, enabled, catalog_version)
+VALUES ('$userId', TRUE, 'cultivation-v1');
+INSERT INTO cultivation_daily_active_time
+    (user_id, activity_date, eligible_microseconds, catalog_version, policy_version)
+VALUES
+    ('$userId', (transaction_timestamp() AT TIME ZONE 'UTC')::date, 5940000000, 'cultivation-v1', 'xp-v1');
+INSERT INTO cultivation_reading_sessions
+    (id, user_id, work_id, chapter_id, catalog_version, policy_version,
+     start_idempotency_key, start_request_sha256, state, started_at, last_heartbeat_at)
+VALUES
+    ('$cultivationRankSeedSessionId', '$userId', '$firstWorkId', '$readerChapterId',
+     'cultivation-v1', 'xp-v1', 'cultivation-rank-up-seed-$cultivationRankSeedSessionId',
+     decode(repeat('00', 32), 'hex'), 'active', transaction_timestamp() - INTERVAL '2 minutes',
+     transaction_timestamp() - INTERVAL '1 minute');
+INSERT INTO cultivation_xp_ledger
+    (user_id, source_session_id, active_minute_index, activity_at,
+     xp_delta, catalog_version, policy_version)
+SELECT '$userId', '$cultivationRankSeedSessionId', minute_index,
+       transaction_timestamp() - INTERVAL '1 second', 1, 'cultivation-v1', 'xp-v1'
+FROM generate_series(0, 98) AS minutes(minute_index);
+UPDATE cultivation_reading_sessions
+SET state = 'closed', closed_at = clock_timestamp(), last_heartbeat_at = clock_timestamp()
+WHERE id = '$cultivationRankSeedSessionId';
+SELECT rebuild_cultivation_daily_xp_aggregate(
+    '$userId', (transaction_timestamp() AT TIME ZONE 'UTC')::date);
+"@
+    }
+
     $fixtureSql = @"
 BEGIN;
 INSERT INTO users (id, display_name, contact_email, email_verified_at, status)
@@ -505,6 +541,7 @@ INSERT INTO segments (id, chapter_revision_id, ordinal, segment_type, source_tex
 VALUES
 ('$readerSegmentId', '$readerRevisionId', 1, 'paragraph', '$readerSourceText', 'live-reader-p1', decode('$readerSourceHash', 'hex')),
 ('$translationSegmentId', '$translationRevisionId', 1, 'paragraph', '$translationSourceText', 'live-translation-p1', decode('$translationSourceHash', 'hex'));
+$cultivationRankUpFixtureSql
 $paymentReturnFixtureSql
 $commerceSettlementFixtureSql
 INSERT INTO glossaries (id, owner_user_id, name, scope_type, source_language, target_language, version)
@@ -552,6 +589,11 @@ COMMIT;
     $env:READER_LIVE_TEST_WORK_ID = [string]$firstWorkId
     $env:READER_LIVE_TEST_CHAPTER_ID = [string]$readerChapterId
     $env:READER_LIVE_TEST_SCREENSHOT = $readerScreenshotPath
+    if ($IncludeCultivationRankUp) {
+        $env:CULTIVATION_LIVE_TEST_RANK_UP = 'true'
+        $env:CULTIVATION_LIVE_TEST_SCREENSHOT = $cultivationRankUpScreenshotPath
+        $env:CULTIVATION_LIVE_TEST_TRACE = $cultivationRankUpTracePath
+    }
     $env:WORK_DETAIL_LIVE_TEST_SCREENSHOT = $workDetailScreenshotPath
     $env:PRIVATE_IMPORT_LIVE_TEST_SCREENSHOT = $privateImportScreenshotPath
     $env:GLOSSARY_LIVE_TEST_GLOSSARY_ID = [string]$glossaryId
@@ -769,6 +811,7 @@ COMMIT;
         $(if ($IncludeAuthoringDraftApi) { '- Separate PostgreSQL authoring draft API test: 1/1 passed for owner/policy/CSRF gates, ETags, immutable writes, exact replay, stale-version response, outline/Reader isolation, and persisted row counts; see authoring-draft-api-test.log' } else { '- Separate PostgreSQL authoring draft API test: not requested' })
         $(if ($IncludeAuthoringEmptyChapterDelete) { '- Separate PostgreSQL empty chapter deletion API tests: 2/2 passed for soft delete/replay/security and transactional save/delete race; see authoring-empty-chapter-delete-api-test.log' } else { '- Separate PostgreSQL empty chapter deletion API tests: not requested' })
         '- Cultivation feature flag: enabled only in this random disposable API process; prior process value restored during cleanup'
+        $(if ($IncludeCultivationRankUp) { '- Cultivation rank-up: synthetic enabled profile started at 99 XP / Phàm nhân, one real Reader award reached 100 XP / Luyện Khí tầng 1; fixture session closed before browser journey; response correlation IDs saved in cultivation-rank-up-trace.json' } else { '- Cultivation rank-up boundary journey: not requested' })
         $(if ($IncludeTranslationPreview) { '- Translation feature/provider/API/worker flags: fake-local only, enabled only in this random disposable API process; no external NMT provider was configured or called; prior process values restored during cleanup' } else { '- Translation fake-local flags: forced false for this disposable API process; prior process values restored during cleanup' })
         "- PostgreSQL cultivation ledger: $cultivationLedgerXp XP across $cultivationLedgerEntries entries for the synthetic user"
         $(if ($glossaryParts.Count -eq 8) { "- PostgreSQL glossary import/editor after revision preview: version $($glossaryParts[0]), active revision $($glossaryParts[1]), latest draft $($glossaryParts[2]), $($glossaryParts[3]) immutable term rows, $($glossaryParts[4]) aliases, one idempotency receipt and one apply row; preview did not create a revision or change the active pointer" } else { '- PostgreSQL glossary import/editor: not verified' })
@@ -782,7 +825,8 @@ COMMIT;
         "- Elapsed: $duration seconds"
         "- Cleanup: $cleanup"
         "- Staging cleanup: $stagingCleanup"
-        "- Screenshots: $([System.IO.Path]::GetFileName($screenshotPath)), $([System.IO.Path]::GetFileName($workDetailScreenshotPath)), $([System.IO.Path]::GetFileName($readerScreenshotPath)), $([System.IO.Path]::GetFileName($glossaryImportScreenshotPath)), $([System.IO.Path]::GetFileName($glossaryEditorScreenshotPath)), $([System.IO.Path]::GetFileName($authoringScreenshotPath))$(if ($IncludeAuthoringOutline) { ', authoring-outline-live.png' } else { '' })$(if ($IncludeAuthoringChapterEditor) { ', authoring-chapter-editor-live.png' } else { '' })$(if ($IncludePublicationRightsAcceptance) { ', publication-rights-policy-live.png' } else { '' })$(if ($IncludePublicationReviewWorkspace) { ', publication-review-workspace-live.png' } else { '' })$(if ($IncludeTranslationPreview) { ', translation-job-live.png' } else { '' })$(if ($IncludePaymentReturn) { ', momo-payment-return-pending-live.png, momo-payment-history-zero-live.png' } else { '' })$(if ($IncludeCommerceSettlement) { ', momo-commerce-success-live.png, momo-commerce-unlocked-chapter-live.png' } else { '' }), private-import-commit-live.png, private-import-detail-live.png, private-import-reader-live.png, private-import-html-commit-live.png, private-import-html-detail-live.png, private-import-html-reader-live.png, private-import-markdown-commit-live.png, private-import-markdown-detail-live.png, private-import-markdown-reader-live.png, private-import-epub-commit-live.png, private-import-epub-detail-live.png, private-import-epub-reader-live.png"
+        "- Screenshots: $([System.IO.Path]::GetFileName($screenshotPath)), $([System.IO.Path]::GetFileName($workDetailScreenshotPath)), $([System.IO.Path]::GetFileName($readerScreenshotPath))$(if ($IncludeCultivationRankUp) { ', cultivation-rank-up-live.png' } else { '' }), $([System.IO.Path]::GetFileName($glossaryImportScreenshotPath)), $([System.IO.Path]::GetFileName($glossaryEditorScreenshotPath)), $([System.IO.Path]::GetFileName($authoringScreenshotPath))$(if ($IncludeAuthoringOutline) { ', authoring-outline-live.png' } else { '' })$(if ($IncludeAuthoringChapterEditor) { ', authoring-chapter-editor-live.png' } else { '' })$(if ($IncludePublicationRightsAcceptance) { ', publication-rights-policy-live.png' } else { '' })$(if ($IncludePublicationReviewWorkspace) { ', publication-review-workspace-live.png' } else { '' })$(if ($IncludeTranslationPreview) { ', translation-job-live.png' } else { '' })$(if ($IncludePaymentReturn) { ', momo-payment-return-pending-live.png, momo-payment-history-zero-live.png' } else { '' })$(if ($IncludeCommerceSettlement) { ', momo-commerce-success-live.png, momo-commerce-unlocked-chapter-live.png' } else { '' }), private-import-commit-live.png, private-import-detail-live.png, private-import-reader-live.png, private-import-html-commit-live.png, private-import-html-detail-live.png, private-import-html-reader-live.png, private-import-markdown-commit-live.png, private-import-markdown-detail-live.png, private-import-markdown-reader-live.png, private-import-epub-commit-live.png, private-import-epub-detail-live.png, private-import-epub-reader-live.png"
+        $(if ($IncludeCultivationRankUp) { '- Cultivation response trace: cultivation-rank-up-trace.json' } else { '- Cultivation response trace: not requested' })
         "- Logs: api-build.log, api-stdout.log, api-stderr.log, playwright.log$(if ($IncludeAuthoringDraftApi) { ', authoring-draft-api-test.log' } else { '' })$(if ($IncludeAuthoringEmptyChapterDelete) { ', authoring-empty-chapter-delete-api-test.log' } else { '' })"
         $(if ($failure) { "- Failure: $failure" } else { '- Failure: none' })
         ''
