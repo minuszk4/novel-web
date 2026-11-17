@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -319,6 +320,34 @@ class CreditTopUpControllerTests {
       assertTrue(response.getHeader("Cache-Control").contains("no-store"));
       assertTrue(response.getHeader("Location") == null);
     }
+    verifyNoInteractions(checkoutService, orderService);
+  }
+
+  @Test
+  void catalogFailureReturnsSafeUnavailableResponseWithoutStartingCheckout() throws Exception {
+    CreditPackCatalog unavailableCatalog = mock(CreditPackCatalog.class);
+    when(policyService.requiredAcceptance(actorId))
+        .thenReturn(PolicyService.RequiredAcceptance.COMPLETE);
+    when(unavailableCatalog.offers()).thenThrow(new IllegalStateException("catalog-store-secret"));
+    MockMvc catalogFailureMvc =
+        MockMvcBuilders.standaloneSetup(
+                new CreditTopUpController(
+                    unavailableCatalog, checkoutService, orderService, policyService, true))
+            .build();
+
+    var response =
+        catalogFailureMvc
+            .perform(get("/api/v1/credit-packs").principal(authentication()))
+            .andReturn()
+            .getResponse();
+
+    assertEquals(503, response.getStatus());
+    assertTrue(response.getContentAsString().contains("CREDIT_PACK_CATALOG_UNAVAILABLE"));
+    assertTrue(!response.getContentAsString().contains("catalog-store-secret"));
+    assertTrue(response.getHeader("Cache-Control").contains("no-store"));
+    assertEquals("no-cache", response.getHeader("Pragma"));
+    assertTrue(response.getHeader("Location") == null);
+    verify(unavailableCatalog).offers();
     verifyNoInteractions(checkoutService, orderService);
   }
 
