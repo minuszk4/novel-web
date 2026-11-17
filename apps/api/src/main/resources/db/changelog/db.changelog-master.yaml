@@ -179,3 +179,6 @@ databaseChangeLog:
   - include:
       file: changes/068-translation-publication.sql
       relativeToChangelogFile: true
+  - include:
+      file: changes/069-work-subscriptions.sql
+      relativeToChangelogFile: true

@@ -50,6 +50,72 @@
           <span aria-hidden="true">i</span>
           <p>Mục lục chỉ chứa số chương và tiêu đề; trang này không tải văn bản chương.</p>
         </div>
+        <section class="work-subscription-control" aria-label="Theo dõi cập nhật truyện">
+          @if (subscriptionState() === 'checking') {
+            <p class="library-status-message" role="status" aria-live="polite">
+              Đang kiểm tra trạng thái theo dõi…
+            </p>
+          } @else if (subscriptionState() === 'signed-out') {
+            <a
+              class="button button-outline"
+              [routerLink]="['/sign-in']"
+              [queryParams]="{ returnTo: followReturnPath() }"
+            >
+              Đăng nhập để theo dõi cập nhật
+            </a>
+          } @else if (subscriptionState() === 'not-following') {
+            <button class="button button-outline" type="button" (click)="follow()">
+              Theo dõi cập nhật chương
+            </button>
+          } @else if (subscriptionState() === 'following') {
+            <p class="work-subscription-status">
+              Đã lưu lựa chọn theo dõi; thông báo chương mới chưa được bật.
+            </p>
+            <div class="work-subscription-actions">
+              <button class="button button-outline" type="button" (click)="mute()">
+                Tạm tắt thông báo
+              </button>
+              <button class="text-button" type="button" (click)="unfollow()">Bỏ theo dõi</button>
+            </div>
+          } @else if (subscriptionState() === 'muted') {
+            <p class="work-subscription-status">
+              Bạn đang theo dõi; đã tắt lựa chọn nhận thông báo.
+            </p>
+            <div class="work-subscription-actions">
+              <button class="button button-outline" type="button" (click)="follow()">
+                Bật lại lựa chọn thông báo
+              </button>
+              <button class="text-button" type="button" (click)="unfollow()">Bỏ theo dõi</button>
+            </div>
+          } @else if (subscriptionState() === 'saving') {
+            <p class="library-status-message" role="status" aria-live="polite">
+              Đang lưu trạng thái theo dõi…
+            </p>
+          } @else if (subscriptionState() === 'policy-required') {
+            <p class="library-sync-error" role="alert">
+              Hãy hoàn tất xác nhận Điều khoản và Quyền riêng tư trước khi theo dõi.
+            </p>
+            <a
+              class="button button-outline"
+              [routerLink]="['/app/setup']"
+              [queryParams]="{ returnUrl: followReturnPath() }"
+            >
+              Xem xác nhận tài khoản
+            </a>
+          } @else {
+            @if (subscriptionMessage()) {
+              <p class="library-sync-error" role="alert">{{ subscriptionMessage() }}</p>
+            }
+            <button class="button button-outline" type="button" (click)="retrySubscription()">
+              Thử tải trạng thái theo dõi
+            </button>
+          }
+          @if (subscriptionMessage() && subscriptionState() !== 'error') {
+            <p class="library-status-message" role="status" aria-live="polite">
+              {{ subscriptionMessage() }}
+            </p>
+          }
+        </section>
         <a
           class="button button-primary"
           [routerLink]="['/sign-in']"

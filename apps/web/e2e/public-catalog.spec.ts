@@ -162,6 +162,17 @@ test('opens public metadata detail and signs in before entering the Reader', asy
       });
     },
   );
+  await page.route(
+    (url) => url.pathname === '/api/v1/works/' + workId + '/subscription',
+    async (route) => {
+      await route.fulfill({
+        status: 401,
+        contentType: 'application/problem+json',
+        headers: { 'Cache-Control': 'no-store', Pragma: 'no-cache' },
+        body: JSON.stringify({ code: 'UNAUTHENTICATED' }),
+      });
+    },
+  );
   await page.route('**/api/v1/catalog/works**', async (route) => {
     if (new URL(route.request().url()).pathname !== '/api/v1/catalog/works') {
       await route.fallback();
@@ -184,6 +195,9 @@ test('opens public metadata detail and signs in before entering the Reader', asy
       'href',
       '/sign-in?returnTo=%2Fapp%2Fworks%2F' + workId,
     );
+    await expect(
+      page.getByRole('link', { name: 'Đăng nhập để theo dõi cập nhật' }),
+    ).toHaveAttribute('href', '/sign-in?returnTo=%2Fworks%2F' + workId);
     await expect(page.getByRole('link', { name: /Đăng nhập để đọc/ }).first()).toHaveAttribute(
       'href',
       '/sign-in?returnTo=%2Fapp%2Fworks%2F' + workId,
@@ -225,6 +239,91 @@ test('opens public metadata detail and signs in before entering the Reader', asy
   expect(requests.filter((path) => path.endsWith('/chapters'))).toHaveLength(3);
   expect(requests.filter((path) => path === '/api/v1/catalog/works/' + workId)).toHaveLength(2);
   expect(requests.some((path) => path.endsWith('/content'))).toBe(false);
+});
+
+test('follows, mutes, re-enables and unfollows a public work with fresh CSRF and ETags', async ({
+  page,
+}) => {
+  const workId = works[0].id;
+  const subscriptionPath = '/api/v1/works/' + workId + '/subscription';
+  const etags: string[] = [];
+  let state = { following: false, notificationsEnabled: false };
+  let version = 0;
+  await installCatalog(page, true);
+  await page.route('**/api/v1/auth/csrf', (route) =>
+    json(route, { token: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' }),
+  );
+  await page.route('**/api/v1/catalog/works/' + workId, (route) => json(route, works[0]));
+  await page.route('**/api/v1/catalog/works/' + workId + '/chapters**', (route) =>
+    json(route, { workId, items: [{ ordinal: 1, title: 'Chương một' }], nextAfterOrdinal: null }),
+  );
+  await page.route(
+    (url) => url.pathname === subscriptionPath,
+    async (route) => {
+      const request = route.request();
+      if (request.method() === 'GET') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          headers: {
+            'Cache-Control': 'no-store',
+            Pragma: 'no-cache',
+            ETag: version === 0 ? '"subscription-absent"' : '"subscription-' + version + '"',
+          },
+          body: JSON.stringify(state),
+        });
+        return;
+      }
+      etags.push(request.headers()['if-match'] ?? '');
+      if (request.method() === 'PUT') {
+        const body = request.postDataJSON() as { notificationsEnabled: boolean };
+        state = { following: true, notificationsEnabled: body.notificationsEnabled };
+        version += 1;
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          headers: {
+            'Cache-Control': 'no-store',
+            Pragma: 'no-cache',
+            ETag: '"subscription-' + version + '"',
+          },
+          body: JSON.stringify(state),
+        });
+        return;
+      }
+      state = { following: false, notificationsEnabled: false };
+      version += 1;
+      await route.fulfill({
+        status: 204,
+        headers: {
+          'Cache-Control': 'no-store',
+          Pragma: 'no-cache',
+          ETag: '"subscription-' + version + '"',
+        },
+      });
+    },
+  );
+
+  await page.setViewportSize({ width: 360, height: 800 });
+  await page.goto('/works/' + workId);
+  await page.getByRole('button', { name: 'Theo dõi cập nhật chương' }).click();
+  await expect(page.getByRole('status')).toContainText('Đã lưu lựa chọn theo dõi truyện này.');
+  await page.getByRole('button', { name: 'Tạm tắt thông báo' }).click();
+  await expect(page.getByRole('status')).toContainText(
+    'Đã lưu lựa chọn tạm tắt thông báo cho truyện này.',
+  );
+  await page.getByRole('button', { name: 'Bật lại lựa chọn thông báo' }).click();
+  await expect(page.getByRole('status')).toContainText('Đã lưu lựa chọn theo dõi truyện này.');
+  await page.getByRole('button', { name: 'Bỏ theo dõi' }).click();
+  await expect(page.getByRole('status')).toContainText('Đã bỏ theo dõi truyện này.');
+  await expect(page.getByRole('button', { name: 'Theo dõi cập nhật chương' })).toBeVisible();
+  expect(etags).toEqual([
+    '"subscription-absent"',
+    '"subscription-1"',
+    '"subscription-2"',
+    '"subscription-3"',
+  ]);
+  await expectNoAxeViolations(page);
 });
 
 test('does not request public work data when the catalog feature is disabled on a deep link', async ({

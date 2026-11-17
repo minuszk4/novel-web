@@ -276,7 +276,8 @@ class PostgresSchemaIntegrationTests {
           "publication_work_takedown_events",
           "publication_release_events",
           "publication_takedown_purge_requests",
-          "publication_takedown_purge_attempts");
+          "publication_takedown_purge_attempts",
+          "work_subscriptions");
 
   @Autowired private DataSource dataSource;
 
@@ -454,7 +455,7 @@ class PostgresSchemaIntegrationTests {
             connection.prepareStatement("SELECT COUNT(*) FROM databasechangelog");
         ResultSet changesets = changesetCount.executeQuery()) {
       changesets.next();
-      assertEquals(171, changesets.getInt(1), "unexpected number of applied changesets");
+      assertEquals(172, changesets.getInt(1), "unexpected number of applied changesets");
     }
 
     Set<String> actualTables = new HashSet<>();
@@ -2864,6 +2865,100 @@ class PostgresSchemaIntegrationTests {
       assertTrue(publicationScopeIsCurrent(approvableFixture.workId(), "CHAPTER_TEXT"));
       assertTrue(publicationScopeIsCurrent(approvableFixture.workId(), "COMMERCIAL_SALE"));
 
+      String subscriptionPath = "/api/v1/works/" + approvableFixture.workId() + "/subscription";
+      MvcResult anonymousSubscription = mockMvc.perform(get(subscriptionPath)).andReturn();
+      assertEquals(401, anonymousSubscription.getResponse().getStatus());
+      assertTrue(
+          anonymousSubscription.getResponse().getContentAsString().contains("UNAUTHENTICATED"));
+      MvcResult absentSubscription =
+          mockMvc.perform(get(subscriptionPath).cookie(ownerCookie)).andReturn();
+      assertEquals(
+          200,
+          absentSubscription.getResponse().getStatus(),
+          absentSubscription.getResponse().getContentAsString());
+      assertEquals(
+          "\"subscription-absent\"", absentSubscription.getResponse().getHeader(HttpHeaders.ETAG));
+      assertEquals(
+          "no-store", absentSubscription.getResponse().getHeader(HttpHeaders.CACHE_CONTROL));
+      JsonNode absentSubscriptionBody =
+          objectMapper.readTree(absentSubscription.getResponse().getContentAsString());
+      assertFalse(absentSubscriptionBody.path("following").asBoolean());
+      assertFalse(absentSubscriptionBody.path("notificationsEnabled").asBoolean());
+      jakarta.servlet.http.Cookie otherActorCookie =
+          new jakarta.servlet.http.Cookie(
+              "__Host-novel_session", staleContentOwnerSession.cookieValue());
+      MvcResult otherActorSubscription =
+          mockMvc.perform(get(subscriptionPath).cookie(otherActorCookie)).andReturn();
+      assertEquals(200, otherActorSubscription.getResponse().getStatus());
+      assertEquals(
+          "\"subscription-absent\"",
+          otherActorSubscription.getResponse().getHeader(HttpHeaders.ETAG));
+      MvcResult mutationWithoutCsrf =
+          mockMvc
+              .perform(
+                  put(subscriptionPath)
+                      .cookie(ownerCookie)
+                      .header(HttpHeaders.IF_MATCH, "\"subscription-absent\"")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"notificationsEnabled\":true}"))
+              .andReturn();
+      assertEquals(403, mutationWithoutCsrf.getResponse().getStatus());
+      MvcResult createdSubscription =
+          mockMvc
+              .perform(
+                  put(subscriptionPath)
+                      .cookie(ownerCookie)
+                      .header(
+                          SessionCsrfTokenService.TOKEN_HEADER_NAME,
+                          csrfTokenService.tokenFor(approvableOwnerSession.cookieValue()))
+                      .header(HttpHeaders.IF_MATCH, "\"subscription-absent\"")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"notificationsEnabled\":true}"))
+              .andReturn();
+      assertEquals(200, createdSubscription.getResponse().getStatus());
+      assertEquals(
+          "\"subscription-1\"", createdSubscription.getResponse().getHeader(HttpHeaders.ETAG));
+      MvcResult mutedSubscription =
+          mockMvc
+              .perform(
+                  put(subscriptionPath)
+                      .cookie(ownerCookie)
+                      .header(
+                          SessionCsrfTokenService.TOKEN_HEADER_NAME,
+                          csrfTokenService.tokenFor(approvableOwnerSession.cookieValue()))
+                      .header(HttpHeaders.IF_MATCH, "\"subscription-1\"")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"notificationsEnabled\":false}"))
+              .andReturn();
+      assertEquals(200, mutedSubscription.getResponse().getStatus());
+      assertEquals(
+          "\"subscription-2\"", mutedSubscription.getResponse().getHeader(HttpHeaders.ETAG));
+      JsonNode mutedSubscriptionBody =
+          objectMapper.readTree(mutedSubscription.getResponse().getContentAsString());
+      assertTrue(mutedSubscriptionBody.path("following").asBoolean());
+      assertFalse(mutedSubscriptionBody.path("notificationsEnabled").asBoolean());
+      MvcResult unfollowedSubscription =
+          mockMvc
+              .perform(
+                  delete(subscriptionPath)
+                      .cookie(ownerCookie)
+                      .header(
+                          SessionCsrfTokenService.TOKEN_HEADER_NAME,
+                          csrfTokenService.tokenFor(approvableOwnerSession.cookieValue()))
+                      .header(HttpHeaders.IF_MATCH, "\"subscription-2\""))
+              .andReturn();
+      assertEquals(204, unfollowedSubscription.getResponse().getStatus());
+      assertEquals(
+          "\"subscription-3\"", unfollowedSubscription.getResponse().getHeader(HttpHeaders.ETAG));
+      MvcResult unfollowedState =
+          mockMvc.perform(get(subscriptionPath).cookie(ownerCookie)).andReturn();
+      assertEquals(200, unfollowedState.getResponse().getStatus());
+      assertEquals("\"subscription-3\"", unfollowedState.getResponse().getHeader(HttpHeaders.ETAG));
+      JsonNode unfollowedBody =
+          objectMapper.readTree(unfollowedState.getResponse().getContentAsString());
+      assertFalse(unfollowedBody.path("following").asBoolean());
+      assertFalse(unfollowedBody.path("notificationsEnabled").asBoolean());
+
       MvcResult releaseReplay =
           mockMvc
               .perform(
@@ -3158,6 +3253,22 @@ class PostgresSchemaIntegrationTests {
       assertFalse(publicationScopeIsCurrent(approvableFixture.workId(), "PUBLIC_METADATA"));
       assertFalse(publicationScopeIsCurrent(approvableFixture.workId(), "CHAPTER_TEXT"));
       assertFalse(publicationScopeIsCurrent(approvableFixture.workId(), "COMMERCIAL_SALE"));
+      MvcResult maskedSubscription =
+          mockMvc.perform(get(subscriptionPath).cookie(ownerCookie)).andReturn();
+      assertEquals(404, maskedSubscription.getResponse().getStatus());
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement select =
+              connection.prepareStatement(
+                  "SELECT active, notifications_enabled FROM work_subscriptions "
+                      + "WHERE actor_user_id = ? AND work_id = ?")) {
+        select.setObject(1, approvableOwnerId);
+        select.setObject(2, approvableFixture.workId());
+        try (ResultSet row = select.executeQuery()) {
+          assertTrue(row.next(), "unfollow history must be retained when the work is taken down");
+          assertFalse(row.getBoolean("active"));
+          assertFalse(row.getBoolean("notifications_enabled"));
+        }
+      }
       assertEquals(
           "55000",
           assertThrows(
@@ -14655,6 +14766,7 @@ class PostgresSchemaIntegrationTests {
             "library_reading_states",
             "library_collections",
             "libraries",
+            "work_subscriptions",
             "works",
             "volumes",
             "chapters",
@@ -21145,6 +21257,7 @@ class PostgresSchemaIntegrationTests {
   }
 
   private void deleteLibraryUserData(UUID userId, UUID workId) throws SQLException {
+    deleteWorkSubscriptionsForTest(userId, workId);
     try (Connection connection = dataSource.getConnection()) {
       try (PreparedStatement deleteAnnotations =
           connection.prepareStatement("DELETE FROM reader_annotations WHERE user_id = ?")) {
@@ -21248,6 +21361,36 @@ class PostgresSchemaIntegrationTests {
                   + " AND NOT EXISTS (SELECT 1 FROM works work WHERE work.library_id = library.id)")) {
         deleteLibraries.setObject(1, userId);
         deleteLibraries.executeUpdate();
+      }
+    }
+  }
+
+  private void deleteWorkSubscriptionsForTest(UUID actorUserId, UUID workId) throws SQLException {
+    try (Connection connection = dataSource.getConnection()) {
+      connection.setAutoCommit(false);
+      try {
+        try (java.sql.Statement disable = connection.createStatement()) {
+          disable.execute(
+              "ALTER TABLE work_subscriptions DISABLE TRIGGER trg_work_subscription_no_delete");
+        }
+        try (PreparedStatement delete =
+            connection.prepareStatement(
+                "DELETE FROM work_subscriptions WHERE actor_user_id = ? OR work_id IN "
+                    + "(SELECT id FROM works WHERE owner_user_id = ?)"
+                    + (workId == null ? "" : " OR work_id = ?"))) {
+          delete.setObject(1, actorUserId);
+          delete.setObject(2, actorUserId);
+          if (workId != null) delete.setObject(3, workId);
+          delete.executeUpdate();
+        }
+        try (java.sql.Statement enable = connection.createStatement()) {
+          enable.execute(
+              "ALTER TABLE work_subscriptions ENABLE TRIGGER trg_work_subscription_no_delete");
+        }
+        connection.commit();
+      } catch (SQLException exception) {
+        connection.rollback();
+        throw exception;
       }
     }
   }
