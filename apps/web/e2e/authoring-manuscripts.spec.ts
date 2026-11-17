@@ -250,6 +250,10 @@ test('keyboard users can retry one failed cursor page without losing focus or lo
     page.getByRole('link', { name: 'Mở dàn ý chương của Bản thảo trang đầu' }),
   ).toBeFocused();
   await page.keyboard.press('Tab');
+  await expect(
+    page.getByRole('link', { name: 'Mở các bản dịch đã duyệt của Bản thảo trang đầu' }),
+  ).toBeFocused();
+  await page.keyboard.press('Tab');
   const continuation = page.getByRole('button', { name: 'Tải thêm bản thảo' });
   await expect(continuation).toBeFocused();
   await page.keyboard.press('Enter');
