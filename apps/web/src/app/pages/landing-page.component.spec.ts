@@ -95,7 +95,7 @@ describe('LandingPageComponent public catalog', () => {
     expect(page.textContent).toContain('Một thư viện riêng');
   });
 
-  it('renders only allow-listed public metadata and hands reading off through sign-in', async () => {
+  it('renders only allow-listed public metadata and links to the public detail page', async () => {
     configure(true);
     const { page } = await render();
 
@@ -107,7 +107,7 @@ describe('LandingPageComponent public catalog', () => {
     expect(page.querySelectorAll('.public-catalog-card')).toHaveLength(1);
     expect(
       page.querySelector<HTMLAnchorElement>('.public-catalog-read-link')?.getAttribute('href'),
-    ).toBe(`/sign-in?returnTo=%2Fapp%2Fworks%2F${workId}`);
+    ).toBe('/works/' + workId);
   });
 
   it('keeps active filters in the landing URL and validates malformed language tags locally', async () => {

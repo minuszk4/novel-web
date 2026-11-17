@@ -84,7 +84,8 @@ public class ApiSecurityConfiguration {
                         HttpMethod.GET,
                         "/api/v1/libraries",
                         "/api/v1/works",
-                        "/api/v1/catalog/works")
+                        "/api/v1/catalog/works",
+                        "/api/v1/catalog/works/**")
                     .permitAll();
                 authorize
                     .requestMatchers(

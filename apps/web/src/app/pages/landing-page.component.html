@@ -156,10 +156,7 @@
                 <article class="public-catalog-card">
                   <p class="public-catalog-card-label">TÁC PHẨM CÔNG KHAI</p>
                   <h3>
-                    <a
-                      [routerLink]="['/sign-in']"
-                      [queryParams]="{ returnTo: readReturnPath(work.id) }"
-                    >
+                    <a [routerLink]="['/works', work.id]">
                       {{ work.title }}
                     </a>
                   </h3>
@@ -176,11 +173,10 @@
                   </dl>
                   <a
                     class="public-catalog-read-link"
-                    [routerLink]="['/sign-in']"
-                    [queryParams]="{ returnTo: readReturnPath(work.id) }"
-                    [attr.aria-label]="'Đăng nhập để mở tác phẩm: ' + work.title"
+                    [routerLink]="['/works', work.id]"
+                    [attr.aria-label]="'Xem chi tiết tác phẩm: ' + work.title"
                   >
-                    Đăng nhập để mở tác phẩm <span aria-hidden="true">→</span>
+                    Xem chi tiết <span aria-hidden="true">→</span>
                   </a>
                 </article>
               }

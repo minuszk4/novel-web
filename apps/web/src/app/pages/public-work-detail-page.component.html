@@ -1,0 +1,111 @@
+<main class="page-wrap work-detail-page public-work-detail-page">
+  <a class="back-link" routerLink="/">← Về danh mục truyện</a>
+
+  @if (state() === 'checking' || state() === 'loading') {
+    <p class="library-status-message library-sync-message" role="status" aria-live="polite">
+      {{
+        state() === 'checking'
+          ? 'Đang kiểm tra danh mục công khai…'
+          : 'Đang tải thông tin tác phẩm…'
+      }}
+    </p>
+  } @else if (state() === 'error') {
+    <section class="empty-state-panel" aria-labelledby="public-work-error-heading">
+      <h1 id="public-work-error-heading">Chưa tải được tác phẩm</h1>
+      <p class="library-sync-error" role="alert">
+        Không thể xác minh tác phẩm lúc này. Vui lòng thử lại sau.
+      </p>
+      <button class="button button-outline" type="button" (click)="retry()">Thử tải lại</button>
+    </section>
+  } @else if (state() === 'disabled') {
+    <section class="empty-state-panel" aria-labelledby="public-work-disabled-heading">
+      <h1 id="public-work-disabled-heading">Danh mục chưa khả dụng</h1>
+      <p>Danh mục truyện công khai hiện đang tạm đóng.</p>
+      <a class="button button-outline" routerLink="/">Về trang chủ</a>
+    </section>
+  } @else if (state() === 'unavailable') {
+    <section class="empty-state-panel" aria-labelledby="public-work-unavailable-heading">
+      <h1 id="public-work-unavailable-heading">Không tìm thấy tác phẩm</h1>
+      <p>Tác phẩm không tồn tại hoặc không còn được phép hiển thị công khai.</p>
+      <a class="button button-outline" routerLink="/">Về danh mục truyện</a>
+    </section>
+  } @else if (work(); as currentWork) {
+    <section class="work-detail-hero" aria-labelledby="public-work-heading">
+      <div class="detail-cover account-detail-cover" aria-hidden="true">
+        <span>✧</span><small>TÁC PHẨM CÔNG KHAI</small>
+      </div>
+      <div class="work-detail-copy">
+        <p class="eyebrow">CHI TIẾT TÁC PHẨM · THÔNG TIN CÔNG KHAI</p>
+        <h1 id="public-work-heading" class="route-heading">{{ currentWork.title }}</h1>
+        <p class="detail-author">{{ currentWork.author || 'Chưa có thông tin tác giả' }}</p>
+        <div class="detail-tags">
+          <span>Ngôn ngữ: {{ currentWork.sourceLanguage }}</span>
+          <span>{{ currentWork.readyChapterCount }} chương sẵn sàng</span>
+        </div>
+        <p class="account-work-detail-description">
+          Đây là thông tin tác phẩm và tên chương đã được phép công khai. Nội dung chương, trạng
+          thái miễn phí hoặc credit chỉ được xác định sau khi bạn đăng nhập.
+        </p>
+        <div class="detail-privacy-note">
+          <span aria-hidden="true">i</span>
+          <p>Mục lục chỉ chứa số chương và tiêu đề; trang này không tải văn bản chương.</p>
+        </div>
+        <a
+          class="button button-primary"
+          [routerLink]="['/sign-in']"
+          [queryParams]="{ returnTo: readReturnPath() }"
+        >
+          Đăng nhập để xem quyền đọc <span aria-hidden="true">→</span>
+        </a>
+      </div>
+    </section>
+
+    <section class="detail-toc public-work-toc" aria-labelledby="public-work-toc-heading">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">MỤC LỤC CÔNG KHAI</p>
+          <h2 id="public-work-toc-heading">{{ currentWork.readyChapterCount }} chương</h2>
+        </div>
+        <span class="sample-tag">CHỈ HIỂN THỊ TIÊU ĐỀ</span>
+      </div>
+      @if (chapters().length > 0) {
+        <ol class="public-work-chapters">
+          @for (chapter of chapters(); track chapter.ordinal) {
+            <li>
+              <a
+                class="detail-chapter-row"
+                [routerLink]="['/sign-in']"
+                [queryParams]="{ returnTo: readReturnPath() }"
+              >
+                <span class="chapter-ordinal">Chương {{ chapter.ordinal }}</span>
+                <span class="chapter-name">{{ chapter.title }}</span>
+                <span class="chapter-read-label">Đăng nhập để đọc →</span>
+              </a>
+            </li>
+          }
+        </ol>
+      } @else {
+        <p class="library-status-message" role="status">Chưa có chương khả dụng trong danh mục.</p>
+      }
+
+      @if (loadMoreError()) {
+        <div class="library-status-message library-sync-error" role="alert">
+          <span>{{ loadMoreError() }}</span>
+          <button class="text-button" type="button" [disabled]="loadingMore()" (click)="loadMore()">
+            {{ loadingMore() ? 'Đang tải…' : 'Thử tải lại mục lục' }}
+          </button>
+        </div>
+      }
+      @if (nextAfterOrdinal() !== null) {
+        <button
+          class="button button-outline account-detail-load-more"
+          type="button"
+          [disabled]="loadingMore()"
+          (click)="loadMore()"
+        >
+          {{ loadingMore() ? 'Đang tải chương…' : 'Tải thêm chương' }}
+        </button>
+      }
+    </section>
+  }
+</main>

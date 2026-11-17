@@ -3878,6 +3878,30 @@ label:has(input:focus-visible) {
 .account-detail-load-more {
   margin-top: 15px;
 }
+.public-work-detail-page .work-detail-hero {
+  grid-template-columns: 205px minmax(0, 1fr);
+  align-items: start;
+}
+.public-work-detail-page .account-detail-cover {
+  min-height: 270px;
+}
+.public-work-detail-page .public-work-toc {
+  margin-top: 24px;
+}
+.public-work-chapters {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.public-work-chapters li:last-child .detail-chapter-row {
+  border-bottom: 1px solid #e8e8e4;
+}
+.public-work-chapters .detail-chapter-row {
+  min-width: 0;
+}
+.public-work-chapters .chapter-read-label {
+  flex: 0 0 auto;
+}
 .chapter-ordinal {
   flex: 0 0 66px;
   color: var(--subtle);
@@ -6168,6 +6192,9 @@ button.reader-chapter-nav {
   .account-work-detail-page .work-detail-hero {
     grid-template-columns: 1fr;
   }
+  .public-work-detail-page .work-detail-hero {
+    grid-template-columns: minmax(0, 1fr);
+  }
   .detail-cover {
     width: min(100%, 210px);
     min-height: 245px;
@@ -6368,6 +6395,38 @@ button.reader-chapter-nav {
   }
 }
 @media (max-width: 380px) {
+  .public-work-detail-page .work-detail-copy {
+    min-width: 0;
+  }
+  .public-work-detail-page .work-detail-copy > .button {
+    width: 100%;
+    flex-wrap: wrap;
+    justify-content: center;
+    overflow-wrap: anywhere;
+    text-align: center;
+  }
+  .public-work-detail-page .detail-cover > small {
+    max-width: calc(100% - 14px);
+    white-space: normal;
+    text-align: center;
+    line-height: 1.3;
+  }
+  .public-work-detail-page .public-work-chapters .detail-chapter-row {
+    width: 100%;
+    min-width: 0;
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 5px;
+    overflow-wrap: anywhere;
+  }
+  .public-work-detail-page .public-work-chapters .chapter-ordinal {
+    flex: initial;
+  }
+  .public-work-detail-page .public-work-chapters .chapter-name,
+  .public-work-detail-page .public-work-chapters .chapter-read-label {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
   .account-reader-paywall .reader-state-mark {
     display: none;
   }

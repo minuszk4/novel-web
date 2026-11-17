@@ -19,6 +19,19 @@ export interface PublicCatalogPage {
   nextCursor: string | null;
 }
 
+export interface PublicWorkDetail extends PublicCatalogWork {}
+
+export interface PublicWorkChapter {
+  ordinal: number;
+  title: string;
+}
+
+export interface PublicWorkChapterPage {
+  workId: string;
+  items: PublicWorkChapter[];
+  nextAfterOrdinal: number | null;
+}
+
 export interface PublicCatalogRequest {
   query?: string;
   language?: string;
@@ -40,6 +53,45 @@ export class PublicCatalogApiError extends Error {
 @Injectable({ providedIn: 'root' })
 export class PublicCatalogApiService {
   private readonly http = inject(HttpClient);
+
+  async getWork(workId: string): Promise<PublicWorkDetail> {
+    if (!uuidPattern.test(workId)) throw new PublicCatalogApiError(400, 'INVALID_CATALOG_QUERY');
+    try {
+      const response: unknown = await firstValueFrom(
+        this.http
+          .get<unknown>(`/api/v1/catalog/works/${encodeURIComponent(workId)}`)
+          .pipe(timeout(requestTimeoutMs)),
+      );
+      return parseCatalogWork(response);
+    } catch (error) {
+      throw toCatalogApiError(error);
+    }
+  }
+
+  async listChapters(workId: string, afterOrdinal = 0, limit = 20): Promise<PublicWorkChapterPage> {
+    if (
+      !uuidPattern.test(workId) ||
+      !Number.isSafeInteger(afterOrdinal) ||
+      afterOrdinal < 0 ||
+      afterOrdinal > 2_000_000_000 ||
+      !Number.isSafeInteger(limit) ||
+      limit < 1 ||
+      limit > 50
+    ) {
+      throw new PublicCatalogApiError(400, 'INVALID_CATALOG_QUERY');
+    }
+    const params = new HttpParams().set('afterOrdinal', afterOrdinal).set('limit', limit);
+    try {
+      const response: unknown = await firstValueFrom(
+        this.http
+          .get<unknown>(`/api/v1/catalog/works/${encodeURIComponent(workId)}/chapters`, { params })
+          .pipe(timeout(requestTimeoutMs)),
+      );
+      return parseChapterPage(response, workId, afterOrdinal, limit);
+    } catch (error) {
+      throw toCatalogApiError(error);
+    }
+  }
 
   async listWorks(request: PublicCatalogRequest = {}): Promise<PublicCatalogPage> {
     const query = normalizeQuery(request.query);
@@ -146,6 +198,54 @@ function parseCatalogWork(value: unknown): PublicCatalogWork {
   }
 
   return { id, title, author, sourceLanguage, readyChapterCount: readyChapterCount as number };
+}
+
+function parseChapterPage(
+  value: unknown,
+  requestedWorkId: string,
+  afterOrdinal: number,
+  limit: number,
+): PublicWorkChapterPage {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['workId', 'items', 'nextAfterOrdinal']) ||
+    value['workId'] !== requestedWorkId ||
+    !Array.isArray(value['items']) ||
+    value['items'].length > limit ||
+    !(value['nextAfterOrdinal'] === null || Number.isSafeInteger(value['nextAfterOrdinal']))
+  ) {
+    throw invalidCatalogResponse();
+  }
+  const items = value['items'].map((item): PublicWorkChapter => {
+    if (
+      !isRecord(item) ||
+      !hasOnlyKeys(item, ['ordinal', 'title']) ||
+      !Number.isSafeInteger(item['ordinal']) ||
+      (item['ordinal'] as number) < 1 ||
+      (item['ordinal'] as number) > 2_000_000_000 ||
+      (item['ordinal'] as number) <= afterOrdinal ||
+      typeof item['title'] !== 'string' ||
+      [...item['title']].length < 1 ||
+      [...item['title']].length > 300
+    ) {
+      throw invalidCatalogResponse();
+    }
+    return { ordinal: item['ordinal'] as number, title: item['title'] };
+  });
+  if (items.some((item, index) => index > 0 && item.ordinal <= items[index - 1].ordinal)) {
+    throw invalidCatalogResponse();
+  }
+  const nextAfterOrdinal = value['nextAfterOrdinal'] as number | null;
+  if (
+    (nextAfterOrdinal !== null &&
+      (items.length !== limit ||
+        items.length === 0 ||
+        nextAfterOrdinal !== items.at(-1)?.ordinal)) ||
+    (nextAfterOrdinal === null && items.length > 0 && items.at(-1)!.ordinal <= afterOrdinal)
+  ) {
+    throw invalidCatalogResponse();
+  }
+  return { workId: requestedWorkId, items, nextAfterOrdinal };
 }
 
 function toCatalogApiError(error: unknown): PublicCatalogApiError {

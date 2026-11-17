@@ -14,6 +14,7 @@ import org.springframework.stereotype.Service;
 public class PublicCatalogService {
 
   private static final int MAX_LIMIT = 50;
+  private static final int MAX_AFTER_ORDINAL = 2_000_000_000;
   private static final int MAX_QUERY_CODE_POINTS = 120;
   private static final Pattern LANGUAGE_TAG = Pattern.compile("(?i)[a-z]{2,3}(?:-[a-z0-9]{2,8})*");
 
@@ -58,6 +59,40 @@ public class PublicCatalogService {
         nextCursor);
   }
 
+  public WorkDetail detail(UUID workId) {
+    Objects.requireNonNull(workId, "work id is required");
+    return repository
+        .findWork(workId)
+        .map(
+            work ->
+                new WorkDetail(
+                    work.id(),
+                    work.title(),
+                    work.author(),
+                    work.sourceLanguage(),
+                    work.readyChapterCount()))
+        .orElseThrow(PublicWorkNotFoundException::new);
+  }
+
+  public ChapterPage chapters(UUID workId, int afterOrdinal, int limit) {
+    Objects.requireNonNull(workId, "work id is required");
+    if (afterOrdinal < 0 || afterOrdinal > MAX_AFTER_ORDINAL) {
+      throw new InvalidCatalogQueryException("afterOrdinal must be between 0 and 2000000000");
+    }
+    validateLimit(limit);
+    WorkDetail work = detail(workId);
+    PublicCatalogRepository.ChapterSlice slice =
+        repository.findReadyChapters(workId, afterOrdinal, limit);
+    Integer nextAfterOrdinal = slice.hasMore() ? slice.items().getLast().ordinal() : null;
+    return new ChapterPage(work.id(), slice.items(), nextAfterOrdinal);
+  }
+
+  private static void validateLimit(int limit) {
+    if (limit < 1 || limit > MAX_LIMIT) {
+      throw new InvalidCatalogQueryException("limit must be an integer between 1 and 50");
+    }
+  }
+
   private static String normalizeQuery(String requestedQuery) {
     if (requestedQuery == null || requestedQuery.isBlank()) return "";
     String normalized =
@@ -86,6 +121,18 @@ public class PublicCatalogService {
       items = List.copyOf(items);
     }
   }
+
+  public record WorkDetail(
+      UUID id, String title, String author, String sourceLanguage, int readyChapterCount) {}
+
+  public record ChapterPage(
+      UUID workId, List<PublicCatalogRepository.PublicChapter> items, Integer nextAfterOrdinal) {
+    public ChapterPage {
+      items = List.copyOf(items);
+    }
+  }
+
+  public static class PublicWorkNotFoundException extends RuntimeException {}
 
   public static class InvalidCatalogQueryException extends RuntimeException {
     public InvalidCatalogQueryException(String message) {

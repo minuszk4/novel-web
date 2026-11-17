@@ -2,7 +2,11 @@ import { HttpHeaders, provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { PublicCatalogApiError, PublicCatalogApiService } from './public-catalog.service';
+import {
+  PublicCatalogApiError,
+  PublicCatalogApiService,
+  PublicWorkChapterPage,
+} from './public-catalog.service';
 
 const workId = '11111111-1111-4111-8111-111111111111';
 const publicWork = {
@@ -113,5 +117,60 @@ describe('PublicCatalogApiService', () => {
     await expect(result).rejects.toEqual(
       new PublicCatalogApiError(429, 'PUBLIC_CATALOG_RATE_LIMITED', 17),
     );
+  });
+
+  it('loads a detail with the exact metadata allow-list', async () => {
+    const result = api.getWork(workId);
+    const request = http.expectOne('/api/v1/catalog/works/' + workId);
+    expect(request.request.method).toBe('GET');
+    request.flush(publicWork);
+    await expect(result).resolves.toEqual(publicWork);
+  });
+
+  it('pages chapter-title metadata using an exclusive ordinal and rejects prose fields', async () => {
+    const result = api.listChapters(workId, 4, 2);
+    const request = http.expectOne(
+      (candidate) => candidate.url === '/api/v1/catalog/works/' + workId + '/chapters',
+    );
+    expect(request.request.params.get('afterOrdinal')).toBe('4');
+    expect(request.request.params.get('limit')).toBe('2');
+    const page: PublicWorkChapterPage = {
+      workId,
+      items: [
+        { ordinal: 5, title: 'Chapter five' },
+        { ordinal: 6, title: 'Chapter six' },
+      ],
+      nextAfterOrdinal: 6,
+    };
+    request.flush(page);
+    await expect(result).resolves.toEqual(page);
+
+    const invalid = api.listChapters(workId, 0, 2);
+    http
+      .expectOne((candidate) => candidate.url.endsWith('/chapters'))
+      .flush({
+        workId,
+        items: [{ ordinal: 1, title: 'Chapter', content: 'private prose' }],
+        nextAfterOrdinal: null,
+      });
+    await expect(invalid).rejects.toEqual(
+      new PublicCatalogApiError(502, 'INVALID_CATALOG_RESPONSE'),
+    );
+  });
+
+  it('rejects malformed IDs, limits and backwards chapter ordinals before requesting', async () => {
+    await expect(api.getWork('not-an-id')).rejects.toMatchObject({
+      status: 400,
+      code: 'INVALID_CATALOG_QUERY',
+    });
+    await expect(api.listChapters(workId, -1)).rejects.toMatchObject({
+      status: 400,
+      code: 'INVALID_CATALOG_QUERY',
+    });
+    await expect(api.listChapters(workId, 0, 51)).rejects.toMatchObject({
+      status: 400,
+      code: 'INVALID_CATALOG_QUERY',
+    });
+    http.expectNone((candidate) => candidate.url.includes('/api/v1/catalog/works/'));
   });
 });

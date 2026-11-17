@@ -4,12 +4,14 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
@@ -59,5 +61,57 @@ class PublicCatalogServiceTests {
         PublicCatalogService.InvalidCatalogQueryException.class,
         () -> service.list(null, "vi!", null, 20));
     verifyNoMoreInteractions(repository);
+  }
+
+  @Test
+  void returnsMetadataOnlyDetailsAndOrdinalContinuationForReadyChapters() {
+    PublicCatalogRepository repository = mock(PublicCatalogRepository.class);
+    UUID workId = UUID.randomUUID();
+    when(repository.findWork(workId))
+        .thenReturn(
+            Optional.of(
+                new PublicCatalogRepository.PublicWork(workId, "Dragon", "Author", "vi", 3)));
+    when(repository.findReadyChapters(workId, 0, 2))
+        .thenReturn(
+            new PublicCatalogRepository.ChapterSlice(
+                List.of(
+                    new PublicCatalogRepository.PublicChapter(1, "First"),
+                    new PublicCatalogRepository.PublicChapter(2, "Second")),
+                true));
+    PublicCatalogService service =
+        new PublicCatalogService(repository, new LibraryCursorCodec(TEST_KEY));
+
+    assertEquals(
+        new PublicCatalogService.WorkDetail(workId, "Dragon", "Author", "vi", 3),
+        service.detail(workId));
+    assertEquals(
+        new PublicCatalogService.ChapterPage(
+            workId,
+            List.of(
+                new PublicCatalogRepository.PublicChapter(1, "First"),
+                new PublicCatalogRepository.PublicChapter(2, "Second")),
+            2),
+        service.chapters(workId, 0, 2));
+    verify(repository, times(2)).findWork(workId);
+    verify(repository).findReadyChapters(workId, 0, 2);
+    verifyNoMoreInteractions(repository);
+  }
+
+  @Test
+  void acceptsAnEmptyChapterPageAtTheEndOfAValidPublicWork() {
+    PublicCatalogRepository repository = mock(PublicCatalogRepository.class);
+    UUID workId = UUID.randomUUID();
+    when(repository.findWork(workId))
+        .thenReturn(
+            Optional.of(
+                new PublicCatalogRepository.PublicWork(workId, "Dragon", "Author", "vi", 1)));
+    when(repository.findReadyChapters(workId, 1_000, 20))
+        .thenReturn(new PublicCatalogRepository.ChapterSlice(List.of(), false));
+    PublicCatalogService service =
+        new PublicCatalogService(repository, new LibraryCursorCodec(TEST_KEY));
+
+    assertEquals(
+        new PublicCatalogService.ChapterPage(workId, List.of(), null),
+        service.chapters(workId, 1_000, 20));
   }
 }

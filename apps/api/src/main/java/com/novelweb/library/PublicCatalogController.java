@@ -2,6 +2,7 @@ package com.novelweb.library;
 
 import com.novelweb.platform.web.CorrelationIdFilter;
 import jakarta.servlet.http.HttpServletRequest;
+import java.util.UUID;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Profile;
 import org.springframework.http.CacheControl;
@@ -11,6 +12,7 @@ import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -41,34 +43,27 @@ public class PublicCatalogController {
       @RequestParam(required = false) String cursor,
       @RequestParam(defaultValue = "20") String limit,
       HttpServletRequest request) {
-    if (!enabled) {
-      return problem(
-          HttpStatus.SERVICE_UNAVAILABLE,
-          "PUBLIC_CATALOG_DISABLED",
-          "The public catalog is not available.",
-          request);
-    }
-    if (!rateLimiter.isConfigured()) {
-      return problem(
-          HttpStatus.SERVICE_UNAVAILABLE,
-          "PUBLIC_CATALOG_RATE_LIMIT_UNAVAILABLE",
-          "The public catalog is not available right now.",
-          request);
-    }
-    PublicCatalogRateLimiter.Decision decision;
-    try {
-      decision = rateLimiter.tryAcquire(request);
-    } catch (IllegalStateException exception) {
-      return problem(
-          HttpStatus.SERVICE_UNAVAILABLE,
-          "PUBLIC_CATALOG_RATE_LIMIT_UNAVAILABLE",
-          "The public catalog is not available right now.",
-          request);
-    }
-    if (!decision.allowed()) {
-      return rateLimited(decision.retryAfterSeconds(), request);
-    }
+    ResponseEntity<?> gate = catalogReadGate(request);
+    if (gate != null) return gate;
     return ok(catalogService.list(q, language, cursor, parseLimit(limit)));
+  }
+
+  @GetMapping("/works/{workId}")
+  public ResponseEntity<?> workDetail(@PathVariable UUID workId, HttpServletRequest request) {
+    ResponseEntity<?> gate = catalogReadGate(request);
+    if (gate != null) return gate;
+    return ok(catalogService.detail(workId));
+  }
+
+  @GetMapping("/works/{workId}/chapters")
+  public ResponseEntity<?> workChapters(
+      @PathVariable UUID workId,
+      @RequestParam(defaultValue = "0") String afterOrdinal,
+      @RequestParam(defaultValue = "20") String limit,
+      HttpServletRequest request) {
+    ResponseEntity<?> gate = catalogReadGate(request);
+    if (gate != null) return gate;
+    return ok(catalogService.chapters(workId, parseAfterOrdinal(afterOrdinal), parseLimit(limit)));
   }
 
   @ExceptionHandler(LibraryCursorCodec.InvalidCursorException.class)
@@ -105,12 +100,58 @@ public class PublicCatalogController {
         request);
   }
 
+  @ExceptionHandler(PublicCatalogService.PublicWorkNotFoundException.class)
+  public ResponseEntity<ProblemDetail> publicWorkUnavailable(HttpServletRequest request) {
+    return problem(
+        HttpStatus.NOT_FOUND,
+        "PUBLIC_WORK_UNAVAILABLE",
+        "This public work is not available.",
+        request);
+  }
+
+  private ResponseEntity<?> catalogReadGate(HttpServletRequest request) {
+    if (!enabled) {
+      return problem(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          "PUBLIC_CATALOG_DISABLED",
+          "The public catalog is not available.",
+          request);
+    }
+    if (!rateLimiter.isConfigured()) {
+      return problem(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          "PUBLIC_CATALOG_RATE_LIMIT_UNAVAILABLE",
+          "The public catalog is not available right now.",
+          request);
+    }
+    try {
+      PublicCatalogRateLimiter.Decision decision = rateLimiter.tryAcquire(request);
+      if (!decision.allowed()) return rateLimited(decision.retryAfterSeconds(), request);
+    } catch (IllegalStateException exception) {
+      return problem(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          "PUBLIC_CATALOG_RATE_LIMIT_UNAVAILABLE",
+          "The public catalog is not available right now.",
+          request);
+    }
+    return null;
+  }
+
   private static int parseLimit(String rawLimit) {
     try {
       return Integer.parseInt(rawLimit);
     } catch (NumberFormatException exception) {
       throw new PublicCatalogService.InvalidCatalogQueryException(
           "limit must be an integer between 1 and 50");
+    }
+  }
+
+  private static int parseAfterOrdinal(String rawAfterOrdinal) {
+    try {
+      return Integer.parseInt(rawAfterOrdinal);
+    } catch (NumberFormatException exception) {
+      throw new PublicCatalogService.InvalidCatalogQueryException(
+          "afterOrdinal must be an integer between 0 and 2000000000");
     }
   }
 

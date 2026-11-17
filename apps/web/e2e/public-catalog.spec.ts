@@ -102,7 +102,7 @@ test('searches the enabled public metadata catalog and hands reading off through
   await expect(page.getByText('chapter body')).toHaveCount(0);
   await expect(page.locator('.public-catalog-read-link')).toHaveAttribute(
     'href',
-    '/sign-in?returnTo=%2Fapp%2Fworks%2F11111111-1111-4111-8111-111111111111',
+    '/works/11111111-1111-4111-8111-111111111111',
   );
   await expectNoAxeViolations(page);
 
@@ -126,6 +126,120 @@ test('searches the enabled public metadata catalog and hands reading off through
   await page.getByRole('button', { name: 'Tải thêm truyện' }).click();
   await expect(page.getByRole('heading', { name: 'Sơn Hà Ký' })).toBeVisible();
   expect(catalogRequests.at(-1)?.searchParams.get('cursor')).toBe('signed-page-2');
+});
+
+test('opens public metadata detail and signs in before entering the Reader', async ({ page }) => {
+  const workId = works[0].id;
+  const requests: string[] = [];
+  await installCatalog(page, true);
+  await page.route(
+    (url) => url.pathname === '/api/v1/catalog/works/' + workId,
+    async (route) => {
+      requests.push(new URL(route.request().url()).pathname);
+      await json(route, { ...works[0], readyChapterCount: 21 });
+    },
+  );
+  await page.route(
+    (url) => url.pathname === '/api/v1/catalog/works/' + workId + '/chapters',
+    async (route) => {
+      const requestUrl = new URL(route.request().url());
+      requests.push(requestUrl.pathname);
+      if (requestUrl.searchParams.get('afterOrdinal') === '20') {
+        await json(route, {
+          workId,
+          items: [{ ordinal: 21, title: 'Chương hai mươi mốt' }],
+          nextAfterOrdinal: null,
+        });
+        return;
+      }
+      await json(route, {
+        workId,
+        items: Array.from({ length: 20 }, (_, index) => ({
+          ordinal: index + 1,
+          title: index === 0 ? 'Chương một' : 'Chương ' + (index + 1),
+        })),
+        nextAfterOrdinal: 20,
+      });
+    },
+  );
+  await page.route('**/api/v1/catalog/works**', async (route) => {
+    if (new URL(route.request().url()).pathname !== '/api/v1/catalog/works') {
+      await route.fallback();
+      return;
+    }
+    await json(route, { items: [works[0]], nextCursor: null });
+  });
+
+  for (const viewport of [
+    { width: 360, height: 800 },
+    { width: 180, height: 400 },
+  ]) {
+    await page.setViewportSize(viewport);
+    await page.goto('/works/' + workId);
+    await expect(page.getByRole('heading', { name: 'Long Vân Truyện' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: '21 chương' })).toBeVisible();
+    await expect(page.getByText('Chương một')).toBeVisible();
+    await expect(page.getByText('chapter body')).toHaveCount(0);
+    await expect(page.getByRole('link', { name: 'Đăng nhập để xem quyền đọc' })).toHaveAttribute(
+      'href',
+      '/sign-in?returnTo=%2Fapp%2Fworks%2F' + workId,
+    );
+    await expect(page.getByRole('link', { name: /Đăng nhập để đọc/ }).first()).toHaveAttribute(
+      'href',
+      '/sign-in?returnTo=%2Fapp%2Fworks%2F' + workId,
+    );
+    await expectNoAxeViolations(page);
+    const evidenceDirectory = process.env['PUBLIC_WORK_DETAIL_EVIDENCE_DIR'];
+    if (evidenceDirectory) {
+      await page.screenshot({
+        path: join(
+          evidenceDirectory,
+          'public-work-detail-' + viewport.width + 'x' + viewport.height + '.png',
+        ),
+        fullPage: true,
+      });
+    }
+
+    if (viewport.width === 360) {
+      await page.getByRole('button', { name: 'Tải thêm chương' }).click();
+      await expect(page.getByText('Chương hai mươi mốt')).toBeVisible();
+      const widths = await page.evaluate(() => ({
+        body: document.body.scrollWidth,
+        viewport: document.documentElement.clientWidth,
+        clipped: [
+          ...document.querySelectorAll<HTMLElement>(
+            '.public-work-chapters .detail-chapter-row, .public-work-detail-page .work-detail-copy > .button',
+          ),
+        ]
+          .map((element) => ({
+            label: element.innerText,
+            content: element.scrollWidth,
+            width: element.clientWidth,
+          }))
+          .filter((element) => element.content > element.width + 1),
+      }));
+      expect(widths.body).toBeLessThanOrEqual(widths.viewport);
+      expect(widths.clipped).toEqual([]);
+    }
+  }
+  expect(requests.filter((path) => path.endsWith('/chapters'))).toHaveLength(3);
+  expect(requests.filter((path) => path === '/api/v1/catalog/works/' + workId)).toHaveLength(2);
+  expect(requests.some((path) => path.endsWith('/content'))).toBe(false);
+});
+
+test('does not request public work data when the catalog feature is disabled on a deep link', async ({
+  page,
+}) => {
+  let workRequests = 0;
+  await installCatalog(page, false);
+  await page.route('**/api/v1/catalog/works/**', async (route) => {
+    workRequests += 1;
+    await json(route, {});
+  });
+  await page.goto('/works/' + works[0].id);
+  await expect(page.getByRole('heading', { name: 'Danh mục chưa khả dụng' })).toBeVisible();
+  expect(workRequests).toBe(0);
+  await expectNoAxeViolations(page);
 });
 
 test('recovers from a failed page request without hiding search', async ({ page }) => {

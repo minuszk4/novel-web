@@ -77,4 +77,19 @@ class PublicCatalogControllerTests {
     verifyNoInteractions(service);
     verify(rateLimiter).tryAcquire(request);
   }
+
+  @Test
+  void allAnonymousDetailReadsUseTheSameFailClosedFeatureGate() {
+    PublicCatalogService service = mock(PublicCatalogService.class);
+    PublicCatalogRateLimiter rateLimiter = mock(PublicCatalogRateLimiter.class);
+    PublicCatalogController controller = new PublicCatalogController(service, rateLimiter, false);
+    HttpServletRequest request = new MockHttpServletRequest();
+    var detail = controller.workDetail(java.util.UUID.randomUUID(), request);
+    var chapters = controller.workChapters(java.util.UUID.randomUUID(), "0", "20", request);
+
+    assertEquals(HttpStatus.SERVICE_UNAVAILABLE, detail.getStatusCode());
+    assertEquals(HttpStatus.SERVICE_UNAVAILABLE, chapters.getStatusCode());
+    verifyNoInteractions(service);
+    verifyNoInteractions(rateLimiter);
+  }
 }

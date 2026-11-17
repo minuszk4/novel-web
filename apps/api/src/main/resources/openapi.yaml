@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 10.2.0
+  version: 10.3.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -363,6 +363,153 @@ paths:
                 $ref: '#/components/schemas/Problem'
         '503':
           description: Feature disabled, limiter unavailable, database unavailable or cursor signing is not configured.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+  /api/v1/catalog/works/{workId}:
+    get:
+      operationId: getPublicCatalogWork
+      tags: [Catalog]
+      x-implementation-status: implemented-postgres-profile
+      summary: Get metadata for one currently public authored work
+      description: >-
+        Anonymous metadata-only detail. The server repeats the same owner, authored-source, active-state,
+        public-visibility, ready-source-chapter and current PUBLIC_METADATA approval checks used by catalog listing.
+        A hidden, missing, withdrawn, takedown-revoked or no-longer-ready work returns the same 404 response.
+        This response does not contain description, cover, chapter body, source revision IDs, paid/free status or
+        unlock information. The public catalog feature flag and persistent API rate limit apply to every request.
+        Keep the feature disabled until rights, takedown, publisher and deployment edge controls are approved.
+      security: []
+      parameters:
+        - name: workId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Allow-listed public work metadata.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicCatalogWork'
+        '404':
+          description: Work is missing or is not currently eligible for public metadata disclosure.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '400':
+          description: The workId path value is not a UUID.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '429':
+          description: Per-client catalog request bucket is exhausted.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+                minimum: 1
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '503':
+          description: Feature disabled, limiter unavailable or database unavailable.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+  /api/v1/catalog/works/{workId}/chapters:
+    get:
+      operationId: listPublicCatalogWorkChapters
+      tags: [Catalog]
+      x-implementation-status: implemented-postgres-profile
+      summary: List public chapter titles without chapter content
+      description: >-
+        Returns an ordinal-ordered bounded page containing only chapter ordinal and title. Every request repeats
+        the current owner, authored-source, active-state, public-visibility and PUBLIC_METADATA approval checks;
+        only ready chapters with a current source revision are eligible. The numeric afterOrdinal continuation point
+        is exclusive and bounded. An empty page is valid when no later chapter exists. Chapter text, content hashes,
+        revision/segment IDs, free/paid state and unlock quotes are never returned. Public catalog feature flag and
+        persistent per-client rate limits apply. This endpoint does not grant Reader access.
+      security: []
+      parameters:
+        - name: workId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: afterOrdinal
+          in: query
+          description: Exclusive chapter ordinal continuation point.
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 2000000000
+            default: 0
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+      responses:
+        '200':
+          description: Allow-listed page of public chapter title metadata.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicCatalogChapterPage'
+        '400':
+          description: Invalid ordinal continuation point or page size.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: Work is missing or is not currently eligible for public metadata disclosure.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '429':
+          description: Per-client catalog request bucket is exhausted.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+                minimum: 1
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '503':
+          description: Feature disabled, limiter unavailable or database unavailable.
           content:
             application/problem+json:
               schema:
@@ -8201,6 +8348,37 @@ components:
         readyChapterCount:
           type: integer
           minimum: 1
+    PublicCatalogChapterPage:
+      type: object
+      additionalProperties: false
+      required: [workId, items, nextAfterOrdinal]
+      properties:
+        workId:
+          type: string
+          format: uuid
+        items:
+          type: array
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/PublicCatalogChapter'
+        nextAfterOrdinal:
+          type: [integer, 'null']
+          minimum: 0
+          maximum: 2000000000
+          description: Exclusive continuation point set to the last returned ordinal when another page exists.
+    PublicCatalogChapter:
+      type: object
+      additionalProperties: false
+      required: [ordinal, title]
+      properties:
+        ordinal:
+          type: integer
+          minimum: 1
+          maximum: 2000000000
+        title:
+          type: string
+          minLength: 1
+          maxLength: 300
     WorkListResponse:
       type: object
       additionalProperties: false

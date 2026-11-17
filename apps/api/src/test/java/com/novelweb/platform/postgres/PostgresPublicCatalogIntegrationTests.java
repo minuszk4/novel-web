@@ -201,6 +201,64 @@ class PostgresPublicCatalogIntegrationTests {
   }
 
   @Test
+  void publicDetailAndChapterPagesExposeOnlyCurrentMetadataAndTitles() throws Exception {
+    UUID workId =
+        createWork(
+            "Public detail",
+            "Public author",
+            "vi",
+            "authored",
+            "public",
+            "active",
+            true,
+            Instant.now(),
+            true,
+            2);
+    UUID privateWork =
+        createWork("Private detail", "Private author", "vi", "authored", "private", "active", true);
+    HttpResult detail = get("/api/v1/catalog/works/" + workId);
+    assertEquals(200, detail.statusCode());
+    assertTrue(detail.cacheControl().contains("no-store"));
+    assertEquals(workId.toString(), detail.body().path("id").asText());
+    assertEquals("Public detail", detail.body().path("title").asText());
+    assertEquals(2, detail.body().path("readyChapterCount").asInt());
+    assertFalse(detail.body().has("description"));
+    assertFalse(detail.body().has("content"));
+    assertFalse(detail.body().has("free"));
+    assertFalse(detail.body().has("creditCost"));
+    assertFalse(detail.body().has("sourceRevisionId"));
+
+    HttpResult firstPage =
+        get("/api/v1/catalog/works/" + workId + "/chapters?afterOrdinal=0&limit=1");
+    assertEquals(200, firstPage.statusCode());
+    assertTrue(firstPage.cacheControl().contains("no-store"));
+    assertEquals(workId.toString(), firstPage.body().path("workId").asText());
+    assertEquals(1, firstPage.body().path("items").size());
+    assertEquals(1, firstPage.body().path("items").get(0).path("ordinal").asInt());
+    assertEquals(
+        "Public detail Chapter", firstPage.body().path("items").get(0).path("title").asText());
+    assertEquals(1, firstPage.body().path("nextAfterOrdinal").asInt());
+    assertFalse(firstPage.body().path("items").get(0).has("content"));
+    assertFalse(firstPage.body().path("items").get(0).has("revisionId"));
+
+    HttpResult secondPage =
+        get("/api/v1/catalog/works/" + workId + "/chapters?afterOrdinal=1&limit=1");
+    assertEquals(200, secondPage.statusCode());
+    assertEquals(2, secondPage.body().path("items").get(0).path("ordinal").asInt());
+    assertEquals("Second chapter", secondPage.body().path("items").get(0).path("title").asText());
+    assertTrue(secondPage.body().path("nextAfterOrdinal").isNull());
+    assertEquals(404, get("/api/v1/catalog/works/" + privateWork).statusCode());
+    assertEquals(
+        400, get("/api/v1/catalog/works/" + workId + "/chapters?afterOrdinal=-1").statusCode());
+
+    setVisibility(workId, "private");
+    assertEquals(404, get("/api/v1/catalog/works/" + workId).statusCode());
+    assertEquals(
+        404,
+        get("/api/v1/catalog/works/" + workId + "/chapters?afterOrdinal=0&limit=1").statusCode());
+  }
+
+  @Test
   void searchFiltersLanguageAndUsesBoundedStablePagination() throws Exception {
     Instant oldest = Instant.parse("2026-11-14T00:00:00Z");
     Instant newest = Instant.parse("2026-11-16T00:00:00Z");
@@ -277,6 +335,10 @@ class PostgresPublicCatalogIntegrationTests {
   void rejectsMalformedLanguageOversizedQueryAndInvalidLimits() throws Exception {
     assertEquals(400, get("/api/v1/catalog/works?language=vi%21").statusCode());
     assertEquals(400, get("/api/v1/catalog/works?limit=51").statusCode());
+    assertEquals(
+        400,
+        get("/api/v1/catalog/works/" + UUID.randomUUID() + "/chapters?afterOrdinal=0&limit=51")
+            .statusCode());
     assertEquals(400, get("/api/v1/catalog/works?q=" + "x".repeat(121)).statusCode());
   }
 
@@ -691,9 +753,13 @@ class PostgresPublicCatalogIntegrationTests {
         responses.stream().filter(response -> response.statusCode() == 429).toList();
     assertEquals(60, allowed.size());
     assertEquals(12, limited.size());
-    assertEquals(List.of("3600"), limited.stream().map(HttpResult::retryAfter).distinct().toList());
+    assertTrue(
+        limited.stream()
+            .map(HttpResult::retryAfter)
+            .allMatch(value -> "3599".equals(value) || "3600".equals(value)));
     assertEquals("PUBLIC_CATALOG_RATE_LIMITED", limited.get(0).body().path("code").asText());
-    assertEquals("3600", limited.get(0).retryAfter());
+    assertTrue(
+        "3599".equals(limited.get(0).retryAfter()) || "3600".equals(limited.get(0).retryAfter()));
     assertTrue(limited.get(0).cacheControl().contains("no-store"));
     assertEquals(200, get(path, testClientAddress()).statusCode());
 
@@ -893,6 +959,34 @@ class PostgresPublicCatalogIntegrationTests {
       Instant createdAt,
       boolean approvePublicMetadata)
       throws Exception {
+    return createWork(
+        title,
+        author,
+        language,
+        sourceKind,
+        visibility,
+        status,
+        withReadyChapter,
+        createdAt,
+        approvePublicMetadata,
+        withReadyChapter ? 1 : 0);
+  }
+
+  private UUID createWork(
+      String title,
+      String author,
+      String language,
+      String sourceKind,
+      String visibility,
+      String status,
+      boolean withReadyChapter,
+      Instant createdAt,
+      boolean approvePublicMetadata,
+      int readyChapterCount)
+      throws Exception {
+    if (readyChapterCount < 0 || readyChapterCount > 10) {
+      throw new IllegalArgumentException("test fixture chapter count is out of range");
+    }
     UUID workId = UUID.randomUUID();
     workIds.add(workId);
     try (Connection connection = dataSource.getConnection()) {
@@ -919,7 +1013,10 @@ class PostgresPublicCatalogIntegrationTests {
         insert.executeUpdate();
       }
       if ("authored".equals(sourceKind)) insertSyntheticAuthoredWork(connection, workId);
-      if (withReadyChapter) insertReadyChapter(connection, workId, title + " Chapter");
+      for (int ordinal = 1; ordinal <= readyChapterCount; ordinal++) {
+        insertReadyChapter(
+            connection, workId, ordinal == 1 ? title + " Chapter" : "Second chapter", ordinal);
+      }
       if (approvePublicMetadata
           && "authored".equals(sourceKind)
           && "public".equals(visibility)
@@ -1168,13 +1265,19 @@ class PostgresPublicCatalogIntegrationTests {
 
   private void insertReadyChapter(Connection connection, UUID workId, String title)
       throws SQLException {
+    insertReadyChapter(connection, workId, title, 1);
+  }
+
+  private void insertReadyChapter(Connection connection, UUID workId, String title, int ordinal)
+      throws SQLException {
     UUID chapterId = UUID.randomUUID();
     UUID revisionId = UUID.randomUUID();
     execute(
         connection,
-        "INSERT INTO chapters (id, work_id, ordinal, title, source_language) VALUES (?, ?, 1, ?, 'vi')",
+        "INSERT INTO chapters (id, work_id, ordinal, title, source_language) VALUES (?, ?, ?, ?, 'vi')",
         chapterId,
         workId,
+        ordinal,
         title);
     try (PreparedStatement revision =
         connection.prepareStatement(

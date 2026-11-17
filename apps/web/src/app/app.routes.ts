@@ -26,6 +26,14 @@ export const routes: Routes = [
     title: 'Tác phẩm mẫu — Novel',
   },
   {
+    path: 'works/:workId',
+    loadComponent: () =>
+      import('./pages/public-work-detail-page.component').then(
+        (page) => page.PublicWorkDetailPageComponent,
+      ),
+    title: 'Chi tiết tác phẩm — Novel',
+  },
+  {
     path: 'read/demo-story/:chapterId',
     loadComponent: () =>
       import('./pages/reader-page.component').then((page) => page.ReaderPageComponent),
