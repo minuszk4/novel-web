@@ -87,6 +87,7 @@ public class TranslationAttemptCompletionRepository {
         Candidate candidate = lockOrCreateCandidate(connection, unit);
         insertCandidateSegments(connection, candidate.id(), unit, translations);
         finishAttempt(connection, attempt.id(), response, estimate, responseSha256);
+        insertConfirmedUsage(connection, attempt, response);
         markUnitSucceeded(connection, lease, attemptNo);
         JobProgress progress = refreshJobProgress(connection, unit.jobId());
         String candidateStatus =
@@ -392,6 +393,27 @@ public class TranslationAttemptCompletionRepository {
       update.setString(10, response.billingUnit().name());
       update.setObject(11, attemptId);
       if (update.executeUpdate() != 1) throw new CompletionConflictException();
+    }
+  }
+
+  private static void insertConfirmedUsage(
+      Connection connection, AttemptContext attempt, TranslationResponse response)
+      throws SQLException {
+    try (PreparedStatement insert =
+        connection.prepareStatement(
+            """
+                INSERT INTO translation_usage_ledger
+                    (attempt_id, provider_id, provider_model, provider_request_id,
+                     confirmed_units, billing_unit)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """)) {
+      insert.setObject(1, attempt.id());
+      insert.setString(2, attempt.providerId());
+      insert.setString(3, response.providerModel());
+      insert.setString(4, response.providerRequestId());
+      insert.setLong(5, response.billedUnits());
+      insert.setString(6, response.billingUnit().name());
+      if (insert.executeUpdate() != 1) throw new CompletionConflictException();
     }
   }
 

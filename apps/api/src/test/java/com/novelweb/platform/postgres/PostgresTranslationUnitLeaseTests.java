@@ -358,6 +358,7 @@ class PostgresTranslationUnitLeaseTests {
     assertEquals(secondResult.candidateId(), replay.candidateId());
     assertEquals(1, countCandidates(fixture.jobId()));
     assertEquals(101, countCandidateSegments(secondResult.candidateId()));
+    assertEquals(2, countUsageRows(fixture.jobId()));
     assertEquals(1, countCandidateReadyEvents(fixture.jobId()));
     assertEquals(2, countUnitCompletedEvents(fixture.jobId()));
     assertEquals("review_required", readJobStatus(fixture.jobId()));
@@ -422,6 +423,7 @@ class PostgresTranslationUnitLeaseTests {
     assertEquals("running", readAttemptOutcome(attempt.attemptId()));
     assertEquals(0, countCandidates(fixture.jobId()));
     assertEquals(0, countUnitCompletedEvents(fixture.jobId()));
+    assertEquals(0, countUsageRows(fixture.jobId()));
   }
 
   @Test
@@ -447,6 +449,7 @@ class PostgresTranslationUnitLeaseTests {
     assertEquals("running", readAttemptOutcome(attempt.attemptId()));
     assertEquals(0, countCandidates(fixture.jobId()));
     assertEquals(0, countUnitCompletedEvents(fixture.jobId()));
+    assertEquals(0, countUsageRows(fixture.jobId()));
   }
 
   @Test
@@ -473,12 +476,117 @@ class PostgresTranslationUnitLeaseTests {
     assertEquals("CODE_POINT", readAttemptEstimateUnit(result.attemptId()));
     assertEquals("fake-free-v1", readAttemptPricingVersion(result.attemptId()));
     assertEquals("succeeded", readAttemptOutcome(result.attemptId()));
+    assertEquals(1, countUsageRows(fixture.jobId()));
+    assertEquals(readAttemptBilledUnits(result.attemptId()), readUsageUnits(result.attemptId()));
+    assertEquals("CODE_POINT", readUsageBillingUnit(result.attemptId()));
+    assertEquals("fake-local", readUsageProvider(result.attemptId()));
+    assertEquals("fake-local", readUsageModel(result.attemptId()));
+    assertEquals("fake-" + result.attemptId(), readUsageRequestId(result.attemptId()));
     assertEquals(1, countAttemptRequestedEvents(result.unitId()));
     assertEquals(1, countUnitCompletedEvents(fixture.jobId()));
+
+    try (Connection connection = dataSource.getConnection()) {
+      SQLException updateFailure =
+          assertThrows(
+              SQLException.class,
+              () ->
+                  execute(
+                      connection,
+                      "UPDATE translation_usage_ledger SET confirmed_units = 0 WHERE attempt_id = ?",
+                      result.attemptId()));
+      assertEquals("55000", updateFailure.getSQLState());
+
+      SQLException deleteFailure =
+          assertThrows(
+              SQLException.class,
+              () ->
+                  execute(
+                      connection,
+                      "DELETE FROM translation_usage_ledger WHERE attempt_id = ?",
+                      result.attemptId()));
+      assertEquals("55000", deleteFailure.getSQLState());
+
+      SQLException truncateFailure =
+          assertThrows(
+              SQLException.class, () -> execute(connection, "TRUNCATE translation_usage_ledger"));
+      assertEquals("55000", truncateFailure.getSQLState());
+    }
+    assertEquals(1, countUsageRows(fixture.jobId()));
     assertTrue(
         fakeLocalWorkerService
             .processNext("translation-fake-worker", Duration.ofSeconds(60))
             .isEmpty());
+  }
+
+  @Test
+  void usageLedgerRejectsAnEntryBeforeItsAttemptSucceeds() throws Exception {
+    Fixture fixture = createQueuedJob(1);
+    TranslationUnitLeaseRepository.Lease lease =
+        leaseService
+            .claimNext("translation-usage-ledger-worker", Duration.ofSeconds(60))
+            .orElseThrow();
+    TranslationAttemptRepository.StartResult attempt = attemptService.begin(lease);
+
+    SQLException rejection;
+    try (Connection connection = dataSource.getConnection()) {
+      rejection =
+          assertThrows(
+              SQLException.class,
+              () ->
+                  execute(
+                      connection,
+                      """
+                          INSERT INTO translation_usage_ledger
+                              (attempt_id, provider_id, provider_model, provider_request_id,
+                               confirmed_units, billing_unit)
+                          VALUES (?, 'fake-local', 'fake-local', ?, 0, 'CODE_POINT')
+                          """,
+                      attempt.attemptId(),
+                      "fake-" + attempt.attemptId()));
+    }
+
+    assertEquals("23514", rejection.getSQLState());
+    assertEquals("running", readAttemptOutcome(attempt.attemptId()));
+    assertEquals("running", readUnitStatus(lease.unitId()));
+    assertEquals(0, countUsageRows(fixture.jobId()));
+  }
+
+  @Test
+  void onlyOneCurrentTranslationVersionCanExistPerChapterAndTargetLanguage() throws Exception {
+    Fixture fixture = createQueuedJob(1);
+    TranslationFakeLocalWorkerService.WorkResult firstJob =
+        fakeLocalWorkerService
+            .processNext("translation-version-first-worker", Duration.ofSeconds(60))
+            .orElseThrow();
+    UUID secondJobId =
+        jobService
+            .enqueue(
+                fixture.userId(),
+                fixture.chapterId(),
+                fixture.revisionId(),
+                "en",
+                "version-job-key-" + UUID.randomUUID().toString().replace("-", ""))
+            .job()
+            .id();
+    additionalJobsByFixture
+        .computeIfAbsent(fixture.jobId(), ignored -> new ArrayList<>())
+        .add(secondJobId);
+    TranslationFakeLocalWorkerService.WorkResult secondJob =
+        fakeLocalWorkerService
+            .processNext("translation-version-second-worker", Duration.ofSeconds(60))
+            .orElseThrow();
+
+    assertEquals(fixture.jobId(), firstJob.jobId());
+    assertEquals(secondJobId, secondJob.jobId());
+    insertCurrentTranslationVersion(fixture, firstJob.completion().candidateId(), 1);
+    SQLException conflict =
+        assertThrows(
+            SQLException.class,
+            () ->
+                insertCurrentTranslationVersion(fixture, secondJob.completion().candidateId(), 2));
+
+    assertEquals("23505", conflict.getSQLState());
+    assertEquals(1, countCurrentTranslationVersions(fixture.chapterId()));
   }
 
   @Test
@@ -527,6 +635,7 @@ class PostgresTranslationUnitLeaseTests {
     assertEquals("TIMEOUT", readAttemptFailureCode(firstAttempt.attemptId()));
     assertEquals(1, countOutboxEvents(fixture.jobId(), "translation.unit.retry_scheduled"));
     assertEquals(0, countOutboxEvents(fixture.jobId(), "translation.unit.failed"));
+    assertEquals(0, countUsageRows(fixture.jobId()));
 
     makeUnitAvailableNow(firstLease.unitId());
     TranslationUnitLeaseRepository.Lease secondLease =
@@ -552,6 +661,7 @@ class PostgresTranslationUnitLeaseTests {
     assertEquals(1, countOutboxEvents(fixture.jobId(), "translation.unit.retry_scheduled"));
     assertEquals(1, countOutboxEvents(fixture.jobId(), "translation.unit.failed"));
     assertEquals(1, countOutboxEvents(fixture.jobId(), "translation.job.failed"));
+    assertEquals(0, countUsageRows(fixture.jobId()));
     assertTrue(outboxPayloadsContainIdentifiersOnly(fixture.jobId()));
   }
 
@@ -586,6 +696,7 @@ class PostgresTranslationUnitLeaseTests {
       assertEquals(0, countCandidateSegmentsForJob(fixture.jobId()));
       assertEquals(0, countCurrentTranslationVersions(fixture.chapterId()));
       assertEquals(0, countCandidateReadyEvents(fixture.jobId()));
+      assertEquals(0, countUsageRows(fixture.jobId()));
       assertTrue(outboxPayloadsContainIdentifiersOnly(fixture.jobId()));
     }
   }
@@ -1574,6 +1685,11 @@ class PostgresTranslationUnitLeaseTests {
         jobIds.add(fixture.jobId());
         jobIds.addAll(additionalJobsByFixture.getOrDefault(fixture.jobId(), List.of()));
         for (UUID jobId : jobIds) {
+          execute(
+              connection,
+              "DELETE FROM translation_versions WHERE candidate_id IN "
+                  + "(SELECT id FROM translation_candidates WHERE job_id = ?)",
+              jobId);
           execute(connection, "DELETE FROM translation_candidate_segments WHERE job_id = ?", jobId);
           execute(connection, "DELETE FROM translation_candidates WHERE job_id = ?", jobId);
           execute(connection, "DELETE FROM translation_jobs WHERE id = ?", jobId);
@@ -1757,6 +1873,46 @@ class PostgresTranslationUnitLeaseTests {
     return countBySql(
         "SELECT COUNT(*) FROM translation_versions WHERE chapter_id = ? AND status = 'current'",
         chapterId);
+  }
+
+  private long countUsageRows(UUID jobId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                """
+                    SELECT COUNT(*)
+                    FROM translation_usage_ledger usage
+                    JOIN translation_attempts attempt ON attempt.id = usage.attempt_id
+                    JOIN translation_units unit ON unit.id = attempt.unit_id
+                    WHERE unit.job_id = ?
+                    """)) {
+      select.setObject(1, jobId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getLong(1);
+      }
+    }
+  }
+
+  private void insertCurrentTranslationVersion(Fixture fixture, UUID candidateId, int versionNo)
+      throws SQLException {
+    try (Connection connection = dataSource.getConnection()) {
+      execute(
+          connection,
+          """
+              INSERT INTO translation_versions
+                  (id, work_id, chapter_id, target_language, source_revision_id,
+                   candidate_id, version_no, status, created_by_user_id)
+              VALUES (?, ?, ?, 'en', ?, ?, ?, 'current', ?)
+              """,
+          UUID.randomUUID(),
+          fixture.workId(),
+          fixture.chapterId(),
+          fixture.revisionId(),
+          candidateId,
+          versionNo,
+          fixture.userId());
+    }
   }
 
   private long countUnitCompletedEvents(UUID jobId) throws SQLException {
@@ -2008,6 +2164,61 @@ class PostgresTranslationUnitLeaseTests {
       try (ResultSet row = select.executeQuery()) {
         assertTrue(row.next());
         return row.getBigDecimal(1);
+      }
+    }
+  }
+
+  private long readAttemptBilledUnits(UUID attemptId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT billed_units FROM translation_attempts WHERE id = ?")) {
+      select.setObject(1, attemptId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getLong(1);
+      }
+    }
+  }
+
+  private long readUsageUnits(UUID attemptId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT confirmed_units FROM translation_usage_ledger WHERE attempt_id = ?")) {
+      select.setObject(1, attemptId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getLong(1);
+      }
+    }
+  }
+
+  private String readUsageBillingUnit(UUID attemptId) throws SQLException {
+    return readUsageText(attemptId, "billing_unit");
+  }
+
+  private String readUsageProvider(UUID attemptId) throws SQLException {
+    return readUsageText(attemptId, "provider_id");
+  }
+
+  private String readUsageModel(UUID attemptId) throws SQLException {
+    return readUsageText(attemptId, "provider_model");
+  }
+
+  private String readUsageRequestId(UUID attemptId) throws SQLException {
+    return readUsageText(attemptId, "provider_request_id");
+  }
+
+  private String readUsageText(UUID attemptId, String column) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT " + column + " FROM translation_usage_ledger WHERE attempt_id = ?")) {
+      select.setObject(1, attemptId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getString(1);
       }
     }
   }

@@ -164,3 +164,6 @@ databaseChangeLog:
   - include:
       file: changes/055-publication-release-content-version.sql
       relativeToChangelogFile: true
+  - include:
+      file: changes/056-translation-usage-ledger.sql
+      relativeToChangelogFile: true
