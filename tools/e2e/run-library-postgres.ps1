@@ -10,7 +10,8 @@ param(
     [switch]$IncludePublicationReviewWorkspace,
     [switch]$IncludePaymentReturn,
     [switch]$IncludeCommerceSettlement,
-    [switch]$IncludeCultivationRankUp
+    [switch]$IncludeCultivationRankUp,
+    [switch]$IncludeDatabaseRestartRecovery
 )
 
 $ErrorActionPreference = 'Stop'
@@ -103,6 +104,7 @@ $glossaryParts = @()
 $publicationRightsParts = @()
 $publicationReviewParts = @()
 $authoringEditorParts = @()
+$databaseRestartSummary = @()
 $startedAt = Get-Date
 $postgresPassword = [guid]::NewGuid().ToString('N')
 $sessionBytes = New-Object byte[] 32
@@ -629,6 +631,112 @@ COMMIT;
         $env:TRANSLATION_LIVE_TEST_CHAPTER_ID = [string]$translationChapterId
         $env:TRANSLATION_LIVE_TEST_SCREENSHOT = $translationJobScreenshot
     }
+
+    if ($IncludeDatabaseRestartRecovery) {
+        $probePath = Join-Path $evidenceDirectory 'database-restart-probes.txt'
+        $apiUri = 'http://127.0.0.1:8081'
+        $sessionCookie = "__Host-novel_session=$sessionToken"
+        $httpClient = [System.Net.Http.HttpClient]::new()
+        $httpClient.Timeout = [TimeSpan]::FromSeconds(5)
+
+        function Invoke-LiveApiProbe {
+            param(
+                [Parameter(Mandatory = $true)][System.Net.Http.HttpClient]$Client,
+                [Parameter(Mandatory = $true)][string]$Uri,
+                [string]$Cookie
+            )
+
+            $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get, $Uri)
+            if ($Cookie) { [void]$request.Headers.TryAddWithoutValidation('Cookie', $Cookie) }
+            $response = $null
+            try {
+                $response = $Client.SendAsync($request).GetAwaiter().GetResult()
+                $body = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+                $correlationId = ''
+                if ($response.Headers.Contains('X-Correlation-Id')) {
+                    $correlationId = ($response.Headers.GetValues('X-Correlation-Id') | Select-Object -First 1)
+                }
+                return [pscustomobject]@{
+                    StatusCode = [int]$response.StatusCode
+                    Body = $body
+                    CorrelationId = $correlationId
+                }
+            }
+            finally {
+                if ($response) { $response.Dispose() }
+                $request.Dispose()
+            }
+        }
+
+        try {
+            $manifestUri = "$apiUri/api/v1/works/$firstWorkId/reader-manifest?limit=1"
+            $beforeManifest = Invoke-LiveApiProbe -Client $httpClient -Uri $manifestUri -Cookie $sessionCookie
+            if ($beforeManifest.StatusCode -ne 200 -or $beforeManifest.Body -notmatch [regex]::Escape([string]$readerChapterId)) {
+                throw "Authenticated Reader manifest baseline failed before PostgreSQL restart (HTTP $($beforeManifest.StatusCode))."
+            }
+
+            $stopOutput = & $docker @composeArguments stop postgres 2>&1
+            $stopOutput | Set-Content -LiteralPath (Join-Path $evidenceDirectory 'postgres-stop.log')
+            if ($LASTEXITCODE -ne 0) { throw 'Could not stop only the disposable PostgreSQL service.' }
+
+            $healthDown = $null
+            for ($attempt = 1; $attempt -le 20; $attempt++) {
+                $apiProcess.Refresh()
+                if ($apiProcess.HasExited) { throw "API exited while PostgreSQL was stopped (code $($apiProcess.ExitCode))." }
+                try {
+                    $healthDown = Invoke-LiveApiProbe -Client $httpClient -Uri "$apiUri/actuator/health"
+                    if ($healthDown.StatusCode -eq 503 -and $healthDown.Body -match '"status"\s*:\s*"DOWN"') { break }
+                } catch { }
+                Start-Sleep -Milliseconds 750
+            }
+            if (-not $healthDown -or $healthDown.StatusCode -ne 503 -or $healthDown.Body -notmatch '"status"\s*:\s*"DOWN"') {
+                throw 'API health did not report PostgreSQL DOWN while the disposable database service was stopped.'
+            }
+
+            $startOutput = & $docker @composeArguments start postgres 2>&1
+            $startOutput | Set-Content -LiteralPath (Join-Path $evidenceDirectory 'postgres-start.log')
+            if ($LASTEXITCODE -ne 0) { throw 'Could not restart the disposable PostgreSQL service.' }
+
+            $databaseReadyAfterRestart = $false
+            for ($attempt = 1; $attempt -le 40; $attempt++) {
+                & $docker @composeArguments exec -T postgres pg_isready -U novelweb -d novelweb *> $null
+                if ($LASTEXITCODE -eq 0) { $databaseReadyAfterRestart = $true; break }
+                Start-Sleep -Seconds 1
+            }
+            if (-not $databaseReadyAfterRestart) { throw 'PostgreSQL did not become ready again within 40 seconds.' }
+
+            $healthUp = $null
+            for ($attempt = 1; $attempt -le 40; $attempt++) {
+                $apiProcess.Refresh()
+                if ($apiProcess.HasExited) { throw "API exited after PostgreSQL restart (code $($apiProcess.ExitCode))." }
+                try {
+                    $healthUp = Invoke-LiveApiProbe -Client $httpClient -Uri "$apiUri/actuator/health"
+                    if ($healthUp.StatusCode -eq 200 -and $healthUp.Body -match '"status"\s*:\s*"UP"') { break }
+                } catch { }
+                Start-Sleep -Milliseconds 750
+            }
+            if (-not $healthUp -or $healthUp.StatusCode -ne 200 -or $healthUp.Body -notmatch '"status"\s*:\s*"UP"') {
+                throw 'API health did not recover to UP after PostgreSQL restarted.'
+            }
+
+            $afterManifest = Invoke-LiveApiProbe -Client $httpClient -Uri $manifestUri -Cookie $sessionCookie
+            if ($afterManifest.StatusCode -ne 200 -or $afterManifest.Body -notmatch [regex]::Escape([string]$readerChapterId)) {
+                throw "Authenticated Reader manifest did not recover after PostgreSQL restart (HTTP $($afterManifest.StatusCode))."
+            }
+
+            $databaseRestartSummary = @(
+                "before_manifest_http=$($beforeManifest.StatusCode); chapter_present=$($beforeManifest.Body -match [regex]::Escape([string]$readerChapterId)); correlation_id=$($beforeManifest.CorrelationId)"
+                "during_restart_health_http=$($healthDown.StatusCode); status=DOWN; API_process_alive=$(-not $apiProcess.HasExited)"
+                "after_restart_health_http=$($healthUp.StatusCode); status=UP; correlation_id=$($healthUp.CorrelationId)"
+                "after_manifest_http=$($afterManifest.StatusCode); chapter_present=$($afterManifest.Body -match [regex]::Escape([string]$readerChapterId)); correlation_id=$($afterManifest.CorrelationId)"
+            )
+            $databaseRestartSummary | Set-Content -LiteralPath $probePath -Encoding utf8
+        }
+        finally {
+            $httpClient.Dispose()
+        }
+    }
+
     Push-Location $webDirectory
     try {
         $translationBeforeOutline = $IncludeTranslationPreview -and $IncludeAuthoringOutline
@@ -812,6 +920,7 @@ COMMIT;
         $(if ($IncludeAuthoringEmptyChapterDelete) { '- Separate PostgreSQL empty chapter deletion API tests: 2/2 passed for soft delete/replay/security and transactional save/delete race; see authoring-empty-chapter-delete-api-test.log' } else { '- Separate PostgreSQL empty chapter deletion API tests: not requested' })
         '- Cultivation feature flag: enabled only in this random disposable API process; prior process value restored during cleanup'
         $(if ($IncludeCultivationRankUp) { '- Cultivation rank-up: synthetic enabled profile started at 99 XP / Phàm nhân, one real Reader award reached 100 XP / Luyện Khí tầng 1; fixture session closed before browser journey; response correlation IDs saved in cultivation-rank-up-trace.json' } else { '- Cultivation rank-up boundary journey: not requested' })
+        $(if ($IncludeDatabaseRestartRecovery) { '- PostgreSQL restart recovery: live API health reported DOWN while its disposable PostgreSQL service was stopped, then returned UP after restart; an authenticated Reader manifest returned HTTP 200 with the same persisted chapter before and after; probes and stop/start logs are saved in database-restart-probes.txt and postgres-*.log' } else { '- PostgreSQL restart recovery: not requested' })
         $(if ($IncludeTranslationPreview) { '- Translation feature/provider/API/worker flags: fake-local only, enabled only in this random disposable API process; no external NMT provider was configured or called; prior process values restored during cleanup' } else { '- Translation fake-local flags: forced false for this disposable API process; prior process values restored during cleanup' })
         "- PostgreSQL cultivation ledger: $cultivationLedgerXp XP across $cultivationLedgerEntries entries for the synthetic user"
         $(if ($glossaryParts.Count -eq 8) { "- PostgreSQL glossary import/editor after revision preview: version $($glossaryParts[0]), active revision $($glossaryParts[1]), latest draft $($glossaryParts[2]), $($glossaryParts[3]) immutable term rows, $($glossaryParts[4]) aliases, one idempotency receipt and one apply row; preview did not create a revision or change the active pointer" } else { '- PostgreSQL glossary import/editor: not verified' })
@@ -827,6 +936,7 @@ COMMIT;
         "- Staging cleanup: $stagingCleanup"
         "- Screenshots: $([System.IO.Path]::GetFileName($screenshotPath)), $([System.IO.Path]::GetFileName($workDetailScreenshotPath)), $([System.IO.Path]::GetFileName($readerScreenshotPath))$(if ($IncludeCultivationRankUp) { ', cultivation-rank-up-live.png' } else { '' }), $([System.IO.Path]::GetFileName($glossaryImportScreenshotPath)), $([System.IO.Path]::GetFileName($glossaryEditorScreenshotPath)), $([System.IO.Path]::GetFileName($authoringScreenshotPath))$(if ($IncludeAuthoringOutline) { ', authoring-outline-live.png' } else { '' })$(if ($IncludeAuthoringChapterEditor) { ', authoring-chapter-editor-live.png' } else { '' })$(if ($IncludePublicationRightsAcceptance) { ', publication-rights-policy-live.png' } else { '' })$(if ($IncludePublicationReviewWorkspace) { ', publication-review-workspace-live.png' } else { '' })$(if ($IncludeTranslationPreview) { ', translation-job-live.png' } else { '' })$(if ($IncludePaymentReturn) { ', momo-payment-return-pending-live.png, momo-payment-history-zero-live.png' } else { '' })$(if ($IncludeCommerceSettlement) { ', momo-commerce-success-live.png, momo-commerce-unlocked-chapter-live.png' } else { '' }), private-import-commit-live.png, private-import-detail-live.png, private-import-reader-live.png, private-import-html-commit-live.png, private-import-html-detail-live.png, private-import-html-reader-live.png, private-import-markdown-commit-live.png, private-import-markdown-detail-live.png, private-import-markdown-reader-live.png, private-import-epub-commit-live.png, private-import-epub-detail-live.png, private-import-epub-reader-live.png"
         $(if ($IncludeCultivationRankUp) { '- Cultivation response trace: cultivation-rank-up-trace.json' } else { '- Cultivation response trace: not requested' })
+        $(if ($IncludeDatabaseRestartRecovery) { '- Database restart probes: database-restart-probes.txt, postgres-stop.log, postgres-start.log' } else { '- Database restart probes: not requested' })
         "- Logs: api-build.log, api-stdout.log, api-stderr.log, playwright.log$(if ($IncludeAuthoringDraftApi) { ', authoring-draft-api-test.log' } else { '' })$(if ($IncludeAuthoringEmptyChapterDelete) { ', authoring-empty-chapter-delete-api-test.log' } else { '' })"
         $(if ($failure) { "- Failure: $failure" } else { '- Failure: none' })
         ''
