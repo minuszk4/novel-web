@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 10.4.0
+  version: 10.5.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -6968,7 +6968,9 @@ paths:
         Sending true on an absent state creates a follow with in-app notifications enabled. Sending false mutes an
         existing active follow and never creates a subscription. The request has a strict one-field allow-list. An
         exact retry of the current desired state returns the current ETag; a conflicting stale state returns 412.
-        Email, push and chapter-published event delivery are not enabled by this operation.
+        A persistent per-actor token bucket limits mutations across API instances. A rejected mutation returns 429
+        with Retry-After; failure to persist the bucket returns 503 without changing the subscription. Email, push and
+        chapter-published event delivery are not enabled by this operation.
       security:
         - appSession: []
           csrfToken: []
@@ -7019,6 +7021,18 @@ paths:
           $ref: '#/components/responses/Problem'
         '428':
           $ref: '#/components/responses/Problem'
+        '429':
+          description: Actor mutation limit reached; wait for Retry-After seconds before retrying.
+          headers:
+            Retry-After:
+              description: Minimum delay in seconds before another follow mutation is allowed.
+              schema:
+                type: integer
+                minimum: 1
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
         '503':
           $ref: '#/components/responses/Problem'
     delete:
@@ -7029,7 +7043,9 @@ paths:
       description: >-
         Requires an active session, current Terms/Privacy acceptance and session-bound CSRF. Active rows require the
         current strong ETag in If-Match. The transition retains an inactive versioned row; repeating an already
-        completed unfollow is harmless. A hidden or withdrawn work returns the same concealed 404 as an unknown work.
+        completed unfollow is harmless. A persistent per-actor token bucket limits mutations across API instances; a
+        rejected mutation returns 429 with Retry-After. A hidden or withdrawn work returns the same concealed 404 as an
+        unknown work.
       security:
         - appSession: []
           csrfToken: []
@@ -7066,6 +7082,18 @@ paths:
           $ref: '#/components/responses/Problem'
         '428':
           $ref: '#/components/responses/Problem'
+        '429':
+          description: Actor mutation limit reached; wait for Retry-After seconds before retrying.
+          headers:
+            Retry-After:
+              description: Minimum delay in seconds before another follow mutation is allowed.
+              schema:
+                type: integer
+                minimum: 1
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
         '503':
           $ref: '#/components/responses/Problem'
 components:

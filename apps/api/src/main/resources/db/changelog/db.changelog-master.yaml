@@ -182,3 +182,6 @@ databaseChangeLog:
   - include:
       file: changes/069-work-subscriptions.sql
       relativeToChangelogFile: true
+  - include:
+      file: changes/070-work-subscription-rate-limits.sql
+      relativeToChangelogFile: true

@@ -23,6 +23,7 @@ export class WorkSubscriptionApiError extends Error {
   constructor(
     readonly status: number,
     readonly code: string,
+    readonly retryAfterSeconds: number | null = null,
   ) {
     super(code);
     this.name = 'WorkSubscriptionApiError';
@@ -168,9 +169,19 @@ function toApiError(error: unknown): WorkSubscriptionApiError {
     if (isRecord(error.error) && typeof error.error['code'] === 'string') {
       code = error.error['code'].slice(0, 80);
     }
-    return new WorkSubscriptionApiError(error.status, code);
+    return new WorkSubscriptionApiError(
+      error.status,
+      code,
+      parseRetryAfter(error.headers.get('Retry-After')),
+    );
   }
   return new WorkSubscriptionApiError(0, 'SUBSCRIPTION_NETWORK_ERROR');
+}
+
+function parseRetryAfter(value: string | null): number | null {
+  if (!value || !/^[0-9]{1,5}$/.test(value)) return null;
+  const seconds = Number(value);
+  return Number.isSafeInteger(seconds) && seconds >= 1 && seconds <= 86_400 ? seconds : null;
 }
 
 function invalidResponse(): WorkSubscriptionApiError {

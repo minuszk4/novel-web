@@ -12,6 +12,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.novelweb.identity.auth.PolicyService;
 import com.novelweb.identity.session.SessionService;
+import com.novelweb.library.WorkSubscriptionRateLimiter.Decision;
+import com.novelweb.library.WorkSubscriptionRateLimiter.RateLimitStoreUnavailableException;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -35,6 +37,7 @@ class WorkSubscriptionControllerTests {
   void setUp() {
     service = org.mockito.Mockito.mock(WorkSubscriptionService.class);
     policyService = org.mockito.Mockito.mock(PolicyService.class);
+    when(service.acquireMutationLimit(actorId)).thenReturn(new Decision(true, 0));
     when(policyService.requiredAcceptance(actorId))
         .thenReturn(PolicyService.RequiredAcceptance.COMPLETE);
     mockMvc =
@@ -118,6 +121,42 @@ class WorkSubscriptionControllerTests {
         .andExpect(header().string("ETag", "\"subscription-5\""))
         .andExpect(header().string("Cache-Control", "no-store"));
     verify(service).unfollow(actorId, workId, 4L);
+  }
+
+  @Test
+  void mutationRateLimitReturnsRetryAfterWithoutCallingSubscriptionRepository() throws Exception {
+    when(service.acquireMutationLimit(actorId)).thenReturn(new Decision(false, 17));
+
+    mockMvc
+        .perform(
+            put("/api/v1/works/{workId}/subscription", workId)
+                .principal(authentication())
+                .header("If-Match", "\"subscription-absent\"")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"notificationsEnabled\":true}"))
+        .andExpect(status().isTooManyRequests())
+        .andExpect(header().string("Retry-After", "17"))
+        .andExpect(header().string("Cache-Control", "no-store"))
+        .andExpect(jsonPath("$.code").value("SUBSCRIPTION_RATE_LIMITED"));
+    verify(service).acquireMutationLimit(actorId);
+    verify(service, org.mockito.Mockito.never()).setNotifications(actorId, workId, true, 0);
+  }
+
+  @Test
+  void rateLimitStoreFailureFailsClosed() throws Exception {
+    when(service.acquireMutationLimit(actorId))
+        .thenThrow(new RateLimitStoreUnavailableException(new IllegalStateException("offline")));
+
+    mockMvc
+        .perform(
+            put("/api/v1/works/{workId}/subscription", workId)
+                .principal(authentication())
+                .header("If-Match", "\"subscription-absent\"")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"notificationsEnabled\":true}"))
+        .andExpect(status().isServiceUnavailable())
+        .andExpect(jsonPath("$.code").value("SUBSCRIPTION_RATE_LIMIT_UNAVAILABLE"));
+    verify(service, org.mockito.Mockito.never()).setNotifications(actorId, workId, true, 0);
   }
 
   @Test

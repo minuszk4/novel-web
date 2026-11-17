@@ -3,6 +3,8 @@ package com.novelweb.library;
 import com.fasterxml.jackson.annotation.JsonAnySetter;
 import com.novelweb.identity.auth.PolicyService;
 import com.novelweb.identity.session.SessionService;
+import com.novelweb.library.WorkSubscriptionRateLimiter.Decision;
+import com.novelweb.library.WorkSubscriptionRateLimiter.RateLimitStoreUnavailableException;
 import com.novelweb.library.WorkSubscriptionRepository.NotFollowingException;
 import com.novelweb.library.WorkSubscriptionRepository.StaleSubscriptionException;
 import com.novelweb.library.WorkSubscriptionRepository.SubscriptionNotFoundException;
@@ -76,9 +78,12 @@ public class WorkSubscriptionController {
           "Provide only notificationsEnabled as a boolean.",
           request);
     }
+    long expectedVersion = parseEtag(ifMatch);
+    ResponseEntity<?> rateLimit = mutationLimit(actor.orElseThrow(), request);
+    if (rateLimit != null) return rateLimit;
     return state(
         service.setNotifications(
-            actor.orElseThrow(), workId, body.notificationsEnabled(), parseEtag(ifMatch)));
+            actor.orElseThrow(), workId, body.notificationsEnabled(), expectedVersion));
   }
 
   @DeleteMapping
@@ -94,8 +99,11 @@ public class WorkSubscriptionController {
     }
     ResponseEntity<?> policyGate = policyGate(actor.orElseThrow(), request);
     if (policyGate != null) return policyGate;
+    Long expectedVersion = parseOptionalEtag(ifMatch);
+    ResponseEntity<?> rateLimit = mutationLimit(actor.orElseThrow(), request);
+    if (rateLimit != null) return rateLimit;
     WorkSubscriptionRepository.SubscriptionState state =
-        service.unfollow(actor.orElseThrow(), workId, parseOptionalEtag(ifMatch));
+        service.unfollow(actor.orElseThrow(), workId, expectedVersion);
     return ResponseEntity.noContent()
         .header(HttpHeaders.ETAG, etag(state.version()))
         .cacheControl(CacheControl.noStore())
@@ -137,6 +145,25 @@ public class WorkSubscriptionController {
         "SUBSCRIPTION_VERSION_REQUIRED",
         "Read the current subscription and provide its ETag in If-Match.",
         request);
+  }
+
+  private ResponseEntity<?> mutationLimit(UUID actorUserId, HttpServletRequest request) {
+    try {
+      Decision decision = service.acquireMutationLimit(actorUserId);
+      if (decision.allowed()) return null;
+      return problem(
+          HttpStatus.TOO_MANY_REQUESTS,
+          "SUBSCRIPTION_RATE_LIMITED",
+          "Too many follow changes were requested. Please wait before trying again.",
+          request,
+          Integer.toString(decision.retryAfterSeconds()));
+    } catch (RateLimitStoreUnavailableException exception) {
+      return problem(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          "SUBSCRIPTION_RATE_LIMIT_UNAVAILABLE",
+          "Follow settings could not be safely changed. Please try again.",
+          request);
+    }
   }
 
   @ExceptionHandler(IllegalArgumentException.class)
@@ -215,15 +242,26 @@ public class WorkSubscriptionController {
 
   private static ResponseEntity<ProblemDetail> problem(
       HttpStatus status, String code, String detail, HttpServletRequest request) {
+    return problem(status, code, detail, request, null);
+  }
+
+  private static ResponseEntity<ProblemDetail> problem(
+      HttpStatus status,
+      String code,
+      String detail,
+      HttpServletRequest request,
+      String retryAfter) {
     ProblemDetail problem = ProblemDetail.forStatusAndDetail(status, detail);
     problem.setTitle(status.getReasonPhrase());
     problem.setProperty("code", code);
     Object value = request.getAttribute(CorrelationIdFilter.REQUEST_ATTRIBUTE);
     problem.setProperty("correlationId", value instanceof String id ? id : "unavailable");
-    return ResponseEntity.status(status)
-        .cacheControl(CacheControl.noStore())
-        .header(HttpHeaders.PRAGMA, "no-cache")
-        .body(problem);
+    ResponseEntity.BodyBuilder response =
+        ResponseEntity.status(status)
+            .cacheControl(CacheControl.noStore())
+            .header(HttpHeaders.PRAGMA, "no-cache");
+    if (retryAfter != null) response.header(HttpHeaders.RETRY_AFTER, retryAfter);
+    return response.body(problem);
   }
 
   public record SubscriptionView(boolean following, boolean notificationsEnabled) {}

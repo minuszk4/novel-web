@@ -326,6 +326,65 @@ test('follows, mutes, re-enables and unfollows a public work with fresh CSRF and
   await expectNoAxeViolations(page);
 });
 
+test('shows the subscription Retry-After and keeps the confirmed follow state', async ({
+  page,
+}) => {
+  const workId = works[0].id;
+  const subscriptionPath = '/api/v1/works/' + workId + '/subscription';
+  let subscriptionReads = 0;
+  let mutations = 0;
+  await installCatalog(page, true);
+  await page.route('**/api/v1/auth/csrf', (route) =>
+    json(route, { token: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' }),
+  );
+  await page.route('**/api/v1/catalog/works/' + workId, (route) => json(route, works[0]));
+  await page.route('**/api/v1/catalog/works/' + workId + '/chapters**', (route) =>
+    json(route, { workId, items: [{ ordinal: 1, title: 'Chương một' }], nextAfterOrdinal: null }),
+  );
+  await page.route(
+    (url) => url.pathname === subscriptionPath,
+    async (route) => {
+      if (route.request().method() === 'GET') {
+        subscriptionReads += 1;
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          headers: {
+            'Cache-Control': 'no-store',
+            Pragma: 'no-cache',
+            ETag: '"subscription-absent"',
+          },
+          body: JSON.stringify({ following: false, notificationsEnabled: false }),
+        });
+        return;
+      }
+      mutations += 1;
+      await route.fulfill({
+        status: 429,
+        contentType: 'application/problem+json',
+        headers: {
+          'Cache-Control': 'no-store',
+          Pragma: 'no-cache',
+          'Retry-After': '23',
+        },
+        body: JSON.stringify({ code: 'SUBSCRIPTION_RATE_LIMITED' }),
+      });
+    },
+  );
+
+  await page.setViewportSize({ width: 360, height: 800 });
+  await page.goto('/works/' + workId);
+  await page.getByRole('button', { name: 'Theo dõi cập nhật chương' }).click();
+
+  await expect(page.locator('.work-subscription-control [role="status"]')).toContainText(
+    'Hãy thử lại sau 23 giây',
+  );
+  await expect(page.getByRole('button', { name: 'Theo dõi cập nhật chương' })).toBeVisible();
+  expect(subscriptionReads).toBe(2);
+  expect(mutations).toBe(1);
+  await expectNoAxeViolations(page);
+});
+
 test('does not request public work data when the catalog feature is disabled on a deep link', async ({
   page,
 }) => {

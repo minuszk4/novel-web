@@ -149,6 +149,8 @@ import tools.jackson.databind.ObjectMapper;
       "novel.public-catalog.rate-limit.capacity=60",
       "novel.public-catalog.rate-limit.refill-interval=1h",
       "novel.library.cursor.hmac-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "novel.work-subscriptions.rate-limit-capacity=4",
+      "novel.work-subscriptions.rate-limit-refill-interval=PT1H",
       "novel.payment.momo.test.enabled=true",
       "novel.payment.momo.test.environment=test",
       "novel.payment.momo.test.partner-code=MOMOTEST123",
@@ -277,7 +279,8 @@ class PostgresSchemaIntegrationTests {
           "publication_release_events",
           "publication_takedown_purge_requests",
           "publication_takedown_purge_attempts",
-          "work_subscriptions");
+          "work_subscriptions",
+          "work_subscription_rate_limits");
 
   @Autowired private DataSource dataSource;
 
@@ -455,7 +458,7 @@ class PostgresSchemaIntegrationTests {
             connection.prepareStatement("SELECT COUNT(*) FROM databasechangelog");
         ResultSet changesets = changesetCount.executeQuery()) {
       changesets.next();
-      assertEquals(172, changesets.getInt(1), "unexpected number of applied changesets");
+      assertEquals(173, changesets.getInt(1), "unexpected number of applied changesets");
     }
 
     Set<String> actualTables = new HashSet<>();
@@ -2950,6 +2953,38 @@ class PostgresSchemaIntegrationTests {
       assertEquals(204, unfollowedSubscription.getResponse().getStatus());
       assertEquals(
           "\"subscription-3\"", unfollowedSubscription.getResponse().getHeader(HttpHeaders.ETAG));
+      MvcResult replayUnfollowedSubscription =
+          mockMvc
+              .perform(
+                  delete(subscriptionPath)
+                      .cookie(ownerCookie)
+                      .header(
+                          SessionCsrfTokenService.TOKEN_HEADER_NAME,
+                          csrfTokenService.tokenFor(approvableOwnerSession.cookieValue()))
+                      .header(HttpHeaders.IF_MATCH, "\"subscription-3\""))
+              .andReturn();
+      assertEquals(204, replayUnfollowedSubscription.getResponse().getStatus());
+      MvcResult limitedSubscriptionMutation =
+          mockMvc
+              .perform(
+                  delete(subscriptionPath)
+                      .cookie(ownerCookie)
+                      .header(
+                          SessionCsrfTokenService.TOKEN_HEADER_NAME,
+                          csrfTokenService.tokenFor(approvableOwnerSession.cookieValue()))
+                      .header(HttpHeaders.IF_MATCH, "\"subscription-3\""))
+              .andReturn();
+      assertEquals(429, limitedSubscriptionMutation.getResponse().getStatus());
+      assertEquals(
+          "SUBSCRIPTION_RATE_LIMITED",
+          objectMapper
+              .readTree(limitedSubscriptionMutation.getResponse().getContentAsString())
+              .path("code")
+              .asText());
+      assertTrue(
+          Integer.parseInt(
+                  limitedSubscriptionMutation.getResponse().getHeader(HttpHeaders.RETRY_AFTER))
+              > 0);
       MvcResult unfollowedState =
           mockMvc.perform(get(subscriptionPath).cookie(ownerCookie)).andReturn();
       assertEquals(200, unfollowedState.getResponse().getStatus());

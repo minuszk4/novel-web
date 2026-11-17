@@ -98,6 +98,26 @@ describe('WorkSubscriptionApiService', () => {
       );
     await expect(result).rejects.toMatchObject({ status: 401, code: 'UNAUTHENTICATED' });
   });
+
+  it('preserves a bounded Retry-After from a subscription mutation limit', async () => {
+    const result = api.setNotifications(workId, true, '"subscription-absent"');
+    const request = await expectNextRequest(http, '/api/v1/auth/csrf');
+    request.flush({ token: 'A'.repeat(43) });
+    const mutation = await expectNextRequest(http, `/api/v1/works/${workId}/subscription`);
+    mutation.flush(
+      { code: 'SUBSCRIPTION_RATE_LIMITED' },
+      {
+        status: 429,
+        statusText: 'Too Many Requests',
+        headers: noStore.set('Retry-After', '23'),
+      },
+    );
+    await expect(result).rejects.toMatchObject({
+      status: 429,
+      code: 'SUBSCRIPTION_RATE_LIMITED',
+      retryAfterSeconds: 23,
+    });
+  });
 });
 
 async function expectNextRequest(http: HttpTestingController, url: string): Promise<TestRequest> {

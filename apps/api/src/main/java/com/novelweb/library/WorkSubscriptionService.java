@@ -10,9 +10,16 @@ import org.springframework.stereotype.Service;
 public class WorkSubscriptionService {
 
   private final WorkSubscriptionRepository repository;
+  private final WorkSubscriptionRateLimiter rateLimiter;
 
-  public WorkSubscriptionService(WorkSubscriptionRepository repository) {
+  public WorkSubscriptionService(
+      WorkSubscriptionRepository repository, WorkSubscriptionRateLimiter rateLimiter) {
     this.repository = Objects.requireNonNull(repository, "repository is required");
+    this.rateLimiter = Objects.requireNonNull(rateLimiter, "rate limiter is required");
+  }
+
+  public WorkSubscriptionRateLimiter.Decision acquireMutationLimit(UUID actorUserId) {
+    return rateLimiter.acquire(actorUserId);
   }
 
   public WorkSubscriptionRepository.SubscriptionState get(UUID actorUserId, UUID workId) {

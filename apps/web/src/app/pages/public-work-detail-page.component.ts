@@ -253,11 +253,24 @@ export class PublicWorkDetailPageComponent {
     const loaded = await this.loadSubscription(workId, token);
     if (token !== this.requestToken || workId !== this.workId) return;
     if (loaded) {
-      this.subscriptionMessage.set(
-        apiError?.status === 409 || apiError?.status === 412
-          ? 'Trạng thái theo dõi đã thay đổi. Mình đã tải trạng thái mới nhất.'
-          : 'Chưa rõ yêu cầu vừa rồi đã lưu chưa. Trạng thái hiện tại đã được tải lại.',
-      );
+      if (apiError?.status === 429 && apiError.code === 'SUBSCRIPTION_RATE_LIMITED') {
+        this.subscriptionMessage.set(
+          apiError.retryAfterSeconds
+            ? 'Bạn thao tác quá nhanh. Hãy thử lại sau ' + apiError.retryAfterSeconds + ' giây.'
+            : 'Bạn thao tác quá nhanh. Hãy đợi một chút rồi thử lại.',
+        );
+      } else if (
+        apiError?.status === 503 &&
+        apiError.code === 'SUBSCRIPTION_RATE_LIMIT_UNAVAILABLE'
+      ) {
+        this.subscriptionMessage.set('Chưa thể lưu thay đổi. Hãy thử lại sau ít phút.');
+      } else {
+        this.subscriptionMessage.set(
+          apiError?.status === 409 || apiError?.status === 412
+            ? 'Trạng thái theo dõi đã thay đổi. Mình đã tải trạng thái mới nhất.'
+            : 'Chưa rõ yêu cầu vừa rồi đã lưu chưa. Trạng thái hiện tại đã được tải lại.',
+        );
+      }
     } else {
       this.subscriptionState.set('error');
       this.subscriptionMessage.set(this.subscriptionErrorMessage(apiError));
@@ -280,7 +293,11 @@ export class PublicWorkDetailPageComponent {
   }
 
   private subscriptionErrorMessage(error: WorkSubscriptionApiError | null): string {
-    if (error?.status === 429) return 'Bạn thao tác quá nhanh. Hãy đợi một chút rồi thử lại.';
+    if (error?.status === 429) {
+      return error.retryAfterSeconds
+        ? 'Bạn thao tác quá nhanh. Hãy thử lại sau ' + error.retryAfterSeconds + ' giây.'
+        : 'Bạn thao tác quá nhanh. Hãy đợi một chút rồi thử lại.';
+    }
     if (error?.status === 503) return 'Theo dõi truyện tạm thời chưa khả dụng.';
     return 'Chưa tải được trạng thái theo dõi. Hãy thử lại.';
   }
