@@ -291,6 +291,38 @@ class CreditTopUpControllerTests {
   }
 
   @Test
+  void policyStoreFailureBlocksCatalogAndOrderCreationWithoutLeakingOrCheckingOut()
+      throws Exception {
+    when(policyService.requiredAcceptance(actorId))
+        .thenThrow(new IllegalStateException("internal-policy-store-secret"));
+
+    var catalogResponse =
+        mockMvc
+            .perform(get("/api/v1/credit-packs").principal(authentication()))
+            .andReturn()
+            .getResponse();
+    var createResponse =
+        mockMvc
+            .perform(
+                post("/api/v1/momo/payment-orders")
+                    .principal(authentication())
+                    .header("Idempotency-Key", IDEMPOTENCY_KEY)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(requestBody()))
+            .andReturn()
+            .getResponse();
+
+    for (var response : List.of(catalogResponse, createResponse)) {
+      assertEquals(503, response.getStatus());
+      assertTrue(response.getContentAsString().contains("POLICY_STORE_UNAVAILABLE"));
+      assertTrue(!response.getContentAsString().contains("internal-policy-store-secret"));
+      assertTrue(response.getHeader("Cache-Control").contains("no-store"));
+      assertTrue(response.getHeader("Location") == null);
+    }
+    verifyNoInteractions(checkoutService, orderService);
+  }
+
+  @Test
   void disabledCommerceBlocksCatalogAndNewOrdersButKeepsSavedOrderStatusReadable()
       throws Exception {
     MockMvc disabledShop =
