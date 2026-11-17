@@ -41,6 +41,7 @@ import com.novelweb.library.WorkspaceService;
 import com.novelweb.library.imports.ImportParseService;
 import com.novelweb.library.imports.ImportStagingCleanupService;
 import com.novelweb.library.imports.ImportStagingRateLimiter;
+import com.novelweb.library.publication.ChapterPublishedNotificationDeliveryService;
 import com.novelweb.library.publication.PublicationTakedownPurgeService;
 import com.novelweb.library.publication.PublicationTakedownPurgeTransport;
 import com.novelweb.payment.credit.ChapterUnlockService;
@@ -177,6 +178,7 @@ import tools.jackson.databind.ObjectMapper;
       "novel.publication.requests.rate-limit-capacity=1",
       "novel.publication.release-enabled=true",
       "novel.publication.purge.worker-enabled=false",
+      "novel.notifications.delivery.enabled=false",
       "novel.publication.purge.required-targets=CDN",
       "novel.publication.purge.targets.cdn.endpoint=https://purge.example.test/v1/work",
       "novel.publication.purge.targets.cdn.bearer-token=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
@@ -263,6 +265,7 @@ class PostgresSchemaIntegrationTests {
           "publication_review_events",
           "chapter_publication_release_events",
           "chapter_published_outbox_events",
+          "notifications",
           "publication_request_rate_limits",
           "import_jobs",
           "import_actor_rate_limits",
@@ -288,6 +291,8 @@ class PostgresSchemaIntegrationTests {
   @Autowired private DataSource dataSource;
 
   @Autowired private PublicationTakedownPurgeService publicationTakedownPurgeService;
+
+  @Autowired private ChapterPublishedNotificationDeliveryService notificationDeliveryService;
 
   @Autowired private GoogleAuthAttemptService googleAuthAttemptService;
 
@@ -463,7 +468,7 @@ class PostgresSchemaIntegrationTests {
             connection.prepareStatement("SELECT COUNT(*) FROM databasechangelog");
         ResultSet changesets = changesetCount.executeQuery()) {
       changesets.next();
-      assertEquals(177, changesets.getInt(1), "unexpected number of applied changesets");
+      assertEquals(178, changesets.getInt(1), "unexpected number of applied changesets");
     }
 
     Set<String> actualTables = new HashSet<>();
@@ -658,7 +663,7 @@ class PostgresSchemaIntegrationTests {
                 try (Connection connection = dataSource.getConnection();
                     java.sql.Statement truncate = connection.createStatement()) {
                   truncate.execute(
-                      "TRUNCATE chapter_published_outbox_events, chapter_publication_release_events,"
+                      "TRUNCATE notifications, chapter_published_outbox_events, chapter_publication_release_events,"
                           + " publication_review_events, publication_request_scope_claims,"
                           + " publication_request_scope_snapshots, publication_requests,"
                           + " publication_release_events,"
@@ -3216,6 +3221,56 @@ class PostgresSchemaIntegrationTests {
       assertEquals(200, createdSubscription.getResponse().getStatus());
       assertEquals(
           "\"subscription-1\"", createdSubscription.getResponse().getHeader(HttpHeaders.ETAG));
+      try (Connection blocker = dataSource.getConnection()) {
+        blocker.setAutoCommit(false);
+        try (PreparedStatement lock =
+            blocker.prepareStatement(
+                "SELECT id FROM chapter_published_outbox_events WHERE work_id = ? FOR UPDATE")) {
+          lock.setObject(1, approvableFixture.workId());
+          try (ResultSet row = lock.executeQuery()) {
+            assertTrue(row.next());
+          }
+        }
+        assertEquals(
+            0, notificationDeliveryService.processDueEventsForWork(approvableFixture.workId()));
+        blocker.commit();
+      }
+      installFailingNotificationInsertTrigger();
+      try {
+        assertEquals(
+            1, notificationDeliveryService.processDueEventsForWork(approvableFixture.workId()));
+      } finally {
+        dropFailingNotificationInsertTrigger();
+      }
+      assertEquals("retry", chapterPublishedOutboxStatus(approvableFixture.workId()));
+      assertEquals(0, notificationCountForWork(approvableFixture.workId()));
+      makeChapterPublishedOutboxDue(approvableFixture.workId());
+      assertEquals(
+          1, notificationDeliveryService.processDueEventsForWork(approvableFixture.workId()));
+      assertEquals("completed", chapterPublishedOutboxStatus(approvableFixture.workId()));
+      assertEquals(1, notificationCountForWork(approvableFixture.workId()));
+      assertEquals(1, notificationCountForActor(approvableFixture.workId(), approvableOwnerId));
+      assertEquals(0, notificationCountForActor(approvableFixture.workId(), staleContentOwnerId));
+      assertEquals(0, notificationSensitiveColumnCount());
+      assertEquals(0, chapterEntitlementCount(stagedChapter.id()));
+      requeueChapterPublishedOutbox(approvableFixture.workId());
+      assertEquals(
+          1, notificationDeliveryService.processDueEventsForWork(approvableFixture.workId()));
+      assertEquals(1, notificationCountForWork(approvableFixture.workId()));
+      prepareChapterPublishedOutboxRetryExhaustion(approvableFixture.workId());
+      installFailingNotificationInsertTrigger();
+      try {
+        assertEquals(
+            1, notificationDeliveryService.processDueEventsForWork(approvableFixture.workId()));
+      } finally {
+        dropFailingNotificationInsertTrigger();
+      }
+      assertEquals("failed", chapterPublishedOutboxStatus(approvableFixture.workId()));
+      assertEquals(8, chapterPublishedOutboxAttempts(approvableFixture.workId()));
+      resetTerminalChapterPublishedOutbox(approvableFixture.workId());
+      assertEquals(
+          1, notificationDeliveryService.processDueEventsForWork(approvableFixture.workId()));
+      assertEquals(1, notificationCountForWork(approvableFixture.workId()));
       MvcResult ownedSubscriptionList =
           mockMvc.perform(get("/api/v1/me/subscriptions?limit=1").cookie(ownerCookie)).andReturn();
       assertEquals(200, ownedSubscriptionList.getResponse().getStatus());
@@ -3250,6 +3305,24 @@ class PostgresSchemaIntegrationTests {
       assertEquals(200, otherActorFollow.getResponse().getStatus());
       assertEquals(
           "\"subscription-1\"", otherActorFollow.getResponse().getHeader(HttpHeaders.ETAG));
+      MvcResult otherActorMuted =
+          mockMvc
+              .perform(
+                  put(subscriptionPath)
+                      .cookie(otherActorCookie)
+                      .header(
+                          SessionCsrfTokenService.TOKEN_HEADER_NAME,
+                          csrfTokenService.tokenFor(staleContentOwnerSession.cookieValue()))
+                      .header(HttpHeaders.IF_MATCH, "\"subscription-1\"")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"notificationsEnabled\":false}"))
+              .andReturn();
+      assertEquals(200, otherActorMuted.getResponse().getStatus());
+      requeueChapterPublishedOutbox(approvableFixture.workId());
+      assertEquals(
+          1, notificationDeliveryService.processDueEventsForWork(approvableFixture.workId()));
+      assertEquals(1, notificationCountForWork(approvableFixture.workId()));
+      assertEquals(0, notificationCountForActor(approvableFixture.workId(), staleContentOwnerId));
       MvcResult mutedSubscription =
           mockMvc
               .perform(
@@ -3488,6 +3561,10 @@ class PostgresSchemaIntegrationTests {
       assertEquals(9, publicationScopeRevocationCount(approvableFixture.workId()));
       assertEquals(1, publicationWorkTakedownEventCount(approvableFixture.workId()));
       assertEquals(1, publicationTakedownPurgeRequestCount(approvableFixture.workId()));
+      requeueChapterPublishedOutbox(approvableFixture.workId());
+      assertEquals(
+          1, notificationDeliveryService.processDueEventsForWork(approvableFixture.workId()));
+      assertEquals(1, notificationCountForWork(approvableFixture.workId()));
 
       when(purgeTransport.purge(any(), any()))
           .thenReturn(PublicationTakedownPurgeTransport.DeliveryResult.acknowledged());
@@ -3634,11 +3711,11 @@ class PostgresSchemaIntegrationTests {
                       .header(
                           SessionCsrfTokenService.TOKEN_HEADER_NAME,
                           csrfTokenService.tokenFor(staleContentOwnerSession.cookieValue()))
-                      .header(HttpHeaders.IF_MATCH, "\"subscription-1\""))
+                      .header(HttpHeaders.IF_MATCH, "\"subscription-2\""))
               .andReturn();
       assertEquals(204, retireWithdrawnSubscription.getResponse().getStatus());
       assertEquals(
-          "\"subscription-2\"",
+          "\"subscription-3\"",
           retireWithdrawnSubscription.getResponse().getHeader(HttpHeaders.ETAG));
       MvcResult maskedSubscription =
           mockMvc.perform(get(subscriptionPath).cookie(ownerCookie)).andReturn();
@@ -4142,6 +4219,145 @@ class PostgresSchemaIntegrationTests {
     }
   }
 
+  private String chapterPublishedOutboxStatus(UUID workId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT status FROM chapter_published_outbox_events WHERE work_id = ?")) {
+      select.setObject(1, workId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getString(1);
+      }
+    }
+  }
+
+  private int chapterPublishedOutboxAttempts(UUID workId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT attempts FROM chapter_published_outbox_events WHERE work_id = ?")) {
+      select.setObject(1, workId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getInt(1);
+      }
+    }
+  }
+
+  private int notificationCountForWork(UUID workId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement("SELECT COUNT(*) FROM notifications WHERE work_id = ?")) {
+      select.setObject(1, workId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getInt(1);
+      }
+    }
+  }
+
+  private int notificationCountForActor(UUID workId, UUID actorId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT COUNT(*) FROM notifications WHERE work_id = ? AND actor_user_id = ?")) {
+      select.setObject(1, workId);
+      select.setObject(2, actorId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getInt(1);
+      }
+    }
+  }
+
+  private int notificationSensitiveColumnCount() throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                """
+                    SELECT COUNT(*) FROM information_schema.columns
+                     WHERE table_schema = 'public' AND table_name = 'notifications'
+                       AND column_name IN ('title', 'body', 'chapter_text', 'url', 'price',
+                                           'credits', 'email', 'payload')
+                    """)) {
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getInt(1);
+      }
+    }
+  }
+
+  private int chapterEntitlementCount(UUID chapterId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT COUNT(*) FROM content_entitlements WHERE chapter_id = ?")) {
+      select.setObject(1, chapterId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getInt(1);
+      }
+    }
+  }
+
+  private void makeChapterPublishedOutboxDue(UUID workId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement update =
+            connection.prepareStatement(
+                """
+                    UPDATE chapter_published_outbox_events
+                       SET next_attempt_at = clock_timestamp()
+                     WHERE work_id = ? AND status = 'retry'
+                    """)) {
+      update.setObject(1, workId);
+      assertEquals(1, update.executeUpdate());
+    }
+  }
+
+  private void requeueChapterPublishedOutbox(UUID workId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement update =
+            connection.prepareStatement(
+                """
+                    UPDATE chapter_published_outbox_events
+                       SET status = 'queued', next_attempt_at = clock_timestamp()
+                     WHERE work_id = ? AND status = 'completed'
+                    """)) {
+      update.setObject(1, workId);
+      assertEquals(1, update.executeUpdate());
+    }
+  }
+
+  private void prepareChapterPublishedOutboxRetryExhaustion(UUID workId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement update =
+            connection.prepareStatement(
+                """
+                    UPDATE chapter_published_outbox_events
+                       SET status = 'retry', attempts = 7, next_attempt_at = clock_timestamp()
+                     WHERE work_id = ? AND status = 'completed'
+                    """)) {
+      update.setObject(1, workId);
+      assertEquals(1, update.executeUpdate());
+    }
+  }
+
+  private void resetTerminalChapterPublishedOutbox(UUID workId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement update =
+            connection.prepareStatement(
+                """
+                    UPDATE chapter_published_outbox_events
+                       SET status = 'queued', attempts = 0, next_attempt_at = clock_timestamp(),
+                           last_safe_failure_code = NULL
+                     WHERE work_id = ? AND status = 'failed'
+                    """)) {
+      update.setObject(1, workId);
+      assertEquals(1, update.executeUpdate());
+    }
+  }
+
   private String chapterStatus(UUID chapterId) throws SQLException {
     try (Connection connection = dataSource.getConnection();
         PreparedStatement select =
@@ -4234,6 +4450,37 @@ class PostgresSchemaIntegrationTests {
           "DROP TRIGGER IF EXISTS trg_test_fail_publication_scope_approval "
               + "ON publication_scope_access_approvals");
       statement.execute("DROP FUNCTION IF EXISTS test_fail_publication_scope_approval()");
+    }
+  }
+
+  private void installFailingNotificationInsertTrigger() throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        java.sql.Statement statement = connection.createStatement()) {
+      statement.execute(
+          """
+              CREATE OR REPLACE FUNCTION test_fail_in_app_notification()
+              RETURNS trigger LANGUAGE plpgsql AS $$
+              BEGIN
+                  RAISE EXCEPTION 'synthetic notification delivery retry check'
+                      USING ERRCODE = '23514';
+              END;
+              $$
+              """);
+      statement.execute(
+          """
+              CREATE TRIGGER trg_test_fail_in_app_notification
+                  BEFORE INSERT ON notifications
+                  FOR EACH ROW EXECUTE FUNCTION test_fail_in_app_notification()
+              """);
+    }
+  }
+
+  private void dropFailingNotificationInsertTrigger() throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        java.sql.Statement statement = connection.createStatement()) {
+      statement.execute(
+          "DROP TRIGGER IF EXISTS trg_test_fail_in_app_notification ON notifications");
+      statement.execute("DROP FUNCTION IF EXISTS test_fail_in_app_notification()");
     }
   }
 
@@ -4434,7 +4681,9 @@ class PostgresSchemaIntegrationTests {
               "ALTER TABLE publication_requests"
                   + " DISABLE TRIGGER trg_publication_request_immutable");
         }
-        try (PreparedStatement deleteReleaseEvents =
+        try (PreparedStatement deleteNotifications =
+                connection.prepareStatement("DELETE FROM notifications WHERE work_id = ?");
+            PreparedStatement deleteReleaseEvents =
                 connection.prepareStatement(
                     "DELETE FROM publication_release_events WHERE work_id = ?");
             PreparedStatement deleteChapterOutboxEvents =
@@ -4457,6 +4706,8 @@ class PostgresSchemaIntegrationTests {
                         + " (SELECT id FROM publication_requests WHERE work_id = ?)");
             PreparedStatement deleteRequests =
                 connection.prepareStatement("DELETE FROM publication_requests WHERE work_id = ?")) {
+          deleteNotifications.setObject(1, workId);
+          deleteNotifications.executeUpdate();
           deleteReleaseEvents.setObject(1, workId);
           deleteReleaseEvents.executeUpdate();
           deleteChapterOutboxEvents.setObject(1, workId);
@@ -15292,6 +15543,7 @@ class PostgresSchemaIntegrationTests {
             "library_reading_states",
             "library_collections",
             "libraries",
+            "notifications",
             "work_subscriptions",
             "works",
             "volumes",
