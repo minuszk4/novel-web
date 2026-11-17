@@ -225,6 +225,9 @@ try {
     if ($IncludePublicationReviewWorkspace -and ($IncludePublicationRightsAcceptance -or $IncludeAuthoringOutline)) {
         throw 'Run -IncludePublicationReviewWorkspace separately from publication-rights acceptance and authoring-outline journeys because each mutates the same synthetic manuscript/policy fixtures.'
     }
+    if ($IncludePublicationReviewWorkspace -and $IncludeCommerceSettlement) {
+        throw 'Run -IncludePublicationReviewWorkspace separately from -IncludeCommerceSettlement because each seeds a different effective synthetic publication-rights policy.'
+    }
 
     $env:POSTGRES_PORT = [string]$hostPort
     $env:POSTGRES_PASSWORD = $postgresPassword
