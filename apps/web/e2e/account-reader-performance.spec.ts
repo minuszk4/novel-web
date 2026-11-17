@@ -54,12 +54,12 @@ interface BenchmarkResult {
     longContentPageRequests: number;
   };
   measurements: {
-    initialLongChapterP95Ms: number;
     initialLongChapterSamplesMs: number[];
-    initialLongChapterDriverWallP95Ms: number;
     initialLongChapterDriverWallSamplesMs: number[];
     firstNavigationDomReadyMs: number;
+    firstNavigationDriverWallMs: number;
     warmNavigationDomReadyP95Ms: number;
+    warmNavigationDriverWallP95Ms: number;
     chapterSwitchP95Ms: number;
     chapterSwitchSamplesMs: number[];
     chapterSwitchDriverWallP95Ms: number;
@@ -72,11 +72,38 @@ interface BenchmarkResult {
     mobileDocumentWidth: number;
     mobileViewportWidth: number;
   };
+  initialNavigationDiagnostics: Array<{
+    sample: string;
+    performanceNowMs: number;
+    readerDomReadyMs: number | null;
+    navigation: {
+      path: string;
+      fetchStartMs: number;
+      requestStartMs: number;
+      responseStartMs: number;
+      domInteractiveMs: number;
+      domContentLoadedMs: number;
+      loadEventMs: number;
+      responseEndMs: number;
+      transferSizeBytes: number;
+    } | null;
+    resources: Array<{
+      path: string;
+      initiatorType: string;
+      startTimeMs: number;
+      durationMs: number;
+      transferSizeBytes: number;
+      encodedBodySizeBytes: number;
+      decodedBodySizeBytes: number;
+    }>;
+    longTasks: Array<{ startTimeMs: number; durationMs: number }>;
+  }>;
   scope: string[];
 }
 
 type ReaderTimingWindow = Window & {
   __readerInitialDomDurations?: number[];
+  __readerLongTasks?: Array<{ startTimeMs: number; durationMs: number }>;
   __readerPendingChapterAction?: {
     buttonSelector: string;
     expectedTitle: string;
@@ -90,6 +117,48 @@ type ReaderTimingWindow = Window & {
   };
   __readerChapterSwitchDurations?: number[];
 };
+
+async function readNavigationDiagnostics(
+  page: Page,
+  sample: string,
+): Promise<BenchmarkResult['initialNavigationDiagnostics'][number]> {
+  return page.evaluate((sampleName) => {
+    const navigation = performance.getEntriesByType('navigation')[0] as
+      PerformanceNavigationTiming | undefined;
+    const target = window as ReaderTimingWindow;
+    return {
+      sample: sampleName,
+      performanceNowMs: performance.now(),
+      readerDomReadyMs: target.__readerInitialDomDurations?.at(-1) ?? null,
+      navigation: navigation
+        ? {
+            path: new URL(navigation.name, location.href).pathname,
+            fetchStartMs: navigation.fetchStart,
+            requestStartMs: navigation.requestStart,
+            responseStartMs: navigation.responseStart,
+            domInteractiveMs: navigation.domInteractive,
+            domContentLoadedMs: navigation.domContentLoadedEventEnd,
+            loadEventMs: navigation.loadEventEnd,
+            responseEndMs: navigation.responseEnd,
+            transferSizeBytes: navigation.transferSize,
+          }
+        : null,
+      resources: performance.getEntriesByType('resource').map((entry) => {
+        const resource = entry as PerformanceResourceTiming;
+        return {
+          path: new URL(resource.name, location.href).pathname,
+          initiatorType: resource.initiatorType,
+          startTimeMs: resource.startTime,
+          durationMs: resource.duration,
+          transferSizeBytes: resource.transferSize,
+          encodedBodySizeBytes: resource.encodedBodySize,
+          decodedBodySizeBytes: resource.decodedBodySize,
+        };
+      }),
+      longTasks: target.__readerLongTasks ?? [],
+    };
+  }, sample);
+}
 
 function metricValue(
   metrics: { metrics: Array<{ name: string; value: number }> },
@@ -379,9 +448,21 @@ test('production Reader renders and remains usable with short, complex, and 5,00
   await page.addInitScript(
     ({ expectedTitle, expectedCount }) => {
       const target = window as ReaderTimingWindow;
-      const navigationStartedAt = performance.now();
       target.__readerInitialDomDurations = [];
       target.__readerChapterSwitchDurations = [];
+      target.__readerLongTasks = [];
+      try {
+        new PerformanceObserver((list) => {
+          target.__readerLongTasks?.push(
+            ...list.getEntries().map((entry) => ({
+              startTimeMs: entry.startTime,
+              durationMs: entry.duration,
+            })),
+          );
+        }).observe({ type: 'longtask', buffered: true });
+      } catch {
+        // Long-task timing is diagnostic and must not affect the functional benchmark.
+      }
       let initialCompletionScheduled = false;
 
       const isReady = (title: string, count: number): boolean =>
@@ -389,28 +470,20 @@ test('production Reader renders and remains usable with short, complex, and 5,00
         document.querySelectorAll('.account-reader-body [data-source-anchor]').length === count;
 
       const scheduleInitialMeasurement = (): void => {
-        if (
-          initialCompletionScheduled ||
-          (target.__readerInitialDomDurations?.length ?? 0) > 0 ||
-          !isReady(expectedTitle, expectedCount)
-        ) {
+        if (initialCompletionScheduled || (target.__readerInitialDomDurations?.length ?? 0) > 0) {
           return;
         }
         initialCompletionScheduled = true;
         requestAnimationFrame(() => {
           initialCompletionScheduled = false;
           if (!isReady(expectedTitle, expectedCount)) return;
-          target.__readerInitialDomDurations?.push(performance.now() - navigationStartedAt);
+          target.__readerInitialDomDurations?.push(performance.now());
         });
       };
 
       const scheduleChapterMeasurement = (): void => {
         const action = target.__readerActiveChapterAction;
-        if (
-          !action ||
-          action.completionScheduled ||
-          !isReady(action.expectedTitle, action.expectedCount)
-        ) {
+        if (!action || action.completionScheduled) {
           return;
         }
         action.completionScheduled = true;
@@ -471,6 +544,7 @@ test('production Reader renders and remains usable with short, complex, and 5,00
   );
   expect(initialLongChapterMs).toBeGreaterThan(0);
   const initialLongChapterDriverWallMs = performance.now() - initialDriverStartedAt;
+  const initialNavigationDiagnostics = [await readNavigationDiagnostics(page, 'first-navigation')];
   const pageRequestsAfterInitialLoad = apiRequests.contentPageRequests[0];
   expect(pageRequestsAfterInitialLoad).toBe(5);
   await session.send('HeapProfiler.enable');
@@ -503,6 +577,9 @@ test('production Reader renders and remains usable with short, complex, and 5,00
     expect(navigationDomMs).toBeGreaterThan(0);
     initialLongChapterSamplesMs.push(navigationDomMs);
     initialLongChapterDriverWallSamplesMs.push(performance.now() - driverStartedAt);
+    initialNavigationDiagnostics.push(
+      await readNavigationDiagnostics(page, `reload-${reload + 1}`),
+    );
   }
 
   const warmupSamples = [
@@ -634,12 +711,12 @@ test('production Reader renders and remains usable with short, complex, and 5,00
       longContentPageRequests: pageRequestsAfterInitialLoad,
     },
     measurements: {
-      initialLongChapterP95Ms: percentile95(initialLongChapterSamplesMs),
       initialLongChapterSamplesMs,
-      initialLongChapterDriverWallP95Ms: percentile95(initialLongChapterDriverWallSamplesMs),
       initialLongChapterDriverWallSamplesMs,
       firstNavigationDomReadyMs: initialLongChapterSamplesMs[0] ?? 0,
+      firstNavigationDriverWallMs: initialLongChapterDriverWallSamplesMs[0] ?? 0,
       warmNavigationDomReadyP95Ms: percentile95(initialLongChapterSamplesMs.slice(1)),
+      warmNavigationDriverWallP95Ms: percentile95(initialLongChapterDriverWallSamplesMs.slice(1)),
       chapterSwitchP95Ms: percentile95(chapterSwitchSamplesMs),
       chapterSwitchSamplesMs,
       chapterSwitchDriverWallP95Ms: percentile95(chapterSwitchDriverWallSamplesMs),
@@ -652,10 +729,12 @@ test('production Reader renders and remains usable with short, complex, and 5,00
       mobileDocumentWidth: mobileDimensions.documentWidth,
       mobileViewportWidth: mobileDimensions.viewportWidth,
     },
+    initialNavigationDiagnostics,
     scope: [
       'Production Angular build served from a local loopback-only static server.',
       'All Reader/account APIs are deterministic Playwright route mocks; no backend or PostgreSQL latency is included.',
-      'Initial/chapter-switch DOM timings are captured inside Chromium through the next animation frame after the expected title and segment count are present; Playwright driver wall time is recorded separately. This is not a physical display-paint measurement.',
+      'Initial DOM timing is Chromium performance.now() from the document navigation time origin through the next animation frame after the expected title and segment count are present; chapter-switch timing starts at the click. Playwright driver wall time is separate. This is not a physical display-paint measurement.',
+      'Initial navigation and reload diagnostics include same-origin resource timing sizes/durations and Chromium long tasks; URLs are reduced to paths and query strings are not recorded.',
       'Browser memory is Chromium CDP JavaScript heap delta from an about:blank baseline after one 5,000-segment load and explicit garbage collection; it excludes native DOM, GPU, and process-wide memory.',
       'Scroll latency is wheel-event to next requestAnimationFrame, not physical display scan-out.',
       'Selection is exercised with a real mouse drag; axe scans run on the complex and 360×800 long-chapter states.',
@@ -678,7 +757,10 @@ test('production Reader renders and remains usable with short, complex, and 5,00
       `- Host: ${result.environment.host.operatingSystem}; ${result.environment.host.architecture}; ${result.environment.host.physicalMemoryGiB} GiB RAM; ${result.environment.host.cpuModel}`,
       `- Initial viewport: ${result.environment.viewport.width}×${result.environment.viewport.height}; DPR ${result.environment.deviceScaleFactor}`,
       `- Long chapter: ${longSegmentCount.toLocaleString('en-US')} segments, ${longSourceTextUtf8Bytes.toLocaleString('en-US')} UTF-8 source-text bytes, ${pageRequestsAfterInitialLoad} API pages of ${pageSize.toLocaleString('en-US')}`,
-      `- Browser initial DOM-ready p95 (${initialLongChapterSamplesMs.length} samples): ${result.measurements.initialLongChapterP95Ms.toFixed(1)} ms; first navigation: ${result.measurements.firstNavigationDomReadyMs.toFixed(1)} ms; warm-navigation p95: ${result.measurements.warmNavigationDomReadyP95Ms.toFixed(1)} ms; Playwright driver-wall p95: ${result.measurements.initialLongChapterDriverWallP95Ms.toFixed(1)} ms`,
+      `- First-navigation DOM-ready (one cold sample): ${result.measurements.firstNavigationDomReadyMs.toFixed(1)} ms; warm-reload DOM-ready p95 (${initialLongChapterSamplesMs.length - 1} samples): ${result.measurements.warmNavigationDomReadyP95Ms.toFixed(1)} ms`,
+      `- Playwright driver wall (reported separately): first navigation ${result.measurements.firstNavigationDriverWallMs.toFixed(1)} ms; warm-reload p95 ${result.measurements.warmNavigationDriverWallP95Ms.toFixed(1)} ms`,
+      `- First document request-to-first-byte: ${((initialNavigationDiagnostics[0]?.navigation?.responseStartMs ?? 0) - (initialNavigationDiagnostics[0]?.navigation?.requestStartMs ?? 0)).toFixed(1)} ms; response body transfer: ${((initialNavigationDiagnostics[0]?.navigation?.responseEndMs ?? 0) - (initialNavigationDiagnostics[0]?.navigation?.responseStartMs ?? 0)).toFixed(1)} ms`,
+      `- First navigation diagnostics: ${initialNavigationDiagnostics[0]?.resources.length ?? 0} resource entries; ${(initialNavigationDiagnostics[0]?.longTasks ?? []).length} long tasks; per-reload detail is in result.json.`,
       `- Browser chapter-switch DOM-update p95 (24 samples after warm-up): ${result.measurements.chapterSwitchP95Ms.toFixed(1)} ms; Playwright driver-wall p95: ${result.measurements.chapterSwitchDriverWallP95Ms.toFixed(1)} ms`,
       `- Wheel event to next animation frame p95 (20 samples): ${result.measurements.wheelToNextAnimationFrameP95Ms.toFixed(1)} ms`,
       `- Chromium JS heap delta from blank page: ${chromiumJsHeapDeltaMiB.toFixed(1)} MiB; DOM nodes: ${chromiumDomNodeCount.toLocaleString('en-US')}`,
