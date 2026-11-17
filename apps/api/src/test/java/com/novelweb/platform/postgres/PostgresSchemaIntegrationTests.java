@@ -452,7 +452,7 @@ class PostgresSchemaIntegrationTests {
             connection.prepareStatement("SELECT COUNT(*) FROM databasechangelog");
         ResultSet changesets = changesetCount.executeQuery()) {
       changesets.next();
-      assertEquals(166, changesets.getInt(1), "unexpected number of applied changesets");
+      assertEquals(167, changesets.getInt(1), "unexpected number of applied changesets");
     }
 
     Set<String> actualTables = new HashSet<>();
@@ -1141,6 +1141,11 @@ class PostgresSchemaIntegrationTests {
                           "scopeCode",
                           "COMMERCIAL_SALE",
                           "rightsBasisCode",
+                          "LICENSE_OR_PERMISSION"),
+                      Map.of(
+                          "scopeCode",
+                          "TRANSLATION_ADAPTATION",
+                          "rightsBasisCode",
                           "LICENSE_OR_PERMISSION"))));
 
       assertEquals(401, mockMvc.perform(get(path)).andReturn().getResponse().getStatus());
@@ -1338,7 +1343,13 @@ class PostgresSchemaIntegrationTests {
       assertTrue(readyBody.path("canSubmit").asBoolean());
       assertEquals(1, readyBody.path("readyChapterCount").asInt());
       assertTrue(readyBody.path("blockerCodes").isEmpty());
-      assertEquals(3, readyBody.path("scopes").size());
+      assertEquals(4, readyBody.path("scopes").size());
+      assertTrue(
+          java.util.stream.StreamSupport.stream(readyBody.path("scopes").spliterator(), false)
+              .anyMatch(
+                  scope ->
+                      "TRANSLATION_ADAPTATION".equals(scope.path("scopeCode").asText())
+                          && scope.path("ready").asBoolean()));
       assertEquals(
           readyBody.path("snapshotEtag").asText(), ready.getResponse().getHeader(HttpHeaders.ETAG));
       String readyResponseText = ready.getResponse().getContentAsString();
@@ -1410,7 +1421,8 @@ class PostgresSchemaIntegrationTests {
       JsonNode receipt = objectMapper.readTree(submitted.getResponse().getContentAsString());
       assertEquals(1, receipt.path("requestVersion").asInt());
       assertEquals("PENDING_REVIEW", receipt.path("state").asText());
-      assertEquals(3, receipt.path("scopeCodes").size());
+      assertEquals(4, receipt.path("scopeCodes").size());
+      assertTrue(receipt.path("scopeCodes").toString().contains("TRANSLATION_ADAPTATION"));
       assertFalse(submitted.getResponse().getContentAsString().contains("Private chapter prose"));
       assertEquals(1, publicationRequestCount(workId));
       assertEquals(1, publicationReviewEventCount(workId));

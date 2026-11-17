@@ -201,8 +201,40 @@
             </label>
           }
 
+          <label class="publication-request-commercial-toggle">
+            <input
+              type="checkbox"
+              [checked]="includeTranslationAdaptation()"
+              [disabled]="formLocked"
+              (change)="toggleTranslationAdaptation($event)"
+            />
+            <span>
+              Tôi cũng yêu cầu xem xét quyền chuyển ngữ và thích nghi nội dung để có thể phát hành
+              bản dịch thủ công sau khi reviewer chấp thuận và tôi xác nhận riêng.
+            </span>
+          </label>
+          @if (includeTranslationAdaptation()) {
+            <label for="publication-request-translation-adaptation-basis">
+              <span>Quyền chuyển ngữ/thích nghi · bắt buộc khi chọn</span>
+              <select
+                id="publication-request-translation-adaptation-basis"
+                [value]="translationAdaptationBasis()"
+                [disabled]="isBusy || uncertain()"
+                (change)="changeTranslationAdaptationBasis($event)"
+              >
+                <option value="">Chọn căn cứ bạn khai báo</option>
+                @for (option of basisOptions; track option.code) {
+                  <option [value]="option.code">{{ option.label }}</option>
+                }
+              </select>
+            </label>
+          }
+
           <ul class="publication-request-disclosures">
-            <li>Thông tin công khai, nội dung chương và quyền bán là ba phạm vi tách biệt.</li>
+            <li>
+              Thông tin công khai, nội dung chương, quyền bán và quyền chuyển ngữ/thích nghi là các
+              phạm vi tách biệt.
+            </li>
             <li>
               Chọn “Cần người duyệt xem xét” thì yêu cầu chưa thể được chấp thuận cho đến khi làm
               rõ.

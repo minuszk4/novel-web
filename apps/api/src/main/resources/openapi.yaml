@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 9.6.0
+  version: 10.0.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -7987,8 +7987,8 @@ components:
           pattern: '^"publication-snapshot-[a-f0-9]{64}"$'
         scopes:
           type: array
-          minItems: 3
-          maxItems: 3
+          minItems: 4
+          maxItems: 4
           items:
             $ref: '#/components/schemas/PublicationScopeReadiness'
         blockerCodes:
@@ -8039,7 +8039,7 @@ components:
       properties:
         scopeCode:
           type: string
-          enum: [PUBLIC_METADATA, CHAPTER_TEXT, COMMERCIAL_SALE]
+          enum: [PUBLIC_METADATA, CHAPTER_TEXT, COMMERCIAL_SALE, TRANSLATION_ADAPTATION]
         ready:
           type: boolean
         snapshotEtag:
@@ -8058,8 +8058,8 @@ components:
         scopeClaims:
           type: array
           minItems: 2
-          maxItems: 3
-          description: Metadata and chapter text are required; commercial sale is optional.
+          maxItems: 4
+          description: Metadata and chapter text are required; commercial sale and translation/adaptation are separate optional scopes.
           items:
             $ref: '#/components/schemas/PublicationRequestScopeClaim'
     PublicationRequestScopeClaim:
@@ -8069,7 +8069,7 @@ components:
       properties:
         scopeCode:
           type: string
-          enum: [PUBLIC_METADATA, CHAPTER_TEXT, COMMERCIAL_SALE]
+          enum: [PUBLIC_METADATA, CHAPTER_TEXT, COMMERCIAL_SALE, TRANSLATION_ADAPTATION]
         rightsBasisCode:
           type: string
           enum: [ORIGINAL_WORK, LICENSE_OR_PERMISSION, PUBLIC_DOMAIN, NEEDS_REVIEW]
@@ -8093,11 +8093,11 @@ components:
         scopeCodes:
           type: array
           minItems: 2
-          maxItems: 3
+          maxItems: 4
           uniqueItems: true
           items:
             type: string
-            enum: [PUBLIC_METADATA, CHAPTER_TEXT, COMMERCIAL_SALE]
+            enum: [PUBLIC_METADATA, CHAPTER_TEXT, COMMERCIAL_SALE, TRANSLATION_ADAPTATION]
         submittedAt:
           type: string
           format: date-time
@@ -8237,11 +8237,11 @@ components:
         scopeCodes:
           type: array
           minItems: 2
-          maxItems: 3
+          maxItems: 4
           uniqueItems: true
           items:
             type: string
-            enum: [PUBLIC_METADATA, CHAPTER_TEXT, COMMERCIAL_SALE]
+            enum: [PUBLIC_METADATA, CHAPTER_TEXT, COMMERCIAL_SALE, TRANSLATION_ADAPTATION]
     PublicationReviewDetail:
       type: object
       additionalProperties: false
@@ -8283,13 +8283,13 @@ components:
         scopes:
           type: array
           minItems: 2
-          maxItems: 3
+          maxItems: 4
           items:
             $ref: '#/components/schemas/PublicationReviewScopePreview'
         claims:
           type: array
           minItems: 2
-          maxItems: 3
+          maxItems: 4
           items:
             $ref: '#/components/schemas/PublicationReviewClaim'
         events:
@@ -8378,7 +8378,7 @@ components:
       properties:
         scopeCode:
           type: string
-          enum: [PUBLIC_METADATA, CHAPTER_TEXT, COMMERCIAL_SALE]
+          enum: [PUBLIC_METADATA, CHAPTER_TEXT, COMMERCIAL_SALE, TRANSLATION_ADAPTATION]
         snapshotSha256:
           type: string
           pattern: '^[a-f0-9]{64}$'
@@ -8429,7 +8429,7 @@ components:
       properties:
         scopeCode:
           type: string
-          enum: [PUBLIC_METADATA, CHAPTER_TEXT, COMMERCIAL_SALE]
+          enum: [PUBLIC_METADATA, CHAPTER_TEXT, COMMERCIAL_SALE, TRANSLATION_ADAPTATION]
         rightsBasisCode:
           type: string
           enum: [ORIGINAL_WORK, LICENSE_OR_PERMISSION, PUBLIC_DOMAIN, NEEDS_REVIEW]

@@ -63,7 +63,8 @@ export type PublicationRequestState =
   | 'SUPERSEDED'
   | 'WITHDRAWN';
 
-export type PublicationScopeCode = 'PUBLIC_METADATA' | 'CHAPTER_TEXT' | 'COMMERCIAL_SALE';
+export type PublicationScopeCode =
+  'PUBLIC_METADATA' | 'CHAPTER_TEXT' | 'COMMERCIAL_SALE' | 'TRANSLATION_ADAPTATION';
 
 export interface PublicationScopeReadiness {
   scopeCode: PublicationScopeCode;
@@ -1057,7 +1058,7 @@ function parsePublicationReadiness(
     !isPublicationReadinessEtag(etag) ||
     etag !== value['snapshotEtag'] ||
     !Array.isArray(value['scopes']) ||
-    value['scopes'].length !== 3 ||
+    value['scopes'].length !== 4 ||
     !Array.isArray(value['blockerCodes']) ||
     value['blockerCodes'].length > 4 ||
     value['blockerCodes'].some((code) => !isPublicationReadinessBlocker(code)) ||
@@ -1082,6 +1083,7 @@ function parsePublicationReadiness(
     'PUBLIC_METADATA',
     'CHAPTER_TEXT',
     'COMMERCIAL_SALE',
+    'TRANSLATION_ADAPTATION',
   ];
   if (
     scopes.length !== parsedScopes.length ||
@@ -1156,7 +1158,7 @@ function parsePublicationRequestReceipt(
     !isSha256(value['snapshotSha256']) ||
     !Array.isArray(value['scopeCodes']) ||
     value['scopeCodes'].length < 2 ||
-    value['scopeCodes'].length > 3 ||
+    value['scopeCodes'].length > 4 ||
     value['scopeCodes'].some((scope) => !isPublicationScopeCode(scope)) ||
     new Set(value['scopeCodes']).size !== value['scopeCodes'].length ||
     !value['scopeCodes'].includes('PUBLIC_METADATA') ||
@@ -1627,7 +1629,12 @@ function isNullablePublicationRequestHistoryReason(
 }
 
 function isPublicationScopeCode(value: unknown): value is PublicationScopeCode {
-  return value === 'PUBLIC_METADATA' || value === 'CHAPTER_TEXT' || value === 'COMMERCIAL_SALE';
+  return (
+    value === 'PUBLIC_METADATA' ||
+    value === 'CHAPTER_TEXT' ||
+    value === 'COMMERCIAL_SALE' ||
+    value === 'TRANSLATION_ADAPTATION'
+  );
 }
 
 function isPublicationRightsBasisCode(value: unknown): value is PublicationRightsBasisCode {

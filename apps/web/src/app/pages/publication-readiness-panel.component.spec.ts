@@ -55,6 +55,7 @@ function readiness(overrides: Partial<PublicationReadiness> = {}): PublicationRe
       { scopeCode: 'PUBLIC_METADATA', ready: true, snapshotEtag: scopeEtag },
       { scopeCode: 'CHAPTER_TEXT', ready: true, snapshotEtag: scopeEtag },
       { scopeCode: 'COMMERCIAL_SALE', ready: true, snapshotEtag: scopeEtag },
+      { scopeCode: 'TRANSLATION_ADAPTATION', ready: true, snapshotEtag: scopeEtag },
     ],
     blockerCodes: [],
     ...overrides,

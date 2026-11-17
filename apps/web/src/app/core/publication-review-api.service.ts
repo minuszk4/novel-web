@@ -8,7 +8,8 @@ import {
 import { Injectable, inject } from '@angular/core';
 import { firstValueFrom, timeout } from 'rxjs';
 
-export type PublicationReviewScope = 'PUBLIC_METADATA' | 'CHAPTER_TEXT' | 'COMMERCIAL_SALE';
+export type PublicationReviewScope =
+  'PUBLIC_METADATA' | 'CHAPTER_TEXT' | 'COMMERCIAL_SALE' | 'TRANSLATION_ADAPTATION';
 export type PublicationRightsBasis =
   'ORIGINAL_WORK' | 'LICENSE_OR_PERMISSION' | 'PUBLIC_DOMAIN' | 'NEEDS_REVIEW';
 export type PublicationReviewState =
@@ -460,7 +461,12 @@ function isSha256(value: unknown): value is string {
 }
 
 function isScope(value: unknown): value is PublicationReviewScope {
-  return value === 'PUBLIC_METADATA' || value === 'CHAPTER_TEXT' || value === 'COMMERCIAL_SALE';
+  return (
+    value === 'PUBLIC_METADATA' ||
+    value === 'CHAPTER_TEXT' ||
+    value === 'COMMERCIAL_SALE' ||
+    value === 'TRANSLATION_ADAPTATION'
+  );
 }
 
 function isScopeList(value: unknown): value is PublicationReviewScope[] {

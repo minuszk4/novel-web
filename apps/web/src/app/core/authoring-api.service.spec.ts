@@ -42,6 +42,7 @@ const publicationReadiness = {
     { scopeCode: 'PUBLIC_METADATA', ready: true, snapshotEtag: publicationScopeEtag },
     { scopeCode: 'CHAPTER_TEXT', ready: true, snapshotEtag: publicationScopeEtag },
     { scopeCode: 'COMMERCIAL_SALE', ready: true, snapshotEtag: publicationScopeEtag },
+    { scopeCode: 'TRANSLATION_ADAPTATION', ready: true, snapshotEtag: publicationScopeEtag },
   ],
   blockerCodes: [],
 };

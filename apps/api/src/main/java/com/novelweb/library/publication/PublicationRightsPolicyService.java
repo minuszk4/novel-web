@@ -147,6 +147,9 @@ public class PublicationRightsPolicyService {
             PublicationSnapshotEtags.scope("CHAPTER_TEXT", snapshot.chapterTextSnapshot());
         String commercialSaleEtag =
             PublicationSnapshotEtags.scope("COMMERCIAL_SALE", snapshot.commercialSaleSnapshot());
+        String translationAdaptationEtag =
+            PublicationSnapshotEtags.scope(
+                "TRANSLATION_ADAPTATION", snapshot.translationAdaptationSnapshot());
         String snapshotEtag =
             PublicationSnapshotEtags.readiness(
                 workId,
@@ -156,7 +159,8 @@ public class PublicationRightsPolicyService {
                 policyDigest,
                 acceptedAt,
                 snapshot.currentRequestState(),
-                List.of(metadataEtag, chapterTextEtag, commercialSaleEtag));
+                List.of(
+                    metadataEtag, chapterTextEtag, commercialSaleEtag, translationAdaptationEtag));
         return ReadinessResult.available(
             new PublicationReadiness(
                 workId,
@@ -174,7 +178,11 @@ public class PublicationRightsPolicyService {
                     new ScopeReadiness(
                         "CHAPTER_TEXT", snapshot.readyChapterCount() > 0, chapterTextEtag),
                     new ScopeReadiness(
-                        "COMMERCIAL_SALE", snapshot.readyChapterCount() > 0, commercialSaleEtag)),
+                        "COMMERCIAL_SALE", snapshot.readyChapterCount() > 0, commercialSaleEtag),
+                    new ScopeReadiness(
+                        "TRANSLATION_ADAPTATION",
+                        snapshot.readyChapterCount() > 0,
+                        translationAdaptationEtag)),
                 List.copyOf(blockers)));
       } catch (SQLException | RuntimeException exception) {
         rollback(connection, exception);
@@ -331,6 +339,8 @@ public class PublicationRightsPolicyService {
                            AS chapter_text_snapshot,
                        publication_work_scope_snapshot(w.id, 'COMMERCIAL_SALE')::text
                            AS commercial_sale_snapshot,
+                       publication_work_scope_snapshot(w.id, 'TRANSLATION_ADAPTATION')::text
+                           AS translation_adaptation_snapshot,
                        (SELECT state.current_state
                           FROM publication_requests request
                           JOIN publication_request_current_state state
@@ -352,6 +362,7 @@ public class PublicationRightsPolicyService {
             row.getString("metadata_snapshot"),
             row.getString("chapter_text_snapshot"),
             row.getString("commercial_sale_snapshot"),
+            row.getString("translation_adaptation_snapshot"),
             row.getString("current_request_state"));
       }
     }
@@ -550,6 +561,7 @@ public class PublicationRightsPolicyService {
       String metadataSnapshot,
       String chapterTextSnapshot,
       String commercialSaleSnapshot,
+      String translationAdaptationSnapshot,
       String currentRequestState) {}
 
   public record CurrentPolicy(

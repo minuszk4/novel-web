@@ -136,6 +136,9 @@ public class PublicationRequestService {
         String commercialSaleEtag =
             PublicationSnapshotEtags.scope(
                 "COMMERCIAL_SALE", workSnapshot.commercialSaleSnapshot());
+        String translationAdaptationEtag =
+            PublicationSnapshotEtags.scope(
+                "TRANSLATION_ADAPTATION", workSnapshot.translationAdaptationSnapshot());
         String currentEtag =
             PublicationSnapshotEtags.readiness(
                 workId,
@@ -145,7 +148,8 @@ public class PublicationRequestService {
                 policyDigest,
                 acceptance.orElseThrow().acceptedAt(),
                 currentRequestState,
-                List.of(metadataEtag, chapterTextEtag, commercialSaleEtag));
+                List.of(
+                    metadataEtag, chapterTextEtag, commercialSaleEtag, translationAdaptationEtag));
         if (!currentEtag.equals(expectedSnapshotEtag)) {
           connection.commit();
           return SubmitResult.staleSnapshot(currentEtag);
@@ -153,7 +157,12 @@ public class PublicationRequestService {
 
         List<ScopeSnapshot> selectedSnapshots =
             selectedSnapshots(
-                claims, workSnapshot, metadataEtag, chapterTextEtag, commercialSaleEtag);
+                claims,
+                workSnapshot,
+                metadataEtag,
+                chapterTextEtag,
+                commercialSaleEtag,
+                translationAdaptationEtag);
         byte[] snapshotDigest = snapshotDigest(selectedSnapshots);
         PublicationRequestRateLimiter.Decision rateDecision =
             rateLimiter.acquire(connection, userId);
@@ -259,6 +268,9 @@ public class PublicationRequestService {
         String commercialSaleEtag =
             PublicationSnapshotEtags.scope(
                 "COMMERCIAL_SALE", workSnapshot.commercialSaleSnapshot());
+        String translationAdaptationEtag =
+            PublicationSnapshotEtags.scope(
+                "TRANSLATION_ADAPTATION", workSnapshot.translationAdaptationSnapshot());
         String currentEtag =
             PublicationSnapshotEtags.readiness(
                 workId,
@@ -270,7 +282,8 @@ public class PublicationRequestService {
                     .orElse("none"),
                 acceptance == null ? null : acceptance.acceptedAt(),
                 currentState,
-                List.of(metadataEtag, chapterTextEtag, commercialSaleEtag));
+                List.of(
+                    metadataEtag, chapterTextEtag, commercialSaleEtag, translationAdaptationEtag));
         if (!currentEtag.equals(expectedSnapshotEtag)) {
           connection.commit();
           return WithdrawalResult.staleSnapshot(currentEtag);
@@ -381,7 +394,8 @@ public class PublicationRequestService {
         connection.prepareStatement(
             "SELECT scope_code FROM publication_request_scope_snapshots WHERE request_id = ?"
                 + " ORDER BY CASE scope_code WHEN 'PUBLIC_METADATA' THEN 0"
-                + " WHEN 'CHAPTER_TEXT' THEN 1 WHEN 'COMMERCIAL_SALE' THEN 2 ELSE 3 END")) {
+                + " WHEN 'CHAPTER_TEXT' THEN 1 WHEN 'COMMERCIAL_SALE' THEN 2"
+                + " WHEN 'TRANSLATION_ADAPTATION' THEN 3 ELSE 4 END")) {
       select.setObject(1, requestId);
       try (ResultSet rows = select.executeQuery()) {
         while (rows.next()) scopeCodes.add(rows.getString(1));
@@ -454,7 +468,9 @@ public class PublicationRequestService {
                        publication_work_scope_snapshot(w.id, 'CHAPTER_TEXT')::text
                            AS chapter_text_snapshot,
                        publication_work_scope_snapshot(w.id, 'COMMERCIAL_SALE')::text
-                           AS commercial_sale_snapshot
+                           AS commercial_sale_snapshot,
+                       publication_work_scope_snapshot(w.id, 'TRANSLATION_ADAPTATION')::text
+                           AS translation_adaptation_snapshot
                   FROM works w
                  WHERE w.id = ?
                 """)) {
@@ -467,7 +483,8 @@ public class PublicationRequestService {
             row.getInt("ready_chapter_count"),
             row.getString("metadata_snapshot"),
             row.getString("chapter_text_snapshot"),
-            row.getString("commercial_sale_snapshot"));
+            row.getString("commercial_sale_snapshot"),
+            row.getString("translation_adaptation_snapshot"));
       }
     }
   }
@@ -505,7 +522,8 @@ public class PublicationRequestService {
       WorkSnapshot workSnapshot,
       String metadataEtag,
       String chapterTextEtag,
-      String commercialSaleEtag) {
+      String commercialSaleEtag,
+      String translationAdaptationEtag) {
     List<ScopeSnapshot> snapshots = new ArrayList<>();
     for (ScopeClaim claim : claims) {
       String json =
@@ -513,6 +531,7 @@ public class PublicationRequestService {
             case "PUBLIC_METADATA" -> workSnapshot.metadataSnapshot();
             case "CHAPTER_TEXT" -> workSnapshot.chapterTextSnapshot();
             case "COMMERCIAL_SALE" -> workSnapshot.commercialSaleSnapshot();
+            case "TRANSLATION_ADAPTATION" -> workSnapshot.translationAdaptationSnapshot();
             default -> throw new IllegalArgumentException("Unsupported publication scope");
           };
       String etag =
@@ -520,6 +539,7 @@ public class PublicationRequestService {
             case "PUBLIC_METADATA" -> metadataEtag;
             case "CHAPTER_TEXT" -> chapterTextEtag;
             case "COMMERCIAL_SALE" -> commercialSaleEtag;
+            case "TRANSLATION_ADAPTATION" -> translationAdaptationEtag;
             default -> throw new IllegalArgumentException("Unsupported publication scope");
           };
       snapshots.add(new ScopeSnapshot(claim.scopeCode(), json, sha256(json), etag));
@@ -543,7 +563,8 @@ public class PublicationRequestService {
       case "PUBLIC_METADATA" -> 0;
       case "CHAPTER_TEXT" -> 1;
       case "COMMERCIAL_SALE" -> 2;
-      default -> 3;
+      case "TRANSLATION_ADAPTATION" -> 3;
+      default -> 4;
     };
   }
 
@@ -838,7 +859,8 @@ public class PublicationRequestService {
       int readyChapterCount,
       String metadataSnapshot,
       String chapterTextSnapshot,
-      String commercialSaleSnapshot) {}
+      String commercialSaleSnapshot,
+      String translationAdaptationSnapshot) {}
 
   private record RequestHistory(
       UUID id, int requestVersion, byte[] snapshotDigest, String state, int eventSequence) {

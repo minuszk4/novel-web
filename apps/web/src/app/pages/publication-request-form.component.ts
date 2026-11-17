@@ -79,6 +79,8 @@ export class PublicationRequestFormComponent implements OnChanges, OnDestroy {
   protected readonly chapterTextBasis = signal<PublicationRightsBasisCode | ''>('');
   protected readonly includeCommercialSale = signal(false);
   protected readonly commercialSaleBasis = signal<PublicationRightsBasisCode | ''>('');
+  protected readonly includeTranslationAdaptation = signal(false);
+  protected readonly translationAdaptationBasis = signal<PublicationRightsBasisCode | ''>('');
   protected readonly declarationConfirmed = signal(false);
   protected readonly submitting = signal(false);
   protected readonly uncertain = signal(false);
@@ -165,6 +167,7 @@ export class PublicationRequestFormComponent implements OnChanges, OnDestroy {
       this.metadataBasis() !== '' &&
       this.chapterTextBasis() !== '' &&
       (!this.includeCommercialSale() || this.commercialSaleBasis() !== '') &&
+      (!this.includeTranslationAdaptation() || this.translationAdaptationBasis() !== '') &&
       this.declarationConfirmed() &&
       !this.isBusy &&
       !this.uncertain() &&
@@ -257,6 +260,18 @@ export class PublicationRequestFormComponent implements OnChanges, OnDestroy {
     this.resetDeclarationConfirmation();
   }
 
+  protected changeTranslationAdaptationBasis(event: Event): void {
+    this.translationAdaptationBasis.set(readBasisValue(event));
+    this.resetDeclarationConfirmation();
+  }
+
+  protected toggleTranslationAdaptation(event: Event): void {
+    const checked = (event.currentTarget as HTMLInputElement).checked;
+    this.includeTranslationAdaptation.set(checked);
+    if (!checked) this.translationAdaptationBasis.set('');
+    this.resetDeclarationConfirmation();
+  }
+
   protected confirmDeclarations(event: Event): void {
     this.declarationConfirmed.set((event.currentTarget as HTMLInputElement).checked);
     this.clearRecoverableRequestError();
@@ -312,6 +327,8 @@ export class PublicationRequestFormComponent implements OnChanges, OnDestroy {
         return 'Nội dung chương';
       case 'COMMERCIAL_SALE':
         return 'Quyền thương mại';
+      case 'TRANSLATION_ADAPTATION':
+        return 'Quyền chuyển ngữ/thích nghi';
     }
   }
 
@@ -386,6 +403,13 @@ export class PublicationRequestFormComponent implements OnChanges, OnDestroy {
     ];
     if (this.includeCommercialSale() && commercialSaleBasis) {
       scopeClaims.push({ scopeCode: 'COMMERCIAL_SALE', rightsBasisCode: commercialSaleBasis });
+    }
+    const translationAdaptationBasis = this.translationAdaptationBasis();
+    if (this.includeTranslationAdaptation() && translationAdaptationBasis) {
+      scopeClaims.push({
+        scopeCode: 'TRANSLATION_ADAPTATION',
+        rightsBasisCode: translationAdaptationBasis,
+      });
     }
     const submission: PublicationRequestSubmission = { policyVersion, scopeClaims };
     return {
@@ -510,6 +534,8 @@ export class PublicationRequestFormComponent implements OnChanges, OnDestroy {
     this.chapterTextBasis.set('');
     this.includeCommercialSale.set(false);
     this.commercialSaleBasis.set('');
+    this.includeTranslationAdaptation.set(false);
+    this.translationAdaptationBasis.set('');
     this.declarationConfirmed.set(false);
     this.submitting.set(false);
     this.uncertain.set(false);

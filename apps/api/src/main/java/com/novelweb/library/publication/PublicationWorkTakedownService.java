@@ -216,7 +216,9 @@ public class PublicationWorkTakedownService {
                  ORDER BY CASE approval.scope_code
                             WHEN 'PUBLIC_METADATA' THEN 0
                             WHEN 'CHAPTER_TEXT' THEN 1
-                            ELSE 2 END,
+                            WHEN 'COMMERCIAL_SALE' THEN 2
+                            WHEN 'TRANSLATION_ADAPTATION' THEN 3
+                            ELSE 4 END,
                           approval.id
                  FOR UPDATE OF approval
                 """)) {

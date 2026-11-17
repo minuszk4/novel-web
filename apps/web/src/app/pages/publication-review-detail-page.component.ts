@@ -153,6 +153,8 @@ export class PublicationReviewDetailPageComponent implements OnInit {
         return 'Văn bản chương';
       case 'COMMERCIAL_SALE':
         return 'Quyền thương mại';
+      case 'TRANSLATION_ADAPTATION':
+        return 'Quyền chuyển ngữ/thích nghi';
     }
   }
 

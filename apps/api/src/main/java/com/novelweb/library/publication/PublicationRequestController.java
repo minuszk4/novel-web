@@ -40,7 +40,8 @@ public class PublicationRequestController {
   private static final Set<String> BODY_FIELDS = Set.of("policyVersion", "scopeClaims");
   private static final Set<String> CLAIM_FIELDS = Set.of("scopeCode", "rightsBasisCode");
   private static final Set<String> REQUIRED_SCOPES = Set.of("PUBLIC_METADATA", "CHAPTER_TEXT");
-  private static final Set<String> OPTIONAL_SCOPES = Set.of("COMMERCIAL_SALE");
+  private static final Set<String> OPTIONAL_SCOPES =
+      Set.of("COMMERCIAL_SALE", "TRANSLATION_ADAPTATION");
   private static final Set<String> RIGHTS_BASES =
       Set.of("ORIGINAL_WORK", "LICENSE_OR_PERMISSION", "PUBLIC_DOMAIN", "NEEDS_REVIEW");
 

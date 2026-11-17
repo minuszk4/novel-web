@@ -204,7 +204,8 @@ public class PublicationReviewQueryService {
                    metadata.scope_snapshot #>> '{work,sourceLanguage}' AS source_language,
                    (SELECT jsonb_agg(scope.scope_code ORDER BY
                            CASE scope.scope_code WHEN 'PUBLIC_METADATA' THEN 0
-                                WHEN 'CHAPTER_TEXT' THEN 1 ELSE 2 END)::text
+                                WHEN 'CHAPTER_TEXT' THEN 1
+                                WHEN 'COMMERCIAL_SALE' THEN 2 ELSE 3 END)::text
                       FROM publication_request_scope_snapshots scope
                      WHERE scope.request_id = request.id) AS scope_codes
               FROM publication_requests request
@@ -320,7 +321,7 @@ public class PublicationReviewQueryService {
                   FROM publication_request_scope_snapshots
                  WHERE request_id = ?
                  ORDER BY CASE scope_code WHEN 'PUBLIC_METADATA' THEN 0
-                      WHEN 'CHAPTER_TEXT' THEN 1 ELSE 2 END
+                      WHEN 'CHAPTER_TEXT' THEN 1 WHEN 'COMMERCIAL_SALE' THEN 2 ELSE 3 END
                 """)) {
       select.setObject(1, requestId);
       try (ResultSet rows = select.executeQuery()) {
@@ -399,7 +400,8 @@ public class PublicationReviewQueryService {
         connection.prepareStatement(
             "SELECT scope_code, rights_basis_code FROM publication_request_scope_claims"
                 + " WHERE request_id = ? ORDER BY CASE scope_code WHEN 'PUBLIC_METADATA' THEN 0"
-                + " WHEN 'CHAPTER_TEXT' THEN 1 ELSE 2 END")) {
+                + " WHEN 'CHAPTER_TEXT' THEN 1 WHEN 'COMMERCIAL_SALE' THEN 2"
+                + " WHEN 'TRANSLATION_ADAPTATION' THEN 3 ELSE 4 END")) {
       select.setObject(1, requestId);
       try (ResultSet rows = select.executeQuery()) {
         List<Claim> claims = new ArrayList<>();

@@ -476,6 +476,8 @@ export class PublicationReadinessPanelComponent implements OnChanges {
         return 'Nội dung chương';
       case 'COMMERCIAL_SALE':
         return 'Quyền thương mại';
+      case 'TRANSLATION_ADAPTATION':
+        return 'Quyền chuyển ngữ/thích nghi';
     }
   }
 

@@ -338,6 +338,8 @@ public class PublicationReleaseService {
                                AS chapter_text_snapshot,
                            publication_work_scope_snapshot(work.id, 'COMMERCIAL_SALE')::text
                                AS commercial_sale_snapshot,
+                           publication_work_scope_snapshot(work.id, 'TRANSLATION_ADAPTATION')::text
+                               AS translation_adaptation_snapshot,
                            (SELECT state.current_state
                               FROM publication_requests request
                               JOIN publication_request_current_state state
@@ -356,6 +358,7 @@ public class PublicationReleaseService {
             row.getString("metadata_snapshot"),
             row.getString("chapter_text_snapshot"),
             row.getString("commercial_sale_snapshot"),
+            row.getString("translation_adaptation_snapshot"),
             row.getString("current_request_state"));
       }
     }
@@ -569,6 +572,7 @@ public class PublicationReleaseService {
       String metadataSnapshot,
       String chapterTextSnapshot,
       String commercialSaleSnapshot,
+      String translationAdaptationSnapshot,
       String currentRequestState) {
     private String etag(UUID workId, CurrentPolicy policy, Instant acceptedAt) {
       return PublicationSnapshotEtags.readiness(
@@ -582,7 +586,9 @@ public class PublicationReleaseService {
           List.of(
               PublicationSnapshotEtags.scope("PUBLIC_METADATA", metadataSnapshot),
               PublicationSnapshotEtags.scope("CHAPTER_TEXT", chapterTextSnapshot),
-              PublicationSnapshotEtags.scope("COMMERCIAL_SALE", commercialSaleSnapshot)));
+              PublicationSnapshotEtags.scope("COMMERCIAL_SALE", commercialSaleSnapshot),
+              PublicationSnapshotEtags.scope(
+                  "TRANSLATION_ADAPTATION", translationAdaptationSnapshot)));
     }
   }
 

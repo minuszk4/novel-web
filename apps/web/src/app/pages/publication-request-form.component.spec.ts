@@ -53,6 +53,11 @@ function readyState(overrides: Partial<PublicationReadiness> = {}): PublicationR
         ready: true,
         snapshotEtag: `"publication-scope-${'d'.repeat(64)}"`,
       },
+      {
+        scopeCode: 'TRANSLATION_ADAPTATION',
+        ready: true,
+        snapshotEtag: `"publication-scope-${'e'.repeat(64)}"`,
+      },
     ],
     blockerCodes: [],
     ...overrides,
@@ -140,7 +145,7 @@ describe('PublicationRequestFormComponent', () => {
     expect(fixture.nativeElement.textContent).toContain('bản lưu 4');
   });
 
-  it('requires both mandatory scopes, optional commercial basis and declaration before submit', async () => {
+  it('requires mandatory and selected optional scope bases plus declaration before submit', async () => {
     const submitted: PublicationRequestReceipt[] = [];
     fixture.componentInstance.requestSubmitted.subscribe((receipt) => submitted.push(receipt));
     await clickButton('Chuẩn bị yêu cầu duyệt');
@@ -151,6 +156,9 @@ describe('PublicationRequestFormComponent', () => {
     await setCheckbox('Tôi cũng yêu cầu xem xét quyền thương mại', true);
     expect(button('Gửi yêu cầu duyệt')?.disabled).toBe(true);
     await chooseBasis('publication-request-commercial-basis', 'NEEDS_REVIEW');
+    await setCheckbox('Tôi cũng yêu cầu xem xét quyền chuyển ngữ', true);
+    expect(button('Gửi yêu cầu duyệt')?.disabled).toBe(true);
+    await chooseBasis('publication-request-translation-adaptation-basis', 'LICENSE_OR_PERMISSION');
     expect(button('Gửi yêu cầu duyệt')?.disabled).toBe(true);
     await setCheckbox('Tôi đã rà soát các phạm vi', true);
     expect(button('Gửi yêu cầu duyệt')?.disabled).toBe(false);
@@ -167,6 +175,7 @@ describe('PublicationRequestFormComponent', () => {
         { scopeCode: 'PUBLIC_METADATA', rightsBasisCode: 'ORIGINAL_WORK' },
         { scopeCode: 'CHAPTER_TEXT', rightsBasisCode: 'LICENSE_OR_PERMISSION' },
         { scopeCode: 'COMMERCIAL_SALE', rightsBasisCode: 'NEEDS_REVIEW' },
+        { scopeCode: 'TRANSLATION_ADAPTATION', rightsBasisCode: 'LICENSE_OR_PERMISSION' },
       ],
     });
     expect(key).toEqual(expect.any(String));

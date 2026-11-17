@@ -346,7 +346,8 @@ public class PublicationReviewDecisionService {
                   FROM publication_request_scope_snapshots scope
                  WHERE scope.request_id = ?
                  ORDER BY CASE scope.scope_code WHEN 'PUBLIC_METADATA' THEN 0
-                      WHEN 'CHAPTER_TEXT' THEN 1 ELSE 2 END
+                      WHEN 'CHAPTER_TEXT' THEN 1 WHEN 'COMMERCIAL_SALE' THEN 2
+                      WHEN 'TRANSLATION_ADAPTATION' THEN 3 ELSE 4 END
                 """)) {
       select.setObject(1, request.workId());
       select.setObject(2, request.id());
@@ -514,7 +515,8 @@ public class PublicationReviewDecisionService {
       case "PUBLIC_METADATA" -> 0;
       case "CHAPTER_TEXT" -> 1;
       case "COMMERCIAL_SALE" -> 2;
-      default -> 3;
+      case "TRANSLATION_ADAPTATION" -> 3;
+      default -> 4;
     };
   }
 
