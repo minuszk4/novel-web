@@ -62,7 +62,9 @@ class CreditTopUpControllerTests {
   }
 
   @Test
-  void anonymousAndPolicyBlockedAccountsCannotReadTheCatalogOrCreateAnOrder() throws Exception {
+  void anonymousAndPolicyBlockedAccountsCannotReadTheCatalogCreateOrCheckOrderStatus()
+      throws Exception {
+    UUID orderId = UUID.randomUUID();
     var anonymousCatalog = mockMvc.perform(get("/api/v1/credit-packs")).andReturn().getResponse();
     var anonymousCreate =
         mockMvc
@@ -73,9 +75,15 @@ class CreditTopUpControllerTests {
                     .content(requestBody()))
             .andReturn()
             .getResponse();
+    var anonymousStatus =
+        mockMvc.perform(get("/api/v1/payment-orders/" + orderId)).andReturn().getResponse();
 
     assertEquals(401, anonymousCatalog.getStatus());
     assertEquals(401, anonymousCreate.getStatus());
+    assertEquals(401, anonymousStatus.getStatus());
+    assertTrue(anonymousStatus.getContentAsString().contains("UNAUTHENTICATED"));
+    assertTrue(anonymousStatus.getHeader("Cache-Control").contains("no-store"));
+    assertEquals("no-cache", anonymousStatus.getHeader("Pragma"));
     verifyNoInteractions(policyService, checkoutService, orderService);
 
     when(policyService.requiredAcceptance(actorId))
@@ -87,6 +95,28 @@ class CreditTopUpControllerTests {
             .getResponse();
     assertEquals(403, blocked.getStatus());
     assertTrue(blocked.getContentAsString().contains("POLICY_ACCEPTANCE_REQUIRED"));
+
+    var policyBlockedCreate =
+        mockMvc
+            .perform(
+                post("/api/v1/momo/payment-orders")
+                    .principal(authentication())
+                    .header("Idempotency-Key", IDEMPOTENCY_KEY)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(requestBody()))
+            .andReturn()
+            .getResponse();
+    var policyBlockedStatus =
+        mockMvc
+            .perform(get("/api/v1/payment-orders/" + orderId).principal(authentication()))
+            .andReturn()
+            .getResponse();
+    assertEquals(403, policyBlockedCreate.getStatus());
+    assertTrue(policyBlockedCreate.getContentAsString().contains("POLICY_ACCEPTANCE_REQUIRED"));
+    assertEquals(403, policyBlockedStatus.getStatus());
+    assertTrue(policyBlockedStatus.getContentAsString().contains("POLICY_ACCEPTANCE_REQUIRED"));
+    assertTrue(policyBlockedStatus.getHeader("Cache-Control").contains("no-store"));
+    assertEquals("no-cache", policyBlockedStatus.getHeader("Pragma"));
     verifyNoInteractions(checkoutService, orderService);
   }
 
