@@ -7,7 +7,12 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 
+import com.novelweb.identity.auth.PolicyService;
+import com.novelweb.identity.session.SessionService;
 import com.novelweb.translation.jobs.TranslationAttemptCompletionRepository;
 import com.novelweb.translation.jobs.TranslationAttemptCompletionService;
 import com.novelweb.translation.jobs.TranslationAttemptFailureRepository;
@@ -21,6 +26,7 @@ import com.novelweb.translation.jobs.TranslationCandidatePreviewService;
 import com.novelweb.translation.jobs.TranslationFakeLocalWorkerService;
 import com.novelweb.translation.jobs.TranslationJobCancelRepository;
 import com.novelweb.translation.jobs.TranslationJobCancelService;
+import com.novelweb.translation.jobs.TranslationJobController;
 import com.novelweb.translation.jobs.TranslationJobRetryRepository;
 import com.novelweb.translation.jobs.TranslationJobRetryService;
 import com.novelweb.translation.jobs.TranslationJobService;
@@ -60,7 +66,12 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.Authentication;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 @SpringBootTest
 @ActiveProfiles({"postgres", "translation-fake"})
@@ -1449,6 +1460,25 @@ class PostgresTranslationUnitLeaseTests {
                 0,
                 "translation-edit-stale-key-01",
                 "Stale source correction."));
+
+    MvcResult stalePreviewResponse = requestCandidatePreview(staleFixture);
+    assertEquals(409, stalePreviewResponse.getResponse().getStatus());
+    assertTrue(
+        stalePreviewResponse
+            .getResponse()
+            .getContentAsString()
+            .contains("TRANSLATION_SOURCE_STALE"));
+    assertTrue(stalePreviewResponse.getResponse().getHeader("Cache-Control").contains("no-store"));
+    assertFalse(
+        stalePreviewResponse
+            .getResponse()
+            .getContentAsString()
+            .contains("Synthetic source sentence 1."));
+    assertFalse(
+        stalePreviewResponse
+            .getResponse()
+            .getContentAsString()
+            .contains("[fake vi->en] Synthetic source sentence 1."));
   }
 
   @Test
@@ -1462,6 +1492,41 @@ class PostgresTranslationUnitLeaseTests {
         () ->
             candidatePreviewService.findCurrentReadyForReview(
                 fixture.userId(), fixture.jobId(), 0, 20));
+
+    MvcResult response = requestCandidatePreview(fixture);
+    assertEquals(409, response.getResponse().getStatus());
+    String body = response.getResponse().getContentAsString();
+    assertTrue(body.contains("TRANSLATION_CANDIDATE_NOT_READY"));
+    assertTrue(response.getResponse().getHeader("Cache-Control").contains("no-store"));
+    assertFalse(body.contains("Synthetic source sentence 1."));
+    assertFalse(body.contains("[fake vi->en] Synthetic source sentence 1."));
+  }
+
+  private MvcResult requestCandidatePreview(Fixture fixture) throws Exception {
+    PolicyService policyService = mock(PolicyService.class);
+    when(policyService.requiredAcceptance(fixture.userId()))
+        .thenReturn(PolicyService.RequiredAcceptance.COMPLETE);
+    TranslationJobController controller =
+        new TranslationJobController(
+            jobService,
+            jobStatusService,
+            jobRetryService,
+            jobCancelService,
+            candidatePreviewService,
+            candidateEditService,
+            policyService);
+    MockMvc mockMvc = MockMvcBuilders.standaloneSetup(controller).build();
+    Authentication authentication =
+        UsernamePasswordAuthenticationToken.authenticated(
+            new SessionService.SessionPrincipal(fixture.userId(), Instant.now().plusSeconds(300)),
+            null,
+            List.of());
+
+    return mockMvc
+        .perform(
+            get("/api/v1/translation/jobs/{jobId}/candidate", fixture.jobId())
+                .principal(authentication))
+        .andReturn();
   }
 
   private TranslationCandidateEditRepository.EditResult saveConcurrentEdit(
