@@ -332,6 +332,11 @@ test('follows, mutes, re-enables and unfollows a public work with fresh CSRF and
   await page.goto('/works/' + workId);
   await page.getByRole('button', { name: 'Theo dõi cập nhật chương' }).click();
   await expect(page.getByRole('status')).toContainText('Đã lưu lựa chọn theo dõi truyện này.');
+  await expect(
+    page.getByText(
+      'Thông báo trong ứng dụng chỉ xuất hiện khi tính năng này được bật trên máy chủ.',
+    ),
+  ).toBeVisible();
   await page.getByRole('button', { name: 'Tạm tắt thông báo' }).click();
   await expect(page.getByRole('status')).toContainText(
     'Đã lưu lựa chọn tạm tắt thông báo cho truyện này.',

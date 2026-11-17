@@ -88,7 +88,7 @@ describe('WorkSubscriptionSettingsComponent', () => {
     expect(element.textContent).toContain('Hành trình tu luyện');
     expect(element.querySelector(`a[href="/works/${publicWorkId}"]`)).not.toBeNull();
     expect(element.textContent).toContain('Một tác phẩm bạn đã theo dõi không còn công khai');
-    expect(element.textContent).toContain('chưa gửi thông báo chương mới');
+    expect(element.textContent).toContain('chỉ xuất hiện khi tính năng này được bật trên máy chủ');
     expect(element.textContent.match(/Bút danh/g)).toHaveLength(1);
     expect(element.textContent).not.toContain('title: null');
   });
