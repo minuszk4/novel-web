@@ -17788,6 +17788,45 @@ class PostgresSchemaIntegrationTests {
   }
 
   @Test
+  void thrownCreditTopUpProviderExceptionPersistsUnknownAndIsNotRetried() throws Exception {
+    UUID userId = createSessionTestUser("Provider Exception Top-up Owner");
+    String idempotencyKey = "credit-top-up-provider-exception-01";
+    AtomicInteger providerCalls = new AtomicInteger();
+    String providerException = "synthetic-provider-exception-secret";
+    CreditTopUpCheckoutService checkout =
+        new CreditTopUpCheckoutService(
+            creditTopUpOrderService,
+            (amountVnd, orderId, requestId) -> {
+              providerCalls.incrementAndGet();
+              throw new IllegalStateException(providerException);
+            });
+    try {
+      CreditTopUpCheckoutService.CheckoutResult first =
+          checkout.createOrReplay(
+              userId, idempotencyKey, CreditPackCatalog.momoTestFixture(), "momo-test-credits-100");
+      assertEquals(
+          CreditTopUpOrderService.CheckoutOutcome.PROVIDER_RESULT_UNKNOWN, first.checkoutOutcome());
+      assertEquals(CreditTopUpOrderService.OrderStatus.UNKNOWN, first.order().status());
+      assertNull(first.checkoutUrl());
+      assertTrue(!first.toString().contains(providerException));
+
+      CreditTopUpCheckoutService.CheckoutResult replay =
+          checkout.createOrReplay(
+              userId, idempotencyKey, CreditPackCatalog.momoTestFixture(), "momo-test-credits-100");
+      assertEquals(CreditTopUpOrderService.Outcome.REPLAYED, replay.creationOutcome());
+      assertEquals(
+          CreditTopUpOrderService.CheckoutOutcome.PROVIDER_RESULT_UNKNOWN,
+          replay.checkoutOutcome());
+      assertEquals(CreditTopUpOrderService.OrderStatus.UNKNOWN, replay.order().status());
+      assertNull(replay.checkoutUrl());
+      assertEquals(1, providerCalls.get());
+      assertEquals(0, creditSourceEntryCount("PAYMENT_ORDER", first.order().id()));
+    } finally {
+      deleteSessionTestUser(userId);
+    }
+  }
+
+  @Test
   void concurrentSameKeyCheckoutClaimsOnlyOneProviderCreateAttempt() throws Exception {
     UUID userId = createSessionTestUser("Concurrent Checkout Owner");
     String idempotencyKey = "credit-top-up-checkout-race-01";
