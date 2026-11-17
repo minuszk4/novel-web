@@ -20,6 +20,7 @@ import com.novelweb.payment.credit.CreditTopUpOrderService.Outcome;
 import com.novelweb.payment.credit.CreditTopUpOrderService.Provider;
 import com.novelweb.payment.credit.CreditTopUpOrderService.TopUpOrder;
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
@@ -240,6 +241,53 @@ class CreditTopUpControllerTests {
     assertEquals(400, missingVersion.getStatus());
     assertTrue(missingVersion.getContentAsString().contains("INVALID_CREDIT_PACK_REQUEST"));
     verifyNoInteractions(checkoutService);
+  }
+
+  @Test
+  void everyFailedCreationOutcomeMapsToItsSafeProblemResponse() throws Exception {
+    when(policyService.requiredAcceptance(actorId))
+        .thenReturn(PolicyService.RequiredAcceptance.COMPLETE);
+    record ExpectedProblem(Outcome outcome, int status, String code) {}
+    List<ExpectedProblem> expectedProblems =
+        List.of(
+            new ExpectedProblem(Outcome.INVALID_IDEMPOTENCY_KEY, 400, "INVALID_IDEMPOTENCY_KEY"),
+            new ExpectedProblem(Outcome.PACK_NOT_FOUND, 404, "CREDIT_PACK_NOT_FOUND"),
+            new ExpectedProblem(Outcome.PACK_VERSION_STALE, 409, "CREDIT_PACK_VERSION_STALE"),
+            new ExpectedProblem(Outcome.IDEMPOTENCY_KEY_REUSED, 409, "IDEMPOTENCY_KEY_REUSED"),
+            new ExpectedProblem(Outcome.ACCOUNT_NOT_FOUND, 401, "UNAUTHENTICATED"),
+            new ExpectedProblem(Outcome.ACCOUNT_INACTIVE, 401, "UNAUTHENTICATED"),
+            new ExpectedProblem(Outcome.CREATED, 503, "PAYMENT_ORDER_UNAVAILABLE"),
+            new ExpectedProblem(Outcome.REPLAYED, 503, "PAYMENT_ORDER_UNAVAILABLE"));
+
+    for (ExpectedProblem expected : expectedProblems) {
+      String requestKey = "failure-outcome-" + expected.outcome().name();
+      when(checkoutService.createOrReplay(
+              eq(actorId),
+              eq(requestKey),
+              any(CreditPackCatalog.class),
+              eq(PACK_ID),
+              eq(PACK_VERSION)))
+          .thenReturn(new CheckoutResult(expected.outcome(), null, null, "sensitive-checkout-url"));
+
+      var response =
+          mockMvc
+              .perform(
+                  post("/api/v1/momo/payment-orders")
+                      .principal(authentication())
+                      .header("Idempotency-Key", requestKey)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(requestBody()))
+              .andReturn()
+              .getResponse();
+
+      assertEquals(expected.status(), response.getStatus(), expected.outcome().name());
+      assertTrue(
+          response.getContentAsString().contains("\"code\":\"" + expected.code() + "\""),
+          expected.outcome().name());
+      assertTrue(!response.getContentAsString().contains("sensitive-checkout-url"));
+      assertTrue(response.getHeader("Location") == null);
+      assertTrue(response.getHeader("Idempotency-Replayed") == null);
+    }
   }
 
   @Test
