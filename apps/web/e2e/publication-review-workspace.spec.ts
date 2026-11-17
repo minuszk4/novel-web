@@ -3,6 +3,7 @@ import type { Page, Route } from '@playwright/test';
 
 const reviewerId = '22222222-2222-4222-8222-222222222222';
 const requestId = '33333333-3333-4333-8333-333333333333';
+const chapterId = '44444444-4444-4444-8444-444444444444';
 const csrfToken = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
 const submittedAt = '2026-11-16T10:00:00Z';
 const snapshotHash = 'b'.repeat(64);
@@ -21,6 +22,7 @@ function reviewDetail(unresolvedClaim = false) {
     requestId,
     requestVersion: 1,
     submittedAt,
+    targetChapterId: null,
     policyVersion: 'rights-policy-1',
     state: 'PENDING_REVIEW',
     snapshotSha256: snapshotHash,
@@ -37,6 +39,7 @@ function reviewDetail(unresolvedClaim = false) {
         work: { title: 'Núi lặng', author: 'Tác giả mẫu', sourceLanguage: 'vi' },
         chapters: [
           {
+            chapterId,
             ordinal: 1,
             title: 'Bước đầu',
             sourceLanguage: 'vi',
@@ -214,6 +217,7 @@ async function installReviewerSession(
             ? [
                 {
                   requestId,
+                  targetChapterId: null,
                   requestVersion: 1,
                   submittedAt,
                   policyVersion: 'rights-policy-1',
@@ -368,7 +372,9 @@ test('an uncertain server reply reuses the same action, reason, ETag and idempot
   await dialog.getByLabel('Cần thêm thông tin').check();
   await dialog.getByRole('button', { name: 'Xác nhận quyết định' }).click();
   await expect(
-    dialog.getByText('Kết quả lần gửi trước chưa xác định. Lựa chọn và mã yêu cầu được giữ nguyên.'),
+    dialog.getByText(
+      'Kết quả lần gửi trước chưa xác định. Lựa chọn và mã yêu cầu được giữ nguyên.',
+    ),
   ).toBeVisible();
   await dialog.getByRole('button', { name: 'Gửi lại đúng quyết định' }).click();
   await expect(page.locator('.publication-review-result')).toContainText('Đã yêu cầu bổ sung');

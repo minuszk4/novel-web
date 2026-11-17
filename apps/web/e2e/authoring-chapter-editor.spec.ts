@@ -70,6 +70,24 @@ async function installAccount(page: Page): Promise<void> {
     route.fulfill({ status: 200, contentType: 'text/markdown', body: '# Quyền riêng tư' }),
   );
   await page.route('**/api/v1/auth/csrf', (route) => json(route, { token: csrfToken }));
+  await page.route(`**/api/v1/authoring/manuscripts/${workId}`, (route) =>
+    json(
+      route,
+      {
+        id: workId,
+        title: 'Bản thảo mẫu',
+        author: 'Tác giả',
+        language: 'vi',
+        visibility: 'private',
+        publicationState: 'draft',
+        chapterCount: 1,
+        createdAt: '2026-11-14T12:00:00Z',
+        metadataVersion: 1,
+      },
+      200,
+      { 'Cache-Control': 'no-store', ETag: '"manuscript-metadata-1"' },
+    ),
+  );
 }
 
 for (const viewport of [

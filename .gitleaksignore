@@ -7,3 +7,5 @@ eedbc2fd7023ef154a755df454c58543d855ed96:apps/api/src/test/java/com/novelweb/pla
 5b22a23ded92262d1e9facf6013408f270810de5:apps/web/src/app/core/glossary-api.service.spec.ts:generic-api-key:319
 530ca069562407d062f403514ab99b7cd8903965:apps/api/src/test/java/com/novelweb/platform/postgres/PostgresSchemaIntegrationTests.java:generic-api-key:1690
 530ca069562407d062f403514ab99b7cd8903965:apps/api/src/test/java/com/novelweb/platform/postgres/PostgresSchemaIntegrationTests.java:generic-api-key:1871
+7b78d55b7a53817b8e027d525101c6174082b9e3:apps/api/src/test/java/com/novelweb/platform/postgres/PostgresSchemaIntegrationTests.java:generic-api-key:2984
+7b78d55b7a53817b8e027d525101c6174082b9e3:apps/api/src/test/java/com/novelweb/platform/postgres/PostgresSchemaIntegrationTests.java:generic-api-key:3092
