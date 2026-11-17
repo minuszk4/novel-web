@@ -57,6 +57,14 @@
           <span class="nav-symbol" aria-hidden="true">⚖</span><span>Hàng đợi duyệt</span>
         </a>
       }
+      @if (
+        policy.canReviewTranslations() &&
+        systemStatus.status()?.features?.translationManualSubmissionEnabled
+      ) {
+        <a routerLink="/app/review/translations" routerLinkActive="selected">
+          <span class="nav-symbol" aria-hidden="true">文</span><span>Duyệt bản dịch</span>
+        </a>
+      }
       <a routerLink="/app/settings" routerLinkActive="selected">
         <span class="nav-symbol" aria-hidden="true">⚙</span><span>Cài đặt</span>
       </a>

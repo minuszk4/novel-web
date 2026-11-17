@@ -9,9 +9,16 @@ import {
   inject,
   signal,
 } from '@angular/core';
-import { DecimalPipe } from '@angular/common';
+import { DatePipe, DecimalPipe } from '@angular/common';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
+import { SystemStatusService } from '../core/system-status.service';
+import {
+  TranslationReviewApiError,
+  TranslationReviewApiService,
+  TranslationReviewReadiness,
+  TranslationReviewSubmissionReceipt,
+} from '../core/translation-review-api.service';
 import {
   newTranslationIdempotencyKey,
   TranslationCandidateEditReceipt,
@@ -46,9 +53,14 @@ interface SegmentDraft {
   attempt: EditAttempt | null;
 }
 
+interface SubmissionAttempt {
+  etag: string;
+  idempotencyKey: string;
+}
+
 @Component({
   selector: 'app-translation-candidate-preview-page',
-  imports: [DecimalPipe, RouterLink],
+  imports: [DatePipe, DecimalPipe, RouterLink],
   templateUrl: './translation-candidate-preview-page.component.html',
   styleUrl: './translation-candidate-preview-page.component.css',
 })
@@ -64,10 +76,18 @@ export class TranslationCandidatePreviewPageComponent {
   protected readonly requiresPolicyAcceptance = signal(false);
   protected readonly activeSegmentId = signal<string | null>(null);
   protected readonly drafts = signal<Record<string, SegmentDraft>>({});
+  protected readonly reviewReadiness = signal<TranslationReviewReadiness | null>(null);
+  protected readonly reviewState = signal<
+    'idle' | 'loading' | 'ready' | 'error' | 'submitting' | 'uncertain' | 'submitted'
+  >('idle');
+  protected readonly reviewError = signal<string | null>(null);
+  protected readonly reviewReceipt = signal<TranslationReviewSubmissionReceipt | null>(null);
 
   private readonly route = inject(ActivatedRoute);
   private readonly router = inject(Router);
   private readonly api = inject(TranslationJobApiService);
+  private readonly reviewApi = inject(TranslationReviewApiService);
+  private readonly systemStatus = inject(SystemStatusService);
   private readonly destroyRef = inject(DestroyRef);
   private jobId: string | null = null;
   private requestToken = 0;
@@ -104,6 +124,7 @@ export class TranslationCandidatePreviewPageComponent {
       if (jobChanged) {
         this.drafts.set({});
         this.activeSegmentId.set(null);
+        this.resetReviewSubmission();
       }
       this.requestedJobId.set(this.jobId);
       this.preview.set(null);
@@ -184,7 +205,8 @@ export class TranslationCandidatePreviewPageComponent {
 
   protected openEditor(segment: TranslationCandidatePreviewSegment): void {
     if (this.activeSegmentId() && this.activeSegmentId() !== segment.sourceSegmentId) return;
-    const baseText = segment.editedText ?? segment.fakeResultText;
+    this.resetReviewSubmission();
+    const baseText = segment.editedText ?? '';
     this.drafts.update((current) => ({
       ...current,
       [segment.sourceSegmentId]: {
@@ -268,6 +290,7 @@ export class TranslationCandidatePreviewPageComponent {
         attempt.idempotencyKey,
       );
       this.applySavedEdit(segmentId, receipt);
+      this.resetReviewSubmission();
       this.removeDraft(segmentId);
       this.announcement.set(
         `Đã lưu chỉnh sửa riêng tư cho phần ${segment.ordinal}, bản ${receipt.editRevision}.`,
@@ -335,6 +358,138 @@ export class TranslationCandidatePreviewPageComponent {
     }
   }
 
+  protected get manualReviewEnabled(): boolean {
+    return this.systemStatus.status()?.features.translationManualSubmissionEnabled === true;
+  }
+
+  protected get canCheckReviewReadiness(): boolean {
+    return (
+      this.manualReviewEnabled &&
+      !!this.jobId &&
+      !this.pageBusy() &&
+      this.activeSegmentId() === null &&
+      !this.hasUnsavedDraft() &&
+      this.reviewState() !== 'loading' &&
+      this.reviewState() !== 'submitting'
+    );
+  }
+
+  protected async checkReviewReadiness(): Promise<void> {
+    const jobId = this.jobId;
+    if (!jobId || !this.canCheckReviewReadiness) {
+      this.reviewError.set('Lưu hoặc hủy bản nháp đang mở trước khi kiểm tra điều kiện gửi.');
+      this.reviewState.set('error');
+      return;
+    }
+    this.reviewState.set('loading');
+    this.reviewError.set(null);
+    this.reviewReadiness.set(null);
+    this.reviewReceipt.set(null);
+    try {
+      const result = await this.reviewApi.getReadiness(jobId);
+      this.reviewReadiness.set(result.readiness);
+      this.reviewSubmissionEtag = result.etag;
+      this.reviewState.set('ready');
+      this.announcement.set(
+        result.readiness.readyForSubmission
+          ? `Đủ điều kiện gửi ${result.readiness.totalSegments} đoạn đã lưu để duyệt.`
+          : `Đã kiểm tra ${result.readiness.editedSegments} trên ${result.readiness.totalSegments} đoạn.`,
+      );
+    } catch (error) {
+      const apiError = error instanceof TranslationReviewApiError ? error : null;
+      if (apiError?.status === 401 || apiError?.status === 403 || apiError?.status === 404) {
+        this.requiresSignIn.set(apiError.status === 401);
+        this.requiresPolicyAcceptance.set(apiError.code === 'POLICY_ACCEPTANCE_REQUIRED');
+        this.reviewError.set(
+          apiError.status === 401
+            ? 'Đăng nhập lại để gửi bản chỉnh sửa đi duyệt.'
+            : apiError.code === 'POLICY_ACCEPTANCE_REQUIRED'
+              ? 'Xác nhận Điều khoản và Thông báo quyền riêng tư hiện hành trước khi gửi.'
+              : 'Candidate này không còn khả dụng để gửi duyệt.',
+        );
+      } else {
+        this.reviewError.set(
+          'Không thể kiểm tra điều kiện gửi. Không có nội dung nào được gửi; hãy thử lại.',
+        );
+      }
+      this.reviewState.set('error');
+    }
+  }
+
+  protected async submitForReview(): Promise<void> {
+    const jobId = this.jobId;
+    const readiness = this.reviewReadiness();
+    const uncertainRetry =
+      this.reviewState() === 'uncertain' && this.reviewSubmissionAttempt !== null;
+    if (
+      !jobId ||
+      !readiness?.readyForSubmission ||
+      !this.reviewSubmissionEtag ||
+      (!uncertainRetry && !this.canCheckReviewReadiness)
+    )
+      return;
+    const attempt = this.reviewSubmissionAttempt ?? {
+      etag: this.reviewSubmissionEtag,
+      idempotencyKey: newTranslationIdempotencyKey(),
+    };
+    if (
+      !this.reviewSubmissionAttempt &&
+      !window.confirm(
+        `Gửi ${readiness.totalSegments} đoạn đã lưu đến người duyệt? Bản gốc không thay đổi và việc gửi không xuất bản nội dung.`,
+      )
+    )
+      return;
+    this.reviewSubmissionAttempt = attempt;
+    this.reviewState.set('submitting');
+    this.reviewError.set(null);
+    try {
+      const receipt = await this.reviewApi.submit(jobId, attempt.etag, attempt.idempotencyKey);
+      this.reviewReceipt.set(receipt);
+      this.reviewSubmissionAttempt = null;
+      this.reviewState.set('submitted');
+      this.announcement.set('Đã gửi bản chỉnh sửa để người duyệt xem xét.');
+    } catch (error) {
+      const apiError = error instanceof TranslationReviewApiError ? error : null;
+      if (apiError?.status === 0 || (apiError?.status ?? 0) >= 500) {
+        this.reviewState.set('uncertain');
+        this.reviewError.set(
+          'Chưa xác minh được lần gửi đã hoàn tất hay chưa. Gửi lại đúng lần gửi để kiểm tra an toàn.',
+        );
+      } else {
+        this.reviewSubmissionAttempt = null;
+        this.reviewState.set('error');
+        this.reviewError.set(
+          apiError?.status === 412 || apiError?.code === 'TRANSLATION_REVIEW_SNAPSHOT_STALE'
+            ? 'Bản chỉnh sửa đã đổi sau khi kiểm tra. Hãy kiểm tra điều kiện gửi lại.'
+            : apiError?.code === 'TRANSLATION_REVIEW_INCOMPLETE'
+              ? 'Còn đoạn chưa có chỉnh sửa được lưu. Hoàn tất rồi kiểm tra lại.'
+              : apiError?.code === 'TRANSLATION_REVIEW_ALREADY_PENDING'
+                ? 'Candidate này đã có một lần gửi đang chờ người duyệt.'
+                : 'Không thể gửi bản chỉnh sửa. Hãy kiểm tra lại điều kiện rồi thử tiếp.',
+        );
+      }
+    }
+  }
+
+  protected missingSegmentsSummary(readiness: TranslationReviewReadiness): string {
+    const firstOrdinals = readiness.missingSegmentOrdinals.slice(0, 20).join(', ');
+    return readiness.missingSegmentOrdinals.length > 20
+      ? `Đoạn chưa chỉnh sửa: ${firstOrdinals} và ${readiness.missingSegmentOrdinals.length - 20} đoạn khác.`
+      : `Đoạn chưa chỉnh sửa: ${firstOrdinals}.`;
+  }
+
+  private reviewSubmissionEtag: string | null = null;
+  private reviewSubmissionAttempt: SubmissionAttempt | null = null;
+
+  private resetReviewSubmission(): void {
+    this.reviewReadiness.set(null);
+    this.reviewState.set('idle');
+    this.reviewError.set(null);
+    this.reviewReceipt.set(null);
+    this.reviewSubmissionEtag = null;
+    this.reviewSubmissionAttempt = null;
+  }
+
   protected async refreshEditVersion(segmentId: string): Promise<void> {
     const offset = this.preview()?.pageOffset ?? 0;
     await this.loadPage(offset, ++this.requestToken, false);
@@ -361,7 +516,7 @@ export class TranslationCandidatePreviewPageComponent {
     const segment = this.preview()?.segments.find((item) => item.sourceSegmentId === segmentId);
     const draft = this.draftFor(segmentId);
     if (!segment || !draft || (draft.currentEtag && segment.editEtag !== draft.currentEtag)) return;
-    const baseText = segment.editedText ?? segment.fakeResultText;
+    const baseText = segment.editedText ?? '';
     this.patchDraft(segmentId, {
       baseText,
       baseEtag: segment.editEtag,

@@ -1,0 +1,186 @@
+:host {
+  display: block;
+  min-width: 0;
+}
+.translation-review-page {
+  width: min(100%, 1120px);
+  margin: 0 auto;
+  padding: 34px clamp(16px, 4vw, 48px) 76px;
+}
+.translation-review-heading {
+  margin: 8px 0 24px;
+}
+.translation-review-heading h1 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: clamp(28px, 3.2vw, 40px);
+  font-weight: 600;
+  line-height: 1.18;
+  letter-spacing: -0.45px;
+}
+.translation-review-heading h1:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 5px;
+}
+.translation-review-heading > p:last-child,
+.translation-review-state > p,
+.translation-review-list-heading p,
+.translation-review-card-author {
+  margin: 9px 0 0;
+  color: var(--muted);
+  line-height: 1.55;
+}
+.translation-review-boundary,
+.translation-review-state,
+.translation-review-queue,
+.translation-review-error,
+.translation-review-card {
+  min-width: 0;
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow-soft);
+}
+.translation-review-boundary {
+  margin-bottom: 22px;
+  padding: 15px 17px;
+  border-color: #d8dff8;
+  color: #26376f;
+  background: var(--primary-soft);
+  line-height: 1.55;
+}
+.translation-review-state,
+.translation-review-queue {
+  padding: clamp(16px, 3vw, 26px);
+}
+.translation-review-state h2,
+.translation-review-state h3,
+.translation-review-list-heading h2 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: clamp(20px, 2.4vw, 27px);
+  line-height: 1.25;
+}
+.translation-review-list-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+.translation-review-list-heading p {
+  margin-top: 5px;
+}
+.translation-review-list {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.translation-review-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: clamp(15px, 2.4vw, 22px);
+}
+.translation-review-card-main {
+  min-width: 0;
+}
+.translation-review-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.4;
+}
+.translation-review-card h3 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: clamp(19px, 2vw, 23px);
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+.translation-review-card h3 a {
+  color: var(--text);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+.translation-review-card h3 a:hover {
+  color: var(--primary);
+}
+.translation-review-card-author {
+  margin-top: 5px;
+}
+.translation-review-stale {
+  margin: 8px 0 0;
+  color: #8a3b16;
+  line-height: 1.45;
+}
+.review-button {
+  display: inline-flex;
+  min-width: 44px;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  padding: 9px 14px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  font: inherit;
+  font-weight: 600;
+  line-height: 1.3;
+  text-align: center;
+  text-decoration: none;
+  cursor: pointer;
+}
+.review-button:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 3px;
+}
+.review-button:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+.review-button-primary {
+  color: white;
+  background: var(--primary);
+}
+.review-button-secondary {
+  color: var(--text);
+  border-color: var(--border-soft);
+  background: var(--surface);
+}
+.translation-review-error {
+  padding: 16px;
+  border-color: #e5aaa2;
+  color: #812d25;
+  background: #fff8f7;
+}
+.translation-review-error p {
+  margin: 0 0 12px;
+  line-height: 1.5;
+}
+.translation-review-more {
+  display: flex;
+  justify-content: center;
+  margin-top: 18px;
+}
+@media (max-width: 600px) {
+  .translation-review-page {
+    padding-top: 24px;
+  }
+  .translation-review-list-heading,
+  .translation-review-card {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .translation-review-list-heading {
+    align-items: flex-start;
+  }
+  .translation-review-open {
+    width: 100%;
+  }
+}

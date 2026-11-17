@@ -1,0 +1,214 @@
+<div class="translation-review-detail-page">
+  <a class="review-back-link" routerLink="/app/review/translations">← Hàng đợi duyệt bản dịch</a>
+
+  @if (state() === 'loading') {
+    <p class="translation-review-detail-state" role="status">Đang tải bản đối chiếu…</p>
+  } @else if (state() === 'error') {
+    <section class="translation-review-detail-state" role="alert">
+      <h1 #pageHeading tabindex="-1">Chưa mở được bản đối chiếu</h1>
+      <p>{{ pageError() }}</p>
+      <div class="review-detail-actions">
+        @if (!staleSource() && !accessState()) {
+          <button class="review-button review-button-secondary" type="button" (click)="refresh()">
+            Thử tải lại
+          </button>
+        }
+        @if (accessState() === 'unauthenticated') {
+          <a class="review-button review-button-primary" routerLink="/sign-in">Đăng nhập lại</a>
+        }
+        @if (accessState() === 'policy-required') {
+          <a class="review-button review-button-primary" routerLink="/app/setup">Mở thiết lập</a>
+        }
+      </div>
+    </section>
+  } @else if (detail(); as current) {
+    <header class="translation-review-detail-heading">
+      <div>
+        <p class="eyebrow">ĐỐI CHIẾU BẢN ĐÃ GỬI</p>
+        <h1 #pageHeading tabindex="-1">{{ current.workTitle }}</h1>
+        <p>
+          {{ current.chapterTitle }} · {{ current.sourceLanguage }} → {{ current.targetLanguage }}
+        </p>
+      </div>
+      <span
+        class="review-status"
+        [class.review-status-accepted]="current.status === 'accepted'"
+        [class.review-status-rejected]="current.status === 'rejected'"
+      >
+        {{
+          current.status === 'pending_review'
+            ? 'Đang chờ duyệt'
+            : current.status === 'accepted'
+              ? 'Đã duyệt · chưa xuất bản'
+              : 'Đã từ chối'
+        }}
+      </span>
+    </header>
+
+    <aside class="translation-review-boundary" role="note">
+      Đọc đúng bản đã gửi, không phải bản nháp mới nhất. Quyết định chỉ áp dụng cho
+      {{ current.segmentCount }} đoạn trong mã băm này. Chấp thuận không xuất bản tác phẩm.
+    </aside>
+
+    <section class="translation-review-snapshot-meta" aria-label="Thông tin lần gửi">
+      <span
+        >Người gửi: <strong>{{ current.submitterDisplayName }}</strong></span
+      >
+      <span
+        >Gửi lúc: <strong>{{ formatDate(current.submittedAt) }}</strong></span
+      >
+      <span
+        >Mã băm snapshot: <code>{{ current.snapshotDigest }}</code></span
+      >
+    </section>
+
+    <section class="translation-review-segments" aria-label="Nguyên tác và bản gửi duyệt">
+      @for (segment of current.segments; track segment.ordinal) {
+        <article class="translation-review-segment">
+          <h2>
+            Đoạn {{ segment.ordinal }} <span>Bản chỉnh sửa {{ segment.editRevision }}</span>
+          </h2>
+          <div class="translation-review-pair">
+            <section [attr.aria-label]="'Nguyên tác đoạn ' + segment.ordinal">
+              <h3>Nguyên tác · {{ current.sourceLanguage }}</h3>
+              <p>{{ segment.sourceText }}</p>
+            </section>
+            <section
+              class="translation-review-submitted"
+              [attr.aria-label]="'Bản gửi duyệt đoạn ' + segment.ordinal"
+            >
+              <h3>Bản gửi duyệt · {{ current.targetLanguage }}</h3>
+              <p>{{ segment.submittedText }}</p>
+              <small>Mã kiểm tra: {{ segment.translatedSha256 }}</small>
+            </section>
+          </div>
+        </article>
+      }
+    </section>
+
+    @if (receipt(); as decision) {
+      <section class="translation-review-result" role="status">
+        <h2 #decisionResultHeading tabindex="-1">
+          {{ decision.actionCode === 'ACCEPT' ? 'Đã ghi nhận duyệt' : 'Đã ghi nhận từ chối' }}
+        </h2>
+        <p>
+          {{
+            decision.actionCode === 'ACCEPT'
+              ? 'Bản chỉnh sửa được duyệt về mặt biên tập nhưng vẫn chưa công khai.'
+              : 'Bản chỉnh sửa được trả về; tác giả có thể tạo lần gửi mới.'
+          }}
+        </p>
+        <p>
+          Thời điểm: {{ formatDate(decision.decidedAt)
+          }}{{ decision.replayed ? ' · đã xác nhận từ lần gửi trước' : '' }}
+        </p>
+      </section>
+    } @else if (current.canDecide && current.status === 'pending_review') {
+      <section
+        class="translation-review-decision"
+        aria-labelledby="translation-review-decision-title"
+      >
+        <div>
+          <h2 id="translation-review-decision-title">Quyết định biên tập</h2>
+          <p>
+            Chọn lý do cố định để lưu vết. Hệ thống không lưu nhận xét tự do hoặc nội dung chương
+            trong nhật ký quyết định.
+          </p>
+        </div>
+        @if (!activeAction()) {
+          <div class="review-detail-actions">
+            <button
+              class="review-button review-button-primary"
+              type="button"
+              (click)="beginDecision('ACCEPT')"
+            >
+              Chấp thuận bản này
+            </button>
+            <button
+              class="review-button review-button-danger"
+              type="button"
+              (click)="beginDecision('REJECT')"
+            >
+              Từ chối bản này
+            </button>
+          </div>
+        } @else {
+          <div
+            class="translation-review-confirm"
+            [attr.aria-labelledby]="'translation-review-confirm-title'"
+          >
+            <h3 id="translation-review-confirm-title">
+              {{ activeAction() === 'ACCEPT' ? 'Xác nhận chấp thuận' : 'Xác nhận từ chối' }}
+            </h3>
+            <label for="translation-review-reason">Lý do</label>
+            <select
+              id="translation-review-reason"
+              [value]="reasonCode()"
+              (change)="updateReason($event)"
+              [disabled]="saving() || uncertain()"
+            >
+              @if (activeAction() === 'ACCEPT') {
+                <option value="ACCURATE">Bản dịch chính xác</option>
+                <option value="MINOR_TERMINOLOGY_ISSUE">Còn lỗi thuật ngữ nhỏ</option>
+              } @else {
+                <option value="MISSING_CONTENT">Thiếu nội dung</option>
+                <option value="MEANING_ERROR">Sai nghĩa</option>
+                <option value="TERMINOLOGY_ERROR">Sai thuật ngữ</option>
+                <option value="FORMATTING_ERROR">Lỗi định dạng</option>
+                <option value="OTHER">Lý do khác</option>
+              }
+            </select>
+            <p class="translation-review-confirm-copy">
+              Quyết định áp dụng cho toàn bộ snapshot hiện tại. Bạn sẽ không thể thay đổi sau khi
+              ghi nhận.
+            </p>
+            @if (decisionError(); as error) {
+              <p class="translation-review-decision-error" role="alert">{{ error }}</p>
+              @if (!uncertain()) {
+                <button
+                  class="review-button review-button-secondary"
+                  type="button"
+                  (click)="refresh()"
+                >
+                  Tải lại bản xem xét
+                </button>
+              }
+            }
+            <div class="review-detail-actions">
+              <button
+                class="review-button review-button-primary"
+                type="button"
+                (click)="confirmDecision()"
+                [disabled]="saving()"
+              >
+                @if (saving()) {
+                  Đang ghi nhận…
+                } @else if (uncertain()) {
+                  Gửi lại đúng quyết định
+                } @else {
+                  Xác nhận và ghi nhận
+                }
+              </button>
+              @if (!uncertain()) {
+                <button
+                  class="review-button review-button-secondary"
+                  type="button"
+                  (click)="cancelDecision()"
+                  [disabled]="saving()"
+                >
+                  Quay lại
+                </button>
+              }
+            </div>
+          </div>
+        }
+      </section>
+    } @else if (!current.canDecide && current.status === 'pending_review') {
+      <p class="translation-review-readonly" role="status">
+        Tài khoản hiện chỉ có quyền xem bản đối chiếu này.
+      </p>
+    }
+
+    <p class="visually-hidden" role="status" aria-live="polite">{{ announcement() }}</p>
+  }
+</div>

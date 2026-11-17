@@ -1,5 +1,6 @@
 import { Component, OnInit, inject, signal } from '@angular/core';
 import { RouterLink } from '@angular/router';
+import { SystemStatusService } from '../core/system-status.service';
 import {
   PublicationReviewApiError,
   PublicationReviewApiService,
@@ -17,6 +18,7 @@ type QueueAccessState = 'unauthenticated' | 'reviewer-required' | 'policy-requir
 })
 export class PublicationReviewQueuePageComponent implements OnInit {
   private readonly api = inject(PublicationReviewApiService);
+  protected readonly systemStatus = inject(SystemStatusService);
 
   protected readonly items = signal<PublicationReviewQueueItem[]>([]);
   protected readonly nextCursor = signal<string | null>(null);

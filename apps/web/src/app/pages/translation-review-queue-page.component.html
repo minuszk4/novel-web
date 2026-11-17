@@ -1,0 +1,116 @@
+<div class="translation-review-page">
+  <header class="translation-review-heading">
+    <p class="eyebrow">KHÔNG GIAN NGƯỜI DUYỆT</p>
+    <h1 #pageHeading tabindex="-1">Hàng đợi duyệt bản dịch</h1>
+    <p>Đối chiếu nguyên tác với đúng bản chỉnh sửa mà tác giả đã gửi.</p>
+  </header>
+
+  <aside class="translation-review-boundary" role="note">
+    <strong>Giới hạn quyết định:</strong> duyệt hoặc từ chối chỉ ghi nhận kết quả biên tập cho bản
+    chỉnh sửa này. Duyệt không xuất bản, không mở quyền đọc và không thay đổi chương gốc.
+  </aside>
+
+  @if (accessState() === 'unauthenticated') {
+    <section class="translation-review-state" aria-labelledby="translation-review-access-title">
+      <h2 id="translation-review-access-title">Phiên đăng nhập không còn hiệu lực</h2>
+      <p>Đăng nhập lại để xác minh quyền người duyệt trước khi xem hàng đợi.</p>
+      <a class="review-button review-button-primary" routerLink="/sign-in">Đăng nhập</a>
+    </section>
+  } @else if (accessState() === 'policy-required') {
+    <section class="translation-review-state" aria-labelledby="translation-review-access-title">
+      <h2 id="translation-review-access-title">Cần xác nhận chính sách hiện hành</h2>
+      <p>Hoàn tất Điều khoản và Thông báo quyền riêng tư trước khi tiếp tục.</p>
+      <a class="review-button review-button-primary" routerLink="/app/setup">Mở thiết lập</a>
+    </section>
+  } @else if (accessState() === 'reviewer-required') {
+    <section class="translation-review-state" aria-labelledby="translation-review-access-title">
+      <h2 id="translation-review-access-title">Không thể truy cập hàng đợi</h2>
+      <p>Tài khoản hiện không có quyền người duyệt đang hoạt động.</p>
+    </section>
+  } @else {
+    <section class="translation-review-queue" aria-labelledby="translation-review-list-title">
+      <div class="translation-review-list-heading">
+        <div>
+          <h2 id="translation-review-list-title">Bản dịch đang chờ</h2>
+          <p>{{ items().length }} mục đã tải</p>
+        </div>
+        <button
+          class="review-button review-button-secondary"
+          type="button"
+          (click)="refresh()"
+          [disabled]="loading() || loadingMore()"
+        >
+          {{ refreshing() ? 'Đang làm mới…' : 'Làm mới' }}
+        </button>
+      </div>
+
+      @if (loading()) {
+        <p class="translation-review-state" role="status">Đang tải hàng đợi…</p>
+      } @else if (errorMessage()) {
+        <div class="translation-review-error" role="alert">
+          <p>{{ errorMessage() }}</p>
+          <button class="review-button review-button-secondary" type="button" (click)="refresh()">
+            {{ reloadFirstPage() ? 'Tải lại hàng đợi' : 'Thử tải lại' }}
+          </button>
+        </div>
+      } @else if (items().length === 0) {
+        <div class="translation-review-state" role="status">
+          <h3>Chưa có bản dịch đang chờ</h3>
+          <p>Yêu cầu mới sẽ xuất hiện sau khi tác giả gửi đủ các đoạn đã chỉnh sửa.</p>
+        </div>
+      } @else {
+        <ol class="translation-review-list" aria-label="Các bản dịch chờ duyệt">
+          @for (item of items(); track item.submissionId) {
+            <li class="translation-review-card">
+              <div class="translation-review-card-main">
+                <p class="translation-review-card-meta">
+                  <span>Gửi {{ formatDate(item.submittedAt) }}</span>
+                  <span>{{ item.segmentCount }} đoạn</span>
+                  <span>{{ item.sourceLanguage }} → {{ item.targetLanguage }}</span>
+                </p>
+                <h3>
+                  @if (item.sourceCurrent) {
+                    <a [routerLink]="['/app/review/translations', item.submissionId]"
+                      >{{ item.workTitle }} · {{ item.chapterTitle }}</a
+                    >
+                  } @else {
+                    <span>{{ item.workTitle }} · {{ item.chapterTitle }}</span>
+                  }
+                </h3>
+                <p class="translation-review-card-author">
+                  Người gửi: {{ item.submitterDisplayName }}
+                </p>
+                @if (!item.sourceCurrent) {
+                  <p class="translation-review-stale">
+                    Nguyên tác đã thay đổi; mục này không thể được duyệt.
+                  </p>
+                }
+              </div>
+              @if (item.sourceCurrent) {
+                <a
+                  class="review-button review-button-primary translation-review-open"
+                  [routerLink]="['/app/review/translations', item.submissionId]"
+                  >Đối chiếu</a
+                >
+              }
+            </li>
+          }
+        </ol>
+
+        @if (nextCursor()) {
+          <div class="translation-review-more">
+            <button
+              class="review-button review-button-secondary"
+              type="button"
+              (click)="loadMore()"
+              [disabled]="loadingMore()"
+            >
+              {{ loadingMore() ? 'Đang tải…' : 'Tải thêm' }}
+            </button>
+          </div>
+        }
+      }
+      <p class="visually-hidden" role="status" aria-live="polite">{{ announcement() }}</p>
+    </section>
+  }
+</div>

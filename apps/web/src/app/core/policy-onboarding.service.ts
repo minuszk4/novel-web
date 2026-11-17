@@ -52,6 +52,7 @@ export class PolicyOnboardingService {
   readonly accountIdentity = signal<AccountIdentitySummary | null>(null);
   readonly canManageReviewerRoles = signal(false);
   readonly canReviewPublications = signal(false);
+  readonly canReviewTranslations = signal(false);
   readonly currentPolicies = signal<CurrentPolicies | null>(null);
   readonly termsDocument = signal<string | null>(null);
   readonly privacyDocument = signal<string | null>(null);
@@ -160,6 +161,7 @@ export class PolicyOnboardingService {
     });
     this.canManageReviewerRoles.set(hasReviewerRoleManagementCapability(account.roles));
     this.canReviewPublications.set(hasPublicationReviewCapability(account.roles));
+    this.canReviewTranslations.set(hasPublicationReviewCapability(account.roles));
 
     this.termsAcceptedVersion.set(account.policy.termsAcceptedVersion);
     this.privacyAcknowledgedVersion.set(account.policy.privacyNoticeAcknowledgedVersion);
@@ -222,6 +224,7 @@ export class PolicyOnboardingService {
     this.accountIdentity.set(null);
     this.canManageReviewerRoles.set(false);
     this.canReviewPublications.set(false);
+    this.canReviewTranslations.set(false);
     this.status.set('demo');
     if (httpStatus === 401) {
       this.demoNotice.set('Chưa có phiên đăng nhập trên máy chủ. Lựa chọn demo mất khi tải lại.');
@@ -233,6 +236,7 @@ export class PolicyOnboardingService {
   private fail(message: string): void {
     this.canManageReviewerRoles.set(false);
     this.canReviewPublications.set(false);
+    this.canReviewTranslations.set(false);
     this.status.set('error');
     this.errorMessage.set(message);
   }

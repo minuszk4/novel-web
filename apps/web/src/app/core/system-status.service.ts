@@ -68,6 +68,8 @@ function isApiSystemStatus(value: unknown): value is ApiSystemStatus {
       typeof features.publicCatalogEnabled === 'boolean') &&
     (features.publicationReleaseEnabled === undefined ||
       typeof features.publicationReleaseEnabled === 'boolean') &&
-    typeof features.translationFakePreviewEnabled === 'boolean'
+    typeof features.translationFakePreviewEnabled === 'boolean' &&
+    (features.translationManualSubmissionEnabled === undefined ||
+      typeof features.translationManualSubmissionEnabled === 'boolean')
   );
 }

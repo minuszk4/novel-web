@@ -30,6 +30,7 @@ export class AppShellComponent {
   protected keepFocusedContentAboveMobileNav(event: FocusEvent): void {
     const target = event.target;
     if (!(target instanceof HTMLElement)) return;
+    if (!target.matches(':focus-visible')) return;
     const nav = document.querySelector<HTMLElement>('.mobile-nav');
     if (!nav || getComputedStyle(nav).display === 'none') return;
 

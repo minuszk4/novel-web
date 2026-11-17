@@ -1,12 +1,15 @@
+import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { ActivatedRoute, convertToParamMap, provideRouter } from '@angular/router';
 import { of } from 'rxjs';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   TranslationCandidatePreview,
   TranslationJobApiError,
   TranslationJobApiService,
 } from '../core/translation-job-api.service';
+import { SystemStatusService } from '../core/system-status.service';
+import { TranslationReviewApiService } from '../core/translation-review-api.service';
 import { TranslationCandidatePreviewPageComponent } from './translation-candidate-preview-page.component';
 
 const jobId = '66666666-6666-4666-8666-666666666666';
@@ -49,10 +52,18 @@ const makePreview = (
 describe('TranslationCandidatePreviewPageComponent', () => {
   const getCandidatePreview = vi.fn();
   const saveCandidateSegmentEdit = vi.fn();
+  const getReadiness = vi.fn();
+  const submitForReview = vi.fn();
+  const features = signal({ features: { translationManualSubmissionEnabled: false } });
+  let originalConfirm: typeof window.confirm | undefined;
 
   beforeEach(() => {
     getCandidatePreview.mockReset();
     saveCandidateSegmentEdit.mockReset();
+    getReadiness.mockReset();
+    submitForReview.mockReset();
+    originalConfirm = window.confirm;
+    features.set({ features: { translationManualSubmissionEnabled: false } });
     TestBed.configureTestingModule({
       imports: [TranslationCandidatePreviewPageComponent],
       providers: [
@@ -65,7 +76,20 @@ describe('TranslationCandidatePreviewPageComponent', () => {
           provide: TranslationJobApiService,
           useValue: { getCandidatePreview, saveCandidateSegmentEdit },
         },
+        {
+          provide: TranslationReviewApiService,
+          useValue: { getReadiness, submit: submitForReview },
+        },
+        { provide: SystemStatusService, useValue: { status: features } },
       ],
+    });
+  });
+
+  afterEach(() => {
+    Object.defineProperty(window, 'confirm', {
+      configurable: true,
+      writable: true,
+      value: originalConfirm,
     });
   });
 
@@ -119,7 +143,7 @@ describe('TranslationCandidatePreviewPageComponent', () => {
     firstEditButton.click();
     fixture.detectChanges();
     const editor = fixture.nativeElement.querySelector('textarea') as HTMLTextAreaElement;
-    expect(editor.value).toBe('[fake vi->en] Nguyên tác 1');
+    expect(editor.value).toBe('');
     editor.value = savedText;
     editor.dispatchEvent(new Event('input', { bubbles: true }));
     fixture.detectChanges();
@@ -146,6 +170,70 @@ describe('TranslationCandidatePreviewPageComponent', () => {
     expect(fixture.nativeElement.textContent).toContain(
       'Đã lưu chỉnh sửa riêng tư cho phần 1, bản 1.',
     );
+  });
+
+  it('submits only a ready server snapshot and confirms without exposing prose in the receipt', async () => {
+    features.set({ features: { translationManualSubmissionEnabled: true } });
+    getCandidatePreview.mockResolvedValue(makePreview(0, 1, 1));
+    const snapshotEtag = `"translation-review-${'a'.repeat(64)}"`;
+    getReadiness.mockResolvedValue({
+      readiness: {
+        jobId,
+        sourceLanguage: 'vi',
+        targetLanguage: 'en',
+        editedSegments: 1,
+        totalSegments: 1,
+        missingSegmentOrdinals: [],
+        pendingReview: false,
+        snapshotDigest: 'a'.repeat(64),
+        readyForSubmission: true,
+        blockers: [],
+      },
+      etag: snapshotEtag,
+    });
+    submitForReview.mockResolvedValue({
+      submissionId: '11111111-1111-4111-8111-111111111111',
+      status: 'pending_review',
+      snapshotDigest: 'a'.repeat(64),
+      segmentCount: 1,
+      submittedAt: '2026-11-17T07:00:00Z',
+      replayed: false,
+    });
+    const confirm = vi.fn(() => true);
+    Object.defineProperty(window, 'confirm', {
+      configurable: true,
+      writable: true,
+      value: confirm,
+    });
+    const fixture = TestBed.createComponent(TranslationCandidatePreviewPageComponent);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    expect(fixture.nativeElement.textContent).toContain('Chuẩn bị gửi người duyệt');
+    const check = [...fixture.nativeElement.querySelectorAll('button')].find((button) =>
+      button.textContent.includes('Kiểm tra điều kiện gửi'),
+    ) as HTMLButtonElement;
+    check.click();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(fixture.nativeElement.textContent).toContain('1 / 1');
+
+    const submit = [...fixture.nativeElement.querySelectorAll('button')].find((button) =>
+      button.textContent.includes('Gửi 1 đoạn để duyệt'),
+    ) as HTMLButtonElement;
+    submit.click();
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    expect(confirm).toHaveBeenCalledOnce();
+    expect(submitForReview).toHaveBeenCalledWith(
+      jobId,
+      snapshotEtag,
+      expect.stringMatching(/^[A-Za-z0-9._~-]{16,128}$/),
+    );
+    expect(fixture.nativeElement.textContent).toContain('Đã gửi để người duyệt xem xét');
+    expect(fixture.nativeElement.textContent).not.toContain('Bản dịch do tác giả gửi');
   });
 
   it('retries an uncertain save with the identical text, ETag and idempotency key', async () => {

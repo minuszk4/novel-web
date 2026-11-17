@@ -10,6 +10,13 @@
     số đoạn. Không có văn bản chương hay tài liệu chứng minh. Chấp thuận chỉ đánh dấu
     <strong>Được duyệt · Chưa công khai</strong>; thao tác này không xuất bản tác phẩm.
   </aside>
+  @if (systemStatus.status()?.features?.translationManualSubmissionEnabled) {
+    <p class="publication-review-translation-link">
+      <a class="review-button review-button-secondary" routerLink="/app/review/translations"
+        >Mở hàng đợi duyệt bản dịch</a
+      >
+    </p>
+  }
 
   @if (accessState() === 'unauthenticated') {
     <section class="publication-review-state" aria-labelledby="review-access-title">

@@ -1,0 +1,281 @@
+:host {
+  display: block;
+  min-width: 0;
+}
+.translation-review-detail-page {
+  width: min(100%, 1160px);
+  margin: 0 auto;
+  padding: 30px clamp(16px, 4vw, 48px) 80px;
+}
+.review-back-link {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  color: var(--primary);
+  font-weight: 600;
+  text-underline-offset: 3px;
+}
+.translation-review-detail-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  margin: 16px 0 22px;
+}
+.translation-review-detail-heading h1 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: clamp(28px, 3.5vw, 42px);
+  line-height: 1.16;
+  overflow-wrap: anywhere;
+}
+.translation-review-detail-heading h1:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 5px;
+}
+.translation-review-detail-heading p:last-child {
+  margin: 8px 0 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+.review-status {
+  display: inline-flex;
+  min-height: 34px;
+  flex: 0 0 auto;
+  align-items: center;
+  padding: 6px 11px;
+  border: 1px solid #d9d6c8;
+  border-radius: 999px;
+  color: #574d23;
+  background: #fbf8e8;
+  font-size: 13px;
+  font-weight: 700;
+}
+.review-status-accepted {
+  color: #185b3d;
+  border-color: #b7d9c6;
+  background: #eff9f2;
+}
+.review-status-rejected {
+  color: #8a2e2b;
+  border-color: #e5b9b5;
+  background: #fff3f1;
+}
+.translation-review-boundary,
+.translation-review-detail-state,
+.translation-review-snapshot-meta,
+.translation-review-segment,
+.translation-review-decision,
+.translation-review-result {
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow-soft);
+}
+.translation-review-boundary {
+  margin-bottom: 16px;
+  padding: 14px 16px;
+  border-color: #d8dff8;
+  color: #26376f;
+  background: var(--primary-soft);
+  line-height: 1.55;
+}
+.translation-review-snapshot-meta {
+  display: grid;
+  gap: 8px;
+  padding: 14px 16px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.translation-review-snapshot-meta strong {
+  color: var(--text);
+}
+.translation-review-snapshot-meta code {
+  display: block;
+  margin-top: 4px;
+  color: var(--text);
+  font-size: 12px;
+}
+.translation-review-segments {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+}
+.translation-review-segment {
+  min-width: 0;
+  padding: clamp(16px, 2.5vw, 24px);
+}
+.translation-review-segment h2 {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 10px;
+  margin: 0 0 14px;
+  font-family: var(--font-display);
+  font-size: 22px;
+}
+.translation-review-segment h2 span {
+  color: var(--muted);
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 500;
+}
+.translation-review-pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.translation-review-pair section {
+  min-width: 0;
+  padding: 15px;
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  background: var(--surface-subtle, var(--surface));
+}
+.translation-review-pair h3 {
+  margin: 0 0 9px;
+  color: var(--muted-strong, var(--text));
+  font-size: 14px;
+}
+.translation-review-pair p {
+  margin: 0;
+  line-height: 1.75;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.translation-review-pair .translation-review-submitted {
+  border-color: #d7dffb;
+  background: #f6f7ff;
+}
+.translation-review-submitted small {
+  display: block;
+  margin-top: 14px;
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.translation-review-decision,
+.translation-review-result,
+.translation-review-detail-state {
+  margin-top: 20px;
+  padding: clamp(16px, 3vw, 25px);
+}
+.translation-review-decision h2,
+.translation-review-result h2 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 23px;
+}
+.translation-review-decision > div:first-child p,
+.translation-review-result p,
+.translation-review-detail-state p {
+  color: var(--muted);
+  line-height: 1.6;
+}
+.review-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 16px;
+}
+.review-button {
+  display: inline-flex;
+  min-width: 44px;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  padding: 9px 14px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  font: inherit;
+  font-weight: 600;
+  text-align: center;
+  text-decoration: none;
+  cursor: pointer;
+}
+.review-button:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 3px;
+}
+.review-button:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+.review-button-primary {
+  color: white;
+  background: var(--primary);
+}
+.review-button-secondary {
+  color: var(--text);
+  border-color: var(--border-soft);
+  background: var(--surface);
+}
+.review-button-danger {
+  color: white;
+  background: #9f312b;
+}
+.translation-review-confirm {
+  max-width: 680px;
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--surface-subtle, var(--surface));
+}
+.translation-review-confirm h3 {
+  margin: 0 0 12px;
+  font-size: 18px;
+}
+.translation-review-confirm label {
+  display: block;
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+.translation-review-confirm select {
+  width: 100%;
+  min-height: 46px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 7px;
+  color: var(--text);
+  background: var(--surface);
+  font: inherit;
+}
+.translation-review-confirm-copy,
+.translation-review-decision-error,
+.translation-review-readonly {
+  line-height: 1.55;
+}
+.translation-review-confirm-copy {
+  color: var(--muted);
+}
+.translation-review-decision-error {
+  color: #8a2e2b;
+}
+.translation-review-readonly {
+  margin-top: 20px;
+  padding: 14px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  color: var(--muted);
+}
+.translation-review-detail-state {
+  border-color: #e5aaa2;
+}
+@media (max-width: 680px) {
+  .translation-review-detail-page {
+    padding-top: 20px;
+  }
+  .translation-review-detail-heading {
+    flex-direction: column;
+  }
+  .translation-review-pair {
+    grid-template-columns: 1fr;
+  }
+  .review-detail-actions {
+    flex-direction: column;
+  }
+  .review-detail-actions .review-button {
+    width: 100%;
+  }
+}

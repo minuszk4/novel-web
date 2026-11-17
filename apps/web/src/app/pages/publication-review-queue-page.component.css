@@ -57,6 +57,10 @@
   line-height: 1.55;
 }
 
+.publication-review-translation-link {
+  margin: 0 0 20px;
+}
+
 .publication-review-state,
 .publication-review-queue {
   padding: clamp(16px, 3vw, 26px);

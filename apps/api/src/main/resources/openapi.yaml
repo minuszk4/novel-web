@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 9.5.0
+  version: 9.6.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -14,7 +14,7 @@ info:
     Source-only Reader manifest, chapter-content, progress, reader-preferences, bookmarks, private annotations and private reading-history routes are implemented in the PostgreSQL profile.
     History is derived from the latest saved progress per accessible readable work, is visible for 365 days, and never returns chapter body text.
     Versioned cultivation catalogs, authenticated profile settings, private daily XP activity and bounded private Reader sessions with atomic XP awards are implemented in the PostgreSQL profile. The approved starting policy awards 1 XP per complete active Reader minute, capped at 120 XP per UTC day; same-day sub-minute remainder does not cross UTC midnight; top-ups and unlocks award none. Cultivation is feature-gated and off by default pending the rank-threshold pilot and release reviews.
-    Scoped glossary storage, actor-scoped catalog listing/creation, active and writer-only latest-revision reads, version-checked immutable draft creation, authenticated diff/lint/match preview, lint-gated revision publication with append-only audit, strict JSON/CSV/TSV import preview and resolved atomic draft apply, and active/writer-only latest snapshot export are implemented in the PostgreSQL profile. Translation job enqueue/status/retry/cancel are available only as an explicit fake-local development preview and never call an external NMT provider. Manual translation readiness and immutable human-edit submission are available only behind `NOVEL_TRANSLATION_REVIEW_ENABLED`; reviewer queue/decision and publication are not implemented yet, so keep this flag off outside local API verification. `features.translationFakePreviewEnabled` is true only when both required profiles and the provider/API/worker opt-in flags are active.
+    Scoped glossary storage, actor-scoped catalog listing/creation, active and writer-only latest-revision reads, version-checked immutable draft creation, authenticated diff/lint/match preview, lint-gated revision publication with append-only audit, strict JSON/CSV/TSV import preview and resolved atomic draft apply, and active/writer-only latest snapshot export are implemented in the PostgreSQL profile. Translation job enqueue/status/retry/cancel are available only as an explicit fake-local development preview and never call an external NMT provider. Manual translation readiness/submission plus assigned-reviewer queue, frozen-snapshot detail and append-only accept/reject decisions are available only behind `NOVEL_TRANSLATION_REVIEW_ENABLED`; the flag defaults off. Writer and reviewer UI are implemented behind the default-off manual-review gate; translation publication and rollback remain open. `features.translationFakePreviewEnabled` is true only when both required profiles and the provider/API/worker opt-in flags are active.
     The authenticated PostgreSQL profile also exposes the current actor's available paid and non-expired bonus credit totals from the rebuildable balance projection; the response is no-store and does not expose another account's ledger. When the MoMo TEST gate is explicitly enabled with valid TEST configuration, the profile also exposes server-priced public-chapter unlock quotes and an idempotent paid-credit unlock that commits the debit with an immutable entitlement; private/draft chapters remain unavailable and no production purchase is enabled.
     An opt-in, metadata-only guest catalog endpoint is available in the PostgreSQL profile. It is disabled by default and returns only authored, active, explicitly public works owned by active users with at least one ready chapter; it does not return descriptions or chapter bodies. Admin-only publication-reviewer role assignment, bounded eligible-account search and status-filtered assignment history are implemented in the PostgreSQL profile; the current-user response exposes the caller's server-derived security capability for navigation only. Author-owned private drafts can read the current effective publication-rights policy, record a work-scoped acknowledgement and submit an immutable rights-review request with scoped declarations. Submission is owner-only, CSRF-protected, snapshot-checked, bounded and persistently rate-limited. Active reviewers can read an actor-bound pending queue and privacy-filtered request snapshot, then append needs-information, reject or approve decisions with exact idempotency and current ETag checks; approval only grants immutable scope access and leaves the work unpublished. An owner-only immediate release route exists behind `NOVEL_PUBLICATION_RELEASE_ENABLED`, which remains off by default and is reported through server feature status; it rechecks current approval and snapshots when the owner confirms release. The API does not bootstrap system administrators, let authors define policy or self-review. Public follow, notifications, scheduled release, owner unpublish, edge rate limits and guest reader access remain separate work.
 servers:
@@ -44,7 +44,10 @@ tags:
     description: Actor-scoped catalog listing/creation, active-revision reads, immutable drafts, publication and resolved import apply are implemented in the PostgreSQL profile.
     x-implementation-status: partial
   - name: Translation
-    description: Explicitly opted-in fake-local translation job lifecycle; external providers, reviewer publication and paid usage are unavailable.
+    description: Explicitly opted-in fake-local lifecycle and separately disabled manual-review API; external providers, translation publication and paid usage are unavailable.
+    x-implementation-status: local-preview
+  - name: Translation review
+    description: Gated manual-only readiness, submission, assigned-reviewer queue/detail and append-only decisions; local writer/reviewer UI is also gated; translation publication is not implemented.
     x-implementation-status: local-preview
   - name: Authoring
     description: Private-first owner manuscript drafts and content. Owners can submit immutable rights-review records.
@@ -2373,6 +2376,236 @@ paths:
         '401':
           $ref: '#/components/responses/Problem'
         '404':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/review/translations:
+    get:
+      operationId: listAssignedTranslationReviewSubmissions
+      tags: [Translation review]
+      x-implementation-status: implemented-postgres-translation-fake-profile
+      summary: List pending manual translation submissions for an assigned reviewer
+      description: >-
+        Requires an active session, current Terms and Privacy acceptance and an active admin-assigned
+        publication_reviewer role. The reviewer’s own work, submissions and any snapshot containing an edit by that
+        reviewer are excluded. Returns only neutral work/chapter labels, languages, submitter identity, segment count,
+        submission time and whether the source is still current; it never returns source or translation prose. Pages
+        use a reviewer-bound HMAC cursor with stable descending submission-time/ID order. Limit is 1–50 (default 20).
+        Every response is no-store. This queue is available only with the postgres and translation-fake profiles and
+        NOVEL_TRANSLATION_REVIEW_ENABLED=true; the flag defaults to false.
+      security:
+        - appSession: []
+      parameters:
+        - name: cursor
+          in: query
+          description: Opaque reviewer-bound cursor returned by the prior page.
+          schema:
+            type: string
+            maxLength: 2048
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+      responses:
+        '200':
+          description: Pending manual translation review page; contains metadata only.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TranslationReviewQueuePage'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          description: The caller must accept the current required policy documents.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: No active reviewer assignment is available to this caller.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/review/translations/{submissionId}:
+    get:
+      operationId: getAssignedTranslationReviewSubmission
+      tags: [Translation review]
+      x-implementation-status: implemented-postgres-translation-fake-profile
+      summary: Read an exact immutable human-edited translation snapshot
+      description: >-
+        Requires the same current reviewer and policy gates as the queue. Missing, foreign, unassigned, owner,
+        submitter and snapshot-contributor requests are masked as 404. The detail pairs each source segment with the
+        exact edit revision/hash frozen at submission; it never reads latest unsaved edits or fakeResultText. If the
+        source has changed, returns a no-store 409 without either body. The strong ETag is bound to the immutable
+        snapshot digest. This endpoint is available only in the gated local fake-translation profile and never grants
+        Reader access or publication.
+      security:
+        - appSession: []
+      parameters:
+        - name: submissionId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Exact submitted snapshot; source and authored translation prose are private and no-store.
+          headers:
+            ETag:
+              required: true
+              schema:
+                type: string
+                pattern: '^"translation-review-[a-f0-9]{64}"$'
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TranslationReviewDetail'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          description: The source changed after submission; the response contains no prose.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/review/translations/{submissionId}/decisions:
+    post:
+      operationId: decideManualTranslationReview
+      tags: [Translation review]
+      x-implementation-status: implemented-postgres-translation-fake-profile
+      summary: Append one accept or reject decision for an exact manual snapshot
+      description: >-
+        Requires an active session, session-bound CSRF token, current Terms and Privacy acceptance and an active
+        publication_reviewer assignment. The database locks and rechecks assignment, private authored work, current
+        source and snapshot digest through commit. Owners, submitters, snapshot editors and inaccessible submissions
+        receive the same 404. Reject requires an allow-listed reason; accept may include an allow-listed quality reason.
+        One immutable decision is allowed per snapshot. Exact retry returns the original receipt; changed body/key
+        reuse conflicts. Role revocation, stale source and already-decided snapshots fail without exposing prose.
+        Acceptance is editorial review only: it does not publish, create a translation version, grant Reader access or
+        expose generated fake text. Every response is no-store.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - name: submissionId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: If-Match
+          in: header
+          required: true
+          description: Strong ETag returned by GET /api/v1/review/translations/{submissionId}.
+          schema:
+            type: string
+            pattern: '^"translation-review-[a-f0-9]{64}"$'
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            minLength: 16
+            maxLength: 128
+            pattern: '^[A-Za-z0-9._~-]{16,128}$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - $ref: '#/components/schemas/TranslationReviewAcceptRequest'
+                - $ref: '#/components/schemas/TranslationReviewRejectRequest'
+      responses:
+        '201':
+          description: A new immutable accept/reject receipt.
+          headers:
+            ETag:
+              schema:
+                type: string
+                pattern: '^"translation-review-[a-f0-9]{64}"$'
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TranslationReviewDecisionResponse'
+        '200':
+          description: Exact retry of a prior decision; returns the original receipt.
+          headers:
+            ETag:
+              schema:
+                type: string
+                pattern: '^"translation-review-[a-f0-9]{64}"$'
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TranslationReviewDecisionResponse'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '412':
+          $ref: '#/components/responses/Problem'
+        '413':
+          $ref: '#/components/responses/Problem'
+        '415':
+          $ref: '#/components/responses/Problem'
+        '428':
           $ref: '#/components/responses/Problem'
         '503':
           $ref: '#/components/responses/Problem'
@@ -5889,8 +6122,9 @@ paths:
         current writer access, the readiness ETag in If-Match and a per-attempt Idempotency-Key. The server recomputes
         the versioned canonical digest under locks, stores only ordered edit revision/hash references and creates no
         publication, Reader entitlement or fake-result approval. Exact retries return the original receipt. A single
-        pending submission is permitted per candidate. Reviewer queue/decision endpoints are not yet available, so
-        keep the API flag off outside local verification.
+        pending submission is permitted per candidate. Assigned-reviewer queue/detail and append-only decisions use
+        the same local-only gate. Writer and reviewer UI are implemented behind the gate; translation publication is
+        still open, so keep the API flag off outside local verification.
       security:
         - appSession: []
           csrfToken: []
@@ -6652,6 +6886,164 @@ components:
         nextCursor:
           type: [string, 'null']
           maxLength: 256
+    TranslationReviewQueuePage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor, hasMore]
+      properties:
+        items:
+          type: array
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/TranslationReviewQueueItem'
+        nextCursor:
+          type: [string, 'null']
+          maxLength: 2048
+        hasMore:
+          type: boolean
+    TranslationReviewQueueItem:
+      type: object
+      additionalProperties: false
+      required: [submissionId, workTitle, chapterTitle, sourceLanguage, targetLanguage, segmentCount, submitterDisplayName, submittedAt, sourceCurrent]
+      properties:
+        submissionId:
+          type: string
+          format: uuid
+        workTitle:
+          type: string
+          maxLength: 300
+        chapterTitle:
+          type: string
+          maxLength: 300
+        sourceLanguage:
+          type: string
+          maxLength: 35
+        targetLanguage:
+          type: string
+          maxLength: 35
+        segmentCount:
+          type: integer
+          minimum: 1
+          maximum: 5000
+        submitterDisplayName:
+          type: string
+          maxLength: 200
+        submittedAt:
+          type: string
+          format: date-time
+        sourceCurrent:
+          type: boolean
+    TranslationReviewDetail:
+      type: object
+      additionalProperties: false
+      required: [submissionId, status, workTitle, chapterTitle, submitterDisplayName, sourceLanguage, targetLanguage, snapshotDigest, segmentCount, submittedAt, canDecide, segments]
+      properties:
+        submissionId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [pending_review, accepted, rejected]
+        workTitle:
+          type: string
+          maxLength: 300
+        chapterTitle:
+          type: string
+          maxLength: 300
+        submitterDisplayName:
+          type: string
+          maxLength: 200
+        sourceLanguage:
+          type: string
+          maxLength: 35
+        targetLanguage:
+          type: string
+          maxLength: 35
+        snapshotDigest:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        segmentCount:
+          type: integer
+          minimum: 1
+          maximum: 5000
+        submittedAt:
+          type: string
+          format: date-time
+        canDecide:
+          type: boolean
+        segments:
+          type: array
+          maxItems: 5000
+          items:
+            $ref: '#/components/schemas/TranslationReviewSegment'
+    TranslationReviewSegment:
+      type: object
+      additionalProperties: false
+      required: [ordinal, editRevision, translatedSha256, sourceText, submittedText]
+      properties:
+        ordinal:
+          type: integer
+          minimum: 1
+          maximum: 5000
+        editRevision:
+          type: integer
+          minimum: 1
+        translatedSha256:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        sourceText:
+          type: string
+          maxLength: 1048576
+        submittedText:
+          type: string
+          maxLength: 1048576
+    TranslationReviewAcceptRequest:
+      type: object
+      additionalProperties: false
+      required: [actionCode]
+      properties:
+        actionCode:
+          type: string
+          const: ACCEPT
+        reasonCode:
+          type: [string, 'null']
+          enum: [ACCURATE, MINOR_TERMINOLOGY_ISSUE, null]
+    TranslationReviewRejectRequest:
+      type: object
+      additionalProperties: false
+      required: [actionCode, reasonCode]
+      properties:
+        actionCode:
+          type: string
+          const: REJECT
+        reasonCode:
+          type: string
+          enum: [MISSING_CONTENT, MEANING_ERROR, TERMINOLOGY_ERROR, FORMATTING_ERROR, OTHER]
+    TranslationReviewDecisionResponse:
+      type: object
+      additionalProperties: false
+      required: [decisionId, submissionId, actionCode, reasonCode, snapshotDigest, decidedAt, replayed]
+      properties:
+        decisionId:
+          type: string
+          format: uuid
+        submissionId:
+          type: string
+          format: uuid
+        actionCode:
+          type: string
+          enum: [ACCEPT, REJECT]
+        reasonCode:
+          type: [string, 'null']
+          enum: [ACCURATE, MINOR_TERMINOLOGY_ISSUE, MISSING_CONTENT, MEANING_ERROR, TERMINOLOGY_ERROR, FORMATTING_ERROR, OTHER, null]
+        snapshotDigest:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        decidedAt:
+          type: string
+          format: date-time
+        replayed:
+          type: boolean
     TranslationReviewReadinessResponse:
       type: object
       additionalProperties: false

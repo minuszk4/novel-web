@@ -271,6 +271,118 @@
       }
     </section>
 
+    @if (manualReviewEnabled) {
+      <section class="translation-candidate-submission" aria-labelledby="manual-review-title">
+        <div>
+          <p class="eyebrow">GỬI DUYỆT BẢN CHỈNH SỬA</p>
+          <h2 id="manual-review-title">Chuẩn bị gửi người duyệt</h2>
+          <p>
+            Chỉ các chỉnh sửa đã lưu mới được gửi. Mọi đoạn phải có chỉnh sửa riêng; kết quả giả
+            không tự trở thành bản dịch.
+          </p>
+        </div>
+        @if (reviewState() === 'idle' || reviewState() === 'error') {
+          <button
+            class="button button-primary"
+            type="button"
+            (click)="checkReviewReadiness()"
+            [disabled]="!canCheckReviewReadiness"
+          >
+            {{ reviewState() === 'error' ? 'Kiểm tra lại điều kiện' : 'Kiểm tra điều kiện gửi' }}
+          </button>
+        }
+        @if (reviewState() === 'loading') {
+          <p role="status">Đang kiểm tra bản đã lưu…</p>
+        }
+        @if (reviewReadiness(); as readiness) {
+          <dl class="translation-candidate-readiness">
+            <div>
+              <dt>Đoạn đã chỉnh sửa</dt>
+              <dd>{{ readiness.editedSegments }} / {{ readiness.totalSegments }}</dd>
+            </div>
+            <div>
+              <dt>Ngôn ngữ</dt>
+              <dd>{{ readiness.sourceLanguage }} → {{ readiness.targetLanguage }}</dd>
+            </div>
+            <div>
+              <dt>Trạng thái</dt>
+              <dd>
+                {{
+                  readiness.pendingReview
+                    ? 'Đã có lần gửi đang chờ'
+                    : readiness.readyForSubmission
+                      ? 'Đủ điều kiện gửi'
+                      : 'Cần hoàn tất chỉnh sửa'
+                }}
+              </dd>
+            </div>
+          </dl>
+          @if (readiness.missingSegmentOrdinals.length > 0) {
+            <p class="translation-candidate-review-blocker">
+              {{ missingSegmentsSummary(readiness) }}
+            </p>
+          }
+          @if (readiness.pendingReview) {
+            <p class="translation-candidate-review-blocker">
+              Không thể tạo lần gửi khác khi snapshot hiện tại còn chờ duyệt.
+            </p>
+          }
+        }
+        @if (reviewError(); as reviewMessage) {
+          <div class="translation-candidate-review-error" role="alert">
+            <p>{{ reviewMessage }}</p>
+            @if (requiresSignIn()) {
+              <a
+                class="button button-outline"
+                [routerLink]="['/sign-in']"
+                [queryParams]="{
+                  returnTo: '/app/translation/jobs/' + requestedJobId() + '/candidate',
+                }"
+                >Đăng nhập lại</a
+              >
+            } @else if (requiresPolicyAcceptance()) {
+              <a class="button button-outline" routerLink="/app/setup">Mở thiết lập</a>
+            }
+          </div>
+        }
+        @if (
+          reviewState() === 'ready' &&
+          reviewReadiness()?.readyForSubmission &&
+          !reviewReadiness()?.pendingReview
+        ) {
+          <button
+            class="button button-primary"
+            type="button"
+            (click)="submitForReview()"
+            [disabled]="!canCheckReviewReadiness"
+          >
+            Gửi {{ reviewReadiness()?.totalSegments }} đoạn để duyệt
+          </button>
+        } @else if (reviewState() === 'uncertain') {
+          <button class="button button-primary" type="button" (click)="submitForReview()">
+            Gửi lại đúng lần gửi
+          </button>
+        } @else if (reviewState() === 'submitting') {
+          <p role="status">Đang gửi snapshot đã lưu…</p>
+        }
+        @if (reviewState() === 'submitted') {
+          @if (reviewReceipt(); as receipt) {
+            <div class="translation-candidate-review-success" role="status">
+              <strong>{{
+                receipt.replayed
+                  ? 'Lần gửi trước đã được xác nhận'
+                  : 'Đã gửi để người duyệt xem xét'
+              }}</strong>
+              <span
+                >{{ receipt.segmentCount }} đoạn · {{ receipt.submittedAt | date: 'medium' }}</span
+              >
+              <a class="text-button" routerLink="/app/translation">Về bàn dịch</a>
+            </div>
+          }
+        }
+      </section>
+    }
+
     <nav class="translation-candidate-pagination" aria-label="Phân trang candidate">
       <button
         class="button button-outline"

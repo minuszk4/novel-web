@@ -90,6 +90,17 @@ public class LibraryCursorCodec {
         "publication-review-queue-v1");
   }
 
+  public static CursorContext translationReviewQueueContext(UUID reviewerUserId) {
+    return new CursorContext(
+        Kind.TRANSLATION_REVIEW_QUEUE,
+        reviewerUserId,
+        NO_SCOPE,
+        "",
+        "",
+        "pending_review",
+        "translation-review-queue-v1");
+  }
+
   public static CursorContext publicationRequestHistoryContext(UUID ownerUserId, UUID workId) {
     return new CursorContext(
         Kind.PUBLICATION_REQUEST_HISTORY,
@@ -253,7 +264,8 @@ public class LibraryCursorCodec {
     WORK(2),
     PUBLIC_CATALOG(3),
     PUBLICATION_REVIEW_QUEUE(4),
-    PUBLICATION_REQUEST_HISTORY(5);
+    PUBLICATION_REQUEST_HISTORY(5),
+    TRANSLATION_REVIEW_QUEUE(6);
 
     private final int code;
 
@@ -309,6 +321,14 @@ public class LibraryCursorCodec {
               || !accessScopeFingerprint.equals("publication-review-queue-v1"))) {
         throw new IllegalArgumentException("Invalid publication-review cursor context");
       }
+      if (kind == Kind.TRANSLATION_REVIEW_QUEUE
+          && (!scopeId.equals(NO_SCOPE)
+              || !query.isEmpty()
+              || !tag.isEmpty()
+              || !status.equals("pending_review")
+              || !accessScopeFingerprint.equals("translation-review-queue-v1"))) {
+        throw new IllegalArgumentException("Invalid translation-review cursor context");
+      }
       if (kind == Kind.PUBLICATION_REQUEST_HISTORY
           && (scopeId.equals(NO_SCOPE)
               || !query.isEmpty()
@@ -327,7 +347,9 @@ public class LibraryCursorCodec {
         updateUuid(digest, scopeId);
         updateString(
             digest,
-            kind == Kind.PUBLICATION_REVIEW_QUEUE || kind == Kind.PUBLICATION_REQUEST_HISTORY
+            kind == Kind.PUBLICATION_REVIEW_QUEUE
+                    || kind == Kind.PUBLICATION_REQUEST_HISTORY
+                    || kind == Kind.TRANSLATION_REVIEW_QUEUE
                 ? "submitted_at_desc,id_desc"
                 : "created_at_desc,id_desc");
         updateString(digest, query);

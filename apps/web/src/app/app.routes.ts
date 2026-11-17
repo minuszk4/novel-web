@@ -244,11 +244,29 @@ export const routes: Routes = [
       },
       {
         path: 'review',
+        pathMatch: 'full',
         loadComponent: () =>
           import('./pages/publication-review-queue-page.component').then(
             (page) => page.PublicationReviewQueuePageComponent,
           ),
         title: 'Hàng đợi duyệt — Novel',
+      },
+      {
+        path: 'review/translations',
+        pathMatch: 'full',
+        loadComponent: () =>
+          import('./pages/translation-review-queue-page.component').then(
+            (page) => page.TranslationReviewQueuePageComponent,
+          ),
+        title: 'Hàng đợi duyệt bản dịch — Novel',
+      },
+      {
+        path: 'review/translations/:submissionId',
+        loadComponent: () =>
+          import('./pages/translation-review-detail-page.component').then(
+            (page) => page.TranslationReviewDetailPageComponent,
+          ),
+        title: 'Đối chiếu bản dịch — Novel',
       },
       {
         path: 'review/:requestId',

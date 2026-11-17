@@ -43,5 +43,6 @@ export interface ApiSystemStatus {
     publicCatalogEnabled?: boolean;
     publicationReleaseEnabled?: boolean;
     translationFakePreviewEnabled: boolean;
+    translationManualSubmissionEnabled?: boolean;
   };
 }

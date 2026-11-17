@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -14,6 +15,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 
 import com.novelweb.identity.auth.PolicyService;
 import com.novelweb.identity.session.SessionService;
+import com.novelweb.library.LibraryCursorCodec;
 import com.novelweb.translation.jobs.TranslationAttemptCompletionRepository;
 import com.novelweb.translation.jobs.TranslationAttemptCompletionService;
 import com.novelweb.translation.jobs.TranslationAttemptFailureRepository;
@@ -35,6 +37,8 @@ import com.novelweb.translation.jobs.TranslationJobRetryRepository;
 import com.novelweb.translation.jobs.TranslationJobRetryService;
 import com.novelweb.translation.jobs.TranslationJobService;
 import com.novelweb.translation.jobs.TranslationJobStatusService;
+import com.novelweb.translation.jobs.TranslationReviewDecisionService;
+import com.novelweb.translation.jobs.TranslationReviewQueryService;
 import com.novelweb.translation.jobs.TranslationReviewSnapshotHasher;
 import com.novelweb.translation.jobs.TranslationUnitLeaseRepository;
 import com.novelweb.translation.jobs.TranslationUnitLeaseService;
@@ -95,6 +99,8 @@ class PostgresTranslationUnitLeaseTests {
   private final List<UUID> extraUserFixtures = new ArrayList<>();
 
   @Autowired private DataSource dataSource;
+
+  @Autowired private LibraryCursorCodec libraryCursorCodec;
 
   @Autowired private TranslationJobService jobService;
 
@@ -1824,6 +1830,492 @@ class PostgresTranslationUnitLeaseTests {
             .submit(fixture.userId(), fixture.jobId(), etag, "translation-review-duplicate-api-02")
             .outcome());
     assertEquals(1, countReviewSubmissions(preview.candidateId()));
+  }
+
+  @Test
+  void translationReviewerQueueAndDetailReturnOnlyTheFrozenAuthoredSnapshot() throws Exception {
+    Fixture fixture = createQueuedJob(2);
+    UUID submissionId = createSubmittedManualSnapshot(fixture, fixture.userId());
+    UUID reviewerId = createAssignedReviewer("Manual review query reviewer");
+    TranslationReviewQueryService queryService = translationReviewQueryService();
+
+    TranslationReviewQueryService.QueueResult queue = queryService.queue(reviewerId, null, 1);
+    assertEquals(TranslationReviewQueryService.QueueOutcome.AVAILABLE, queue.outcome());
+    assertEquals(1, queue.page().items().size());
+    TranslationReviewQueryService.QueueItem item = queue.page().items().getFirst();
+    assertEquals(submissionId, item.submissionId());
+    assertEquals("Synthetic translation source", item.workTitle());
+    assertEquals("Chapter 1", item.chapterTitle());
+    assertEquals("vi", item.sourceLanguage());
+    assertEquals("en", item.targetLanguage());
+    assertEquals(2, item.segmentCount());
+    assertTrue(item.sourceCurrent());
+    assertFalse(item.toString().contains("Synthetic source sentence"));
+    assertFalse(item.toString().contains("Manual translation"));
+
+    TranslationReviewQueryService.DetailResult detail =
+        queryService.detail(reviewerId, submissionId);
+    assertEquals(TranslationReviewQueryService.DetailOutcome.AVAILABLE, detail.outcome());
+    assertEquals(submissionId, detail.detail().submissionId());
+    assertEquals("pending_review", detail.detail().status());
+    assertTrue(detail.detail().canDecide());
+    assertEquals(2, detail.detail().segments().size());
+    assertEquals(
+        "Synthetic source sentence 1.", detail.detail().segments().getFirst().sourceText());
+    assertEquals("Manual translation 1", detail.detail().segments().getFirst().submittedText());
+    assertEquals("Synthetic source sentence 2.", detail.detail().segments().getLast().sourceText());
+    assertEquals("Manual translation 2", detail.detail().segments().getLast().submittedText());
+    assertEquals(
+        TranslationReviewSnapshotHasher.etag(
+            HexFormat.of().parseHex(detail.detail().snapshotDigest())),
+        detail.etag());
+
+    UUID segmentId = detail.detail().segments().getFirst().sourceSegmentId();
+    candidateEditService.save(
+        fixture.userId(),
+        fixture.jobId(),
+        segmentId,
+        1,
+        "translation-review-later-edit-0001",
+        "A later edit must not rewrite the submitted copy.");
+    TranslationReviewQueryService.DetailResult reread =
+        queryService.detail(reviewerId, submissionId);
+    assertEquals("Manual translation 1", reread.detail().segments().getFirst().submittedText());
+  }
+
+  @Test
+  void translationReviewerQueueMasksOwnerAndSnapshotContributors() throws Exception {
+    Fixture ownerFixture = createQueuedJob(1);
+    UUID ownerSubmission = createSubmittedManualSnapshot(ownerFixture, ownerFixture.userId());
+    UUID ownerReviewer = createAssignedReviewerFor(ownerFixture.userId());
+
+    TranslationReviewQueryService queryService = translationReviewQueryService();
+    TranslationReviewQueryService.QueueResult ownerQueue =
+        queryService.queue(ownerReviewer, null, 20);
+    assertEquals(TranslationReviewQueryService.QueueOutcome.AVAILABLE, ownerQueue.outcome());
+    assertTrue(ownerQueue.page().items().isEmpty());
+    assertEquals(
+        TranslationReviewQueryService.DetailOutcome.NOT_FOUND,
+        queryService.detail(ownerReviewer, ownerSubmission).outcome());
+
+    Fixture contributorFixture = createQueuedJob(1);
+    UUID workspaceId = createWorkspace(contributorFixture);
+    UUID editorId = addWorkspaceMember(workspaceId, "editor");
+    UUID contributorSubmission = createSubmittedManualSnapshot(contributorFixture, editorId);
+    assertEquals(1, countSnapshotEditsBy(contributorSubmission, editorId));
+    assignReviewer(editorId);
+    TranslationReviewQueryService.QueueResult contributorQueue =
+        queryService.queue(editorId, null, 20);
+    assertEquals(TranslationReviewQueryService.QueueOutcome.AVAILABLE, contributorQueue.outcome());
+    assertFalse(
+        contributorQueue.page().items().stream()
+            .anyMatch(item -> item.submissionId().equals(contributorSubmission)),
+        () -> "snapshot contributor appeared in queue: " + contributorQueue.page().items());
+    assertEquals(
+        TranslationReviewQueryService.DetailOutcome.NOT_FOUND,
+        queryService.detail(editorId, contributorSubmission).outcome());
+  }
+
+  @Test
+  void translationReviewerQueueUsesReviewerBoundStableKeysetCursors() throws Exception {
+    Fixture firstFixture = createQueuedJob(1);
+    createSubmittedManualSnapshot(firstFixture, firstFixture.userId());
+    Fixture secondFixture = createQueuedJob(1);
+    createSubmittedManualSnapshot(secondFixture, secondFixture.userId());
+    UUID reviewerId = createAssignedReviewer("Manual review cursor reviewer");
+    TranslationReviewQueryService queryService = translationReviewQueryService();
+
+    TranslationReviewQueryService.QueueResult first = queryService.queue(reviewerId, null, 1);
+    assertEquals(TranslationReviewQueryService.QueueOutcome.AVAILABLE, first.outcome());
+    assertTrue(first.page().hasMore());
+    assertNotNull(first.page().nextCursor());
+    TranslationReviewQueryService.QueueResult second =
+        queryService.queue(reviewerId, first.page().nextCursor(), 1);
+    assertEquals(TranslationReviewQueryService.QueueOutcome.AVAILABLE, second.outcome());
+    assertEquals(1, second.page().items().size());
+    assertNotEquals(
+        first.page().items().getFirst().submissionId(),
+        second.page().items().getFirst().submissionId());
+    UUID otherReviewer = createAssignedReviewer("Other manual review cursor reviewer");
+    assertEquals(
+        TranslationReviewQueryService.QueueOutcome.INVALID_CURSOR,
+        queryService.queue(otherReviewer, first.page().nextCursor(), 1).outcome());
+  }
+
+  @Test
+  void translationReviewDecisionIsAppendOnlyIdempotentAndNeverPublishes() throws Exception {
+    Fixture fixture = createQueuedJob(1);
+    UUID submissionId = createSubmittedManualSnapshot(fixture, fixture.userId());
+    UUID reviewerId = createAssignedReviewer("Manual review decision reviewer");
+    TranslationReviewQueryService.TranslationReviewDetail detail =
+        translationReviewQueryService().detail(reviewerId, submissionId).detail();
+    TranslationReviewDecisionService decisionService = translationReviewDecisionService();
+    TranslationReviewDecisionService.DecisionCommand accept =
+        new TranslationReviewDecisionService.DecisionCommand("ACCEPT", "ACCURATE");
+    String key = "translation-review-decision-accept-01";
+
+    TranslationReviewDecisionService.DecisionResult created =
+        decisionService.decide(reviewerId, submissionId, detailEtag(detail), key, accept);
+    assertEquals(TranslationReviewDecisionService.DecisionOutcome.CREATED, created.outcome());
+    assertEquals("ACCEPT", created.receipt().actionCode());
+    assertEquals("accepted", readReviewSubmissionStatus(submissionId));
+    assertEquals(1, countReviewDecisions(submissionId));
+    assertEquals(0, countTranslationVersions(fixture.chapterId()));
+    assertEquals("private", readWorkVisibility(fixture.workId()));
+
+    TranslationReviewDecisionService.DecisionResult replay =
+        decisionService.decide(reviewerId, submissionId, detailEtag(detail), key, accept);
+    assertEquals(TranslationReviewDecisionService.DecisionOutcome.REPLAYED, replay.outcome());
+    assertEquals(created.receipt().decisionId(), replay.receipt().decisionId());
+    assertTrue(replay.receipt().replayed());
+
+    TranslationReviewDecisionService.DecisionResult changedKeyBody =
+        decisionService.decide(
+            reviewerId,
+            submissionId,
+            detailEtag(detail),
+            key,
+            new TranslationReviewDecisionService.DecisionCommand("REJECT", "MEANING_ERROR"));
+    assertEquals(
+        TranslationReviewDecisionService.DecisionOutcome.KEY_REUSED, changedKeyBody.outcome());
+    assertEquals(
+        TranslationReviewDecisionService.DecisionOutcome.INVALID_STATE,
+        decisionService
+            .decide(
+                reviewerId,
+                submissionId,
+                detailEtag(detail),
+                "translation-review-decision-new-key-01",
+                accept)
+            .outcome());
+
+    SQLException updateFailure =
+        assertThrows(
+            SQLException.class,
+            () ->
+                execute(
+                    "UPDATE translation_candidate_review_decisions SET reason_code = 'OTHER' "
+                        + "WHERE submission_id = ?",
+                    submissionId));
+    assertEquals("55000", updateFailure.getSQLState());
+  }
+
+  @Test
+  void rejectedTranslationSnapshotAllowsASeparateCorrectedSubmission() throws Exception {
+    Fixture fixture = createQueuedJob(1);
+    UUID submissionId = createSubmittedManualSnapshot(fixture, fixture.userId());
+    UUID reviewerId = createAssignedReviewer("Manual review reject reviewer");
+    TranslationReviewQueryService.TranslationReviewDetail detail =
+        translationReviewQueryService().detail(reviewerId, submissionId).detail();
+    TranslationReviewDecisionService decisionService = translationReviewDecisionService();
+    TranslationReviewDecisionService.DecisionResult rejected =
+        decisionService.decide(
+            reviewerId,
+            submissionId,
+            detailEtag(detail),
+            "translation-review-decision-reject-01",
+            new TranslationReviewDecisionService.DecisionCommand("REJECT", "MEANING_ERROR"));
+    assertEquals(TranslationReviewDecisionService.DecisionOutcome.CREATED, rejected.outcome());
+    assertEquals("rejected", readReviewSubmissionStatus(submissionId));
+
+    TranslationCandidatePreviewService.PreviewSegment segment =
+        candidatePreviewService
+            .findCurrentReadyForReview(fixture.userId(), fixture.jobId(), 0, 1)
+            .orElseThrow()
+            .segments()
+            .getFirst();
+    TranslationCandidateEditRepository.EditResult revised =
+        candidateEditService.save(
+            fixture.userId(),
+            fixture.jobId(),
+            segment.sourceSegmentId(),
+            1,
+            "translation-review-after-reject-edit-01",
+            "Corrected manual translation after review.");
+    assertEquals(2, revised.editRevision());
+    TranslationCandidateReviewRepository.Readiness readiness =
+        candidateReviewService.readiness(fixture.userId(), fixture.jobId());
+    TranslationCandidateReviewRepository.SubmissionResult resubmitted =
+        candidateReviewService.submit(
+            fixture.userId(),
+            fixture.jobId(),
+            TranslationReviewSnapshotHasher.etag(readiness.snapshotDigest()),
+            "translation-review-after-reject-submit-01");
+    assertEquals(TranslationCandidateReviewRepository.Outcome.CREATED, resubmitted.outcome());
+    assertNotEquals(submissionId, resubmitted.receipt().submissionId());
+    assertEquals(
+        "pending_review", readReviewSubmissionStatus(resubmitted.receipt().submissionId()));
+    assertEquals(2, countReviewSubmissions(candidateIdFor(fixture.jobId())));
+    assertEquals(1, countReviewDecisions(submissionId));
+  }
+
+  @Test
+  void translationReviewDecisionMasksOwnerSubmitterAndSnapshotContributor() throws Exception {
+    Fixture fixture = createQueuedJob(1);
+    UUID workspaceId = createWorkspace(fixture);
+    UUID contributorId = addWorkspaceMember(workspaceId, "editor");
+    UUID submitterId = addWorkspaceMember(workspaceId, "editor");
+    UUID submissionId = createSubmittedManualSnapshot(fixture, contributorId, submitterId);
+    UUID ownerReviewerId = createAssignedReviewerFor(fixture.userId());
+    UUID submitterReviewerId = createAssignedReviewerFor(submitterId);
+    assignReviewer(contributorId);
+    TranslationReviewQueryService.TranslationReviewDetail detail =
+        translationReviewQueryService()
+            .detail(createAssignedReviewer("Independent detail reviewer"), submissionId)
+            .detail();
+    String etag = detailEtag(detail);
+    TranslationReviewDecisionService decisionService = translationReviewDecisionService();
+    TranslationReviewDecisionService.DecisionCommand accept =
+        new TranslationReviewDecisionService.DecisionCommand("ACCEPT", "ACCURATE");
+
+    for (UUID ineligibleReviewer : List.of(ownerReviewerId, submitterReviewerId, contributorId)) {
+      assertEquals(
+          TranslationReviewDecisionService.DecisionOutcome.NOT_FOUND,
+          decisionService
+              .decide(
+                  ineligibleReviewer,
+                  submissionId,
+                  etag,
+                  "translation-review-ineligible-" + UUID.randomUUID().toString().replace("-", ""),
+                  accept)
+              .outcome());
+    }
+    assertEquals("pending_review", readReviewSubmissionStatus(submissionId));
+    assertEquals(0, countReviewDecisions(submissionId));
+  }
+
+  @Test
+  void reviewerRevocationWinsWhenItLocksBeforeTheDecisionRoleCheck() throws Exception {
+    Fixture fixture = createQueuedJob(1);
+    UUID submissionId = createSubmittedManualSnapshot(fixture, fixture.userId());
+    UUID reviewerId = createAssignedReviewer("Manual review revocation reviewer");
+    TranslationReviewQueryService.TranslationReviewDetail detail =
+        translationReviewQueryService().detail(reviewerId, submissionId).detail();
+    TranslationReviewDecisionService decisionService = translationReviewDecisionService();
+    String etag = detailEtag(detail);
+    ExecutorService executor = Executors.newSingleThreadExecutor();
+
+    try (Connection revocation = dataSource.getConnection()) {
+      revocation.setAutoCommit(false);
+      execute(
+          revocation,
+          "UPDATE security_role_assignments "
+              + "SET revoked_by_user_id = ?, revoked_at = clock_timestamp(), "
+              + "revocation_reason_code = 'SECURITY_REVIEW' "
+              + "WHERE user_id = ? AND role_code = 'publication_reviewer' AND revoked_at IS NULL",
+          UUID.randomUUID(),
+          reviewerId);
+
+      CountDownLatch started = new CountDownLatch(1);
+      Future<TranslationReviewDecisionService.DecisionResult> decision =
+          executor.submit(
+              () -> {
+                started.countDown();
+                return decisionService.decide(
+                    reviewerId,
+                    submissionId,
+                    etag,
+                    "translation-review-revoked-race-01",
+                    new TranslationReviewDecisionService.DecisionCommand("ACCEPT", "ACCURATE"));
+              });
+      assertTrue(started.await(5, TimeUnit.SECONDS));
+      assertTrue(
+          awaitReviewerRoleLockWait(), "decision should wait behind the role revocation lock");
+
+      revocation.commit();
+      assertEquals(
+          TranslationReviewDecisionService.DecisionOutcome.NOT_FOUND,
+          decision.get(10, TimeUnit.SECONDS).outcome());
+    } finally {
+      executor.shutdownNow();
+      assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
+    }
+    assertEquals("pending_review", readReviewSubmissionStatus(submissionId));
+    assertEquals(0, countReviewDecisions(submissionId));
+  }
+
+  private boolean awaitReviewerRoleLockWait() throws Exception {
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+    while (System.nanoTime() < deadline) {
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement select =
+              connection.prepareStatement(
+                  "SELECT EXISTS (SELECT 1 FROM pg_stat_activity "
+                      + "WHERE wait_event_type = 'Lock' "
+                      + "AND query LIKE '%security_role_assignments%')")) {
+        try (ResultSet row = select.executeQuery()) {
+          row.next();
+          if (row.getBoolean(1)) return true;
+        }
+      }
+      Thread.sleep(20);
+    }
+    return false;
+  }
+
+  private UUID createSubmittedManualSnapshot(Fixture fixture, UUID editorUserId) throws Exception {
+    return createSubmittedManualSnapshot(fixture, editorUserId, fixture.userId());
+  }
+
+  private UUID createSubmittedManualSnapshot(
+      Fixture fixture, UUID editorUserId, UUID submitterUserId) throws Exception {
+    fakeLocalWorkerService.processNext(
+        "translation-review-query-worker-" + UUID.randomUUID().toString().substring(0, 8),
+        Duration.ofSeconds(60));
+    TranslationCandidatePreviewService.CandidatePreview preview =
+        candidatePreviewService
+            .findCurrentReadyForReview(submitterUserId, fixture.jobId(), 0, 25)
+            .orElseThrow();
+    for (TranslationCandidatePreviewService.PreviewSegment segment : preview.segments()) {
+      candidateEditService.save(
+          editorUserId,
+          fixture.jobId(),
+          segment.sourceSegmentId(),
+          0,
+          "translation-review-query-edit-" + UUID.randomUUID().toString().replace("-", ""),
+          "Manual translation " + segment.ordinal());
+    }
+    TranslationCandidateReviewRepository.Readiness readiness =
+        candidateReviewService.readiness(submitterUserId, fixture.jobId());
+    TranslationCandidateReviewRepository.SubmissionResult submission =
+        candidateReviewService.submit(
+            submitterUserId,
+            fixture.jobId(),
+            TranslationReviewSnapshotHasher.etag(readiness.snapshotDigest()),
+            "translation-review-query-submit-" + UUID.randomUUID().toString().replace("-", ""));
+    assertEquals(TranslationCandidateReviewRepository.Outcome.CREATED, submission.outcome());
+    return submission.receipt().submissionId();
+  }
+
+  private TranslationReviewDecisionService translationReviewDecisionService() {
+    PolicyService policyService = mock(PolicyService.class);
+    when(policyService.requiredAcceptance(org.mockito.ArgumentMatchers.any(UUID.class)))
+        .thenReturn(PolicyService.RequiredAcceptance.COMPLETE);
+    return new TranslationReviewDecisionService(dataSource, policyService);
+  }
+
+  private static String detailEtag(TranslationReviewQueryService.TranslationReviewDetail detail) {
+    return TranslationReviewSnapshotHasher.etag(HexFormat.of().parseHex(detail.snapshotDigest()));
+  }
+
+  private int countReviewDecisions(UUID submissionId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT count(*) FROM translation_candidate_review_decisions "
+                    + "WHERE submission_id = ?")) {
+      select.setObject(1, submissionId);
+      try (ResultSet row = select.executeQuery()) {
+        row.next();
+        return row.getInt(1);
+      }
+    }
+  }
+
+  private int countSnapshotEditsBy(UUID submissionId, UUID editorId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                """
+                    SELECT count(*)
+                      FROM translation_candidate_review_submission_segments snapshot_segment
+                      JOIN translation_candidate_segment_edits edit
+                        ON edit.candidate_id = snapshot_segment.candidate_id
+                       AND edit.source_segment_id = snapshot_segment.source_segment_id
+                       AND edit.edit_revision = snapshot_segment.edit_revision
+                     WHERE snapshot_segment.submission_id = ? AND edit.editor_user_id = ?
+                    """)) {
+      select.setObject(1, submissionId);
+      select.setObject(2, editorId);
+      try (ResultSet row = select.executeQuery()) {
+        row.next();
+        return row.getInt(1);
+      }
+    }
+  }
+
+  private String readReviewSubmissionStatus(UUID submissionId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT status FROM translation_candidate_review_submissions WHERE id = ?")) {
+      select.setObject(1, submissionId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getString(1);
+      }
+    }
+  }
+
+  private int countTranslationVersions(UUID chapterId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT count(*) FROM translation_versions WHERE chapter_id = ?")) {
+      select.setObject(1, chapterId);
+      try (ResultSet row = select.executeQuery()) {
+        row.next();
+        return row.getInt(1);
+      }
+    }
+  }
+
+  private String readWorkVisibility(UUID workId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement("SELECT visibility FROM works WHERE id = ?")) {
+      select.setObject(1, workId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getString(1);
+      }
+    }
+  }
+
+  private UUID candidateIdFor(UUID jobId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT id FROM translation_candidates WHERE job_id = ? "
+                    + "ORDER BY candidate_no DESC LIMIT 1")) {
+      select.setObject(1, jobId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getObject(1, UUID.class);
+      }
+    }
+  }
+
+  private TranslationReviewQueryService translationReviewQueryService() {
+    PolicyService policyService = mock(PolicyService.class);
+    when(policyService.requiredAcceptance(org.mockito.ArgumentMatchers.any(UUID.class)))
+        .thenReturn(PolicyService.RequiredAcceptance.COMPLETE);
+    return new TranslationReviewQueryService(dataSource, policyService, libraryCursorCodec);
+  }
+
+  private UUID createAssignedReviewer(String displayName) throws SQLException {
+    UUID reviewerId = createUser(displayName);
+    assignReviewer(reviewerId);
+    return reviewerId;
+  }
+
+  private UUID createAssignedReviewerFor(UUID reviewerId) throws SQLException {
+    assignReviewer(reviewerId);
+    return reviewerId;
+  }
+
+  private void assignReviewer(UUID reviewerId) throws SQLException {
+    UUID assignerId = createUser("Manual review role assigner");
+    try (Connection connection = dataSource.getConnection()) {
+      execute(
+          connection,
+          "INSERT INTO security_role_assignments "
+              + "(id, user_id, role_code, assigned_by_user_id, reason_code) "
+              + "VALUES (?, ?, 'publication_reviewer', ?, 'REVIEW_CAPACITY')",
+          UUID.randomUUID(),
+          reviewerId,
+          assignerId);
+    }
   }
 
   private UUID insertReviewSnapshot(
