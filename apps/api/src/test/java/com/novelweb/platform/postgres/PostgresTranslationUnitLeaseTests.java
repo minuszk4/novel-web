@@ -50,6 +50,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -1502,6 +1503,345 @@ class PostgresTranslationUnitLeaseTests {
     assertFalse(body.contains("[fake vi->en] Synthetic source sentence 1."));
   }
 
+  @Test
+  void manualCandidateSubmissionFreezesEveryOrderedLatestEditAndRejectsMutation() throws Exception {
+    Fixture fixture = createQueuedJob(2);
+    fakeLocalWorkerService.processNext(
+        "translation-review-snapshot-worker", Duration.ofSeconds(60));
+    TranslationCandidatePreviewService.CandidatePreview preview =
+        candidatePreviewService
+            .findCurrentReadyForReview(fixture.userId(), fixture.jobId(), 0, 10)
+            .orElseThrow();
+    List<ReviewSnapshotSegment> snapshotSegments = new ArrayList<>();
+    for (TranslationCandidatePreviewService.PreviewSegment segment : preview.segments()) {
+      String translatedText = "Bản dịch thủ công đoạn " + segment.ordinal() + ".";
+      TranslationCandidateEditRepository.EditResult edit =
+          candidateEditService.save(
+              fixture.userId(),
+              fixture.jobId(),
+              segment.sourceSegmentId(),
+              0,
+              "translation-review-edit-" + UUID.randomUUID().toString().replace("-", ""),
+              translatedText);
+      snapshotSegments.add(
+          new ReviewSnapshotSegment(
+              segment.sourceSegmentId(),
+              segment.ordinal(),
+              edit.editRevision(),
+              sha256(edit.translatedText())));
+    }
+
+    UUID submissionId =
+        insertReviewSnapshot(fixture, preview.candidateId(), snapshotSegments, "complete");
+
+    assertEquals(1, countReviewSubmissions(preview.candidateId()));
+    assertEquals(2, countReviewSubmissionSegments(submissionId));
+    assertEquals(List.of(1, 2), readReviewSubmissionOrdinals(submissionId));
+    assertEquals(
+        snapshotSegments.stream()
+            .map(segment -> HexFormat.of().formatHex(segment.translatedSha256()))
+            .toList(),
+        readReviewSubmissionEditHashes(submissionId));
+    assertFalse(reviewSnapshotHasTextColumn("translation_candidate_review_submissions"));
+    assertFalse(reviewSnapshotHasTextColumn("translation_candidate_review_submission_segments"));
+
+    SQLException updateFailure =
+        assertThrows(
+            SQLException.class,
+            () ->
+                execute(
+                    "UPDATE translation_candidate_review_submissions "
+                        + "SET snapshot_sha256 = ? WHERE id = ?",
+                    sha256("replacement snapshot"),
+                    submissionId));
+    assertEquals("55000", updateFailure.getSQLState());
+
+    SQLException deleteFailure =
+        assertThrows(
+            SQLException.class,
+            () ->
+                execute(
+                    "DELETE FROM translation_candidate_review_submission_segments "
+                        + "WHERE submission_id = ?",
+                    submissionId));
+    assertEquals("55000", deleteFailure.getSQLState());
+
+    SQLException truncateFailure =
+        assertThrows(
+            SQLException.class,
+            () -> execute("TRUNCATE translation_candidate_review_submissions CASCADE"));
+    assertEquals("55000", truncateFailure.getSQLState());
+
+    SQLException pendingConflict =
+        assertThrows(
+            SQLException.class,
+            () -> insertReviewSnapshot(fixture, preview.candidateId(), snapshotSegments, "second"));
+    assertEquals("23505", pendingConflict.getSQLState());
+  }
+
+  @Test
+  void manualCandidateSubmissionRejectsIncompleteOrNonlatestEdits() throws Exception {
+    Fixture incompleteFixture = createQueuedJob(2);
+    fakeLocalWorkerService.processNext(
+        "translation-review-incomplete-worker", Duration.ofSeconds(60));
+    TranslationCandidatePreviewService.CandidatePreview incompletePreview =
+        candidatePreviewService
+            .findCurrentReadyForReview(incompleteFixture.userId(), incompleteFixture.jobId(), 0, 10)
+            .orElseThrow();
+    TranslationCandidatePreviewService.PreviewSegment firstSegment =
+        incompletePreview.segments().getFirst();
+    TranslationCandidateEditRepository.EditResult firstEdit =
+        candidateEditService.save(
+            incompleteFixture.userId(),
+            incompleteFixture.jobId(),
+            firstSegment.sourceSegmentId(),
+            0,
+            "translation-review-incomplete-" + UUID.randomUUID().toString().replace("-", ""),
+            "Only one segment has a manual translation.");
+    List<ReviewSnapshotSegment> incompleteSnapshot =
+        List.of(
+            new ReviewSnapshotSegment(
+                firstSegment.sourceSegmentId(),
+                firstSegment.ordinal(),
+                firstEdit.editRevision(),
+                sha256(firstEdit.translatedText())));
+
+    SQLException incompleteFailure =
+        assertThrows(
+            SQLException.class,
+            () ->
+                insertReviewSnapshot(
+                    incompleteFixture,
+                    incompletePreview.candidateId(),
+                    incompleteSnapshot,
+                    "incomplete"));
+    assertEquals("23514", incompleteFailure.getSQLState());
+    assertEquals(0, countReviewSubmissions(incompletePreview.candidateId()));
+
+    Fixture staleEditFixture = createQueuedJob(1);
+    fakeLocalWorkerService.processNext(
+        "translation-review-stale-edit-worker", Duration.ofSeconds(60));
+    TranslationCandidatePreviewService.CandidatePreview staleEditPreview =
+        candidatePreviewService
+            .findCurrentReadyForReview(staleEditFixture.userId(), staleEditFixture.jobId(), 0, 1)
+            .orElseThrow();
+    UUID segmentId = staleEditPreview.segments().getFirst().sourceSegmentId();
+    candidateEditService.save(
+        staleEditFixture.userId(),
+        staleEditFixture.jobId(),
+        segmentId,
+        0,
+        "translation-review-revision-one-" + UUID.randomUUID().toString().replace("-", ""),
+        "First manual revision.");
+    TranslationCandidateEditRepository.EditResult latestEdit =
+        candidateEditService.save(
+            staleEditFixture.userId(),
+            staleEditFixture.jobId(),
+            segmentId,
+            1,
+            "translation-review-revision-two-" + UUID.randomUUID().toString().replace("-", ""),
+            "Second manual revision.");
+    List<ReviewSnapshotSegment> staleEditSnapshot =
+        List.of(new ReviewSnapshotSegment(segmentId, 1, 1, sha256("First manual revision.")));
+
+    SQLException staleEditFailure =
+        assertThrows(
+            SQLException.class,
+            () ->
+                insertReviewSnapshot(
+                    staleEditFixture,
+                    staleEditPreview.candidateId(),
+                    staleEditSnapshot,
+                    "old-edit"));
+    assertEquals("23514", staleEditFailure.getSQLState());
+    assertEquals(0, countReviewSubmissions(staleEditPreview.candidateId()));
+    assertEquals(2, latestEdit.editRevision());
+  }
+
+  @Test
+  void manualCandidateSubmissionRejectsAStaleSourceRevision() throws Exception {
+    Fixture fixture = createQueuedJob(1);
+    fakeLocalWorkerService.processNext(
+        "translation-review-stale-source-worker", Duration.ofSeconds(60));
+    TranslationCandidatePreviewService.CandidatePreview preview =
+        candidatePreviewService
+            .findCurrentReadyForReview(fixture.userId(), fixture.jobId(), 0, 1)
+            .orElseThrow();
+    TranslationCandidatePreviewService.PreviewSegment segment = preview.segments().getFirst();
+    TranslationCandidateEditRepository.EditResult edit =
+        candidateEditService.save(
+            fixture.userId(),
+            fixture.jobId(),
+            segment.sourceSegmentId(),
+            0,
+            "translation-review-source-edit-" + UUID.randomUUID().toString().replace("-", ""),
+            "Manually translated before source change.");
+    List<ReviewSnapshotSegment> snapshot =
+        List.of(
+            new ReviewSnapshotSegment(
+                segment.sourceSegmentId(),
+                segment.ordinal(),
+                edit.editRevision(),
+                sha256(edit.translatedText())));
+    advanceCurrentSourceRevision(fixture);
+
+    SQLException staleFailure =
+        assertThrows(
+            SQLException.class,
+            () -> insertReviewSnapshot(fixture, preview.candidateId(), snapshot, "stale-source"));
+    assertEquals("23514", staleFailure.getSQLState());
+    assertEquals(0, countReviewSubmissions(preview.candidateId()));
+  }
+
+  private UUID insertReviewSnapshot(
+      Fixture fixture,
+      UUID candidateId,
+      List<ReviewSnapshotSegment> snapshotSegments,
+      String snapshotToken)
+      throws Exception {
+    UUID submissionId = UUID.randomUUID();
+    byte[] sourceSha256 = readCandidateSourceSha256(candidateId);
+    byte[] snapshotSha256 = sha256("translation-review-snapshot-" + snapshotToken);
+    try (Connection connection = dataSource.getConnection()) {
+      connection.setAutoCommit(false);
+      try {
+        try (PreparedStatement insert =
+            connection.prepareStatement(
+                """
+                    INSERT INTO translation_candidate_review_submissions
+                        (id, candidate_id, job_id, work_id, chapter_id, target_language,
+                         source_revision_id, source_sha256, snapshot_sha256, segment_count,
+                         submitted_by_user_id, idempotency_key_sha256, request_sha256)
+                    VALUES (?, ?, ?, ?, ?, 'en', ?, ?, ?, ?, ?, ?, ?)
+                    """)) {
+          insert.setObject(1, submissionId);
+          insert.setObject(2, candidateId);
+          insert.setObject(3, fixture.jobId());
+          insert.setObject(4, fixture.workId());
+          insert.setObject(5, fixture.chapterId());
+          insert.setObject(6, fixture.revisionId());
+          insert.setBytes(7, sourceSha256);
+          insert.setBytes(8, snapshotSha256);
+          insert.setInt(9, snapshotSegments.size());
+          insert.setObject(10, fixture.userId());
+          insert.setBytes(11, sha256("translation-review-key-" + snapshotToken));
+          insert.setBytes(12, sha256("translation-review-request-" + snapshotToken));
+          assertEquals(1, insert.executeUpdate());
+        }
+        try (PreparedStatement insertSegment =
+            connection.prepareStatement(
+                """
+                    INSERT INTO translation_candidate_review_submission_segments
+                        (submission_id, candidate_id, source_segment_id, segment_ordinal,
+                         edit_revision, translated_sha256)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """)) {
+          for (ReviewSnapshotSegment segment : snapshotSegments) {
+            insertSegment.setObject(1, submissionId);
+            insertSegment.setObject(2, candidateId);
+            insertSegment.setObject(3, segment.sourceSegmentId());
+            insertSegment.setInt(4, segment.ordinal());
+            insertSegment.setInt(5, segment.editRevision());
+            insertSegment.setBytes(6, segment.translatedSha256());
+            insertSegment.addBatch();
+          }
+          insertSegment.executeBatch();
+        }
+        connection.commit();
+      } catch (SQLException | RuntimeException exception) {
+        connection.rollback();
+        throw exception;
+      }
+    }
+    return submissionId;
+  }
+
+  private byte[] readCandidateSourceSha256(UUID candidateId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT source_sha256 FROM translation_candidates WHERE id = ?")) {
+      select.setObject(1, candidateId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getBytes("source_sha256");
+      }
+    }
+  }
+
+  private int countReviewSubmissions(UUID candidateId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT count(*) FROM translation_candidate_review_submissions "
+                    + "WHERE candidate_id = ?")) {
+      select.setObject(1, candidateId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getInt(1);
+      }
+    }
+  }
+
+  private int countReviewSubmissionSegments(UUID submissionId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT count(*) FROM translation_candidate_review_submission_segments "
+                    + "WHERE submission_id = ?")) {
+      select.setObject(1, submissionId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getInt(1);
+      }
+    }
+  }
+
+  private List<Integer> readReviewSubmissionOrdinals(UUID submissionId) throws SQLException {
+    List<Integer> ordinals = new ArrayList<>();
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT segment_ordinal FROM translation_candidate_review_submission_segments "
+                    + "WHERE submission_id = ? ORDER BY segment_ordinal")) {
+      select.setObject(1, submissionId);
+      try (ResultSet rows = select.executeQuery()) {
+        while (rows.next()) ordinals.add(rows.getInt(1));
+      }
+    }
+    return ordinals;
+  }
+
+  private List<String> readReviewSubmissionEditHashes(UUID submissionId) throws SQLException {
+    List<String> hashes = new ArrayList<>();
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT translated_sha256 FROM translation_candidate_review_submission_segments "
+                    + "WHERE submission_id = ? ORDER BY segment_ordinal")) {
+      select.setObject(1, submissionId);
+      try (ResultSet rows = select.executeQuery()) {
+        while (rows.next()) hashes.add(HexFormat.of().formatHex(rows.getBytes(1)));
+      }
+    }
+    return hashes;
+  }
+
+  private boolean reviewSnapshotHasTextColumn(String tableName) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.columns "
+                    + "WHERE table_schema = current_schema() AND table_name = ? "
+                    + "AND (column_name ILIKE '%text%' OR column_name ILIKE '%body%'))")) {
+      select.setString(1, tableName);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getBoolean(1);
+      }
+    }
+  }
+
   private MvcResult requestCandidatePreview(Fixture fixture) throws Exception {
     PolicyService policyService = mock(PolicyService.class);
     when(policyService.requiredAcceptance(fixture.userId()))
@@ -2419,10 +2759,19 @@ class PostgresTranslationUnitLeaseTests {
     }
   }
 
+  private void execute(String sql, Object... values) throws SQLException {
+    try (Connection connection = dataSource.getConnection()) {
+      execute(connection, sql, values);
+    }
+  }
+
   private static byte[] sha256(String value) throws Exception {
     return MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8));
   }
 
   private record Fixture(
       UUID userId, UUID libraryId, UUID workId, UUID chapterId, UUID revisionId, UUID jobId) {}
+
+  private record ReviewSnapshotSegment(
+      UUID sourceSegmentId, int ordinal, int editRevision, byte[] translatedSha256) {}
 }
