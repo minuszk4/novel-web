@@ -11,10 +11,12 @@ param(
     [switch]$IncludePaymentReturn,
     [switch]$IncludeCommerceSettlement,
     [switch]$IncludeCultivationRankUp,
+    [switch]$IncludeNotificationInbox,
     [switch]$IncludeDatabaseRestartRecovery
 )
 
 $ErrorActionPreference = 'Stop'
+if ($IncludeNotificationInbox) { $IncludePublicationReviewWorkspace = $true }
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $apiDirectory = Join-Path $repoRoot 'apps\api'
 $webDirectory = Join-Path $repoRoot 'apps\web'
@@ -55,7 +57,8 @@ $environmentNames = @(
     'POSTGRES_PORT', 'POSTGRES_PASSWORD', 'DATABASE_URL', 'DATABASE_USERNAME', 'DATABASE_PASSWORD',
     'GOOGLE_AUTH_RATE_LIMIT_HMAC_KEY', 'NOVEL_CSRF_HMAC_KEY', 'NOVEL_LIBRARY_CURSOR_HMAC_KEY',
     'NOVEL_WEB_CORS_ALLOWED_ORIGINS', 'NOVEL_FEATURE_CULTIVATION_ENABLED',
-    'NOVEL_FEATURE_COMMERCE_SANDBOX_ENABLED',
+    'NOVEL_FEATURE_COMMERCE_SANDBOX_ENABLED', 'NOVEL_NOTIFICATIONS_DELIVERY_ENABLED',
+    'NOVEL_NOTIFICATIONS_DELIVERY_POLL_DELAY',
     'NOVEL_TRANSLATION_FAKE_ENABLED', 'NOVEL_TRANSLATION_FAKE_API_ENABLED',
     'NOVEL_TRANSLATION_FAKE_WORKER_ENABLED',
     'NOVEL_MOMO_TEST_ENABLED', 'NOVEL_MOMO_TEST_RECONCILIATION_ENABLED', 'MOMO_ENV',
@@ -84,7 +87,7 @@ $environmentNames = @(
     'TRANSLATION_LIVE_TEST_WORK_ID', 'TRANSLATION_LIVE_TEST_CHAPTER_ID', 'TRANSLATION_LIVE_TEST_SCREENSHOT',
     'READER_LIVE_TEST_CHAPTER_ID', 'READER_LIVE_TEST_SCREENSHOT',
     'CULTIVATION_LIVE_TEST_RANK_UP', 'CULTIVATION_LIVE_TEST_SCREENSHOT', 'CULTIVATION_LIVE_TEST_TRACE',
-    'WORK_DETAIL_LIVE_TEST_SCREENSHOT', 'PRIVATE_IMPORT_LIVE_TEST_SCREENSHOT',
+    'WORK_DETAIL_LIVE_TEST_SCREENSHOT', 'PRIVATE_IMPORT_LIVE_TEST_SCREENSHOT', 'NOTIFICATION_LIVE_TEST_SCREENSHOT',
     'GLOSSARY_LIVE_TEST_GLOSSARY_ID', 'GLOSSARY_LIVE_TEST_SCREENSHOT', 'GLOSSARY_EDITOR_LIVE_TEST_SCREENSHOT'
 )
 $previousEnvironment = @{}
@@ -104,6 +107,7 @@ $cultivationLedgerEntries = 0
 $glossaryParts = @()
 $publicationRightsParts = @()
 $publicationReviewParts = @()
+$notificationParts = @()
 $authoringEditorParts = @()
 $databaseRestartSummary = @()
 $startedAt = Get-Date
@@ -172,6 +176,7 @@ $publicationRightsPolicySha256 = [Convert]::ToHexString(
 $publicationRightsScreenshotPath = Join-Path $evidenceDirectory 'publication-rights-policy-live.png'
 $publicationReviewScreenshotPath = Join-Path $evidenceDirectory 'publication-review-workspace-live.png'
 $publicationChapterReleaseScreenshotPath = Join-Path $evidenceDirectory 'publication-chapter-release-live.png'
+$notificationInboxScreenshotPath = Join-Path $evidenceDirectory 'notification-inbox-live.png'
 $secondWorkSourceKind = if ($IncludeTranslationPreview -or $IncludeAuthoringOutline -or $IncludeCommerceSettlement -or $IncludePublicationRightsAcceptance -or $IncludePublicationReviewWorkspace) { 'authored' } else { 'imported' }
 $readerSourceText = 'Live E2E source text is served from PostgreSQL.'
 $readerSourceHash = [Convert]::ToHexString(
@@ -231,11 +236,17 @@ try {
     $env:NOVEL_LIBRARY_CURSOR_HMAC_KEY = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
     $env:NOVEL_FEATURE_CULTIVATION_ENABLED = 'true'
     $env:NOVEL_FEATURE_COMMERCE_SANDBOX_ENABLED = 'false'
+    $env:NOVEL_NOTIFICATIONS_DELIVERY_ENABLED = 'false'
     $env:NOVEL_TRANSLATION_FAKE_ENABLED = 'false'
     $env:NOVEL_TRANSLATION_FAKE_API_ENABLED = 'false'
     $env:NOVEL_TRANSLATION_FAKE_WORKER_ENABLED = 'false'
     $env:NOVEL_MOMO_TEST_ENABLED = 'false'
     $env:NOVEL_MOMO_TEST_RECONCILIATION_ENABLED = 'false'
+    if ($IncludeNotificationInbox) {
+        # Enable only inside the random disposable API process used by this end-to-end journey.
+        $env:NOVEL_NOTIFICATIONS_DELIVERY_ENABLED = 'true'
+        $env:NOVEL_NOTIFICATIONS_DELIVERY_POLL_DELAY = 'PT1S'
+    }
     if ($IncludeTranslationPreview) {
         $env:NOVEL_TRANSLATION_FAKE_ENABLED = 'true'
         $env:NOVEL_TRANSLATION_FAKE_API_ENABLED = 'true'
@@ -505,6 +516,11 @@ SELECT rebuild_cultivation_daily_xp_aggregate(
 "@
     }
 
+$notificationSubscriptionFixtureSql = ''
+if ($IncludeNotificationInbox) {
+    $notificationSubscriptionFixtureSql = "INSERT INTO work_subscriptions (id, actor_user_id, work_id) VALUES (gen_random_uuid(), '$userId', '$secondWorkId');"
+}
+
     $fixtureSql = @"
 BEGIN;
 INSERT INTO users (id, display_name, contact_email, email_verified_at, status)
@@ -530,6 +546,7 @@ INSERT INTO works (id, library_id, owner_user_id, title, author, source_language
 VALUES
 ('$firstWorkId', '$libraryId', '$userId', 'Live E2E Novel One', 'E2E Author', 'vi', 'imported', 'private', 'active'),
 ('$secondWorkId', '$libraryId', '$userId', 'Live E2E Novel Two', 'E2E Author', 'en', '$secondWorkSourceKind', 'private', 'active');
+$notificationSubscriptionFixtureSql
 $authoringOutlineCreationFixtureSql
 $publicationRightsPolicyFixtureSql
 INSERT INTO volumes (id, work_id, ordinal, title)
@@ -597,6 +614,9 @@ COMMIT;
     $env:READER_LIVE_TEST_WORK_ID = [string]$firstWorkId
     $env:READER_LIVE_TEST_CHAPTER_ID = [string]$readerChapterId
     $env:READER_LIVE_TEST_SCREENSHOT = $readerScreenshotPath
+    if ($IncludeNotificationInbox) {
+        $env:NOTIFICATION_LIVE_TEST_SCREENSHOT = $notificationInboxScreenshotPath
+    }
     if ($IncludeCultivationRankUp) {
         $env:CULTIVATION_LIVE_TEST_RANK_UP = 'true'
         $env:CULTIVATION_LIVE_TEST_SCREENSHOT = $cultivationRankUpScreenshotPath
@@ -749,12 +769,14 @@ COMMIT;
     Push-Location $webDirectory
     try {
         $translationBeforeOutline = $IncludeTranslationPreview -and $IncludeAuthoringOutline
+        $hasPriorE2eLog = $false
         $e2eExit = 0
         if ($translationBeforeOutline) {
             & npm.cmd run test:e2e:postgres -- 'e2e/translation-live-postgres.spec.ts' *>&1 |
                 Tee-Object -FilePath $e2eLog
             $e2eExit = $LASTEXITCODE
             if ($e2eExit -ne 0) { throw "Fake-local translation journey failed (exit $e2eExit)." }
+            $hasPriorE2eLog = $true
         }
 
         $e2eSpecs = @(
@@ -773,19 +795,16 @@ COMMIT;
         )
         if ($IncludePublicationRightsAcceptance) { $e2eSpecs += 'e2e/publication-rights-policy-live-postgres.spec.ts' }
         if ($IncludePublicationReviewWorkspace) { $e2eSpecs += 'e2e/publication-review-live-postgres.spec.ts' }
+        if ($IncludeNotificationInbox) { $e2eSpecs += 'e2e/publication-review-notifications-live-postgres.spec.ts' }
         if ($IncludeTranslationPreview -and -not $translationBeforeOutline) {
             $e2eSpecs += 'e2e/translation-live-postgres.spec.ts'
         }
         if ($IncludeAuthoringChapterEditor) { $e2eSpecs += 'e2e/authoring-chapter-editor-live-postgres.spec.ts' }
         if ($IncludePaymentReturn) { $e2eSpecs += 'e2e/momo-payment-return-live-postgres.spec.ts' }
         if ($IncludeCommerceSettlement) { $e2eSpecs += 'e2e/momo-commerce-settlement-live-postgres.spec.ts' }
-        if ($translationBeforeOutline) {
-            & npm.cmd run test:e2e:postgres -- $e2eSpecs *>&1 |
-                Tee-Object -FilePath $e2eLog -Append
-        } else {
-            & npm.cmd run test:e2e:postgres -- $e2eSpecs *>&1 |
-                Tee-Object -FilePath $e2eLog
-        }
+
+        & npm.cmd run test:e2e:postgres -- $e2eSpecs *>&1 |
+            Tee-Object -FilePath $e2eLog -Append:$hasPriorE2eLog
         $e2eExit = $LASTEXITCODE
     } finally { Pop-Location }
     if ($e2eExit -ne 0) { throw "Live FE/API/PostgreSQL Playwright journey failed (exit $e2eExit)." }
@@ -812,6 +831,15 @@ COMMIT;
         $chapterReleaseParts = ([string]$chapterReleaseSummary).Trim() -split '\|'
         if ($chapterReleaseParts.Count -ne 7 -or $chapterReleaseParts[0] -ne 'APPROVED_UNPUBLISHED' -or $chapterReleaseParts[1] -ne 'ready' -or $chapterReleaseParts[2] -ne '2' -or $chapterReleaseParts[3] -ne '1' -or $chapterReleaseParts[4] -ne '1' -or $chapterReleaseParts[5] -ne 'public' -or $chapterReleaseParts[6] -ne '6') {
             throw "PostgreSQL staged chapter publication invariants failed after the browser journey: $chapterReleaseSummary"
+        }
+    }
+
+    if ($IncludeNotificationInbox) {
+        $notificationSummary = & $docker @composeArguments exec -T postgres psql -v ON_ERROR_STOP=1 -tA -U novelweb -d novelweb -c "SELECT COUNT(*)::text || '|' || COALESCE(SUM((notification.read_at IS NULL)::integer), 0)::text || '|' || COALESCE(MAX(outbox.status), 'missing') || '|' || COALESCE(MAX(outbox.attempts), 0)::text FROM notifications notification JOIN chapters chapter ON chapter.id = notification.chapter_id AND chapter.work_id = notification.work_id JOIN chapter_publication_release_events released ON released.id = notification.event_id AND released.work_id = notification.work_id AND released.chapter_id = notification.chapter_id JOIN chapter_published_outbox_events outbox ON outbox.release_event_id = released.id WHERE notification.actor_user_id = '$userId' AND notification.work_id = '$secondWorkId' AND chapter.title = 'Live E2E Staged Chapter';"
+        if ($LASTEXITCODE -ne 0) { throw 'Could not verify delivery and persisted read state in disposable PostgreSQL.' }
+        $notificationParts = ([string]$notificationSummary).Trim() -split '\|'
+        if ($notificationParts.Count -ne 4 -or $notificationParts[0] -ne '1' -or $notificationParts[1] -ne '0' -or $notificationParts[2] -ne 'completed' -or $notificationParts[3] -ne '1') {
+            throw "Notification delivery/read persistence invariants failed in disposable PostgreSQL: $notificationSummary"
         }
     }
 
@@ -931,7 +959,8 @@ COMMIT;
         $(if ($IncludeAuthoringEmptyChapterDelete) { '- Empty chapter deletion API integration: 2/2 PostgreSQL-backed tests passed for owner/policy/CSRF gates, soft delete, idempotent replay, saved-content conflict, privacy, Reader isolation, and concurrent delete/save winner' } else { '- Empty chapter deletion API integration: not requested' })
         $(if ($IncludePublicationRightsAcceptance) { '- Publication-rights browser/API: disposable synthetic approved policy only; the real acceptance endpoint committed the first confirmation, the browser received a synthetic 503, and same-key retry replayed the same acceptance' } else { '- Publication-rights browser/API: not requested' })
         $(if ($IncludePublicationReviewWorkspace) { '- Reviewer workspace + staged chapter browser/API: owner submitted a whole-work snapshot, assigned reviewer approved it, and owner explicitly released the work; owner then created/saved a private chapter on that public work, submitted an exact chapter snapshot in Author Studio, reviewer approved without making it public, and owner separately released it; PostgreSQL confirms the ready chapter, APPROVED_UNPUBLISHED request receipt, one immutable chapter-release event, one identifier-only outbox row, public work visibility and six immutable scope approval receipts' } else { '- Reviewer workspace browser/API: not requested' })
-        "- Browser journey: session cookie/policy → rights receipt → upload/parse/preview/private commit → refreshed Library → Work Detail → Reader source/bookmark, then opt-in → server-timed Reader session → XP award → private profile/activity → glossary import/draft edit/revision preview$(if ($IncludeTranslationPreview) { ' → fake-local Reader translation → redacted job status → unpublished PostgreSQL candidate' } else { '' })$(if ($IncludeAuthoringOutline) { ' → private authoring chapter outline → CSRF/idempotent blank-chapter creation' } else { '' })$(if ($IncludeAuthoringChapterEditor) { ' → private chapter editor → immutable save → competing writer → explicit conflict resolution' } else { '' })$(if ($IncludePublicationRightsAcceptance) { ' → exact synthetic rights policy → explicit author acknowledgement → lost-response same-key retry' } else { '' })$(if ($IncludePublicationReviewWorkspace) { ' → whole-work rights review/release → public-work draft edit → chapter-scoped rights request/reviewer approval → owner-confirmed chapter release' } else { '' })$(if ($IncludeCommerceSettlement) { ' → synthetic signed TEST settlement → paid-credit ledger/projection → explicit Reader unlock/entitlement' } else { '' })"
+        $(if ($IncludeNotificationInbox -and $result -eq 'PASS') { "- Notification inbox: enabled only in the disposable API process; the owner-confirmed release outbox was consumed, the signed-in follower saw the real chapter metadata, read state survived reload, and a second actor could not list or mark the row. PostgreSQL summary: $($notificationParts -join '|')" } elseif ($IncludeNotificationInbox) { '- Notification inbox end-to-end: requested but not verified because the browser journey or PostgreSQL invariants failed' } else { '- Notification inbox end-to-end: not requested' })
+        "- Browser journey: session cookie/policy → rights receipt → upload/parse/preview/private commit → refreshed Library → Work Detail → Reader source/bookmark, then opt-in → server-timed Reader session → XP award → private profile/activity → glossary import/draft edit/revision preview$(if ($IncludeTranslationPreview) { ' → fake-local Reader translation → redacted job status → unpublished PostgreSQL candidate' } else { '' })$(if ($IncludeAuthoringOutline) { ' → private authoring chapter outline → CSRF/idempotent blank-chapter creation' } else { '' })$(if ($IncludeAuthoringChapterEditor) { ' → private chapter editor → immutable save → competing writer → explicit conflict resolution' } else { '' })$(if ($IncludePublicationRightsAcceptance) { ' → exact synthetic rights policy → explicit author acknowledgement → lost-response same-key retry' } else { '' })$(if ($IncludePublicationReviewWorkspace) { ' → whole-work rights review/release → public-work draft edit → chapter-scoped rights request/reviewer approval → owner-confirmed chapter release' } else { '' })$(if ($IncludeNotificationInbox -and $result -eq 'PASS') { ' → worker delivery → actor inbox → persisted read state → second-actor isolation' } elseif ($IncludeNotificationInbox) { ' → notification delivery journey requested but not verified' } else { '' })$(if ($IncludeCommerceSettlement) { ' → synthetic signed TEST settlement → paid-credit ledger/projection → explicit Reader unlock/entitlement' } else { '' })"
         $(if ($IncludeAuthoringDraftApi) { '- Separate PostgreSQL authoring draft API test: 1/1 passed for owner/policy/CSRF gates, ETags, immutable writes, exact replay, stale-version response, outline/Reader isolation, and persisted row counts; see authoring-draft-api-test.log' } else { '- Separate PostgreSQL authoring draft API test: not requested' })
         $(if ($IncludeAuthoringEmptyChapterDelete) { '- Separate PostgreSQL empty chapter deletion API tests: 2/2 passed for soft delete/replay/security and transactional save/delete race; see authoring-empty-chapter-delete-api-test.log' } else { '- Separate PostgreSQL empty chapter deletion API tests: not requested' })
         '- Cultivation feature flag: enabled only in this random disposable API process; prior process value restored during cleanup'
@@ -950,7 +979,7 @@ COMMIT;
         "- Elapsed: $duration seconds"
         "- Cleanup: $cleanup"
         "- Staging cleanup: $stagingCleanup"
-        "- Screenshots: $([System.IO.Path]::GetFileName($screenshotPath)), $([System.IO.Path]::GetFileName($workDetailScreenshotPath)), $([System.IO.Path]::GetFileName($readerScreenshotPath))$(if ($IncludeCultivationRankUp) { ', cultivation-rank-up-live.png' } else { '' }), $([System.IO.Path]::GetFileName($glossaryImportScreenshotPath)), $([System.IO.Path]::GetFileName($glossaryEditorScreenshotPath)), $([System.IO.Path]::GetFileName($authoringScreenshotPath))$(if ($IncludeAuthoringOutline) { ', authoring-outline-live.png' } else { '' })$(if ($IncludeAuthoringChapterEditor) { ', authoring-chapter-editor-live.png' } else { '' })$(if ($IncludePublicationRightsAcceptance) { ', publication-rights-policy-live.png' } else { '' })$(if ($IncludePublicationReviewWorkspace) { ', publication-review-workspace-live.png, publication-chapter-release-live.png' } else { '' })$(if ($IncludeTranslationPreview) { ', translation-job-live.png' } else { '' })$(if ($IncludePaymentReturn) { ', momo-payment-return-pending-live.png, momo-payment-history-zero-live.png' } else { '' })$(if ($IncludeCommerceSettlement) { ', momo-commerce-success-live.png, momo-commerce-unlocked-chapter-live.png' } else { '' }), private-import-commit-live.png, private-import-detail-live.png, private-import-reader-live.png, private-import-html-commit-live.png, private-import-html-detail-live.png, private-import-html-reader-live.png, private-import-markdown-commit-live.png, private-import-markdown-detail-live.png, private-import-markdown-reader-live.png, private-import-epub-commit-live.png, private-import-epub-detail-live.png, private-import-epub-reader-live.png"
+        "- Screenshots: $([System.IO.Path]::GetFileName($screenshotPath)), $([System.IO.Path]::GetFileName($workDetailScreenshotPath)), $([System.IO.Path]::GetFileName($readerScreenshotPath))$(if ($IncludeCultivationRankUp) { ', cultivation-rank-up-live.png' } else { '' }), $([System.IO.Path]::GetFileName($glossaryImportScreenshotPath)), $([System.IO.Path]::GetFileName($glossaryEditorScreenshotPath)), $([System.IO.Path]::GetFileName($authoringScreenshotPath))$(if ($IncludeAuthoringOutline) { ', authoring-outline-live.png' } else { '' })$(if ($IncludeAuthoringChapterEditor) { ', authoring-chapter-editor-live.png' } else { '' })$(if ($IncludePublicationRightsAcceptance) { ', publication-rights-policy-live.png' } else { '' })$(if ($IncludePublicationReviewWorkspace) { ', publication-review-workspace-live.png, publication-chapter-release-live.png' } else { '' })$(if ($IncludeNotificationInbox) { ', notification-inbox-live.png' } else { '' })$(if ($IncludeTranslationPreview) { ', translation-job-live.png' } else { '' })$(if ($IncludePaymentReturn) { ', momo-payment-return-pending-live.png, momo-payment-history-zero-live.png' } else { '' })$(if ($IncludeCommerceSettlement) { ', momo-commerce-success-live.png, momo-commerce-unlocked-chapter-live.png' } else { '' }), private-import-commit-live.png, private-import-detail-live.png, private-import-reader-live.png, private-import-html-commit-live.png, private-import-html-detail-live.png, private-import-html-reader-live.png, private-import-markdown-commit-live.png, private-import-markdown-detail-live.png, private-import-markdown-reader-live.png, private-import-epub-commit-live.png, private-import-epub-detail-live.png, private-import-epub-reader-live.png"
         $(if ($IncludeCultivationRankUp) { '- Cultivation response trace: cultivation-rank-up-trace.json' } else { '- Cultivation response trace: not requested' })
         $(if ($IncludeDatabaseRestartRecovery) { '- Database restart probes: database-restart-probes.txt, postgres-stop.log, postgres-start.log' } else { '- Database restart probes: not requested' })
         "- Logs: api-build.log, api-stdout.log, api-stderr.log, playwright.log$(if ($IncludeAuthoringDraftApi) { ', authoring-draft-api-test.log' } else { '' })$(if ($IncludeAuthoringEmptyChapterDelete) { ', authoring-empty-chapter-delete-api-test.log' } else { '' })"

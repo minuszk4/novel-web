@@ -40,7 +40,7 @@ export interface AccountWorkSummary {
   title: string;
   author: string;
   language: string;
-  visibility: 'private';
+  visibility: 'private' | 'public';
   chapterCount: number;
   createdAt: string;
 }
@@ -335,7 +335,7 @@ function parseWorkSummary(value: unknown, expectedLibraryId: string): AccountWor
     typeof value['language'] !== 'string' ||
     [...value['language']].length < 2 ||
     [...value['language']].length > 35 ||
-    value['visibility'] !== 'private' ||
+    (value['visibility'] !== 'private' && value['visibility'] !== 'public') ||
     !Number.isInteger(value['chapterCount']) ||
     (value['chapterCount'] as number) < 0 ||
     !isTimestamp(value['createdAt'])
@@ -348,7 +348,7 @@ function parseWorkSummary(value: unknown, expectedLibraryId: string): AccountWor
     title: value['title'],
     author: value['author'],
     language: value['language'],
-    visibility: 'private',
+    visibility: value['visibility'],
     chapterCount: value['chapterCount'] as number,
     createdAt: value['createdAt'],
   };

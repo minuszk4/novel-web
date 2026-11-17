@@ -109,9 +109,19 @@
             <div class="mini-cover" aria-hidden="true">✧</div>
             <div class="library-work-copy">
               @if (workStatePhase(work.id) === 'ready') {
-                <span class="private-tag">RIÊNG TƯ · TÀI KHOẢN</span>
+                <span class="private-tag">
+                  {{
+                    work.visibility === 'public' ? 'CÔNG KHAI · TÀI KHOẢN' : 'RIÊNG TƯ · TÀI KHOẢN'
+                  }}
+                </span>
               } @else {
-                <span class="private-tag">RIÊNG TƯ · ĐANG ĐỒNG BỘ</span>
+                <span class="private-tag">
+                  {{
+                    work.visibility === 'public'
+                      ? 'CÔNG KHAI · ĐANG ĐỒNG BỘ'
+                      : 'RIÊNG TƯ · ĐANG ĐỒNG BỘ'
+                  }}
+                </span>
               }
               <h2>{{ work.title }}</h2>
               @if (work.isAccountWork) {

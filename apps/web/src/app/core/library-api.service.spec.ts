@@ -106,6 +106,16 @@ describe('LibraryApiService', () => {
     await expect(result).resolves.toEqual({ items: [work], nextCursor: null });
   });
 
+  it('loads an owner’s public work after publication without misclassifying it as a private draft', async () => {
+    const publicWork = { ...work, visibility: 'public' as const };
+    const result = service.listWorks(libraryId);
+    http
+      .expectOne((candidate) => candidate.url === '/api/v1/works')
+      .flush({ items: [publicWork], nextCursor: null });
+
+    await expect(result).resolves.toEqual({ items: [publicWork], nextCursor: null });
+  });
+
   it('rejects invalid list cursors, cross-library rows and malformed pages', async () => {
     await expect(service.listLibraries('', 25)).rejects.toMatchObject({
       code: 'INVALID_LIBRARY_QUERY',
