@@ -29,7 +29,15 @@ export interface PrivateManuscriptListItem {
   createdAt: string;
 }
 
-export interface PrivateManuscriptDetails extends PrivateManuscriptListItem {
+export interface PrivateManuscriptDetails {
+  id: string;
+  title: string;
+  author: string;
+  language: string;
+  visibility: 'private' | 'public';
+  publicationState: 'draft' | 'published';
+  chapterCount: number;
+  createdAt: string;
   metadataVersion: number;
   etag: string;
 }
@@ -349,17 +357,32 @@ export class AuthoringApiService {
     if (!isUuid(workId)) throw new AuthoringApiError(400, 'INVALID_AUTHORING_QUERY');
 
     try {
+      return await this.readManuscriptDetails(workId, 'private');
+    } catch (error) {
+      const privateError = toAuthoringApiError(error);
+      if (privateError.status !== 404) throw privateError;
+      return this.readManuscriptDetails(workId, 'public');
+    }
+  }
+
+  private async readManuscriptDetails(
+    workId: string,
+    visibility: 'private' | 'public',
+  ): Promise<PrivateManuscriptDetails> {
+    const path =
+      visibility === 'private'
+        ? `${manuscriptsUrl}/${workId}`
+        : `${manuscriptsUrl}/${workId}/public-drafting-context`;
+    try {
       const response = await firstValueFrom(
-        this.http
-          .get<unknown>(`${manuscriptsUrl}/${workId}`, { observe: 'response' })
-          .pipe(timeout(requestTimeoutMs)),
+        this.http.get<unknown>(path, { observe: 'response' }).pipe(timeout(requestTimeoutMs)),
       );
       if (response.status !== 200 || response.headers.get('Cache-Control') !== 'no-store') {
         throw invalidManuscriptDetailResponse();
       }
       let details: Omit<PrivateManuscriptDetails, 'etag'>;
       try {
-        details = parseManuscriptDetails(response.body);
+        details = parseManuscriptDetails(response.body, visibility);
       } catch {
         throw invalidManuscriptDetailResponse();
       }
@@ -645,7 +668,7 @@ export class AuthoringApiService {
       }
       let details: Omit<PrivateManuscriptDetails, 'etag'>;
       try {
-        details = parseManuscriptDetails(response.body);
+        details = parseManuscriptDetails(response.body, 'private');
       } catch {
         throw invalidManuscriptDetailResponse();
       }
@@ -917,7 +940,7 @@ function parseManuscriptListPage(
     throw invalidManuscriptListResponse();
   }
 
-  const items = value['items'].map(parseManuscriptListItem);
+  const items = value['items'].map((item) => parseManuscriptListItem(item));
   if (
     new Set(items.map(({ id }) => id)).size !== items.length ||
     items.some(
@@ -958,7 +981,10 @@ function parseManuscriptListItem(value: unknown): PrivateManuscriptListItem {
   return value as unknown as PrivateManuscriptListItem;
 }
 
-function parseManuscriptDetails(value: unknown): Omit<PrivateManuscriptDetails, 'etag'> {
+function parseManuscriptDetails(
+  value: unknown,
+  visibility: 'private' | 'public',
+): Omit<PrivateManuscriptDetails, 'etag'> {
   if (
     !isRecord(value) ||
     hasUnexpectedFields(value, [
@@ -972,15 +998,30 @@ function parseManuscriptDetails(value: unknown): Omit<PrivateManuscriptDetails, 
       'createdAt',
       'metadataVersion',
     ]) ||
+    !isUuid(value['id']) ||
+    !isBoundedString(value['title'], 1, 300) ||
+    !isBoundedString(value['author'], 0, 200) ||
+    !isBoundedString(value['language'], 2, 35) ||
+    value['visibility'] !== visibility ||
+    value['publicationState'] !== (visibility === 'private' ? 'draft' : 'published') ||
+    !Number.isSafeInteger(value['chapterCount']) ||
+    (value['chapterCount'] as number) < 0 ||
+    !isInstant(value['createdAt']) ||
     !Number.isSafeInteger(value['metadataVersion']) ||
     (value['metadataVersion'] as number) < 1
   ) {
     throw invalidManuscriptDetailResponse();
   }
-  const { metadataVersion, ...item } = value;
   return {
-    ...parseManuscriptListItem(item),
-    metadataVersion: metadataVersion as number,
+    id: value['id'] as string,
+    title: value['title'] as string,
+    author: value['author'] as string,
+    language: value['language'] as string,
+    visibility,
+    publicationState: visibility === 'private' ? 'draft' : 'published',
+    chapterCount: value['chapterCount'] as number,
+    createdAt: value['createdAt'] as string,
+    metadataVersion: value['metadataVersion'] as number,
   };
 }
 

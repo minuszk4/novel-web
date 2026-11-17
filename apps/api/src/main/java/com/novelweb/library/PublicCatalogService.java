@@ -59,7 +59,7 @@ public class PublicCatalogService {
         nextCursor);
   }
 
-  public WorkDetail detail(UUID workId) {
+  public WorkDetail detail(UUID workId, UUID actorUserId) {
     Objects.requireNonNull(workId, "work id is required");
     return repository
         .findWork(workId)
@@ -70,8 +70,13 @@ public class PublicCatalogService {
                     work.title(),
                     work.author(),
                     work.sourceLanguage(),
-                    work.readyChapterCount()))
+                    work.readyChapterCount(),
+                    actorUserId != null && repository.isOwner(workId, actorUserId)))
         .orElseThrow(PublicWorkNotFoundException::new);
+  }
+
+  public WorkDetail detail(UUID workId) {
+    return detail(workId, null);
   }
 
   public ChapterPage chapters(UUID workId, int afterOrdinal, int limit) {
@@ -123,7 +128,12 @@ public class PublicCatalogService {
   }
 
   public record WorkDetail(
-      UUID id, String title, String author, String sourceLanguage, int readyChapterCount) {}
+      UUID id,
+      String title,
+      String author,
+      String sourceLanguage,
+      int readyChapterCount,
+      boolean isOwner) {}
 
   public record ChapterPage(
       UUID workId, List<PublicCatalogRepository.PublicChapter> items, Integer nextAfterOrdinal) {

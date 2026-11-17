@@ -596,7 +596,7 @@ public class LibraryRepository {
                     FROM works w
                     JOIN libraries l ON l.id = w.library_id
                     WHERE w.id = ? AND w.owner_user_id = ?
-                      AND w.source_kind = 'authored' AND w.visibility = 'private'
+                      AND w.source_kind = 'authored' AND w.visibility IN ('private', 'public')
                       AND w.status = 'active' AND w.deleted_at IS NULL
                       AND l.owner_user_id = w.owner_user_id AND l.workspace_id IS NULL
                       AND l.visibility = 'private' AND l.deleted_at IS NULL
@@ -732,7 +732,7 @@ public class LibraryRepository {
                     FROM works w
                     JOIN libraries l ON l.id = w.library_id
                     WHERE w.id = ? AND w.owner_user_id = ?
-                      AND w.source_kind = 'authored' AND w.visibility = 'private'
+                      AND w.source_kind = 'authored' AND w.visibility IN ('private', 'public')
                       AND w.status = 'active' AND w.deleted_at IS NULL
                       AND l.owner_user_id = w.owner_user_id AND l.workspace_id IS NULL
                       AND l.visibility = 'private' AND l.deleted_at IS NULL
@@ -816,7 +816,7 @@ public class LibraryRepository {
                     JOIN works w ON w.id = c.work_id
                     JOIN libraries l ON l.id = w.library_id
                     WHERE c.id = ? AND c.work_id = ? AND w.owner_user_id = ?
-                      AND w.source_kind = 'authored' AND w.visibility = 'private'
+                      AND w.source_kind = 'authored' AND w.visibility IN ('private', 'public')
                       AND w.status = 'active' AND w.deleted_at IS NULL
                       AND l.owner_user_id = w.owner_user_id AND l.workspace_id IS NULL
                       AND l.visibility = 'private' AND l.deleted_at IS NULL
@@ -947,6 +947,16 @@ public class LibraryRepository {
   }
 
   public PrivateAuthoredWorkDetails getPrivateAuthoredWorkDetails(UUID ownerUserId, UUID workId) {
+    return getOwnedAuthoredWorkDetails(ownerUserId, workId, "private");
+  }
+
+  public PrivateAuthoredWorkDetails getPublicAuthoredWorkDraftingContext(
+      UUID ownerUserId, UUID workId) {
+    return getOwnedAuthoredWorkDetails(ownerUserId, workId, "public");
+  }
+
+  private PrivateAuthoredWorkDetails getOwnedAuthoredWorkDetails(
+      UUID ownerUserId, UUID workId, String visibility) {
     Objects.requireNonNull(ownerUserId, "owner user id is required");
     Objects.requireNonNull(workId, "work id is required");
     try (Connection connection = dataSource.getConnection()) {
@@ -963,14 +973,14 @@ public class LibraryRepository {
 
         String query =
             """
-                SELECT w.id, w.title, w.author, w.source_language, w.created_at,
+                SELECT w.id, w.title, w.author, w.source_language, w.visibility, w.created_at,
                        w.authoring_metadata_version,
                        count(c.id) FILTER (WHERE c.deleted_at IS NULL) AS chapter_count
                 FROM works w
                 JOIN libraries l ON l.id = w.library_id
                 LEFT JOIN chapters c ON c.work_id = w.id
                 WHERE w.id = ? AND w.owner_user_id = ? AND w.source_kind = 'authored'
-                  AND w.visibility = 'private' AND w.status = 'active'
+                  AND w.visibility = ? AND w.status = 'active'
                   AND w.deleted_at IS NULL AND l.owner_user_id = w.owner_user_id
                   AND l.workspace_id IS NULL AND l.visibility = 'private' AND l.deleted_at IS NULL
                 GROUP BY w.id
@@ -979,6 +989,7 @@ public class LibraryRepository {
         try (PreparedStatement select = connection.prepareStatement(query)) {
           select.setObject(1, workId);
           select.setObject(2, ownerUserId);
+          select.setString(3, visibility);
           try (ResultSet row = select.executeQuery()) {
             if (!row.next()) throw new WorkNotFoundException();
             details =
@@ -987,6 +998,7 @@ public class LibraryRepository {
                     row.getString("title"),
                     row.getString("author"),
                     row.getString("source_language"),
+                    row.getString("visibility"),
                     row.getInt("chapter_count"),
                     instant(row, "created_at"),
                     row.getLong("authoring_metadata_version"));
@@ -1001,7 +1013,7 @@ public class LibraryRepository {
     } catch (WorkNotFoundException exception) {
       throw exception;
     } catch (SQLException exception) {
-      throw new IllegalStateException("Unable to load private authored manuscript", exception);
+      throw new IllegalStateException("Unable to load authored manuscript context", exception);
     }
   }
 
@@ -1032,7 +1044,7 @@ public class LibraryRepository {
         try (PreparedStatement select =
             connection.prepareStatement(
                 """
-                    SELECT w.id, w.title, w.author, w.source_language, w.created_at,
+                    SELECT w.id, w.title, w.author, w.source_language, w.visibility, w.created_at,
                            w.authoring_metadata_version,
                            (SELECT count(*) FROM chapters c
                             WHERE c.work_id = w.id AND c.deleted_at IS NULL) AS chapter_count
@@ -1054,6 +1066,7 @@ public class LibraryRepository {
                     row.getString("title"),
                     row.getString("author"),
                     row.getString("source_language"),
+                    row.getString("visibility"),
                     row.getInt("chapter_count"),
                     instant(row, "created_at"),
                     row.getLong("authoring_metadata_version"));
@@ -1097,6 +1110,7 @@ public class LibraryRepository {
             title,
             author,
             language,
+            "private",
             current.chapterCount(),
             current.createdAt(),
             current.metadataVersion() + 1);
@@ -1499,7 +1513,7 @@ public class LibraryRepository {
                       ON current_revision.id = c.source_revision_id
                      AND current_revision.chapter_id = c.id
                     WHERE c.id = ? AND c.work_id = ? AND w.owner_user_id = ?
-                      AND w.source_kind = 'authored' AND w.visibility = 'private'
+                      AND w.source_kind = 'authored' AND w.visibility IN ('private', 'public')
                       AND w.status = 'active' AND w.deleted_at IS NULL
                       AND l.owner_user_id = w.owner_user_id AND l.workspace_id IS NULL
                       AND l.visibility = 'private' AND l.deleted_at IS NULL
@@ -1663,7 +1677,7 @@ public class LibraryRepository {
                   LEFT JOIN chapter_revisions r
                     ON r.id = c.source_revision_id AND r.chapter_id = c.id
                   WHERE c.id = ? AND c.work_id = ? AND w.owner_user_id = ?
-                    AND w.source_kind = 'authored' AND w.visibility = 'private'
+                    AND w.source_kind = 'authored' AND w.visibility IN ('private', 'public')
                     AND w.status = 'active' AND w.deleted_at IS NULL
                     AND l.owner_user_id = w.owner_user_id AND l.workspace_id IS NULL
                     AND l.visibility = 'private' AND l.deleted_at IS NULL
@@ -1940,6 +1954,7 @@ public class LibraryRepository {
       String title,
       String author,
       String language,
+      String visibility,
       int chapterCount,
       Instant createdAt,
       long metadataVersion) {}

@@ -7,6 +7,8 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import jakarta.servlet.http.HttpServletRequest;
+import java.time.Instant;
+import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
 import org.springframework.mock.web.MockHttpServletRequest;
@@ -84,12 +86,41 @@ class PublicCatalogControllerTests {
     PublicCatalogRateLimiter rateLimiter = mock(PublicCatalogRateLimiter.class);
     PublicCatalogController controller = new PublicCatalogController(service, rateLimiter, false);
     HttpServletRequest request = new MockHttpServletRequest();
-    var detail = controller.workDetail(java.util.UUID.randomUUID(), request);
+    var detail = controller.workDetail(null, java.util.UUID.randomUUID(), request);
     var chapters = controller.workChapters(java.util.UUID.randomUUID(), "0", "20", request);
 
     assertEquals(HttpStatus.SERVICE_UNAVAILABLE, detail.getStatusCode());
     assertEquals(HttpStatus.SERVICE_UNAVAILABLE, chapters.getStatusCode());
     verifyNoInteractions(service);
     verifyNoInteractions(rateLimiter);
+  }
+
+  @Test
+  void activeSessionIsPassedOnlyAsOwnerNavigationContext() {
+    PublicCatalogService service = mock(PublicCatalogService.class);
+    PublicCatalogRateLimiter rateLimiter = mock(PublicCatalogRateLimiter.class);
+    when(rateLimiter.isConfigured()).thenReturn(true);
+    when(rateLimiter.tryAcquire(org.mockito.ArgumentMatchers.any()))
+        .thenReturn(new PublicCatalogRateLimiter.Decision(true, 0));
+    UUID workId = UUID.randomUUID();
+    UUID actorId = UUID.randomUUID();
+    when(service.detail(workId, actorId))
+        .thenReturn(new PublicCatalogService.WorkDetail(workId, "Title", "Author", "vi", 1, true));
+    PublicCatalogController controller = new PublicCatalogController(service, rateLimiter, true);
+    var authentication =
+        org.springframework.security.authentication.UsernamePasswordAuthenticationToken
+            .authenticated(
+                new com.novelweb.identity.session.SessionService.SessionPrincipal(
+                    actorId, Instant.parse("2026-11-17T00:00:00Z")),
+                "",
+                java.util.List.of());
+
+    var response = controller.workDetail(authentication, workId, new MockHttpServletRequest());
+
+    assertEquals(HttpStatus.OK, response.getStatusCode());
+    assertEquals(
+        new PublicCatalogService.WorkDetail(workId, "Title", "Author", "vi", 1, true),
+        response.getBody());
+    verify(service).detail(workId, actorId);
   }
 }

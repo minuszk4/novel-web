@@ -237,6 +237,7 @@ export class AuthoringOutlinePageComponent {
     const current = this.manuscript();
     if (
       !current ||
+      current.visibility !== 'private' ||
       this.policy.status() !== 'accepted' ||
       this.pageState() !== 'ready' ||
       this.isAddFormOpen()
@@ -291,6 +292,7 @@ export class AuthoringOutlinePageComponent {
     const workId = this.requestedWorkId;
     if (
       !current ||
+      current.visibility !== 'private' ||
       !draft ||
       !workId ||
       this.policy.status() !== 'accepted' ||
@@ -502,6 +504,9 @@ export class AuthoringOutlinePageComponent {
   }
 
   protected chapterAvailability(chapter: PrivateChapterOutlineItem): string {
+    if (chapter.status === 'ready' && this.manuscript()?.visibility === 'public') {
+      return 'Đã phát hành';
+    }
     if (chapter.contentAvailable) return 'Có nội dung đọc được';
     if (chapter.status === 'draft') {
       return chapter.hasSavedDraftContent ? 'Có bản nháp đã lưu' : 'Chưa lưu nội dung';

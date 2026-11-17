@@ -207,6 +207,7 @@ public class ApiSecurityConfiguration {
                         HttpMethod.GET,
                         "/api/v1/authoring/manuscripts",
                         "/api/v1/authoring/manuscripts/*",
+                        "/api/v1/authoring/manuscripts/*/public-drafting-context",
                         "/api/v1/authoring/manuscripts/*/publication/rights-policy",
                         "/api/v1/authoring/manuscripts/*/publication/readiness",
                         "/api/v1/authoring/manuscripts/*/publication/requests/history",

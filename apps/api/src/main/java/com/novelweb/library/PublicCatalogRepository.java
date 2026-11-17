@@ -130,6 +130,35 @@ public class PublicCatalogRepository {
     }
   }
 
+  public boolean isOwner(UUID workId, UUID actorUserId) {
+    Objects.requireNonNull(workId, "work id is required");
+    Objects.requireNonNull(actorUserId, "actor user id is required");
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                """
+                    SELECT EXISTS (
+                        SELECT 1 FROM works work
+                        JOIN users owner ON owner.id = work.owner_user_id AND owner.status = 'active'
+                        JOIN libraries library ON library.id = work.library_id
+                          AND library.owner_user_id = work.owner_user_id
+                          AND library.workspace_id IS NULL AND library.deleted_at IS NULL
+                        WHERE work.id = ? AND work.owner_user_id = ?
+                          AND work.source_kind = 'authored' AND work.visibility = 'public'
+                          AND work.status = 'active' AND work.deleted_at IS NULL
+                          AND publication_scope_access_is_current(work.id, 'PUBLIC_METADATA')
+                    )
+                    """)) {
+      select.setObject(1, workId);
+      select.setObject(2, actorUserId);
+      try (ResultSet row = select.executeQuery()) {
+        return row.next() && row.getBoolean(1);
+      }
+    } catch (SQLException exception) {
+      throw new IllegalStateException("Unable to check public work ownership", exception);
+    }
+  }
+
   public ChapterSlice findReadyChapters(UUID workId, int afterOrdinal, int limit) {
     try (Connection connection = dataSource.getConnection();
         PreparedStatement select =

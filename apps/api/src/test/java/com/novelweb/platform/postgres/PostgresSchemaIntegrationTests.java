@@ -35,6 +35,7 @@ import com.novelweb.library.LibraryRepository;
 import com.novelweb.library.LibraryService;
 import com.novelweb.library.LibraryUserStateRepository;
 import com.novelweb.library.LibraryUserStateService;
+import com.novelweb.library.PublicCatalogRepository;
 import com.novelweb.library.WorkspaceRepository;
 import com.novelweb.library.WorkspaceService;
 import com.novelweb.library.imports.ImportParseService;
@@ -301,6 +302,8 @@ class PostgresSchemaIntegrationTests {
   @Autowired private LibraryService libraryService;
 
   @Autowired private LibraryRepository libraryRepository;
+
+  @Autowired private PublicCatalogRepository publicCatalogRepository;
 
   @Autowired private WorkspaceService workspaceService;
 
@@ -11224,7 +11227,7 @@ class PostgresSchemaIntegrationTests {
   }
 
   @Test
-  void authoringChapterCreateIsPrivateCsrfProtectedIdempotentAndBlank() throws Exception {
+  void authoringChapterCreateIsOwnerScopedCsrfProtectedIdempotentAndBlank() throws Exception {
     UUID ownerId = createSessionTestUser("Authoring Chapter Owner");
     UUID otherOwnerId = createSessionTestUser("Other Authoring Chapter Owner");
     UUID workId = null;
@@ -11406,7 +11409,13 @@ class PostgresSchemaIntegrationTests {
                       .content("{\"title\":\"Hidden\"}")
                       .cookie(ownerCookie))
               .andReturn();
-      assertEquals(404, publicWork.getResponse().getStatus());
+      assertEquals(201, publicWork.getResponse().getStatus());
+      assertEquals(
+          "draft",
+          objectMapper
+              .readTree(publicWork.getResponse().getContentAsString())
+              .path("status")
+              .asText());
       setWorkVisibility(workId, "private");
 
       MvcResult unreadableContent =
@@ -11443,11 +11452,11 @@ class PostgresSchemaIntegrationTests {
         for (int index = 1; index <= 5; index++) select.setObject(index, workId);
         try (ResultSet row = select.executeQuery()) {
           assertTrue(row.next());
-          assertEquals(6, row.getInt("chapters"));
+          assertEquals(7, row.getInt("chapters"));
           assertEquals(0, row.getInt("volumes"));
           assertEquals(0, row.getInt("revisions"));
           assertEquals(0, row.getInt("segments"));
-          assertEquals(6, row.getInt("receipts"));
+          assertEquals(7, row.getInt("receipts"));
         }
       }
     } finally {
@@ -12008,10 +12017,78 @@ class PostgresSchemaIntegrationTests {
               .getStatus());
       setWorkSourceKind(workId, "authored");
       setWorkVisibility(workId, "public");
+      MvcResult publicOutline = mockMvc.perform(get(route, workId).cookie(ownerCookie)).andReturn();
+      assertEquals(200, publicOutline.getResponse().getStatus());
       assertEquals(
           404,
           mockMvc
-              .perform(get(route, workId).cookie(ownerCookie))
+              .perform(get(route, workId).cookie(otherCookie))
+              .andReturn()
+              .getResponse()
+              .getStatus());
+      MvcResult privateDetailForPublicWork =
+          mockMvc
+              .perform(get("/api/v1/authoring/manuscripts/{workId}", workId).cookie(ownerCookie))
+              .andReturn();
+      assertEquals(404, privateDetailForPublicWork.getResponse().getStatus());
+      MvcResult publicManuscript =
+          mockMvc
+              .perform(
+                  get("/api/v1/authoring/manuscripts/{workId}/public-drafting-context", workId)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(200, publicManuscript.getResponse().getStatus());
+      JsonNode publicManuscriptBody =
+          objectMapper.readTree(publicManuscript.getResponse().getContentAsString());
+      assertEquals("public", publicManuscriptBody.path("visibility").asText());
+      assertEquals("published", publicManuscriptBody.path("publicationState").asText());
+
+      long versionBeforeStagedDraft =
+          readLong("SELECT publication_content_version FROM works WHERE id = ?", workId);
+      String ownerCsrf = csrfTokenService.tokenFor(ownerSession.cookieValue());
+      MvcResult stagedChapter =
+          mockMvc
+              .perform(
+                  post("/api/v1/authoring/manuscripts/{workId}/chapters", workId)
+                      .cookie(ownerCookie)
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .header("Idempotency-Key", "public-draft-chapter-owner-0001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"title\":\"Private staged chapter\"}"))
+              .andReturn();
+      assertEquals(201, stagedChapter.getResponse().getStatus());
+      JsonNode stagedChapterBody =
+          objectMapper.readTree(stagedChapter.getResponse().getContentAsString());
+      UUID stagedChapterId = UUID.fromString(stagedChapterBody.path("id").asText());
+      int stagedChapterOrdinal = stagedChapterBody.path("ordinal").asInt();
+      assertEquals("draft", stagedChapterBody.path("status").asText());
+      LibraryRepository.DraftRevisionWrite stagedRevision =
+          libraryService.savePrivateAuthoredDraftRevision(
+              ownerId,
+              workId,
+              stagedChapterId,
+              0,
+              "public-staged-revision-owner-01",
+              "plain_text",
+              "Unpublished draft text.",
+              List.of(
+                  new LibraryService.NewSegment(
+                      1, "paragraph", "Unpublished draft text.", "staged-p1")));
+      assertEquals(1, stagedRevision.revision().revisionNo());
+      assertEquals(
+          versionBeforeStagedDraft,
+          readLong("SELECT publication_content_version FROM works WHERE id = ?", workId));
+      LibraryRepository.PrivateAuthoredDraftRecord privateStagedDraft =
+          libraryService.getPrivateAuthoredDraft(ownerId, workId, stagedChapterId);
+      assertEquals("Unpublished draft text.", privateStagedDraft.normalizedContent());
+      assertFalse(
+          publicCatalogRepository.findReadyChapters(workId, 0, 25).items().stream()
+              .anyMatch(chapter -> chapter.ordinal() == stagedChapterOrdinal));
+      assertEquals(
+          404,
+          mockMvc
+              .perform(
+                  get("/api/v1/chapters/{chapterId}/content", stagedChapterId).cookie(ownerCookie))
               .andReturn()
               .getResponse()
               .getStatus());
@@ -12050,6 +12127,17 @@ class PostgresSchemaIntegrationTests {
       if (foreignWorkId != null) deleteLibraryUserData(otherOwnerId, foreignWorkId);
       deleteSessionTestUser(ownerId);
       deleteSessionTestUser(otherOwnerId);
+    }
+  }
+
+  private long readLong(String sql, Object parameter) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement statement = connection.prepareStatement(sql)) {
+      statement.setObject(1, parameter);
+      try (ResultSet row = statement.executeQuery()) {
+        if (!row.next()) throw new SQLException("Expected a scalar row");
+        return row.getLong(1);
+      }
     }
   }
 

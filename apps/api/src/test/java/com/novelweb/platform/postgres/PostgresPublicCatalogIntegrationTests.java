@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.novelweb.identity.session.SessionService;
 import com.novelweb.library.PublicCatalogRateLimiter;
 import java.net.URI;
 import java.net.URLEncoder;
@@ -73,6 +74,8 @@ class PostgresPublicCatalogIntegrationTests {
   @Autowired private DataSource dataSource;
 
   @Autowired private PublicCatalogRateLimiter publicCatalogRateLimiter;
+
+  @Autowired private SessionService sessionService;
 
   @Autowired private ObjectMapper objectMapper;
 
@@ -143,6 +146,7 @@ class PostgresPublicCatalogIntegrationTests {
       execute(connection, "DELETE FROM public_catalog_rate_limits");
       if (libraryId != null) {
         execute(connection, "DELETE FROM security_role_assignments WHERE user_id = ?", reviewerId);
+        execute(connection, "DELETE FROM sessions WHERE user_id IN (?, ?)", userId, reviewerId);
         try (java.sql.Statement disable = connection.createStatement()) {
           disable.execute(
               "ALTER TABLE publication_rights_policy_documents"
@@ -227,6 +231,18 @@ class PostgresPublicCatalogIntegrationTests {
     assertFalse(detail.body().has("free"));
     assertFalse(detail.body().has("creditCost"));
     assertFalse(detail.body().has("sourceRevisionId"));
+    assertFalse(detail.body().path("isOwner").asBoolean());
+
+    SessionService.IssuedSession ownerSession = sessionService.create(userId).orElseThrow();
+    HttpResult ownerDetail =
+        getWithCookie("/api/v1/catalog/works/" + workId, ownerSession.cookieValue());
+    assertEquals(200, ownerDetail.statusCode());
+    assertTrue(ownerDetail.body().path("isOwner").asBoolean());
+    SessionService.IssuedSession otherSession = sessionService.create(reviewerId).orElseThrow();
+    HttpResult otherDetail =
+        getWithCookie("/api/v1/catalog/works/" + workId, otherSession.cookieValue());
+    assertEquals(200, otherDetail.statusCode());
+    assertFalse(otherDetail.body().path("isOwner").asBoolean());
 
     HttpResult firstPage =
         get("/api/v1/catalog/works/" + workId + "/chapters?afterOrdinal=0&limit=1");
@@ -1429,6 +1445,20 @@ class PostgresPublicCatalogIntegrationTests {
     if (forwardedFor != null) request.header("X-Forwarded-For", forwardedFor);
     HttpResponse<String> response =
         httpClient.send(request.build(), HttpResponse.BodyHandlers.ofString());
+    return new HttpResult(
+        response.statusCode(),
+        response.headers().firstValue("Cache-Control").orElse(""),
+        response.headers().firstValue("Retry-After").orElse(""),
+        objectMapper.readTree(response.body()));
+  }
+
+  private HttpResult getWithCookie(String path, String cookieValue) throws Exception {
+    HttpRequest request =
+        HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + apiPort + path))
+            .header("Cookie", "__Host-novel_session=" + cookieValue)
+            .GET()
+            .build();
+    HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
     return new HttpResult(
         response.statusCode(),
         response.headers().firstValue("Cache-Control").orElse(""),

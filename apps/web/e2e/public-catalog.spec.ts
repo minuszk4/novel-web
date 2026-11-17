@@ -136,7 +136,7 @@ test('opens public metadata detail and signs in before entering the Reader', asy
     (url) => url.pathname === '/api/v1/catalog/works/' + workId,
     async (route) => {
       requests.push(new URL(route.request().url()).pathname);
-      await json(route, { ...works[0], readyChapterCount: 21 });
+      await json(route, { ...works[0], readyChapterCount: 21, isOwner: false });
     },
   );
   await page.route(
@@ -241,6 +241,28 @@ test('opens public metadata detail and signs in before entering the Reader', asy
   expect(requests.some((path) => path.endsWith('/content'))).toBe(false);
 });
 
+test('shows authoring navigation only when the server confirms current ownership', async ({
+  page,
+}) => {
+  const workId = works[0].id;
+  await installCatalog(page, true);
+  await page.route('**/api/v1/catalog/works/' + workId, (route) =>
+    json(route, { ...works[0], isOwner: true }),
+  );
+  await page.route('**/api/v1/catalog/works/' + workId + '/chapters**', (route) =>
+    json(route, { workId, items: [], nextAfterOrdinal: null }),
+  );
+  await page.route('**/api/v1/works/' + workId + '/subscription', (route) =>
+    json(route, { code: 'UNAUTHENTICATED' }, 401),
+  );
+  await page.goto('/works/' + workId);
+
+  await expect(
+    page.getByRole('link', { name: 'Quản lý bản thảo và viết chương mới' }),
+  ).toHaveAttribute('href', '/app/authoring/' + workId + '/chapters');
+  await expectNoAxeViolations(page);
+});
+
 test('follows, mutes, re-enables and unfollows a public work with fresh CSRF and ETags', async ({
   page,
 }) => {
@@ -253,7 +275,9 @@ test('follows, mutes, re-enables and unfollows a public work with fresh CSRF and
   await page.route('**/api/v1/auth/csrf', (route) =>
     json(route, { token: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' }),
   );
-  await page.route('**/api/v1/catalog/works/' + workId, (route) => json(route, works[0]));
+  await page.route('**/api/v1/catalog/works/' + workId, (route) =>
+    json(route, { ...works[0], isOwner: false }),
+  );
   await page.route('**/api/v1/catalog/works/' + workId + '/chapters**', (route) =>
     json(route, { workId, items: [{ ordinal: 1, title: 'Chương một' }], nextAfterOrdinal: null }),
   );
@@ -337,7 +361,9 @@ test('shows the subscription Retry-After and keeps the confirmed follow state', 
   await page.route('**/api/v1/auth/csrf', (route) =>
     json(route, { token: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' }),
   );
-  await page.route('**/api/v1/catalog/works/' + workId, (route) => json(route, works[0]));
+  await page.route('**/api/v1/catalog/works/' + workId, (route) =>
+    json(route, { ...works[0], isOwner: false }),
+  );
   await page.route('**/api/v1/catalog/works/' + workId + '/chapters**', (route) =>
     json(route, { workId, items: [{ ordinal: 1, title: 'Chương một' }], nextAfterOrdinal: null }),
   );

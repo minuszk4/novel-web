@@ -82,7 +82,7 @@ class PublicCatalogServiceTests {
         new PublicCatalogService(repository, new LibraryCursorCodec(TEST_KEY));
 
     assertEquals(
-        new PublicCatalogService.WorkDetail(workId, "Dragon", "Author", "vi", 3),
+        new PublicCatalogService.WorkDetail(workId, "Dragon", "Author", "vi", 3, false),
         service.detail(workId));
     assertEquals(
         new PublicCatalogService.ChapterPage(
@@ -113,5 +113,26 @@ class PublicCatalogServiceTests {
     assertEquals(
         new PublicCatalogService.ChapterPage(workId, List.of(), null),
         service.chapters(workId, 1_000, 20));
+  }
+
+  @Test
+  void exposesOnlyTheBooleanOwnerHintForTheCurrentPublicOwner() {
+    PublicCatalogRepository repository = mock(PublicCatalogRepository.class);
+    UUID workId = UUID.randomUUID();
+    UUID ownerId = UUID.randomUUID();
+    when(repository.findWork(workId))
+        .thenReturn(
+            Optional.of(
+                new PublicCatalogRepository.PublicWork(workId, "Dragon", "Author", "vi", 1)));
+    when(repository.isOwner(workId, ownerId)).thenReturn(true);
+    PublicCatalogService service =
+        new PublicCatalogService(repository, new LibraryCursorCodec(TEST_KEY));
+
+    assertEquals(
+        new PublicCatalogService.WorkDetail(workId, "Dragon", "Author", "vi", 1, true),
+        service.detail(workId, ownerId));
+    verify(repository).findWork(workId);
+    verify(repository).isOwner(workId, ownerId);
+    verifyNoMoreInteractions(repository);
   }
 }

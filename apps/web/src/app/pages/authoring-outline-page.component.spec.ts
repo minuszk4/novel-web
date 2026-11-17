@@ -146,6 +146,31 @@ describe('AuthoringOutlinePageComponent', () => {
     expect(api.getCurrentPublicationRightsPolicy).not.toHaveBeenCalled();
   });
 
+  it('lets the owner stage drafts on a public work without offering public metadata or release controls', async () => {
+    api.getPrivateManuscript.mockResolvedValueOnce({
+      ...manuscript(),
+      visibility: 'public',
+      publicationState: 'published',
+      chapterCount: 2,
+    });
+    api.listPrivateChapters.mockResolvedValueOnce(
+      page([chapter(firstChapterId, 1, 'Already released', 'ready'), chapter(secondChapterId, 2)]),
+    );
+    const fixture = TestBed.createComponent(AuthoringOutlinePageComponent);
+    fixture.detectChanges();
+    await settle(fixture);
+    fixture.detectChanges();
+
+    expect(fixture.nativeElement.textContent).toContain('TÁC PHẨM ĐANG PHÁT HÀNH');
+    expect(fixture.nativeElement.textContent).toContain('Đã phát hành');
+    expect(fixture.nativeElement.textContent).toContain('Bản nháp riêng tư');
+    expect(fixture.nativeElement.querySelector('.authoring-outline-metadata-trigger')).toBeNull();
+    expect(fixture.nativeElement.querySelector('app-publication-readiness-panel')).toBeNull();
+    expect(fixture.nativeElement.querySelector('app-publication-rights-policy-panel')).toBeNull();
+    expect(fixture.nativeElement.querySelectorAll('.authoring-outline-edit')).toHaveLength(1);
+    expect(api.getCurrentPublicationRightsPolicy).not.toHaveBeenCalled();
+  });
+
   it('shows the rights policy only after the author opens the policy step', async () => {
     const fixture = TestBed.createComponent(AuthoringOutlinePageComponent);
     fixture.detectChanges();

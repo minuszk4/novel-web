@@ -12,6 +12,7 @@ export interface PublicCatalogWork {
   author: string;
   sourceLanguage: string;
   readyChapterCount: number;
+  isOwner?: boolean;
 }
 
 export interface PublicCatalogPage {
@@ -19,7 +20,9 @@ export interface PublicCatalogPage {
   nextCursor: string | null;
 }
 
-export interface PublicWorkDetail extends PublicCatalogWork {}
+export interface PublicWorkDetail extends PublicCatalogWork {
+  isOwner: boolean;
+}
 
 export interface PublicWorkChapter {
   ordinal: number;
@@ -62,7 +65,7 @@ export class PublicCatalogApiService {
           .get<unknown>(`/api/v1/catalog/works/${encodeURIComponent(workId)}`)
           .pipe(timeout(requestTimeoutMs)),
       );
-      return parseCatalogWork(response);
+      return parseCatalogWork(response, true) as PublicWorkDetail;
     } catch (error) {
       throw toCatalogApiError(error);
     }
@@ -166,16 +169,15 @@ function parseCatalogPage(value: unknown, limit: number): PublicCatalogPage {
   }
 
   return {
-    items: value['items'].map(parseCatalogWork),
+    items: value['items'].map((item) => parseCatalogWork(item)),
     nextCursor: value['nextCursor'],
   };
 }
 
-function parseCatalogWork(value: unknown): PublicCatalogWork {
-  if (
-    !isRecord(value) ||
-    !hasOnlyKeys(value, ['id', 'title', 'author', 'sourceLanguage', 'readyChapterCount'])
-  ) {
+function parseCatalogWork(value: unknown, includeOwner = false): PublicCatalogWork {
+  const allowedKeys = ['id', 'title', 'author', 'sourceLanguage', 'readyChapterCount'];
+  if (includeOwner) allowedKeys.push('isOwner');
+  if (!isRecord(value) || !hasOnlyKeys(value, allowedKeys)) {
     throw invalidCatalogResponse();
   }
   const { id, title, author, sourceLanguage, readyChapterCount } = value;
@@ -192,12 +194,20 @@ function parseCatalogWork(value: unknown): PublicCatalogWork {
     sourceLanguage.length > 35 ||
     !languageTagPattern.test(sourceLanguage) ||
     !Number.isSafeInteger(readyChapterCount) ||
-    (readyChapterCount as number) < 1
+    (readyChapterCount as number) < 1 ||
+    (includeOwner && typeof value['isOwner'] !== 'boolean')
   ) {
     throw invalidCatalogResponse();
   }
 
-  return { id, title, author, sourceLanguage, readyChapterCount: readyChapterCount as number };
+  return {
+    id,
+    title,
+    author,
+    sourceLanguage,
+    readyChapterCount: readyChapterCount as number,
+    ...(includeOwner ? { isOwner: value['isOwner'] as boolean } : {}),
+  };
 }
 
 function parseChapterPage(

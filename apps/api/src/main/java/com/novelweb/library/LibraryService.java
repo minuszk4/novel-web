@@ -157,6 +157,13 @@ public class LibraryService {
     return repository.getPrivateAuthoredWorkDetails(ownerUserId, workId);
   }
 
+  public LibraryRepository.PrivateAuthoredWorkDetails getPublicAuthoredWorkDraftingContext(
+      UUID ownerUserId, UUID workId) {
+    Objects.requireNonNull(ownerUserId, "owner user id is required");
+    Objects.requireNonNull(workId, "work id is required");
+    return repository.getPublicAuthoredWorkDraftingContext(ownerUserId, workId);
+  }
+
   public LibraryRepository.PrivateAuthoredWorkDetails updatePrivateAuthoredWorkDetails(
       UUID ownerUserId,
       UUID workId,

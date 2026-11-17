@@ -1,7 +1,9 @@
 package com.novelweb.library;
 
+import com.novelweb.identity.session.SessionService;
 import com.novelweb.platform.web.CorrelationIdFilter;
 import jakarta.servlet.http.HttpServletRequest;
+import java.util.Optional;
 import java.util.UUID;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Profile;
@@ -10,6 +12,7 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -49,10 +52,12 @@ public class PublicCatalogController {
   }
 
   @GetMapping("/works/{workId}")
-  public ResponseEntity<?> workDetail(@PathVariable UUID workId, HttpServletRequest request) {
+  public ResponseEntity<?> workDetail(
+      Authentication authentication, @PathVariable UUID workId, HttpServletRequest request) {
     ResponseEntity<?> gate = catalogReadGate(request);
     if (gate != null) return gate;
-    return ok(catalogService.detail(workId));
+    UUID actorUserId = actorUserId(authentication).orElse(null);
+    return ok(catalogService.detail(workId, actorUserId));
   }
 
   @GetMapping("/works/{workId}/chapters")
@@ -135,6 +140,15 @@ public class PublicCatalogController {
           request);
     }
     return null;
+  }
+
+  private static Optional<UUID> actorUserId(Authentication authentication) {
+    if (authentication == null
+        || !authentication.isAuthenticated()
+        || !(authentication.getPrincipal() instanceof SessionService.SessionPrincipal principal)) {
+      return Optional.empty();
+    }
+    return Optional.of(principal.userId());
   }
 
   private static int parseLimit(String rawLimit) {

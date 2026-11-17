@@ -208,7 +208,7 @@ class AuthoringControllerTests {
     when(libraryService.getPrivateAuthoredWorkDetails(actorId, workId))
         .thenReturn(
             new LibraryRepository.PrivateAuthoredWorkDetails(
-                workId, "My Novel", "Pen Name", "vi", 3, createdAt, 7));
+                workId, "My Novel", "Pen Name", "vi", "private", 3, createdAt, 7));
 
     var response =
         mockMvc
@@ -232,6 +232,37 @@ class AuthoringControllerTests {
     assertTrue(!body.contains("sourceHash"));
     assertTrue(!body.contains(actorId.toString()));
     verify(libraryService).getPrivateAuthoredWorkDetails(actorId, workId);
+  }
+
+  @Test
+  void publicDraftingContextReturnsOnlyPublishedOwnerMetadata() throws Exception {
+    when(policyService.requiredAcceptance(actorId))
+        .thenReturn(PolicyService.RequiredAcceptance.COMPLETE);
+    UUID workId = UUID.randomUUID();
+    Instant createdAt = Instant.parse("2026-11-17T12:34:56Z");
+    when(libraryService.getPublicAuthoredWorkDraftingContext(actorId, workId))
+        .thenReturn(
+            new LibraryRepository.PrivateAuthoredWorkDetails(
+                workId, "Public Novel", "Pen Name", "vi", "public", 4, createdAt, 8));
+
+    var response =
+        mockMvc
+            .perform(
+                get("/api/v1/authoring/manuscripts/{workId}/public-drafting-context", workId)
+                    .principal(authentication()))
+            .andReturn()
+            .getResponse();
+
+    assertEquals(200, response.getStatus());
+    assertTrue(response.getHeader("Cache-Control").contains("no-store"));
+    assertEquals("\"manuscript-metadata-8\"", response.getHeader("ETag"));
+    String body = response.getContentAsString();
+    assertTrue(body.contains("\"visibility\":\"public\""));
+    assertTrue(body.contains("\"publicationState\":\"published\""));
+    assertTrue(body.contains("\"chapterCount\":4"));
+    assertTrue(!body.contains("ownerUserId"));
+    assertTrue(!body.contains("sourceHash"));
+    verify(libraryService).getPublicAuthoredWorkDraftingContext(actorId, workId);
   }
 
   @Test
@@ -306,7 +337,7 @@ class AuthoringControllerTests {
             actorId, workId, 3, "Edited Novel", "New Pen", "ja"))
         .thenReturn(
             new LibraryRepository.PrivateAuthoredWorkDetails(
-                workId, "Edited Novel", "New Pen", "ja", 3, createdAt, 4));
+                workId, "Edited Novel", "New Pen", "ja", "private", 3, createdAt, 4));
     var updated =
         mockMvc
             .perform(

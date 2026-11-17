@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 10.5.0
+  version: 10.6.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -377,13 +377,17 @@ paths:
       x-implementation-status: implemented-postgres-profile
       summary: Get metadata for one currently public authored work
       description: >-
-        Anonymous metadata-only detail. The server repeats the same owner, authored-source, active-state,
+        Metadata-only detail. The server repeats the same owner, authored-source, active-state,
         public-visibility, ready-source-chapter and current PUBLIC_METADATA approval checks used by catalog listing.
         A hidden, missing, withdrawn, takedown-revoked or no-longer-ready work returns the same 404 response.
         This response does not contain description, cover, chapter body, source revision IDs, paid/free status or
-        unlock information. The public catalog feature flag and persistent API rate limit apply to every request.
+        unlock information. When the caller has an active session, isOwner is true only for the active owner of this
+        currently public work; anonymous and other-account requests receive false. This field is navigation context,
+        never authorization. The public catalog feature flag and persistent API rate limit apply to every request.
         Keep the feature disabled until rights, takedown, publisher and deployment edge controls are approved.
-      security: []
+      security:
+        - {}
+        - appSession: []
       parameters:
         - name: workId
           in: path
@@ -406,7 +410,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PublicCatalogWork'
+                  $ref: '#/components/schemas/PublicWorkDetail'
         '404':
           description: Work is missing or is not currently eligible for public metadata disclosure.
           content:
@@ -1981,12 +1985,12 @@ paths:
       operationId: getPrivateAuthoredManuscript
       tags: [Authoring]
       x-implementation-status: implemented-postgres-profile
-      summary: Get one private authored manuscript owned by the actor
+      summary: Get the actor's private authored draft
       description: >-
-        Returns safe metadata for one active private authored manuscript in the actor's personal private library.
-        The session actor and current Terms and Privacy acceptance are required. Foreign, imported, public, archived,
-        deleted and workspace-backed works are hidden as 404. No chapter body, revision IDs, source hashes, owner IDs
-        or idempotency receipts are returned. This read-only operation does not make draft chapters readable in Reader.
+        Returns safe metadata only for an active private authored draft owned by the actor in the actor's personal
+        private library. The session actor and current Terms and Privacy acceptance are required. Foreign, imported,
+        public, archived, deleted and workspace-backed works are hidden as 404. No revision IDs, source hashes, owner
+        IDs or idempotency receipts are returned.
       security:
         - appSession: []
       parameters:
@@ -1998,7 +2002,7 @@ paths:
             format: uuid
       responses:
         '200':
-          description: Safe metadata for the owner's private draft.
+          description: Safe owner metadata for a private draft or public work.
           headers:
             Cache-Control:
               schema:
@@ -3551,18 +3555,68 @@ paths:
           $ref: '#/components/responses/Problem'
         '503':
           $ref: '#/components/responses/Problem'
+  /api/v1/authoring/manuscripts/{workId}/public-drafting-context:
+    get:
+      operationId: getPublicAuthoredWorkDraftingContext
+      tags: [Authoring]
+      x-implementation-status: implemented-postgres-profile
+      summary: Read owner metadata needed to continue drafting on a public work
+      description: >-
+        Returns safe metadata only for the actor's active public authored work in the actor's personal private
+        library. Requires an active session and current Terms/Privacy acceptance. Foreign, private, imported,
+        archived, deleted and workspace-backed works are hidden as 404. The endpoint is read-only and does not grant
+        write or publication authority; every Authoring mutation rechecks ownership and scope. Draft chapter content
+        remains unavailable in public catalog and Reader routes.
+      security:
+        - appSession: []
+      parameters:
+        - name: workId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Owner-only metadata for a currently public work.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
+            ETag:
+              schema:
+                type: string
+                pattern: '^"manuscript-metadata-[1-9][0-9]*"$'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicAuthoredWorkDraftContext'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
   /api/v1/authoring/manuscripts/{workId}/chapters:
     get:
       operationId: listPrivateAuthoredChapterOutline
       tags: [Authoring]
       x-implementation-status: implemented-postgres-profile
-      summary: List the owner's private chapter outline
+      summary: List the owner's published chapters and private drafts
       description: >-
-        Returns bounded metadata pages for an active private authored manuscript in the actor's personal private
-        library. Current Terms and Privacy acceptance is required. The HMAC cursor is bound to the actor, manuscript
-        and authoring-outline operation. Pages use ascending chapter ordinal, omit soft-deleted chapters and never
-        return revision identifiers or source text. Foreign, imported, public, archived, deleted or workspace-backed
-        manuscripts are hidden as 404. This read-only operation does not make draft chapters readable in Reader.
+        Returns bounded metadata pages for an active owner-authored work, whether private or public, in the actor's
+        personal private library. Current Terms and Privacy acceptance is required. The HMAC cursor is bound to the
+        actor, manuscript and authoring-outline operation. Pages use ascending chapter ordinal, omit soft-deleted
+        chapters and never return revision identifiers or source text. For a public work, the owner can see their own
+        draft chapter titles; public catalog and Reader routes continue to exclude those drafts. Foreign, imported,
+        archived, deleted or workspace-backed manuscripts are hidden as 404.
       security:
         - appSession: []
       parameters:
@@ -3588,7 +3642,7 @@ paths:
             default: 25
       responses:
         '200':
-          description: One bounded page of private chapter-outline metadata.
+          description: One bounded page of owner-only chapter-outline metadata.
           headers:
             Cache-Control:
               schema:
@@ -3616,15 +3670,15 @@ paths:
       operationId: createPrivateDraftChapter
       tags: [Authoring]
       x-implementation-status: implemented-postgres-profile
-      summary: Add a blank private draft chapter
+      summary: Add a blank private chapter draft to an owned work
       description: >-
-        Adds a metadata-only chapter to an active private authored manuscript in the actor's personal library.
+        Adds a metadata-only chapter to an active private or public authored work in the actor's personal library.
         The actor is derived from the authenticated session; owner, language, ordinal, volume and revision fields
         are server controlled. Current Terms and Privacy acceptance, session-bound CSRF and an Idempotency-Key are
         required. Same key and normalized title returns the original chapter; a changed title returns 409. The
-        chapter has draft status and no volume, source revision, revision row or segments. Imported, foreign,
-        public, archived or deleted manuscripts are hidden as 404. This endpoint does not create chapter text,
-        reorder or delete chapters, publish the manuscript, or make the chapter readable in Reader.
+        chapter has draft status and no volume, source revision, revision row or segments. For an already public
+        work, this creates a private staged draft only; it does not alter the public snapshot or content version.
+        Imported, foreign, archived or deleted manuscripts are hidden as 404. Publication/review is a separate action.
       security:
         - appSession: []
           csrfToken: []
@@ -3652,7 +3706,7 @@ paths:
               $ref: '#/components/schemas/CreateDraftChapterRequest'
       responses:
         '201':
-          description: Private, blank chapter metadata.
+          description: Owner-only blank draft chapter metadata; never public catalog data.
           headers:
             Cache-Control:
               schema:
@@ -3677,7 +3731,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Problem'
         '404':
-          description: Manuscript is not an active, owner-visible private authored draft.
+          description: Manuscript is not an active owner-authored work in the actor's personal library.
           $ref: '#/components/responses/Problem'
         '409':
           description: Idempotency-Key was already used with a different normalized title.
@@ -3692,14 +3746,15 @@ paths:
       operationId: deletePrivateEmptyAuthoredChapter
       tags: [Authoring]
       x-implementation-status: implemented-postgres-profile
-      summary: Remove an empty private draft chapter from the outline
+      summary: Remove an empty owner draft chapter from the outline
       description: >-
-        Soft-deletes only an owner-visible authored draft in the actor's personal private library when the chapter
-        has no current source revision and no chapter revision history. Requires an active session, current
+        Soft-deletes only an owner-visible draft in the actor's personal private library when the chapter has no
+        current source revision and no chapter revision history. This includes staged drafts in currently public
+        works; it never removes a published chapter. Requires an active session, current
         Terms/Privacy acceptance and session-bound CSRF. The transaction fences a concurrent first revision save;
         whichever operation commits first determines whether deletion succeeds or returns 409. A repeated request
-        for the same already-deleted chapter returns 204. Saved content is never removed. Foreign, imported, public,
-        archived, deleted-work and workspace-backed resources are hidden as 404. No ordinal is reused or renumbered.
+        for the same already-deleted chapter returns 204. Saved content is never removed. Foreign, imported, archived,
+        deleted-work and workspace-backed resources are hidden as 404. No ordinal is reused or renumbered.
       security:
         - appSession: []
           csrfToken: []
@@ -3737,7 +3792,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Problem'
         '404':
-          description: Chapter is not in the actor's active private authored manuscript scope.
+          description: Chapter is not an editable draft in the actor's active authored work scope.
           $ref: '#/components/responses/Problem'
         '409':
           description: A saved draft revision exists; the operation did not remove chapter content.
@@ -3752,11 +3807,11 @@ paths:
       operationId: readPrivateAuthoredChapterDraft
       tags: [Authoring]
       x-implementation-status: implemented-postgres-profile
-      summary: Read the owner's private chapter draft
+      summary: Read an owner-only chapter draft
       description: >-
         Returns the current complete private draft snapshot for a draft-status chapter in the actor's own active,
-        private authored manuscript and personal library. The actor must have an active session and current Terms
-        and Privacy acceptance. Foreign, imported, public, archived, deleted or workspace-backed resources are hidden
+        private or public authored work and personal library. The actor must have an active session and current Terms
+        and Privacy acceptance. Foreign, imported, archived, deleted or workspace-backed resources are hidden
         as 404. The strong ETag is "draft-0" when the chapter has no saved revision, otherwise "draft-N". The route
         is uncached and never makes draft content available through Reader or public catalog APIs.
       security:
@@ -3810,9 +3865,11 @@ paths:
       x-implementation-status: implemented-postgres-profile
       summary: Save a complete immutable private draft revision
       description: >-
-        Atomically appends a complete revision and ordered segments to an eligible private authored draft chapter.
-        The revision is immutable; the chapter's current revision pointer advances while status stays draft, so Reader
-        and public catalog routes continue to hide it. Requires an active session, current Terms/Privacy acceptance,
+        Atomically appends a complete revision and ordered segments to an eligible authored draft chapter in a
+        private or public work. The revision is immutable; the chapter's current revision pointer advances while
+        status stays draft, so Reader and public catalog routes continue to hide it. For public works, saving such a
+        draft does not change the currently approved public snapshot or publication content version. Requires an
+        active session, current Terms/Privacy acceptance,
         session-bound CSRF, a strong If-Match ETag from the draft read route, and a 16–128 character Idempotency-Key.
         A stale ETag returns 412 with currentEtag. Replaying the same key and complete request returns the original
         revision even after a later save; reusing that key for another request returns 409. Unknown JSON properties
@@ -7284,6 +7341,42 @@ components:
           type: integer
           format: int64
           minimum: 1
+    PublicAuthoredWorkDraftContext:
+      type: object
+      additionalProperties: false
+      required:
+        [id, title, author, language, visibility, publicationState, chapterCount, createdAt, metadataVersion]
+      properties:
+        id:
+          type: string
+          format: uuid
+        title:
+          type: string
+          minLength: 1
+          maxLength: 300
+        author:
+          type: string
+          maxLength: 200
+        language:
+          type: string
+          minLength: 2
+          maxLength: 35
+        visibility:
+          type: string
+          const: public
+        publicationState:
+          type: string
+          const: published
+        chapterCount:
+          type: integer
+          minimum: 0
+        createdAt:
+          type: string
+          format: date-time
+        metadataVersion:
+          type: integer
+          format: int64
+          minimum: 1
     AuthoringManuscriptMetadataUpdate:
       type: object
       additionalProperties: false
@@ -8554,6 +8647,33 @@ components:
         readyChapterCount:
           type: integer
           minimum: 1
+    PublicWorkDetail:
+      type: object
+      additionalProperties: false
+      required: [id, title, author, sourceLanguage, readyChapterCount, isOwner]
+      properties:
+        id:
+          type: string
+          format: uuid
+        title:
+          type: string
+          minLength: 1
+          maxLength: 300
+        author:
+          type: string
+          maxLength: 200
+        sourceLanguage:
+          type: string
+          minLength: 2
+          maxLength: 35
+        readyChapterCount:
+          type: integer
+          minimum: 1
+        isOwner:
+          type: boolean
+          description: >-
+            True only when the caller's active session belongs to the current owner. This is a navigation hint;
+            all authoring APIs recheck ownership and current work state.
     PublicCatalogChapterPage:
       type: object
       additionalProperties: false

@@ -29,7 +29,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-/** Private-first owner authoring. Publishing is a separate, unimplemented workflow. */
+/** Owner authoring supports private manuscripts and private drafts on published works. */
 @RestController
 @RequestMapping("/api/v1/authoring/manuscripts")
 @Profile("postgres")
@@ -127,6 +127,21 @@ public class AuthoringController {
     return manuscriptDetailsResponse(details);
   }
 
+  @GetMapping("/{workId}/public-drafting-context")
+  public ResponseEntity<?> getPublicDraftingContext(
+      Authentication authentication, @PathVariable UUID workId, HttpServletRequest request) {
+    Optional<UUID> actor = actorUserId(authentication);
+    if (actor.isEmpty())
+      return problem(
+          HttpStatus.UNAUTHORIZED, "UNAUTHENTICATED", "Sign in to view this manuscript.", request);
+    ResponseEntity<?> policyGate = policyGate(actor.orElseThrow(), request);
+    if (policyGate != null) return policyGate;
+
+    LibraryRepository.PrivateAuthoredWorkDetails details =
+        libraryService.getPublicAuthoredWorkDraftingContext(actor.orElseThrow(), workId);
+    return publicDraftingContextResponse(details);
+  }
+
   @PutMapping("/{workId}")
   public ResponseEntity<?> updateManuscript(
       Authentication authentication,
@@ -185,6 +200,25 @@ public class AuthoringController {
                 details.language(),
                 "private",
                 "draft",
+                details.chapterCount(),
+                details.createdAt(),
+                details.metadataVersion()));
+  }
+
+  private static ResponseEntity<PublicAuthoredWorkDraftContextResponse>
+      publicDraftingContextResponse(LibraryRepository.PrivateAuthoredWorkDetails details) {
+    return ResponseEntity.ok()
+        .cacheControl(CacheControl.noStore())
+        .header(HttpHeaders.PRAGMA, "no-cache")
+        .header(HttpHeaders.ETAG, manuscriptMetadataEtag(details.metadataVersion()))
+        .body(
+            new PublicAuthoredWorkDraftContextResponse(
+                details.id(),
+                details.title(),
+                details.author(),
+                details.language(),
+                "public",
+                "published",
                 details.chapterCount(),
                 details.createdAt(),
                 details.metadataVersion()));
@@ -898,6 +932,17 @@ public class AuthoringController {
   }
 
   public record PrivateManuscriptDetailsResponse(
+      UUID id,
+      String title,
+      String author,
+      String language,
+      String visibility,
+      String publicationState,
+      int chapterCount,
+      Instant createdAt,
+      long metadataVersion) {}
+
+  public record PublicAuthoredWorkDraftContextResponse(
       UUID id,
       String title,
       String author,

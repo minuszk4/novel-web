@@ -123,8 +123,14 @@ describe('PublicCatalogApiService', () => {
     const result = api.getWork(workId);
     const request = http.expectOne('/api/v1/catalog/works/' + workId);
     expect(request.request.method).toBe('GET');
-    request.flush(publicWork);
-    await expect(result).resolves.toEqual(publicWork);
+    request.flush({ ...publicWork, isOwner: false });
+    await expect(result).resolves.toEqual({ ...publicWork, isOwner: false });
+  });
+
+  it('accepts the owner-only authoring navigation hint on detail responses', async () => {
+    const result = api.getWork(workId);
+    http.expectOne('/api/v1/catalog/works/' + workId).flush({ ...publicWork, isOwner: true });
+    await expect(result).resolves.toMatchObject({ id: workId, isOwner: true });
   });
 
   it('pages chapter-title metadata using an exclusive ordinal and rejects prose fields', async () => {

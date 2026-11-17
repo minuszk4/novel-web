@@ -46,6 +46,13 @@
           Đây là thông tin tác phẩm và tên chương đã được phép công khai. Nội dung chương, trạng
           thái miễn phí hoặc credit chỉ được xác định sau khi bạn đăng nhập.
         </p>
+        @if (currentWork.isOwner) {
+          <a
+            class="button button-outline"
+            [routerLink]="['/app/authoring', currentWork.id, 'chapters']"
+            >Quản lý bản thảo và viết chương mới</a
+          >
+        }
         <div class="detail-privacy-note">
           <span aria-hidden="true">i</span>
           <p>Mục lục chỉ chứa số chương và tiêu đề; trang này không tải văn bản chương.</p>

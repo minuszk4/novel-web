@@ -272,6 +272,54 @@ describe('AuthoringApiService', () => {
     });
   });
 
+  it('accepts an owner-only published work detail while keeping the response strict', async () => {
+    const pending = api.getPrivateManuscript(workId);
+    http
+      .expectOne(`/api/v1/authoring/manuscripts/${workId}`)
+      .flush({ code: 'MANUSCRIPT_NOT_FOUND' }, { status: 404, statusText: 'Not Found' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    http.expectOne(`/api/v1/authoring/manuscripts/${workId}/public-drafting-context`).flush(
+      {
+        ...createdDraft,
+        visibility: 'public',
+        publicationState: 'published',
+        chapterCount: 3,
+        metadataVersion: 8,
+      },
+      {
+        status: 200,
+        statusText: 'OK',
+        headers: new HttpHeaders({
+          'Cache-Control': 'no-store',
+          ETag: '"manuscript-metadata-8"',
+        }),
+      },
+    );
+
+    await expect(pending).resolves.toMatchObject({
+      visibility: 'public',
+      publicationState: 'published',
+      metadataVersion: 8,
+      etag: '"manuscript-metadata-8"',
+    });
+  });
+
+  it('does not accept a private response from the public drafting-context route', async () => {
+    const pending = api.getPrivateManuscript(workId);
+    http
+      .expectOne(`/api/v1/authoring/manuscripts/${workId}`)
+      .flush({ code: 'MANUSCRIPT_NOT_FOUND' }, { status: 404, statusText: 'Not Found' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    http
+      .expectOne(`/api/v1/authoring/manuscripts/${workId}/public-drafting-context`)
+      .flush({ ...createdDraft, metadataVersion: 1 });
+
+    await expect(pending).rejects.toMatchObject({
+      status: 502,
+      code: 'INVALID_AUTHORING_MANUSCRIPT_RESPONSE',
+    });
+  });
+
   it('reads only a strict no-store publication rights policy for the requested manuscript', async () => {
     const pending = api.getCurrentPublicationRightsPolicy(workId);
     const request = http.expectOne(

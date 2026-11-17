@@ -1,6 +1,9 @@
 <section class="page-wrap authoring-outline-page">
   <header class="page-heading authoring-outline-heading">
-    <p class="eyebrow">AUTHOR STUDIO · BẢN THỬ</p>
+    <p class="eyebrow">
+      AUTHOR STUDIO ·
+      {{ manuscript()?.visibility === 'public' ? 'TÁC PHẨM ĐANG PHÁT HÀNH' : 'BẢN THẢO RIÊNG TƯ' }}
+    </p>
     <h1 #pageHeading tabindex="-1">{{ manuscript()?.title ?? 'Dàn ý bản thảo' }}</h1>
     @if (manuscript(); as details) {
       <div class="authoring-outline-manuscript-summary">
@@ -8,18 +11,27 @@
           {{ details.author || 'Chưa có bút danh' }} · Ngôn ngữ {{ details.language }} ·
           {{ details.chapterCount }} chương
         </p>
-        <button
-          #editMetadataButton
-          class="button button-outline authoring-outline-metadata-trigger"
-          type="button"
-          [disabled]="isMetadataFormOpen() || isAddFormOpen() || isSavingMetadata()"
-          (click)="openMetadataForm()"
-        >
-          Sửa thông tin
-        </button>
+        @if (details.visibility === 'private') {
+          <button
+            #editMetadataButton
+            class="button button-outline authoring-outline-metadata-trigger"
+            type="button"
+            [disabled]="isMetadataFormOpen() || isAddFormOpen() || isSavingMetadata()"
+            (click)="openMetadataForm()"
+          >
+            Sửa thông tin
+          </button>
+        }
       </div>
     }
-    <p>Thêm tên chương và sắp xếp theo thứ tự. Chương mới hiện chưa có nội dung.</p>
+    @if (manuscript()?.visibility === 'public') {
+      <p>
+        Chương mới và nội dung bạn soạn tại đây được lưu riêng tư. Chúng chưa xuất hiện với người
+        đọc và không làm thay đổi bản đang phát hành.
+      </p>
+    } @else {
+      <p>Thêm tên chương và sắp xếp theo thứ tự. Chương mới hiện chưa có nội dung.</p>
+    }
   </header>
 
   @if (policy.status() !== 'accepted') {
@@ -238,23 +250,35 @@
     <aside class="authoring-outline-privacy" aria-label="Thông tin về phạm vi dàn ý">
       <span aria-hidden="true">▣</span>
       <div>
-        <strong>Riêng tư mặc định</strong>
-        <p>Chỉ bạn có thể xem mục lục này. Hiện tại mỗi chương chỉ lưu tên, ngôn ngữ và thứ tự.</p>
+        @if (manuscript()?.visibility === 'public') {
+          <strong>Bản nháp riêng tư</strong>
+          <p>
+            Chỉ bạn xem được chương mới và nội dung đang soạn. Người đọc chỉ thấy những chương đã
+            được duyệt và phát hành.
+          </p>
+        } @else {
+          <strong>Riêng tư mặc định</strong>
+          <p>
+            Chỉ bạn có thể xem mục lục này. Hiện tại mỗi chương chỉ lưu tên, ngôn ngữ và thứ tự.
+          </p>
+        }
       </div>
     </aside>
 
     @if (manuscript(); as details) {
-      <app-publication-rights-policy-panel
-        [workId]="details.id"
-        [workTitle]="details.title"
-        [openRequest]="publicationPolicyOpenRequest()"
-        (policyAccepted)="refreshPublicationReadiness()"
-      />
-      <app-publication-readiness-panel
-        [workId]="details.id"
-        [refreshRequest]="readinessRefreshRequest()"
-        (requestPolicyReview)="openPublicationPolicy()"
-      />
+      @if (details.visibility === 'private') {
+        <app-publication-rights-policy-panel
+          [workId]="details.id"
+          [workTitle]="details.title"
+          [openRequest]="publicationPolicyOpenRequest()"
+          (policyAccepted)="refreshPublicationReadiness()"
+        />
+        <app-publication-readiness-panel
+          [workId]="details.id"
+          [refreshRequest]="readinessRefreshRequest()"
+          (requestPolicyReview)="openPublicationPolicy()"
+        />
+      }
     }
 
     @if (createAnnouncement()) {
@@ -274,7 +298,13 @@
     <section class="authoring-outline-panel" aria-labelledby="outline-list-title">
       <div class="authoring-outline-list-heading">
         <div>
-          <p class="eyebrow">MỤC LỤC RIÊNG TƯ</p>
+          <p class="eyebrow">
+            {{
+              manuscript()?.visibility === 'public'
+                ? 'CHƯƠNG ĐÃ PHÁT HÀNH VÀ BẢN NHÁP'
+                : 'MỤC LỤC RIÊNG TƯ'
+            }}
+          </p>
           <h2 id="outline-list-title">Các chương</h2>
         </div>
         <button
@@ -294,7 +324,14 @@
               <p class="eyebrow">CHƯƠNG TRỐNG</p>
               <h3 id="outline-add-title">Thêm vào dàn ý</h3>
             </div>
-            <p>Chỉ tạo tên và thứ tự; bạn chưa thể nhập nội dung chương.</p>
+            @if (manuscript()?.visibility === 'public') {
+              <p>
+                Tạo một chương nháp riêng tư; nội dung chỉ được công khai sau khi có luồng duyệt và
+                phát hành.
+              </p>
+            } @else {
+              <p>Chỉ tạo tên và thứ tự; bạn chưa thể nhập nội dung chương.</p>
+            }
           </div>
 
           <form novalidate (submit)="addChapter($event)">
