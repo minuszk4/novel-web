@@ -281,10 +281,18 @@ public class ApiSecurityConfiguration {
                     .permitAll();
                 authorize
                     .requestMatchers(
+                        HttpMethod.GET, "/api/v1/translation/jobs/*/candidate/review-readiness")
+                    .permitAll();
+                authorize
+                    .requestMatchers(
                         HttpMethod.POST,
                         "/api/v1/translation/jobs",
                         "/api/v1/translation/jobs/*/retry",
                         "/api/v1/translation/jobs/*/cancel")
+                    .permitAll();
+                authorize
+                    .requestMatchers(
+                        HttpMethod.POST, "/api/v1/translation/jobs/*/candidate/review-submissions")
                     .permitAll();
                 authorize
                     .requestMatchers(

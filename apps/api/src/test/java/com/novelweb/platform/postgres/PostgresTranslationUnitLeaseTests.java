@@ -10,6 +10,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 
 import com.novelweb.identity.auth.PolicyService;
 import com.novelweb.identity.session.SessionService;
@@ -23,6 +24,9 @@ import com.novelweb.translation.jobs.TranslationCandidateEditRepository;
 import com.novelweb.translation.jobs.TranslationCandidateEditService;
 import com.novelweb.translation.jobs.TranslationCandidatePreviewRepository;
 import com.novelweb.translation.jobs.TranslationCandidatePreviewService;
+import com.novelweb.translation.jobs.TranslationCandidateReviewController;
+import com.novelweb.translation.jobs.TranslationCandidateReviewRepository;
+import com.novelweb.translation.jobs.TranslationCandidateReviewService;
 import com.novelweb.translation.jobs.TranslationFakeLocalWorkerService;
 import com.novelweb.translation.jobs.TranslationJobCancelRepository;
 import com.novelweb.translation.jobs.TranslationJobCancelService;
@@ -31,6 +35,7 @@ import com.novelweb.translation.jobs.TranslationJobRetryRepository;
 import com.novelweb.translation.jobs.TranslationJobRetryService;
 import com.novelweb.translation.jobs.TranslationJobService;
 import com.novelweb.translation.jobs.TranslationJobStatusService;
+import com.novelweb.translation.jobs.TranslationReviewSnapshotHasher;
 import com.novelweb.translation.jobs.TranslationUnitLeaseRepository;
 import com.novelweb.translation.jobs.TranslationUnitLeaseService;
 import com.novelweb.translation.provider.TranslationBillingUnit;
@@ -102,6 +107,8 @@ class PostgresTranslationUnitLeaseTests {
   @Autowired private TranslationCandidatePreviewService candidatePreviewService;
 
   @Autowired private TranslationCandidateEditService candidateEditService;
+
+  @Autowired private TranslationCandidateReviewService candidateReviewService;
 
   @Autowired private TranslationUnitLeaseService leaseService;
 
@@ -1693,6 +1700,132 @@ class PostgresTranslationUnitLeaseTests {
     assertEquals(0, countReviewSubmissions(preview.candidateId()));
   }
 
+  @Test
+  void manualReviewReadinessSubmitsOnlyTheExactCompleteSnapshotAndReplays() throws Exception {
+    Fixture fixture = createQueuedJob(2);
+    fakeLocalWorkerService.processNext("translation-review-api-worker", Duration.ofSeconds(60));
+
+    TranslationCandidateReviewRepository.Readiness emptyReadiness =
+        candidateReviewService.readiness(fixture.userId(), fixture.jobId());
+    assertEquals(TranslationCandidateReviewRepository.Outcome.AVAILABLE, emptyReadiness.outcome());
+    assertEquals(0, emptyReadiness.editedSegments());
+    assertEquals(2, emptyReadiness.totalSegments());
+    assertEquals(List.of(1, 2), emptyReadiness.missingSegmentOrdinals());
+    assertNull(emptyReadiness.snapshotDigest());
+    MvcResult readinessResponse = requestManualReviewReadiness(fixture);
+    assertEquals(200, readinessResponse.getResponse().getStatus());
+    assertTrue(readinessResponse.getResponse().getHeader("ETag") == null);
+    assertTrue(readinessResponse.getResponse().getHeader("Cache-Control").contains("no-store"));
+    assertTrue(
+        readinessResponse.getResponse().getContentAsString().contains("missingSegmentOrdinals"));
+    assertFalse(
+        readinessResponse.getResponse().getContentAsString().contains("Synthetic source sentence"));
+    assertFalse(readinessResponse.getResponse().getContentAsString().contains("[fake vi->en]"));
+
+    TranslationCandidatePreviewService.CandidatePreview preview =
+        candidatePreviewService
+            .findCurrentReadyForReview(fixture.userId(), fixture.jobId(), 0, 10)
+            .orElseThrow();
+    for (TranslationCandidatePreviewService.PreviewSegment segment : preview.segments()) {
+      candidateEditService.save(
+          fixture.userId(),
+          fixture.jobId(),
+          segment.sourceSegmentId(),
+          0,
+          "translation-review-api-edit-" + UUID.randomUUID().toString().replace("-", ""),
+          "Manual translation " + segment.ordinal());
+    }
+
+    TranslationCandidateReviewRepository.Readiness completeReadiness =
+        candidateReviewService.readiness(fixture.userId(), fixture.jobId());
+    assertEquals(2, completeReadiness.editedSegments());
+    assertEquals(List.of(), completeReadiness.missingSegmentOrdinals());
+    assertFalse(completeReadiness.pendingReview());
+    assertTrue(completeReadiness.snapshotDigest() != null);
+    String snapshotEtag = TranslationReviewSnapshotHasher.etag(completeReadiness.snapshotDigest());
+    MvcResult readyResponse = requestManualReviewReadiness(fixture);
+    assertEquals(snapshotEtag, readyResponse.getResponse().getHeader("ETag"));
+    assertTrue(
+        readyResponse.getResponse().getContentAsString().contains("\"readyForSubmission\":true"));
+
+    String idempotencyKey = "translation-review-submit-api-0001";
+    MvcResult submittedResponse =
+        requestManualReviewSubmission(fixture, snapshotEtag, idempotencyKey);
+    assertEquals(201, submittedResponse.getResponse().getStatus());
+    assertTrue(submittedResponse.getResponse().getHeader("Cache-Control").contains("no-store"));
+    String responseBody = submittedResponse.getResponse().getContentAsString();
+    assertTrue(responseBody.contains("pending_review"));
+    assertTrue(
+        responseBody.contains(
+            TranslationReviewSnapshotHasher.digestHex(completeReadiness.snapshotDigest())));
+    assertFalse(responseBody.contains("Manual translation"));
+
+    MvcResult replayResponse = requestManualReviewSubmission(fixture, snapshotEtag, idempotencyKey);
+    assertEquals(200, replayResponse.getResponse().getStatus());
+    assertTrue(replayResponse.getResponse().getContentAsString().contains("\"replayed\":true"));
+    assertEquals(1, countReviewSubmissions(preview.candidateId()));
+    assertEquals(2, countReviewSubmissionSegments(readReviewSubmissionId(preview.candidateId())));
+    TranslationCandidateReviewRepository.Readiness pendingReadiness =
+        candidateReviewService.readiness(fixture.userId(), fixture.jobId());
+    assertTrue(pendingReadiness.pendingReview());
+    assertFalse(pendingReadiness.readyForSubmission());
+  }
+
+  @Test
+  void manualReviewSubmissionRejectsIncompleteDuplicateAndReusedKeyRequests() throws Exception {
+    Fixture fixture = createQueuedJob(2);
+    fakeLocalWorkerService.processNext(
+        "translation-review-incomplete-api-worker", Duration.ofSeconds(60));
+    String placeholderEtag = TranslationReviewSnapshotHasher.etag(sha256("synthetic etag"));
+    TranslationCandidateReviewRepository.Outcome incomplete =
+        candidateReviewService
+            .submit(
+                fixture.userId(),
+                fixture.jobId(),
+                placeholderEtag,
+                "translation-review-incomplete-api-01")
+            .outcome();
+    assertEquals(TranslationCandidateReviewRepository.Outcome.INCOMPLETE, incomplete);
+
+    TranslationCandidatePreviewService.CandidatePreview preview =
+        candidatePreviewService
+            .findCurrentReadyForReview(fixture.userId(), fixture.jobId(), 0, 10)
+            .orElseThrow();
+    for (TranslationCandidatePreviewService.PreviewSegment segment : preview.segments()) {
+      candidateEditService.save(
+          fixture.userId(),
+          fixture.jobId(),
+          segment.sourceSegmentId(),
+          0,
+          "translation-review-duplicate-edit-" + UUID.randomUUID().toString().replace("-", ""),
+          "Manual translation " + segment.ordinal());
+    }
+    TranslationCandidateReviewRepository.Readiness readiness =
+        candidateReviewService.readiness(fixture.userId(), fixture.jobId());
+    String etag = TranslationReviewSnapshotHasher.etag(readiness.snapshotDigest());
+    String key = "translation-review-duplicate-api-01";
+    assertEquals(
+        TranslationCandidateReviewRepository.Outcome.CREATED,
+        candidateReviewService.submit(fixture.userId(), fixture.jobId(), etag, key).outcome());
+    assertEquals(
+        TranslationCandidateReviewRepository.Outcome.REPLAYED,
+        candidateReviewService.submit(fixture.userId(), fixture.jobId(), etag, key).outcome());
+    assertThrows(
+        TranslationCandidateReviewRepository.IdempotencyKeyReusedException.class,
+        () ->
+            candidateReviewService.submit(
+                fixture.userId(),
+                fixture.jobId(),
+                TranslationReviewSnapshotHasher.etag(sha256("different snapshot etag")),
+                key));
+    assertEquals(
+        TranslationCandidateReviewRepository.Outcome.PENDING_CONFLICT,
+        candidateReviewService
+            .submit(fixture.userId(), fixture.jobId(), etag, "translation-review-duplicate-api-02")
+            .outcome());
+    assertEquals(1, countReviewSubmissions(preview.candidateId()));
+  }
+
   private UUID insertReviewSnapshot(
       Fixture fixture,
       UUID candidateId,
@@ -1783,6 +1916,20 @@ class PostgresTranslationUnitLeaseTests {
     }
   }
 
+  private UUID readReviewSubmissionId(UUID candidateId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT id FROM translation_candidate_review_submissions "
+                    + "WHERE candidate_id = ? AND status = 'pending_review'")) {
+      select.setObject(1, candidateId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getObject("id", UUID.class);
+      }
+    }
+  }
+
   private int countReviewSubmissionSegments(UUID submissionId) throws SQLException {
     try (Connection connection = dataSource.getConnection();
         PreparedStatement select =
@@ -1867,6 +2014,41 @@ class PostgresTranslationUnitLeaseTests {
             get("/api/v1/translation/jobs/{jobId}/candidate", fixture.jobId())
                 .principal(authentication))
         .andReturn();
+  }
+
+  private MvcResult requestManualReviewReadiness(Fixture fixture) throws Exception {
+    return manualReviewMockMvc(fixture)
+        .perform(
+            get("/api/v1/translation/jobs/{jobId}/candidate/review-readiness", fixture.jobId())
+                .principal(authenticationFor(fixture.userId())))
+        .andReturn();
+  }
+
+  private MvcResult requestManualReviewSubmission(
+      Fixture fixture, String etag, String idempotencyKey) throws Exception {
+    return manualReviewMockMvc(fixture)
+        .perform(
+            post("/api/v1/translation/jobs/{jobId}/candidate/review-submissions", fixture.jobId())
+                .principal(authenticationFor(fixture.userId()))
+                .header("If-Match", etag)
+                .header("Idempotency-Key", idempotencyKey))
+        .andReturn();
+  }
+
+  private MockMvc manualReviewMockMvc(Fixture fixture) {
+    PolicyService policyService = mock(PolicyService.class);
+    when(policyService.requiredAcceptance(fixture.userId()))
+        .thenReturn(PolicyService.RequiredAcceptance.COMPLETE);
+    return MockMvcBuilders.standaloneSetup(
+            new TranslationCandidateReviewController(candidateReviewService, policyService))
+        .build();
+  }
+
+  private static Authentication authenticationFor(UUID userId) {
+    return UsernamePasswordAuthenticationToken.authenticated(
+        new SessionService.SessionPrincipal(userId, Instant.now().plusSeconds(300)),
+        null,
+        List.of());
   }
 
   private TranslationCandidateEditRepository.EditResult saveConcurrentEdit(
