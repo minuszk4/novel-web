@@ -12,7 +12,17 @@ const catalogWorkCount = 1_000;
 const initialLoadSamples = 10;
 const searchSamples = 10;
 type LongTaskSample = { startTime: number; duration: number };
+type DomActionSample = { kind: string; durationMs: number };
 type CatalogTimingWindow = Window & {
+  __catalogInitialDomDurations?: number[];
+  __catalogPendingDomAction?: { kind: string; buttonText: string; expectedCount: number };
+  __catalogActiveDomAction?: {
+    kind: string;
+    expectedCount: number;
+    startTime: number;
+    completionScheduled: boolean;
+  };
+  __catalogDomActionDurations?: DomActionSample[];
   __catalogLongTasks?: LongTaskSample[];
   __catalogSearchDomDurations?: Array<{ query: string; durationMs: number }>;
   __catalogSearchSequence?: number;
@@ -88,13 +98,102 @@ async function json(
   });
 }
 
-async function measure(page: Page, metricName: string, startMark: string): Promise<number> {
-  return page.evaluate(
-    ({ name, start }) => {
-      performance.clearMeasures(name);
-      return performance.measure(name, start).duration;
+async function installBrowserDomTiming(
+  page: Page,
+  mode: 'library' | 'catalog',
+  initialItemCount: number,
+): Promise<void> {
+  await page.addInitScript(
+    ({ pageMode, itemCount }) => {
+      const target = window as CatalogTimingWindow;
+      const navigationStartedAt = performance.now();
+      target.__catalogInitialDomDurations = [];
+      target.__catalogDomActionDurations = [];
+      let initialCompletionScheduled = false;
+
+      const isReady = (expectedCount: number): boolean => {
+        if (pageMode === 'library') {
+          const rows = Array.from(document.querySelectorAll('.library-work-row'));
+          return (
+            rows.length === expectedCount &&
+            rows.every(
+              (row) =>
+                row.querySelector('.private-tag')?.textContent?.trim() === 'RIÊNG TƯ · TÀI KHOẢN',
+            )
+          );
+        }
+        const cards = document.querySelectorAll('.public-catalog-card');
+        const announcement =
+          document.querySelector('.public-catalog-announcement')?.textContent?.trim() ?? '';
+        return (
+          cards.length === expectedCount && announcement === `${expectedCount} truyện đã được tải.`
+        );
+      };
+
+      const scheduleInitialMeasurement = (): void => {
+        if (
+          initialCompletionScheduled ||
+          (target.__catalogInitialDomDurations?.length ?? 0) > 0 ||
+          !isReady(itemCount)
+        ) {
+          return;
+        }
+        initialCompletionScheduled = true;
+        requestAnimationFrame(() => {
+          initialCompletionScheduled = false;
+          if (!isReady(itemCount)) return;
+          target.__catalogInitialDomDurations?.push(performance.now() - navigationStartedAt);
+        });
+      };
+
+      const scheduleActionMeasurement = (): void => {
+        const action = target.__catalogActiveDomAction;
+        if (!action || action.completionScheduled || !isReady(action.expectedCount)) return;
+        action.completionScheduled = true;
+        requestAnimationFrame(() => {
+          if (target.__catalogActiveDomAction !== action) return;
+          action.completionScheduled = false;
+          if (!isReady(action.expectedCount)) return;
+          target.__catalogDomActionDurations?.push({
+            kind: action.kind,
+            durationMs: performance.now() - action.startTime,
+          });
+          target.__catalogActiveDomAction = undefined;
+        });
+      };
+
+      const observer = new MutationObserver(() => {
+        scheduleInitialMeasurement();
+        scheduleActionMeasurement();
+      });
+      observer.observe(document, {
+        childList: true,
+        characterData: true,
+        subtree: true,
+      });
+      document.addEventListener(
+        'click',
+        (event) => {
+          const pending = target.__catalogPendingDomAction;
+          const eventTarget = event.target;
+          if (!pending || !(eventTarget instanceof Element)) return;
+          const button = eventTarget.closest('button');
+          const buttonText = button?.textContent?.trim().replace(/\s+/g, ' ');
+          if (buttonText !== pending.buttonText) return;
+          target.__catalogPendingDomAction = undefined;
+          target.__catalogActiveDomAction = {
+            kind: pending.kind,
+            expectedCount: pending.expectedCount,
+            startTime: performance.now(),
+            completionScheduled: false,
+          };
+          scheduleActionMeasurement();
+        },
+        true,
+      );
+      scheduleInitialMeasurement();
     },
-    { name: metricName, start: startMark },
+    { pageMode: mode, itemCount: initialItemCount },
   );
 }
 
@@ -124,7 +223,7 @@ async function writeProductionEvidence(
 
 async function installAccountLibraryRoutes(page: Page): Promise<{ stateReads: () => number }> {
   let stateReads = 0;
-  await page.addInitScript(() => performance.mark('library-navigation-start'));
+  await installBrowserDomTiming(page, 'library', libraryPageSize);
   await page.addInitScript(() => localStorage.removeItem('novel.demo.library.v1'));
 
   await page.route('**/api/v1/system/status', (route) =>
@@ -238,31 +337,65 @@ test('account Library renders and filters a 200-work synthetic collection', asyn
 }, testInfo) => {
   const reads = await installAccountLibraryRoutes(page);
   const initialLoadSamplesMs: number[] = [];
+  const initialLoadDriverWallSamplesMs: number[] = [];
   await page.setViewportSize({ width: 1280, height: 720 });
   const session = await page.context().newCDPSession(page);
   await session.send('Performance.enable');
   const baselineMetrics = await session.send('Performance.getMetrics');
 
   for (let sample = 0; sample < initialLoadSamples; sample += 1) {
+    const driverStartedAt = performance.now();
     if (sample === 0) await page.goto('/app/library');
     else await page.reload();
     await expect(page.locator('.library-work-row')).toHaveCount(libraryPageSize);
     await expect.poll(reads.stateReads).toBe((sample + 1) * libraryPageSize);
-    initialLoadSamplesMs.push(
-      await measure(page, 'library-initial-render', 'library-navigation-start'),
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => (window as CatalogTimingWindow).__catalogInitialDomDurations?.length ?? 0,
+        ),
+      )
+      .toBe(1);
+    const initialDomDurationMs = await page.evaluate(
+      () => (window as CatalogTimingWindow).__catalogInitialDomDurations?.at(-1) ?? 0,
     );
+    expect(initialDomDurationMs).toBeGreaterThan(0);
+    initialLoadSamplesMs.push(initialDomDurationMs);
+    initialLoadDriverWallSamplesMs.push(performance.now() - driverStartedAt);
   }
 
   const pageAppendSamplesMs: number[] = [];
+  const pageAppendDriverWallSamplesMs: number[] = [];
   for (let pageNumber = 1; pageNumber < libraryWorkCount / libraryPageSize; pageNumber += 1) {
     const expectedWorkCount = (pageNumber + 1) * libraryPageSize;
-    await page.evaluate(() => performance.mark('library-append-start'));
+    await page.evaluate((expectedCount) => {
+      (window as CatalogTimingWindow).__catalogPendingDomAction = {
+        kind: 'library-append',
+        buttonText: 'Tải thêm tác phẩm',
+        expectedCount,
+      };
+    }, expectedWorkCount);
+    const driverStartedAt = performance.now();
     await page.getByRole('button', { name: 'Tải thêm tác phẩm' }).click();
     await expect(page.locator('.library-work-row')).toHaveCount(expectedWorkCount);
     await expect
       .poll(reads.stateReads)
       .toBe(initialLoadSamples * libraryPageSize + pageNumber * libraryPageSize);
-    pageAppendSamplesMs.push(await measure(page, 'library-page-append', 'library-append-start'));
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => (window as CatalogTimingWindow).__catalogDomActionDurations?.length ?? 0,
+        ),
+      )
+      .toBe(pageNumber);
+    const action = await page.evaluate(() =>
+      (window as CatalogTimingWindow).__catalogDomActionDurations?.at(-1),
+    );
+    expect(action?.kind).toBe('library-append');
+    const actionDurationMs = action?.durationMs ?? 0;
+    expect(actionDurationMs).toBeGreaterThan(0);
+    pageAppendSamplesMs.push(actionDurationMs);
+    pageAppendDriverWallSamplesMs.push(performance.now() - driverStartedAt);
   }
 
   await session.send('HeapProfiler.enable');
@@ -284,10 +417,28 @@ test('account Library renders and filters a 200-work synthetic collection', asyn
     (metric('JSHeapUsedSize') - baselineMetric('JSHeapUsedSize')) / (1024 * 1024);
   const domNodeCount = metric('Nodes');
 
-  await page.evaluate(() => performance.mark('library-filter-start'));
+  await page.evaluate(() => {
+    (window as CatalogTimingWindow).__catalogPendingDomAction = {
+      kind: 'library-filter',
+      buttonText: 'Hoàn thành 100',
+      expectedCount: 100,
+    };
+  });
+  const filterDriverStartedAt = performance.now();
   await page.getByRole('button', { name: 'Hoàn thành 100' }).click();
   await expect(page.locator('.library-work-row')).toHaveCount(100);
-  const filterMs = await measure(page, 'library-status-filter', 'library-filter-start');
+  await expect
+    .poll(() =>
+      page.evaluate(() => (window as CatalogTimingWindow).__catalogDomActionDurations?.length ?? 0),
+    )
+    .toBe(libraryWorkCount / libraryPageSize);
+  const filterAction = await page.evaluate(() =>
+    (window as CatalogTimingWindow).__catalogDomActionDurations?.at(-1),
+  );
+  expect(filterAction?.kind).toBe('library-filter');
+  const filterMs = filterAction?.durationMs ?? 0;
+  expect(filterMs).toBeGreaterThan(0);
+  const filterDriverWallMs = performance.now() - filterDriverStartedAt;
   await page.setViewportSize({ width: 360, height: 800 });
   const mobileDimensions = await page.evaluate(() => ({
     documentWidth: document.documentElement.scrollWidth,
@@ -319,9 +470,16 @@ test('account Library renders and filters a 200-work synthetic collection', asyn
     measurements: {
       initialLoadP95Ms: percentile95(initialLoadSamplesMs),
       initialLoadSamplesMs,
+      firstNavigationDomReadyMs: initialLoadSamplesMs[0] ?? 0,
+      warmNavigationDomReadyP95Ms: percentile95(initialLoadSamplesMs.slice(1)),
+      initialLoadDriverWallP95Ms: percentile95(initialLoadDriverWallSamplesMs),
+      initialLoadDriverWallSamplesMs,
       appendPageP95Ms: percentile95(pageAppendSamplesMs),
       appendPageSamplesMs: pageAppendSamplesMs,
-      statusFilterMs: filterMs,
+      appendPageDriverWallP95Ms: percentile95(pageAppendDriverWallSamplesMs),
+      appendPageDriverWallSamplesMs: pageAppendDriverWallSamplesMs,
+      statusFilterDomUpdateMs: filterMs,
+      statusFilterDriverWallMs: filterDriverWallMs,
       chromiumJsHeapDeltaMiB: heapDeltaMiB,
       chromiumDomNodeCount: domNodeCount,
       mobileDocumentWidth: mobileDimensions.documentWidth,
@@ -330,6 +488,7 @@ test('account Library renders and filters a 200-work synthetic collection', asyn
     scope: [
       'Production Angular build served locally from the loopback static server.',
       'Account, library, work-state and policy endpoints are deterministic Playwright route mocks; PostgreSQL/API latency is excluded.',
+      'Browser render/action durations are captured inside Chromium through the next animation frame after the target DOM state; Playwright driver wall time is recorded separately. This is not a physical display-paint measurement.',
       'Heap and DOM metrics are Chromium CDP samples after explicit garbage collection; they are not process/native memory totals.',
       'Dataset is synthetic: 200 private work summaries, eight 25-item pages, and one actor-scoped state read per work.',
     ],
@@ -340,9 +499,9 @@ test('account Library renders and filters a 200-work synthetic collection', asyn
     `- Generated: ${result.generatedAt}`,
     `- Browser/host: ${result.environment.browserProject}; ${result.environment.host.operatingSystem}; ${result.environment.host.architecture}; ${result.environment.host.physicalMemoryGiB} GiB RAM; ${result.environment.host.cpuModel}`,
     `- Dataset: ${libraryWorkCount} private works across ${libraryWorkCount / libraryPageSize} pages of ${libraryPageSize}; one mocked work-state read per work`,
-    `- Initial load p95 (${initialLoadSamplesMs.length} samples): ${result.measurements.initialLoadP95Ms.toFixed(1)} ms`,
-    `- Page-append p95 (${pageAppendSamplesMs.length} samples): ${result.measurements.appendPageP95Ms.toFixed(1)} ms`,
-    `- Client status-filter render: ${filterMs.toFixed(1)} ms`,
+    `- Browser initial DOM-ready p95 (${initialLoadSamplesMs.length} samples): ${result.measurements.initialLoadP95Ms.toFixed(1)} ms; first navigation: ${result.measurements.firstNavigationDomReadyMs.toFixed(1)} ms; warm-navigation p95: ${result.measurements.warmNavigationDomReadyP95Ms.toFixed(1)} ms; Playwright driver-wall p95: ${result.measurements.initialLoadDriverWallP95Ms.toFixed(1)} ms`,
+    `- Browser page-append DOM-update p95 (${pageAppendSamplesMs.length} samples): ${result.measurements.appendPageP95Ms.toFixed(1)} ms; Playwright driver-wall p95: ${result.measurements.appendPageDriverWallP95Ms.toFixed(1)} ms`,
+    `- Browser status-filter DOM-update: ${filterMs.toFixed(1)} ms; Playwright driver wall: ${filterDriverWallMs.toFixed(1)} ms`,
     `- Chromium JS heap after GC: ${heapDeltaMiB.toFixed(1)} MiB; DOM nodes: ${domNodeCount.toLocaleString('en-US')}`,
     `- Mobile 360×800 document width: ${mobileDimensions.documentWidth}px / viewport ${mobileDimensions.viewportWidth}px; overflow: none`,
     '',
@@ -367,7 +526,7 @@ test('public catalog paginates 200 works and measures search over a 1,000-work s
   }));
   const requests: URL[] = [];
   const mockResponseDurationsMs: Array<{ query: string; durationMs: number }> = [];
-  await page.addInitScript(() => performance.mark('catalog-navigation-start'));
+  await installBrowserDomTiming(page, 'catalog', catalogPageSize);
   await page.addInitScript(() => {
     const target = window as CatalogTimingWindow;
     target.__catalogLongTasks = [];
@@ -423,10 +582,16 @@ test('public catalog paginates 200 works and measures search over a 1,000-work s
             return;
           }
           observer.disconnect();
-          const endMark = `catalog-search-ui-end-${sequence}`;
-          performance.mark(endMark);
-          const measure = performance.measure(`catalog-search-dom-${sequence}`, startMark, endMark);
-          target.__catalogSearchDomDurations?.push({ query, durationMs: measure.duration });
+          requestAnimationFrame(() => {
+            const endMark = `catalog-search-dom-end-${sequence}`;
+            performance.mark(endMark);
+            const measure = performance.measure(
+              `catalog-search-dom-${sequence}`,
+              startMark,
+              endMark,
+            );
+            target.__catalogSearchDomDurations?.push({ query, durationMs: measure.duration });
+          });
         });
         observer.observe(document.documentElement, {
           childList: true,
@@ -476,22 +641,56 @@ test('public catalog paginates 200 works and measures search over a 1,000-work s
   const baselineMetrics = await session.send('Performance.getMetrics');
 
   const initialLoadSamplesMs: number[] = [];
+  const initialLoadDriverWallSamplesMs: number[] = [];
   for (let sample = 0; sample < initialLoadSamples; sample += 1) {
+    const driverStartedAt = performance.now();
     if (sample === 0) await page.goto('/');
     else await page.reload();
     await expect(page.locator('.public-catalog-card')).toHaveCount(catalogPageSize);
-    initialLoadSamplesMs.push(
-      await measure(page, 'catalog-initial-render', 'catalog-navigation-start'),
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => (window as CatalogTimingWindow).__catalogInitialDomDurations?.length ?? 0,
+        ),
+      )
+      .toBe(1);
+    const initialDomDurationMs = await page.evaluate(
+      () => (window as CatalogTimingWindow).__catalogInitialDomDurations?.at(-1) ?? 0,
     );
+    expect(initialDomDurationMs).toBeGreaterThan(0);
+    initialLoadSamplesMs.push(initialDomDurationMs);
+    initialLoadDriverWallSamplesMs.push(performance.now() - driverStartedAt);
   }
 
   const pageAppendSamplesMs: number[] = [];
+  const pageAppendDriverWallSamplesMs: number[] = [];
   for (let pageNumber = 1; pageNumber < 10; pageNumber += 1) {
     const expectedCount = (pageNumber + 1) * catalogPageSize;
-    await page.evaluate(() => performance.mark('catalog-append-start'));
+    await page.evaluate((appendCount) => {
+      (window as CatalogTimingWindow).__catalogPendingDomAction = {
+        kind: 'catalog-append',
+        buttonText: 'Tải thêm truyện',
+        expectedCount: appendCount,
+      };
+    }, expectedCount);
+    const driverStartedAt = performance.now();
     await page.getByRole('button', { name: 'Tải thêm truyện' }).click();
     await expect(page.locator('.public-catalog-card')).toHaveCount(expectedCount);
-    pageAppendSamplesMs.push(await measure(page, 'catalog-page-append', 'catalog-append-start'));
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => (window as CatalogTimingWindow).__catalogDomActionDurations?.length ?? 0,
+        ),
+      )
+      .toBe(pageNumber);
+    const action = await page.evaluate(() =>
+      (window as CatalogTimingWindow).__catalogDomActionDurations?.at(-1),
+    );
+    expect(action?.kind).toBe('catalog-append');
+    const actionDurationMs = action?.durationMs ?? 0;
+    expect(actionDurationMs).toBeGreaterThan(0);
+    pageAppendSamplesMs.push(actionDurationMs);
+    pageAppendDriverWallSamplesMs.push(performance.now() - driverStartedAt);
   }
 
   await session.send('HeapProfiler.enable');
@@ -545,7 +744,9 @@ test('public catalog paginates 200 works and measures search over a 1,000-work s
     const browserDomDurations = await page.evaluate(
       () => (window as CatalogTimingWindow).__catalogSearchDomDurations ?? [],
     );
-    searchSamplesMs.push(browserDomDurations.at(-1)?.durationMs ?? 0);
+    const searchDomDurationMs = browserDomDurations.at(-1)?.durationMs ?? 0;
+    expect(searchDomDurationMs).toBeGreaterThan(0);
+    searchSamplesMs.push(searchDomDurationMs);
     searchDriverWallSamplesMs.push(performance.now() - driverStartedAt);
     searchLongTasks.push(
       await page.evaluate(() => {
@@ -563,6 +764,7 @@ test('public catalog paginates 200 works and measures search over a 1,000-work s
   }));
   expect(mobileDimensions.documentWidth).toBeLessThanOrEqual(mobileDimensions.viewportWidth);
   expect(requests).toHaveLength(initialLoadSamples + 9 + searchSamples);
+  expect(mockResponseDurationsMs).toHaveLength(searchSamples);
 
   const result = {
     generatedAt: new Date().toISOString(),
@@ -589,8 +791,14 @@ test('public catalog paginates 200 works and measures search over a 1,000-work s
     measurements: {
       initialLoadP95Ms: percentile95(initialLoadSamplesMs),
       initialLoadSamplesMs,
+      firstNavigationDomReadyMs: initialLoadSamplesMs[0] ?? 0,
+      warmNavigationDomReadyP95Ms: percentile95(initialLoadSamplesMs.slice(1)),
+      initialLoadDriverWallP95Ms: percentile95(initialLoadDriverWallSamplesMs),
+      initialLoadDriverWallSamplesMs,
       appendPageP95Ms: percentile95(pageAppendSamplesMs),
       appendPageSamplesMs: pageAppendSamplesMs,
+      appendPageDriverWallP95Ms: percentile95(pageAppendDriverWallSamplesMs),
+      appendPageDriverWallSamplesMs: pageAppendDriverWallSamplesMs,
       browserSearchDomUpdateP95Ms: percentile95(searchSamplesMs),
       browserSearchDomUpdateSamplesMs: searchSamplesMs,
       searchDriverWallP95Ms: percentile95(searchDriverWallSamplesMs),
@@ -607,6 +815,7 @@ test('public catalog paginates 200 works and measures search over a 1,000-work s
     scope: [
       'Production Angular build served locally from the loopback static server.',
       'The 1,000-work catalog and its query filtering/pagination are deterministic Playwright route mocks; server/database search cost is excluded.',
+      'Browser render/action durations are captured inside Chromium through the next animation frame after the target DOM state; Playwright driver wall time is recorded separately. This is not a physical display-paint measurement.',
       'Ten 20-item pages (200 cards) are appended in the browser before the heap/DOM measurement.',
       'Heap and DOM metrics are Chromium CDP samples after explicit garbage collection; they are not process/native memory totals.',
     ],
@@ -617,8 +826,8 @@ test('public catalog paginates 200 works and measures search over a 1,000-work s
     `- Generated: ${result.generatedAt}`,
     `- Browser/host: ${result.environment.browserProject}; ${result.environment.host.operatingSystem}; ${result.environment.host.architecture}; ${result.environment.host.physicalMemoryGiB} GiB RAM; ${result.environment.host.cpuModel}`,
     `- Dataset: ${catalogWorkCount.toLocaleString('en-US')} synthetic works; ten ${catalogPageSize}-item pages appended; each search matches at least 100 works`,
-    `- Initial page p95 (${initialLoadSamplesMs.length} samples): ${result.measurements.initialLoadP95Ms.toFixed(1)} ms`,
-    `- Page-append p95 (${pageAppendSamplesMs.length} samples): ${result.measurements.appendPageP95Ms.toFixed(1)} ms`,
+    `- Browser initial DOM-ready p95 (${initialLoadSamplesMs.length} samples): ${result.measurements.initialLoadP95Ms.toFixed(1)} ms; first navigation: ${result.measurements.firstNavigationDomReadyMs.toFixed(1)} ms; warm-navigation p95: ${result.measurements.warmNavigationDomReadyP95Ms.toFixed(1)} ms; Playwright driver-wall p95: ${result.measurements.initialLoadDriverWallP95Ms.toFixed(1)} ms`,
+    `- Browser page-append DOM-update p95 (${pageAppendSamplesMs.length} samples): ${result.measurements.appendPageP95Ms.toFixed(1)} ms; Playwright driver-wall p95: ${result.measurements.appendPageDriverWallP95Ms.toFixed(1)} ms`,
     `- Browser submit-to-results DOM update p95 (${searchSamplesMs.length} samples): ${result.measurements.browserSearchDomUpdateP95Ms.toFixed(1)} ms`,
     `- First search after appending 200 cards: ${result.measurements.firstSearchAfterAppending200CardsMs.toFixed(1)} ms; follow-up search p95 (${searchSamplesMs.length - 1} samples): ${result.measurements.followUpSearchP95Ms.toFixed(1)} ms`,
     `- Playwright driver wall p95: ${result.measurements.searchDriverWallP95Ms.toFixed(1)} ms`,
