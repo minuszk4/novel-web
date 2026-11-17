@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 10.8.0
+  version: 10.9.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -7208,7 +7208,7 @@ paths:
         owner, library and PUBLIC_METADATA approval remain current. If a previously followed work is no longer
         public, the row retains only opaque actor-owned controls and a neutral unavailable state; title and author are
         null so this list cannot reveal withdrawn metadata. Responses are no-store. This route lists saved preferences;
-        it does not imply that chapter alerts are currently delivered.
+        it does not replay historical chapter releases or enable email/push delivery.
       security:
         - appSession: []
       parameters:
@@ -7245,6 +7245,134 @@ paths:
                 $ref: '#/components/schemas/MyWorkSubscriptionPage'
         '400':
           $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/me/notifications:
+    get:
+      operationId: listMyNotifications
+      tags: [Notifications]
+      x-implementation-status: implemented-postgres-profile
+      summary: List the current actor's in-app notifications
+      description: >-
+        Requires an active session and current Terms/Privacy acceptance. Uses an actor-bound HMAC keyset cursor,
+        returns at most 50 rows and includes the actor's unread count. Current public work/chapter metadata is included
+        only while PUBLIC_METADATA scope remains current. Withdrawn or unavailable items use UPDATE_UNAVAILABLE and
+        omit work/chapter identifiers and metadata. Rows never contain chapter prose or grant Reader access. No-store.
+      security:
+        - appSession: []
+      parameters:
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 2048
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+      responses:
+        '200':
+          description: Actor-owned, privacy-filtered inbox page.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationPage'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/me/notifications/{notificationId}/read:
+    post:
+      operationId: markMyNotificationRead
+      tags: [Notifications]
+      x-implementation-status: implemented-postgres-profile
+      summary: Mark one actor-owned notification as read
+      description: Unknown and foreign notification identifiers share a masked 404 response. Exact retries are safe.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - name: notificationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Actor-owned read receipt.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationReadReceipt'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/me/notifications/read-all:
+    post:
+      operationId: markMyNotificationsRead
+      tags: [Notifications]
+      x-implementation-status: implemented-postgres-profile
+      summary: Mark a bounded batch of the actor's unread notifications as read
+      description: >-
+        Each request updates at most 500 rows. If hasMore is true, repeat the idempotent request until false. This
+        bounds each transaction while allowing large inboxes to complete without exposing row identifiers.
+      security:
+        - appSession: []
+          csrfToken: []
+      responses:
+        '200':
+          description: Bounded actor-owned read-all progress.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationReadAllReceipt'
         '401':
           $ref: '#/components/responses/Problem'
         '403':
@@ -7309,8 +7437,9 @@ paths:
         existing active follow and never creates a subscription. The request has a strict one-field allow-list. An
         exact retry of the current desired state returns the current ETag; a conflicting stale state returns 412.
         A persistent per-actor token bucket limits mutations across API instances. A rejected mutation returns 429
-        with Retry-After; failure to persist the bucket returns 503 without changing the subscription. Email, push and
-        chapter-published event delivery are not enabled by this operation.
+        with Retry-After; failure to persist the bucket returns 503 without changing the subscription. This operation
+        only saves the per-work in-app choice; it does not enable email/push, replay old releases or bypass the
+        default-off chapter notification worker.
       security:
         - appSession: []
           csrfToken: []
@@ -7497,6 +7626,79 @@ components:
         author:
           type: [string, 'null']
           maxLength: 300
+    NotificationPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor, unreadCount]
+      properties:
+        items:
+          type: array
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/NotificationItem'
+        nextCursor:
+          type: [string, 'null']
+          maxLength: 2048
+        unreadCount:
+          type: integer
+          minimum: 0
+    NotificationItem:
+      type: object
+      additionalProperties: false
+      required:
+        [notificationId, eventType, createdAt, readAt, available, workId, workTitle, chapterId, chapterTitle, chapterOrdinal]
+      properties:
+        notificationId:
+          type: string
+          format: uuid
+        eventType:
+          type: string
+          enum: [CHAPTER_PUBLISHED, UPDATE_UNAVAILABLE]
+        createdAt:
+          type: string
+          format: date-time
+        readAt:
+          type: [string, 'null']
+          format: date-time
+        available:
+          type: boolean
+        workId:
+          type: [string, 'null']
+          format: uuid
+        workTitle:
+          type: [string, 'null']
+          maxLength: 300
+        chapterId:
+          type: [string, 'null']
+          format: uuid
+        chapterTitle:
+          type: [string, 'null']
+          maxLength: 300
+        chapterOrdinal:
+          type: [integer, 'null']
+          minimum: 1
+    NotificationReadReceipt:
+      type: object
+      additionalProperties: false
+      required: [notificationId, readAt]
+      properties:
+        notificationId:
+          type: string
+          format: uuid
+        readAt:
+          type: string
+          format: date-time
+    NotificationReadAllReceipt:
+      type: object
+      additionalProperties: false
+      required: [updatedCount, hasMore]
+      properties:
+        updatedCount:
+          type: integer
+          minimum: 0
+          maximum: 500
+        hasMore:
+          type: boolean
     WorkSubscriptionState:
       type: object
       additionalProperties: false

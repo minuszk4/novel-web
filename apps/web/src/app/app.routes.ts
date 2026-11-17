@@ -129,6 +129,14 @@ export const routes: Routes = [
         title: 'Lịch sử đọc — Novel',
       },
       {
+        path: 'notifications',
+        loadComponent: () =>
+          import('./pages/notifications-page.component').then(
+            (page) => page.NotificationsPageComponent,
+          ),
+        title: 'Thông báo — Novel',
+      },
+      {
         path: 'purchases',
         loadComponent: () =>
           import('./pages/purchases-page.component').then((page) => page.PurchasesPageComponent),

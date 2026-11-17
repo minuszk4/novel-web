@@ -1,0 +1,131 @@
+<section class="notifications-page" aria-labelledby="notifications-title">
+  <header class="notifications-heading">
+    <div>
+      <p class="notifications-eyebrow">CẬP NHẬT TỪ TÁC PHẨM BẠN THEO DÕI</p>
+      <h1 id="notifications-title">Thông báo</h1>
+      <p class="notifications-intro">
+        Chỉ chương được chủ tác phẩm xác nhận phát hành mới xuất hiện ở đây. Thông báo không mở khóa
+        nội dung trả phí.
+      </p>
+      <a class="notifications-secondary-link notifications-manage-link" routerLink="/app/settings">
+        Quản lý tác phẩm đang theo dõi
+      </a>
+    </div>
+    @if (page(); as current) {
+      @if (current.unreadCount > 0) {
+        <button
+          class="notifications-read-all"
+          type="button"
+          [disabled]="markingAllRead()"
+          (click)="markAllRead()"
+        >
+          {{ markingAllRead() ? 'Đang cập nhật…' : 'Đánh dấu tất cả đã đọc' }}
+        </button>
+      }
+    }
+  </header>
+
+  @if (message()) {
+    <p class="notifications-status" role="status" aria-live="polite">{{ message() }}</p>
+  }
+  @if (actionError()) {
+    <p class="notifications-error" role="alert">{{ actionError() }}</p>
+  }
+
+  @if (loading()) {
+    <div class="notifications-state" role="status" aria-live="polite">
+      <span class="notifications-spinner" aria-hidden="true"></span>
+      <p>Đang tải thông báo…</p>
+    </div>
+  } @else if (error(); as problem) {
+    <div class="notifications-state" role="alert">
+      @if (problem.status === 401) {
+        <h2>Hãy đăng nhập để xem thông báo</h2>
+        <p>Thông báo chỉ được lưu trong tài khoản của bạn.</p>
+        <a
+          class="notifications-primary-link"
+          routerLink="/sign-in"
+          [queryParams]="{ returnTo: '/app/notifications' }"
+        >
+          Đăng nhập
+        </a>
+      } @else if (problem.code === 'POLICY_ACCEPTANCE_REQUIRED') {
+        <h2>Cần xác nhận chính sách</h2>
+        <p>Hãy hoàn tất bước xác nhận Terms và Privacy trước khi xem hộp thư.</p>
+        <a class="notifications-primary-link" routerLink="/app/setup">Mở thiết lập tài khoản</a>
+      } @else {
+        <h2>Chưa tải được thông báo</h2>
+        <p>Trạng thái đọc chưa bị thay đổi. Hãy thử tải lại.</p>
+        <button class="notifications-primary-link" type="button" (click)="retry()">Thử lại</button>
+      }
+    </div>
+  } @else if (!hasItems()) {
+    <div class="notifications-state notifications-empty">
+      <span class="notifications-empty-mark" aria-hidden="true">✦</span>
+      <h2>Chưa có thông báo</h2>
+      <p>Khi tác phẩm bạn theo dõi có chương mới được phát hành, thông báo sẽ hiện ở đây.</p>
+      <a class="notifications-secondary-link" routerLink="/app/settings"
+        >Quản lý tác phẩm đang theo dõi</a
+      >
+    </div>
+  } @else if (page(); as current) {
+    <p class="notifications-count" aria-live="polite">
+      {{ current.unreadCount }} thông báo chưa đọc
+    </p>
+    <ol class="notifications-list" aria-label="Danh sách thông báo">
+      @for (item of current.items; track item.notificationId) {
+        <li class="notification-row" [class.notification-unread]="!item.readAt">
+          <span class="notification-indicator" aria-hidden="true"></span>
+          <div class="notification-copy">
+            @if (item.available) {
+              <p class="notification-kind">Có chương mới</p>
+              <h2>{{ item.chapterTitle }}</h2>
+              <p class="notification-work">
+                {{ item.workTitle }} · Chương {{ item.chapterOrdinal }}
+              </p>
+              <a class="notification-work-link" [routerLink]="['/works', item.workId]">
+                Xem tác phẩm
+              </a>
+            } @else {
+              <p class="notification-kind">Cập nhật không khả dụng</p>
+              <h2>Một tác phẩm bạn theo dõi có cập nhật mới</h2>
+              <p class="notification-work">
+                Tác phẩm hiện không còn công khai. Không có thông tin nhận diện được hiển thị.
+              </p>
+            }
+            <time [attr.datetime]="item.createdAt">{{ item.createdAt | date: 'medium' }}</time>
+          </div>
+          <div class="notification-actions">
+            @if (item.readAt) {
+              <span class="notification-read-label">Đã đọc</span>
+            } @else {
+              <span class="notification-unread-label">Chưa đọc</span>
+              <button
+                class="notification-read-button"
+                type="button"
+                [disabled]="markingReadId() === item.notificationId || markingAllRead()"
+                (click)="markRead(item)"
+                [attr.aria-label]="
+                  'Đánh dấu đã đọc: ' +
+                  (item.available ? item.chapterTitle : 'cập nhật không khả dụng')
+                "
+              >
+                {{ markingReadId() === item.notificationId ? 'Đang lưu…' : 'Đánh dấu đã đọc' }}
+              </button>
+            }
+          </div>
+        </li>
+      }
+    </ol>
+    @if (current.nextCursor) {
+      <button
+        class="notifications-load-more"
+        type="button"
+        [disabled]="loadingMore()"
+        (click)="loadMore()"
+      >
+        {{ loadingMore() ? 'Đang tải…' : 'Tải thêm thông báo' }}
+      </button>
+    }
+  }
+</section>

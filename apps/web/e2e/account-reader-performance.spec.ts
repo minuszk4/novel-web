@@ -308,6 +308,14 @@ async function installPerformanceRoutes(page: Page): Promise<{
       return route.fulfill({ status: 200, contentType: 'text/markdown', body: '# Quyền riêng tư' });
     }
     if (pathname === '/api/v1/me/reader-preferences') return fulfillJson(route, preferences);
+    if (pathname === '/api/v1/me/notifications' && request.method() === 'GET') {
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        headers: { 'Cache-Control': 'no-store', Pragma: 'no-cache' },
+        body: JSON.stringify({ items: [], nextCursor: null, unreadCount: 0 }),
+      });
+    }
     if (pathname === `/api/v1/works/${workId}/reader-manifest`) {
       return fulfillJson(route, { work, sourceLanguage: 'vi', chapters, nextCursor: null });
     }

@@ -3253,6 +3253,81 @@ class PostgresSchemaIntegrationTests {
       assertEquals(0, notificationCountForActor(approvableFixture.workId(), staleContentOwnerId));
       assertEquals(0, notificationSensitiveColumnCount());
       assertEquals(0, chapterEntitlementCount(stagedChapter.id()));
+      MvcResult inboxPage =
+          mockMvc.perform(get("/api/v1/me/notifications?limit=1").cookie(ownerCookie)).andReturn();
+      assertEquals(
+          200, inboxPage.getResponse().getStatus(), inboxPage.getResponse().getContentAsString());
+      assertEquals("no-store", inboxPage.getResponse().getHeader(HttpHeaders.CACHE_CONTROL));
+      assertEquals("no-cache", inboxPage.getResponse().getHeader(HttpHeaders.PRAGMA));
+      JsonNode inboxBody = objectMapper.readTree(inboxPage.getResponse().getContentAsString());
+      assertEquals(1, inboxBody.path("unreadCount").asInt());
+      assertEquals(1, inboxBody.path("items").size());
+      JsonNode inboxItem = inboxBody.path("items").get(0);
+      UUID notificationId = UUID.fromString(inboxItem.path("notificationId").asText());
+      assertEquals("CHAPTER_PUBLISHED", inboxItem.path("eventType").asText());
+      assertTrue(inboxItem.path("available").asBoolean());
+      assertEquals(approvableFixture.workId().toString(), inboxItem.path("workId").asText());
+      assertEquals(stagedChapter.id().toString(), inboxItem.path("chapterId").asText());
+      assertTrue(inboxItem.path("chapterText").isMissingNode());
+      assertTrue(inboxItem.path("price").isMissingNode());
+      MvcResult otherActorInbox =
+          mockMvc.perform(get("/api/v1/me/notifications").cookie(otherActorCookie)).andReturn();
+      assertEquals(200, otherActorInbox.getResponse().getStatus());
+      assertEquals(
+          0,
+          objectMapper
+              .readTree(otherActorInbox.getResponse().getContentAsString())
+              .path("items")
+              .size());
+      MvcResult firstReadAll =
+          mockMvc
+              .perform(
+                  post("/api/v1/me/notifications/read-all")
+                      .cookie(ownerCookie)
+                      .header(
+                          SessionCsrfTokenService.TOKEN_HEADER_NAME,
+                          csrfTokenService.tokenFor(approvableOwnerSession.cookieValue())))
+              .andReturn();
+      assertEquals(200, firstReadAll.getResponse().getStatus());
+      JsonNode firstReadAllBody =
+          objectMapper.readTree(firstReadAll.getResponse().getContentAsString());
+      assertEquals(1, firstReadAllBody.path("updatedCount").asInt());
+      assertFalse(firstReadAllBody.path("hasMore").asBoolean());
+      MvcResult repeatedReadAll =
+          mockMvc
+              .perform(
+                  post("/api/v1/me/notifications/read-all")
+                      .cookie(ownerCookie)
+                      .header(
+                          SessionCsrfTokenService.TOKEN_HEADER_NAME,
+                          csrfTokenService.tokenFor(approvableOwnerSession.cookieValue())))
+              .andReturn();
+      assertEquals(
+          0,
+          objectMapper
+              .readTree(repeatedReadAll.getResponse().getContentAsString())
+              .path("updatedCount")
+              .asInt());
+      MvcResult foreignRead =
+          mockMvc
+              .perform(
+                  post("/api/v1/me/notifications/{notificationId}/read", notificationId)
+                      .cookie(otherActorCookie)
+                      .header(
+                          SessionCsrfTokenService.TOKEN_HEADER_NAME,
+                          csrfTokenService.tokenFor(staleContentOwnerSession.cookieValue())))
+              .andReturn();
+      assertEquals(404, foreignRead.getResponse().getStatus());
+      MvcResult ownerReadReplay =
+          mockMvc
+              .perform(
+                  post("/api/v1/me/notifications/{notificationId}/read", notificationId)
+                      .cookie(ownerCookie)
+                      .header(
+                          SessionCsrfTokenService.TOKEN_HEADER_NAME,
+                          csrfTokenService.tokenFor(approvableOwnerSession.cookieValue())))
+              .andReturn();
+      assertEquals(200, ownerReadReplay.getResponse().getStatus());
       requeueChapterPublishedOutbox(approvableFixture.workId());
       assertEquals(
           1, notificationDeliveryService.processDueEventsForWork(approvableFixture.workId()));
@@ -3565,6 +3640,20 @@ class PostgresSchemaIntegrationTests {
       assertEquals(
           1, notificationDeliveryService.processDueEventsForWork(approvableFixture.workId()));
       assertEquals(1, notificationCountForWork(approvableFixture.workId()));
+      MvcResult withdrawnInbox =
+          mockMvc.perform(get("/api/v1/me/notifications").cookie(ownerCookie)).andReturn();
+      assertEquals(200, withdrawnInbox.getResponse().getStatus());
+      JsonNode withdrawnInboxItem =
+          objectMapper
+              .readTree(withdrawnInbox.getResponse().getContentAsString())
+              .path("items")
+              .get(0);
+      assertFalse(withdrawnInboxItem.path("available").asBoolean());
+      assertEquals("UPDATE_UNAVAILABLE", withdrawnInboxItem.path("eventType").asText());
+      assertTrue(withdrawnInboxItem.path("workId").isNull());
+      assertTrue(withdrawnInboxItem.path("chapterId").isNull());
+      assertTrue(withdrawnInboxItem.path("workTitle").isNull());
+      assertTrue(withdrawnInboxItem.path("chapterTitle").isNull());
 
       when(purgeTransport.purge(any(), any()))
           .thenReturn(PublicationTakedownPurgeTransport.DeliveryResult.acknowledged());

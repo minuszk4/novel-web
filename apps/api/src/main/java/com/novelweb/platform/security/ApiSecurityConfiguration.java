@@ -98,6 +98,7 @@ public class ApiSecurityConfiguration {
                         "/api/v1/me/reader-preferences",
                         "/api/v1/me/reading-history",
                         "/api/v1/me/subscriptions",
+                        "/api/v1/me/notifications",
                         "/api/v1/chapters/*/content",
                         "/api/v1/chapters/*/translations",
                         "/api/v1/chapters/*/translations/*/content")
@@ -107,6 +108,12 @@ public class ApiSecurityConfiguration {
                     .permitAll();
                 authorize
                     .requestMatchers(HttpMethod.DELETE, "/api/v1/works/*/subscription")
+                    .permitAll();
+                authorize
+                    .requestMatchers(
+                        HttpMethod.POST,
+                        "/api/v1/me/notifications/*/read",
+                        "/api/v1/me/notifications/read-all")
                     .permitAll();
                 authorize.requestMatchers(HttpMethod.PUT, "/api/v1/works/*/progress").permitAll();
                 authorize.requestMatchers(HttpMethod.POST, "/api/v1/works/*/bookmarks").permitAll();

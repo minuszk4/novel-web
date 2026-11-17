@@ -219,6 +219,25 @@ class LibraryCursorCodecTests {
   }
 
   @Test
+  void notificationCursorIsBoundToActorAndInboxSort() {
+    LibraryCursorCodec codec = new LibraryCursorCodec(TEST_KEY);
+    UUID actorId = UUID.randomUUID();
+    LibraryCursorCodec.CursorContext context = LibraryCursorCodec.notificationsContext(actorId);
+    LibraryCursorCodec.Position position =
+        new LibraryCursorCodec.Position(
+            0, Instant.parse("2026-11-18T00:00:00.123456Z"), UUID.randomUUID());
+    String cursor = codec.encode(context, position);
+
+    assertEquals(position, codec.decode(cursor, context));
+    assertThrows(
+        LibraryCursorCodec.InvalidCursorException.class,
+        () -> codec.decode(cursor, LibraryCursorCodec.notificationsContext(UUID.randomUUID())));
+    assertThrows(
+        LibraryCursorCodec.InvalidCursorException.class,
+        () -> codec.decode(cursor, LibraryCursorCodec.workSubscriptionsContext(actorId)));
+  }
+
+  @Test
   void rejectsTamperedNonCanonicalAndUnconfiguredCursors() {
     LibraryCursorCodec codec = new LibraryCursorCodec(TEST_KEY);
     LibraryCursorCodec.CursorContext context = LibraryCursorCodec.libraryContext(UUID.randomUUID());

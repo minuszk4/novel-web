@@ -139,6 +139,11 @@ public class LibraryCursorCodec {
         Kind.WORK_SUBSCRIPTIONS, actorUserId, NO_SCOPE, "", "", "active", "work-subscriptions-v1");
   }
 
+  public static CursorContext notificationsContext(UUID actorUserId) {
+    return new CursorContext(
+        Kind.NOTIFICATIONS, actorUserId, NO_SCOPE, "", "", "inbox", "notifications-v1");
+  }
+
   public void requireConfigured() {
     if (hmacKey == null) throw new SigningUnavailableException();
   }
@@ -295,7 +300,8 @@ public class LibraryCursorCodec {
     TRANSLATION_REVIEW_QUEUE(6),
     TRANSLATION_PUBLICATION_QUEUE(7),
     TRANSLATION_RELEASE_HISTORY(8),
-    WORK_SUBSCRIPTIONS(9);
+    WORK_SUBSCRIPTIONS(9),
+    NOTIFICATIONS(10);
 
     private final int code;
 
@@ -390,6 +396,14 @@ public class LibraryCursorCodec {
               || !status.equals("active")
               || !accessScopeFingerprint.equals("work-subscriptions-v1"))) {
         throw new IllegalArgumentException("Invalid work-subscriptions cursor context");
+      }
+      if (kind == Kind.NOTIFICATIONS
+          && (!scopeId.equals(NO_SCOPE)
+              || !query.isEmpty()
+              || !tag.isEmpty()
+              || !status.equals("inbox")
+              || !accessScopeFingerprint.equals("notifications-v1"))) {
+        throw new IllegalArgumentException("Invalid notifications cursor context");
       }
     }
 

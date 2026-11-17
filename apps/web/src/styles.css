@@ -1407,6 +1407,50 @@ label:has(input:focus-visible) {
   color: var(--primary);
   font-weight: 700;
 }
+.notification-bell-link {
+  position: relative;
+  min-width: 38px;
+  height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  color: var(--ink);
+  font-size: 20px;
+  text-decoration: none;
+}
+.notification-bell-link:focus-visible {
+  outline: 3px solid #bd8d43;
+  outline-offset: 3px;
+}
+.notification-bell-link svg {
+  width: 19px;
+  height: 19px;
+}
+.notification-bell-text {
+  font-size: 11px;
+  font-weight: 700;
+}
+.notification-badge {
+  position: absolute;
+  top: -4px;
+  right: -7px;
+  min-width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  padding: 0 4px;
+  border: 2px solid var(--surface);
+  border-radius: 10px;
+  color: #fff;
+  background: #a03d32;
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1;
+}
 .topbar-avatar {
   width: 30px;
   height: 30px;
@@ -6655,6 +6699,13 @@ a.followed-work-title:hover {
   }
   .progress-foot {
     font-size: 7px;
+  }
+}
+@media (max-width: 420px) {
+  .topbar-context,
+  .topbar-avatar,
+  .notification-bell-text {
+    display: none;
   }
 }
 @media (max-width: 320px) {
