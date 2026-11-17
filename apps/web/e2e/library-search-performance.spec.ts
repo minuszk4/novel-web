@@ -106,7 +106,6 @@ async function installBrowserDomTiming(
   await page.addInitScript(
     ({ pageMode, itemCount }) => {
       const target = window as CatalogTimingWindow;
-      const navigationStartedAt = performance.now();
       target.__catalogInitialDomDurations = [];
       target.__catalogDomActionDurations = [];
       let initialCompletionScheduled = false;
@@ -131,24 +130,20 @@ async function installBrowserDomTiming(
       };
 
       const scheduleInitialMeasurement = (): void => {
-        if (
-          initialCompletionScheduled ||
-          (target.__catalogInitialDomDurations?.length ?? 0) > 0 ||
-          !isReady(itemCount)
-        ) {
+        if (initialCompletionScheduled || (target.__catalogInitialDomDurations?.length ?? 0) > 0) {
           return;
         }
         initialCompletionScheduled = true;
         requestAnimationFrame(() => {
           initialCompletionScheduled = false;
           if (!isReady(itemCount)) return;
-          target.__catalogInitialDomDurations?.push(performance.now() - navigationStartedAt);
+          target.__catalogInitialDomDurations?.push(performance.now());
         });
       };
 
       const scheduleActionMeasurement = (): void => {
         const action = target.__catalogActiveDomAction;
-        if (!action || action.completionScheduled || !isReady(action.expectedCount)) return;
+        if (!action || action.completionScheduled) return;
         action.completionScheduled = true;
         requestAnimationFrame(() => {
           if (target.__catalogActiveDomAction !== action) return;
@@ -468,11 +463,11 @@ test('account Library renders and filters a 200-work synthetic collection', asyn
       workStateReadsObserved: reads.stateReads(),
     },
     measurements: {
-      initialLoadP95Ms: percentile95(initialLoadSamplesMs),
       initialLoadSamplesMs,
       firstNavigationDomReadyMs: initialLoadSamplesMs[0] ?? 0,
       warmNavigationDomReadyP95Ms: percentile95(initialLoadSamplesMs.slice(1)),
-      initialLoadDriverWallP95Ms: percentile95(initialLoadDriverWallSamplesMs),
+      firstNavigationDriverWallMs: initialLoadDriverWallSamplesMs[0] ?? 0,
+      warmNavigationDriverWallP95Ms: percentile95(initialLoadDriverWallSamplesMs.slice(1)),
       initialLoadDriverWallSamplesMs,
       appendPageP95Ms: percentile95(pageAppendSamplesMs),
       appendPageSamplesMs: pageAppendSamplesMs,
@@ -499,7 +494,8 @@ test('account Library renders and filters a 200-work synthetic collection', asyn
     `- Generated: ${result.generatedAt}`,
     `- Browser/host: ${result.environment.browserProject}; ${result.environment.host.operatingSystem}; ${result.environment.host.architecture}; ${result.environment.host.physicalMemoryGiB} GiB RAM; ${result.environment.host.cpuModel}`,
     `- Dataset: ${libraryWorkCount} private works across ${libraryWorkCount / libraryPageSize} pages of ${libraryPageSize}; one mocked work-state read per work`,
-    `- Browser initial DOM-ready p95 (${initialLoadSamplesMs.length} samples): ${result.measurements.initialLoadP95Ms.toFixed(1)} ms; first navigation: ${result.measurements.firstNavigationDomReadyMs.toFixed(1)} ms; warm-navigation p95: ${result.measurements.warmNavigationDomReadyP95Ms.toFixed(1)} ms; Playwright driver-wall p95: ${result.measurements.initialLoadDriverWallP95Ms.toFixed(1)} ms`,
+    `- First-navigation DOM-ready (one cold sample): ${result.measurements.firstNavigationDomReadyMs.toFixed(1)} ms; warm-reload DOM-ready p95 (${initialLoadSamplesMs.length - 1} samples): ${result.measurements.warmNavigationDomReadyP95Ms.toFixed(1)} ms`,
+    `- Playwright driver wall (reported separately): first navigation ${result.measurements.firstNavigationDriverWallMs.toFixed(1)} ms; warm-reload p95 ${result.measurements.warmNavigationDriverWallP95Ms.toFixed(1)} ms`,
     `- Browser page-append DOM-update p95 (${pageAppendSamplesMs.length} samples): ${result.measurements.appendPageP95Ms.toFixed(1)} ms; Playwright driver-wall p95: ${result.measurements.appendPageDriverWallP95Ms.toFixed(1)} ms`,
     `- Browser status-filter DOM-update: ${filterMs.toFixed(1)} ms; Playwright driver wall: ${filterDriverWallMs.toFixed(1)} ms`,
     `- Chromium JS heap after GC: ${heapDeltaMiB.toFixed(1)} MiB; DOM nodes: ${domNodeCount.toLocaleString('en-US')}`,
@@ -789,11 +785,11 @@ test('public catalog paginates 200 works and measures search over a 1,000-work s
       resultCountPerSearchPage: catalogPageSize,
     },
     measurements: {
-      initialLoadP95Ms: percentile95(initialLoadSamplesMs),
       initialLoadSamplesMs,
       firstNavigationDomReadyMs: initialLoadSamplesMs[0] ?? 0,
       warmNavigationDomReadyP95Ms: percentile95(initialLoadSamplesMs.slice(1)),
-      initialLoadDriverWallP95Ms: percentile95(initialLoadDriverWallSamplesMs),
+      firstNavigationDriverWallMs: initialLoadDriverWallSamplesMs[0] ?? 0,
+      warmNavigationDriverWallP95Ms: percentile95(initialLoadDriverWallSamplesMs.slice(1)),
       initialLoadDriverWallSamplesMs,
       appendPageP95Ms: percentile95(pageAppendSamplesMs),
       appendPageSamplesMs: pageAppendSamplesMs,
@@ -826,7 +822,8 @@ test('public catalog paginates 200 works and measures search over a 1,000-work s
     `- Generated: ${result.generatedAt}`,
     `- Browser/host: ${result.environment.browserProject}; ${result.environment.host.operatingSystem}; ${result.environment.host.architecture}; ${result.environment.host.physicalMemoryGiB} GiB RAM; ${result.environment.host.cpuModel}`,
     `- Dataset: ${catalogWorkCount.toLocaleString('en-US')} synthetic works; ten ${catalogPageSize}-item pages appended; each search matches at least 100 works`,
-    `- Browser initial DOM-ready p95 (${initialLoadSamplesMs.length} samples): ${result.measurements.initialLoadP95Ms.toFixed(1)} ms; first navigation: ${result.measurements.firstNavigationDomReadyMs.toFixed(1)} ms; warm-navigation p95: ${result.measurements.warmNavigationDomReadyP95Ms.toFixed(1)} ms; Playwright driver-wall p95: ${result.measurements.initialLoadDriverWallP95Ms.toFixed(1)} ms`,
+    `- First-navigation DOM-ready (one cold sample): ${result.measurements.firstNavigationDomReadyMs.toFixed(1)} ms; warm-reload DOM-ready p95 (${initialLoadSamplesMs.length - 1} samples): ${result.measurements.warmNavigationDomReadyP95Ms.toFixed(1)} ms`,
+    `- Playwright driver wall (reported separately): first navigation ${result.measurements.firstNavigationDriverWallMs.toFixed(1)} ms; warm-reload p95 ${result.measurements.warmNavigationDriverWallP95Ms.toFixed(1)} ms`,
     `- Browser page-append DOM-update p95 (${pageAppendSamplesMs.length} samples): ${result.measurements.appendPageP95Ms.toFixed(1)} ms; Playwright driver-wall p95: ${result.measurements.appendPageDriverWallP95Ms.toFixed(1)} ms`,
     `- Browser submit-to-results DOM update p95 (${searchSamplesMs.length} samples): ${result.measurements.browserSearchDomUpdateP95Ms.toFixed(1)} ms`,
     `- First search after appending 200 cards: ${result.measurements.firstSearchAfterAppending200CardsMs.toFixed(1)} ms; follow-up search p95 (${searchSamplesMs.length - 1} samples): ${result.measurements.followUpSearchP95Ms.toFixed(1)} ms`,
