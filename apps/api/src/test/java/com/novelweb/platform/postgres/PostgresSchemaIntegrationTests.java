@@ -261,6 +261,8 @@ class PostgresSchemaIntegrationTests {
           "publication_request_scope_snapshots",
           "publication_request_scope_claims",
           "publication_review_events",
+          "chapter_publication_release_events",
+          "chapter_published_outbox_events",
           "publication_request_rate_limits",
           "import_jobs",
           "import_actor_rate_limits",
@@ -461,7 +463,7 @@ class PostgresSchemaIntegrationTests {
             connection.prepareStatement("SELECT COUNT(*) FROM databasechangelog");
         ResultSet changesets = changesetCount.executeQuery()) {
       changesets.next();
-      assertEquals(174, changesets.getInt(1), "unexpected number of applied changesets");
+      assertEquals(177, changesets.getInt(1), "unexpected number of applied changesets");
     }
 
     Set<String> actualTables = new HashSet<>();
@@ -656,7 +658,8 @@ class PostgresSchemaIntegrationTests {
                 try (Connection connection = dataSource.getConnection();
                     java.sql.Statement truncate = connection.createStatement()) {
                   truncate.execute(
-                      "TRUNCATE publication_review_events, publication_request_scope_claims,"
+                      "TRUNCATE chapter_published_outbox_events, chapter_publication_release_events,"
+                          + " publication_review_events, publication_request_scope_claims,"
                           + " publication_request_scope_snapshots, publication_requests,"
                           + " publication_release_events,"
                           + " publication_rights_policy_acceptance_idempotency,"
@@ -2870,6 +2873,286 @@ class PostgresSchemaIntegrationTests {
       assertTrue(publicationScopeIsCurrent(approvableFixture.workId(), "PUBLIC_METADATA"));
       assertTrue(publicationScopeIsCurrent(approvableFixture.workId(), "CHAPTER_TEXT"));
       assertTrue(publicationScopeIsCurrent(approvableFixture.workId(), "COMMERCIAL_SALE"));
+      assertEquals(3, publicationScopeApprovalCount(approvableFixture.workId()));
+
+      LibraryRepository.ChapterRecord stagedChapter =
+          libraryService.createPrivateAuthoredChapter(
+              approvableOwnerId,
+              approvableFixture.workId(),
+              "Chapter held for review",
+              "staged-chapter-create-key-0001");
+      libraryService.savePrivateAuthoredDraftRevision(
+          approvableOwnerId,
+          approvableFixture.workId(),
+          stagedChapter.id(),
+          0,
+          "staged-chapter-revision-key-0001",
+          "plain_text",
+          "This chapter stays private until its own review is approved.",
+          List.of(
+              new LibraryService.NewSegment(
+                  1,
+                  "paragraph",
+                  "This chapter stays private until its own review is approved.",
+                  "staged-chapter-p1")));
+      String chapterReadinessPath =
+          "/api/v1/authoring/manuscripts/"
+              + approvableFixture.workId()
+              + "/publication/readiness/chapters/"
+              + stagedChapter.id();
+      MvcResult chapterReadiness =
+          mockMvc.perform(get(chapterReadinessPath).cookie(ownerCookie)).andReturn();
+      assertEquals(200, chapterReadiness.getResponse().getStatus());
+      JsonNode chapterReadinessBody =
+          objectMapper.readTree(chapterReadiness.getResponse().getContentAsString());
+      assertTrue(chapterReadinessBody.path("canSubmit").asBoolean());
+      assertTrue(
+          chapterReadinessBody.path("currentRequestState").isNull(),
+          "The approved whole-work request must not be treated as review of this new chapter");
+      assertEquals("draft", chapterStatus(stagedChapter.id()));
+      assertEquals(3, publicationScopeApprovalCount(approvableFixture.workId()));
+      assertEquals(0, chapterPublishedOutboxEventCount(approvableFixture.workId()));
+
+      String chapterRequestBody =
+          objectMapper.writeValueAsString(
+              Map.of(
+                  "policyVersion",
+                  policyVersion,
+                  "scopeClaims",
+                  List.of(
+                      Map.of("scopeCode", "PUBLIC_METADATA", "rightsBasisCode", "ORIGINAL_WORK"),
+                      Map.of("scopeCode", "CHAPTER_TEXT", "rightsBasisCode", "ORIGINAL_WORK"),
+                      Map.of("scopeCode", "COMMERCIAL_SALE", "rightsBasisCode", "ORIGINAL_WORK"))));
+      // The test profile permits one submission per owner; model the elapsed refill window.
+      deletePublicationRateLimitBucket(approvableOwnerId);
+      MvcResult chapterRequest =
+          mockMvc
+              .perform(
+                  post(
+                          "/api/v1/authoring/manuscripts/{workId}/publication/requests/chapters/{chapterId}",
+                          approvableFixture.workId(),
+                          stagedChapter.id())
+                      .cookie(ownerCookie)
+                      .header(
+                          SessionCsrfTokenService.TOKEN_HEADER_NAME,
+                          csrfTokenService.tokenFor(approvableOwnerSession.cookieValue()))
+                      .header(
+                          HttpHeaders.IF_MATCH,
+                          chapterReadiness.getResponse().getHeader(HttpHeaders.ETAG))
+                      .header("Idempotency-Key", "staged-chapter-request-key-0001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(chapterRequestBody))
+              .andReturn();
+      assertEquals(
+          201,
+          chapterRequest.getResponse().getStatus(),
+          chapterRequest.getResponse().getContentAsString());
+      UUID chapterRequestId =
+          UUID.fromString(
+              objectMapper
+                  .readTree(chapterRequest.getResponse().getContentAsString())
+                  .path("requestId")
+                  .asText());
+      assertEquals("draft", chapterStatus(stagedChapter.id()));
+
+      MvcResult chapterReviewDetail =
+          mockMvc
+              .perform(
+                  get("/api/v1/review/publications/{requestId}", chapterRequestId)
+                      .cookie(reviewerCookie))
+              .andReturn();
+      assertEquals(200, chapterReviewDetail.getResponse().getStatus());
+      JsonNode chapterReviewBody =
+          objectMapper.readTree(chapterReviewDetail.getResponse().getContentAsString());
+      assertEquals(
+          stagedChapter.id().toString(), chapterReviewBody.path("targetChapterId").asText());
+      assertTrue(
+          chapterReviewDetail
+              .getResponse()
+              .getContentAsString()
+              .contains("Chapter held for review"));
+      String chapterDecisionPath = "/api/v1/review/publications/" + chapterRequestId + "/decisions";
+      MvcResult chapterApproval =
+          mockMvc
+              .perform(
+                  post(chapterDecisionPath)
+                      .cookie(reviewerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, csrf)
+                      .header(
+                          HttpHeaders.IF_MATCH,
+                          chapterReviewDetail.getResponse().getHeader(HttpHeaders.ETAG))
+                      .header("Idempotency-Key", "staged-chapter-approval-key-01")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(approvalBody))
+              .andReturn();
+      assertEquals(
+          201,
+          chapterApproval.getResponse().getStatus(),
+          chapterApproval.getResponse().getContentAsString());
+      assertEquals("draft", chapterStatus(stagedChapter.id()));
+      assertEquals(3, publicationScopeApprovalCount(approvableFixture.workId()));
+      assertEquals(0, chapterPublishedOutboxEventCount(approvableFixture.workId()));
+
+      String chapterReleasePath =
+          "/api/v1/authoring/manuscripts/"
+              + approvableFixture.workId()
+              + "/chapters/"
+              + stagedChapter.id()
+              + "/publication-release";
+
+      libraryService.savePrivateAuthoredDraftRevision(
+          approvableOwnerId,
+          approvableFixture.workId(),
+          stagedChapter.id(),
+          1,
+          "staged-chapter-revision-key-0002",
+          "plain_text",
+          "This revision changed after review and needs a fresh approval.",
+          List.of(
+              new LibraryService.NewSegment(
+                  1,
+                  "paragraph",
+                  "This revision changed after review and needs a fresh approval.",
+                  "staged-chapter-p1")));
+      MvcResult staleChapterReadiness =
+          mockMvc.perform(get(chapterReadinessPath).cookie(ownerCookie)).andReturn();
+      assertEquals(200, staleChapterReadiness.getResponse().getStatus());
+      MvcResult staleChapterRelease =
+          mockMvc
+              .perform(
+                  post(chapterReleasePath)
+                      .cookie(ownerCookie)
+                      .header(
+                          SessionCsrfTokenService.TOKEN_HEADER_NAME,
+                          csrfTokenService.tokenFor(approvableOwnerSession.cookieValue()))
+                      .header(
+                          HttpHeaders.IF_MATCH,
+                          staleChapterReadiness.getResponse().getHeader(HttpHeaders.ETAG))
+                      .header("Idempotency-Key", "staged-chapter-stale-release-key-01")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(releaseBody))
+              .andReturn();
+      assertEquals(409, staleChapterRelease.getResponse().getStatus());
+      assertTrue(
+          staleChapterRelease
+              .getResponse()
+              .getContentAsString()
+              .contains("PUBLICATION_APPROVAL_REQUIRED"));
+      assertEquals("draft", chapterStatus(stagedChapter.id()));
+      assertEquals(3, publicationScopeApprovalCount(approvableFixture.workId()));
+      assertEquals(0, chapterPublicationReleaseEventCount(approvableFixture.workId()));
+      assertEquals(0, chapterPublishedOutboxEventCount(approvableFixture.workId()));
+
+      // Submit a changed chapter snapshot after a separate rate-limit refill window.
+      deletePublicationRateLimitBucket(approvableOwnerId);
+      MvcResult updatedChapterRequest =
+          mockMvc
+              .perform(
+                  post(
+                          "/api/v1/authoring/manuscripts/{workId}/publication/requests/chapters/{chapterId}",
+                          approvableFixture.workId(),
+                          stagedChapter.id())
+                      .cookie(ownerCookie)
+                      .header(
+                          SessionCsrfTokenService.TOKEN_HEADER_NAME,
+                          csrfTokenService.tokenFor(approvableOwnerSession.cookieValue()))
+                      .header(
+                          HttpHeaders.IF_MATCH,
+                          staleChapterReadiness.getResponse().getHeader(HttpHeaders.ETAG))
+                      .header("Idempotency-Key", "staged-chapter-request-key-0002")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(chapterRequestBody))
+              .andReturn();
+      assertEquals(
+          201,
+          updatedChapterRequest.getResponse().getStatus(),
+          updatedChapterRequest.getResponse().getContentAsString());
+      UUID updatedChapterRequestId =
+          UUID.fromString(
+              objectMapper
+                  .readTree(updatedChapterRequest.getResponse().getContentAsString())
+                  .path("requestId")
+                  .asText());
+      MvcResult updatedChapterReviewDetail =
+          mockMvc
+              .perform(
+                  get("/api/v1/review/publications/{requestId}", updatedChapterRequestId)
+                      .cookie(reviewerCookie))
+              .andReturn();
+      assertEquals(200, updatedChapterReviewDetail.getResponse().getStatus());
+      MvcResult updatedChapterApproval =
+          mockMvc
+              .perform(
+                  post("/api/v1/review/publications/{requestId}/decisions", updatedChapterRequestId)
+                      .cookie(reviewerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, csrf)
+                      .header(
+                          HttpHeaders.IF_MATCH,
+                          updatedChapterReviewDetail.getResponse().getHeader(HttpHeaders.ETAG))
+                      .header("Idempotency-Key", "staged-chapter-approval-key-02")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(approvalBody))
+              .andReturn();
+      assertEquals(
+          201,
+          updatedChapterApproval.getResponse().getStatus(),
+          updatedChapterApproval.getResponse().getContentAsString());
+      assertEquals("draft", chapterStatus(stagedChapter.id()));
+
+      MvcResult approvedChapterReadiness =
+          mockMvc.perform(get(chapterReadinessPath).cookie(ownerCookie)).andReturn();
+      assertEquals(200, approvedChapterReadiness.getResponse().getStatus());
+      assertTrue(
+          approvedChapterReadiness
+              .getResponse()
+              .getContentAsString()
+              .contains("APPROVED_UNPUBLISHED"));
+      String chapterReleaseKey = "staged-chapter-release-key-0001";
+      MvcResult chapterPublished =
+          mockMvc
+              .perform(
+                  post(chapterReleasePath)
+                      .cookie(ownerCookie)
+                      .header(
+                          SessionCsrfTokenService.TOKEN_HEADER_NAME,
+                          csrfTokenService.tokenFor(approvableOwnerSession.cookieValue()))
+                      .header(
+                          HttpHeaders.IF_MATCH,
+                          approvedChapterReadiness.getResponse().getHeader(HttpHeaders.ETAG))
+                      .header("Idempotency-Key", chapterReleaseKey)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(releaseBody))
+              .andReturn();
+      assertEquals(
+          201,
+          chapterPublished.getResponse().getStatus(),
+          chapterPublished.getResponse().getContentAsString());
+      assertEquals("ready", chapterStatus(stagedChapter.id()));
+      assertEquals(1, chapterPublishedOutboxEventCount(approvableFixture.workId()));
+      assertEquals(1, chapterPublicationReleaseEventCount(approvableFixture.workId()));
+      assertEquals(6, publicationScopeApprovalCount(approvableFixture.workId()));
+      assertTrue(publicationScopeIsCurrent(approvableFixture.workId(), "PUBLIC_METADATA"));
+      assertTrue(publicationScopeIsCurrent(approvableFixture.workId(), "CHAPTER_TEXT"));
+      MvcResult chapterReleaseReplay =
+          mockMvc
+              .perform(
+                  post(chapterReleasePath)
+                      .cookie(ownerCookie)
+                      .header(
+                          SessionCsrfTokenService.TOKEN_HEADER_NAME,
+                          csrfTokenService.tokenFor(approvableOwnerSession.cookieValue()))
+                      .header(
+                          HttpHeaders.IF_MATCH,
+                          approvedChapterReadiness.getResponse().getHeader(HttpHeaders.ETAG))
+                      .header("Idempotency-Key", chapterReleaseKey)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(releaseBody))
+              .andReturn();
+      assertEquals(200, chapterReleaseReplay.getResponse().getStatus());
+      assertEquals(
+          chapterPublished.getResponse().getContentAsString(),
+          chapterReleaseReplay.getResponse().getContentAsString());
+      assertEquals(1, chapterPublishedOutboxEventCount(approvableFixture.workId()));
 
       String subscriptionPath = "/api/v1/works/" + approvableFixture.workId() + "/subscription";
       MvcResult anonymousSubscription = mockMvc.perform(get(subscriptionPath)).andReturn();
@@ -3198,11 +3481,11 @@ class PostgresSchemaIntegrationTests {
       assertEquals("REQUESTED", takedownReceipt.path("externalCachePurgeStatus").asText());
       assertEquals("publication_reviewer", takedownReceipt.path("actorRoleCode").asText());
       assertEquals("EMERGENCY_TAKEDOWN", takedownReceipt.path("reasonCode").asText());
-      assertEquals(6, takedownReceipt.path("revokedApprovalCount").asInt());
+      assertEquals(9, takedownReceipt.path("revokedApprovalCount").asInt());
       assertEquals("public", takedownReceipt.path("previousVisibility").asText());
       assertEquals("private", takedownReceipt.path("currentVisibility").asText());
       assertEquals("private", publicationWorkVisibility(approvableFixture.workId()));
-      assertEquals(6, publicationScopeRevocationCount(approvableFixture.workId()));
+      assertEquals(9, publicationScopeRevocationCount(approvableFixture.workId()));
       assertEquals(1, publicationWorkTakedownEventCount(approvableFixture.workId()));
       assertEquals(1, publicationTakedownPurgeRequestCount(approvableFixture.workId()));
 
@@ -3833,6 +4116,44 @@ class PostgresSchemaIntegrationTests {
     }
   }
 
+  private int chapterPublicationReleaseEventCount(UUID workId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT COUNT(*) FROM chapter_publication_release_events WHERE work_id = ?")) {
+      select.setObject(1, workId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getInt(1);
+      }
+    }
+  }
+
+  private int chapterPublishedOutboxEventCount(UUID workId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT COUNT(*) FROM chapter_published_outbox_events WHERE work_id = ?")) {
+      select.setObject(1, workId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getInt(1);
+      }
+    }
+  }
+
+  private String chapterStatus(UUID chapterId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement("SELECT status FROM chapters WHERE id = ?")) {
+      select.setObject(1, chapterId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getString(1);
+      }
+    }
+  }
+
   private void setPublicationWorkVisibility(UUID workId, String visibility) throws SQLException {
     try (Connection connection = dataSource.getConnection();
         PreparedStatement update =
@@ -4098,6 +4419,9 @@ class PostgresSchemaIntegrationTests {
               "ALTER TABLE publication_release_events"
                   + " DISABLE TRIGGER trg_publication_release_immutable");
           disable.execute(
+              "ALTER TABLE chapter_publication_release_events"
+                  + " DISABLE TRIGGER trg_chapter_publication_release_immutable");
+          disable.execute(
               "ALTER TABLE publication_review_events"
                   + " DISABLE TRIGGER trg_publication_review_event_immutable");
           disable.execute(
@@ -4113,6 +4437,12 @@ class PostgresSchemaIntegrationTests {
         try (PreparedStatement deleteReleaseEvents =
                 connection.prepareStatement(
                     "DELETE FROM publication_release_events WHERE work_id = ?");
+            PreparedStatement deleteChapterOutboxEvents =
+                connection.prepareStatement(
+                    "DELETE FROM chapter_published_outbox_events WHERE work_id = ?");
+            PreparedStatement deleteChapterReleaseEvents =
+                connection.prepareStatement(
+                    "DELETE FROM chapter_publication_release_events WHERE work_id = ?");
             PreparedStatement deleteEvents =
                 connection.prepareStatement(
                     "DELETE FROM publication_review_events WHERE request_id IN"
@@ -4129,6 +4459,10 @@ class PostgresSchemaIntegrationTests {
                 connection.prepareStatement("DELETE FROM publication_requests WHERE work_id = ?")) {
           deleteReleaseEvents.setObject(1, workId);
           deleteReleaseEvents.executeUpdate();
+          deleteChapterOutboxEvents.setObject(1, workId);
+          deleteChapterOutboxEvents.executeUpdate();
+          deleteChapterReleaseEvents.setObject(1, workId);
+          deleteChapterReleaseEvents.executeUpdate();
           deleteEvents.setObject(1, workId);
           deleteEvents.executeUpdate();
           deleteClaims.setObject(1, workId);
@@ -4142,6 +4476,9 @@ class PostgresSchemaIntegrationTests {
           enable.execute(
               "ALTER TABLE publication_release_events"
                   + " ENABLE TRIGGER trg_publication_release_immutable");
+          enable.execute(
+              "ALTER TABLE chapter_publication_release_events"
+                  + " ENABLE TRIGGER trg_chapter_publication_release_immutable");
           enable.execute(
               "ALTER TABLE publication_requests"
                   + " ENABLE TRIGGER trg_publication_request_immutable");

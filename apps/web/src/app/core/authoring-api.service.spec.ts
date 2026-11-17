@@ -438,6 +438,75 @@ describe('AuthoringApiService', () => {
     await expect(replay).resolves.toEqual(publicationReceipt);
   });
 
+  it('loads, submits and releases one staged chapter with strict owner validators', async () => {
+    const readiness = api.getChapterPublicationReadiness(workId, chapterId);
+    const readinessRequest = http.expectOne(
+      `/api/v1/authoring/manuscripts/${workId}/publication/readiness/chapters/${chapterId}`,
+    );
+    expect(readinessRequest.request.method).toBe('GET');
+    readinessRequest.flush(publicationReadiness, {
+      status: 200,
+      statusText: 'OK',
+      headers: new HttpHeaders({
+        'Cache-Control': 'no-store',
+        Pragma: 'no-cache',
+        ETag: publicationEtag,
+      }),
+    });
+    await expect(readiness).resolves.toMatchObject({ workId, snapshotEtag: publicationEtag });
+
+    const requestKey = 'chapter-publication-request-key-01';
+    const submission = api.submitChapterPublicationRequest(
+      workId,
+      chapterId,
+      publicationEtag,
+      publicationRequest,
+      requestKey,
+    );
+    await flushCsrf(http);
+    const submissionRequest = http.expectOne(
+      `/api/v1/authoring/manuscripts/${workId}/publication/requests/chapters/${chapterId}`,
+    );
+    expect(submissionRequest.request.method).toBe('POST');
+    expect(submissionRequest.request.headers.get('X-CSRF-Token')).toBe(csrfToken);
+    expect(submissionRequest.request.headers.get('If-Match')).toBe(publicationEtag);
+    expect(submissionRequest.request.headers.get('Idempotency-Key')).toBe(requestKey);
+    expect(submissionRequest.request.body).toEqual(publicationRequest);
+    submissionRequest.flush(publicationRequestReceipt, {
+      status: 201,
+      statusText: 'Created',
+      headers: new HttpHeaders({ 'Cache-Control': 'no-store', Pragma: 'no-cache' }),
+    });
+    await expect(submission).resolves.toEqual(publicationRequestReceipt);
+
+    const releaseKey = 'chapter-publication-release-key-01';
+    const releaseReceipt = {
+      eventId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      workId,
+      chapterId,
+      requestId: publicationRequestReceipt.requestId,
+      state: 'PUBLISHED',
+      publishedAt: createdAt,
+      publicationContentVersion: 8,
+    };
+    const release = api.publishChapterNow(workId, chapterId, publicationEtag, releaseKey);
+    await flushCsrf(http);
+    const releaseRequest = http.expectOne(
+      `/api/v1/authoring/manuscripts/${workId}/chapters/${chapterId}/publication-release`,
+    );
+    expect(releaseRequest.request.method).toBe('POST');
+    expect(releaseRequest.request.headers.get('X-CSRF-Token')).toBe(csrfToken);
+    expect(releaseRequest.request.headers.get('If-Match')).toBe(publicationEtag);
+    expect(releaseRequest.request.headers.get('Idempotency-Key')).toBe(releaseKey);
+    expect(releaseRequest.request.body).toEqual({ actionCode: 'PUBLISH_NOW' });
+    releaseRequest.flush(releaseReceipt, {
+      status: 201,
+      statusText: 'Created',
+      headers: new HttpHeaders({ 'Cache-Control': 'no-store', Pragma: 'no-cache' }),
+    });
+    await expect(release).resolves.toEqual(releaseReceipt);
+  });
+
   it('submits owner rights claims with the current snapshot, CSRF and exact-key replay', async () => {
     const pending = api.submitPublicationRequest(
       workId,

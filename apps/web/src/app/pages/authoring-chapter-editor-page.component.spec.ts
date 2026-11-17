@@ -8,8 +8,12 @@ import {
   AuthoringApiService,
   CreatedPrivateDraftRevision,
   PrivateAuthoredChapterDraft,
+  PrivateManuscriptDetails,
+  PublicationReadiness,
 } from '../core/authoring-api.service';
 import { PolicyOnboardingService } from '../core/policy-onboarding.service';
+import { ApiSystemStatus } from '../core/models';
+import { SystemStatusService } from '../core/system-status.service';
 import { AuthoringChapterEditorPageComponent } from './authoring-chapter-editor-page.component';
 
 const workId = '11111111-1111-4111-8111-111111111111';
@@ -45,6 +49,49 @@ function draft(
   };
 }
 
+function chapterReadiness(): PublicationReadiness {
+  return {
+    workId,
+    canSubmit: false,
+    publicationRightsPolicyAvailable: true,
+    publicationRightsPolicyVersion: 'rights-v1',
+    publicationRightsPolicyEffectiveAt: timestamp,
+    publicationRightsPolicyAcceptedAt: timestamp,
+    publicationContentVersion: 2,
+    readyChapterCount: 1,
+    currentRequestState: 'PENDING_REVIEW',
+    snapshotEtag: `"publication-snapshot-${'a'.repeat(64)}"`,
+    scopes: [
+      { scopeCode: 'PUBLIC_METADATA', ready: true, snapshotEtag: '"scope-metadata"' },
+      { scopeCode: 'CHAPTER_TEXT', ready: true, snapshotEtag: '"scope-text"' },
+      { scopeCode: 'COMMERCIAL_SALE', ready: false, snapshotEtag: '"scope-sale"' },
+      {
+        scopeCode: 'TRANSLATION_ADAPTATION',
+        ready: false,
+        snapshotEtag: '"scope-translation"',
+      },
+    ],
+    blockerCodes: ['PUBLICATION_REQUEST_ALREADY_PENDING'],
+  };
+}
+
+const releaseDisabledStatus: ApiSystemStatus = {
+  apiVersion: 'v1',
+  environment: 'test',
+  integrations: {
+    googleOidcEnabled: false,
+    momoTestEnabled: false,
+    momoEnvironment: 'TEST',
+  },
+  features: {
+    importProcessingEnabled: false,
+    cultivationEnabled: false,
+    commerceSandboxEnabled: false,
+    publicationReleaseEnabled: false,
+    translationFakePreviewEnabled: false,
+  },
+};
+
 function revision(revisionNo: number, etag = `"draft-${revisionNo}"`): CreatedPrivateDraftRevision {
   return {
     id: revisionId,
@@ -56,9 +103,26 @@ function revision(revisionNo: number, etag = `"draft-${revisionNo}"`): CreatedPr
   };
 }
 
+function manuscript(visibility: 'private' | 'public' = 'private'): PrivateManuscriptDetails {
+  return {
+    id: workId,
+    title: 'Tác phẩm thử nghiệm',
+    author: 'Tác giả',
+    language: 'vi',
+    visibility,
+    publicationState: visibility === 'private' ? 'draft' : 'published',
+    chapterCount: 1,
+    createdAt: timestamp,
+    metadataVersion: 1,
+    etag: '"manuscript-1"',
+  };
+}
+
 describe('AuthoringChapterEditorPageComponent', () => {
   let api: {
     getPrivateChapterDraft: ReturnType<typeof vi.fn>;
+    getPrivateManuscript: ReturnType<typeof vi.fn>;
+    getChapterPublicationReadiness: ReturnType<typeof vi.fn>;
     savePrivateChapterDraftRevision: ReturnType<typeof vi.fn>;
   };
   let policyStatus: ReturnType<typeof signal>;
@@ -66,6 +130,8 @@ describe('AuthoringChapterEditorPageComponent', () => {
   beforeEach(() => {
     api = {
       getPrivateChapterDraft: vi.fn().mockResolvedValue(draft()),
+      getPrivateManuscript: vi.fn().mockResolvedValue(manuscript()),
+      getChapterPublicationReadiness: vi.fn().mockResolvedValue(chapterReadiness()),
       savePrivateChapterDraftRevision: vi.fn().mockResolvedValue(revision(1)),
     };
     policyStatus = signal('accepted');
@@ -79,6 +145,10 @@ describe('AuthoringChapterEditorPageComponent', () => {
         },
         { provide: AuthoringApiService, useValue: api },
         { provide: PolicyOnboardingService, useValue: { status: policyStatus } },
+        {
+          provide: SystemStatusService,
+          useValue: { status: signal<ApiSystemStatus | null>(releaseDisabledStatus) },
+        },
       ],
     });
   });
@@ -91,6 +161,7 @@ describe('AuthoringChapterEditorPageComponent', () => {
     const fixture = TestBed.createComponent(AuthoringChapterEditorPageComponent);
     fixture.detectChanges();
     await fixture.whenStable();
+    await flushMicrotasks();
     fixture.detectChanges();
 
     expect(api.getPrivateChapterDraft).toHaveBeenCalledWith(workId, chapterId);
@@ -103,6 +174,57 @@ describe('AuthoringChapterEditorPageComponent', () => {
     );
     expect(fixture.nativeElement.textContent).toContain('Đã lưu · phiên bản 1');
     expect(fixture.nativeElement.querySelector('a[href*="reader"]')).toBeNull();
+  });
+
+  it('shows chapter-scoped review and owner release controls only for a public work', async () => {
+    api.getPrivateManuscript.mockResolvedValue(manuscript('public'));
+    api.getPrivateChapterDraft.mockResolvedValue(draft(1, 'Saved staged chapter text.'));
+    const fixture = await createEditor();
+    await flushMicrotasks();
+    fixture.detectChanges();
+
+    expect(api.getChapterPublicationReadiness).toHaveBeenCalledWith(workId, chapterId);
+    expect(fixture.nativeElement.textContent).toContain('Duyệt chương mới');
+    expect(fixture.nativeElement.textContent).toContain(
+      'Chương nháp chỉ được công khai sau khi reviewer duyệt và bạn xác nhận xuất bản.',
+    );
+    expect(fixture.nativeElement.textContent).toContain('Đang chờ người duyệt');
+    expect(fixture.nativeElement.querySelector('button[type="submit"]')).toBeNull();
+    fixture.destroy();
+  });
+
+  it('waits for the first saved draft revision before loading chapter review readiness', async () => {
+    api.getPrivateManuscript.mockResolvedValue(manuscript('public'));
+    const fixture = await createEditor();
+    await flushMicrotasks();
+    fixture.detectChanges();
+
+    expect(api.getChapterPublicationReadiness).not.toHaveBeenCalled();
+    expect(fixture.nativeElement.querySelector('.chapter-release-panel')).toBeNull();
+    expect(fixture.nativeElement.textContent).toContain('chưa được xuất bản');
+    fixture.destroy();
+  });
+
+  it('keeps an approved chapter private while the publication release feature is disabled', async () => {
+    api.getPrivateManuscript.mockResolvedValue(manuscript('public'));
+    api.getPrivateChapterDraft.mockResolvedValue(draft(1, 'Saved staged chapter text.'));
+    api.getChapterPublicationReadiness.mockResolvedValue({
+      ...chapterReadiness(),
+      canSubmit: true,
+      currentRequestState: 'APPROVED_UNPUBLISHED',
+      blockerCodes: [],
+    });
+    const fixture = await createEditor();
+    await flushMicrotasks();
+    fixture.detectChanges();
+
+    expect(fixture.nativeElement.textContent).toContain('Reviewer đã duyệt chương');
+    expect(fixture.nativeElement.textContent).toContain(
+      'Tác vụ xuất bản đang tắt trong môi trường này',
+    );
+    expect(fixture.nativeElement.querySelector('.chapter-release-confirm')).toBeNull();
+    expect(fixture.nativeElement.querySelector('button[type="submit"]')).toBeNull();
+    fixture.destroy();
   });
 
   it('previews only the saved revision and treats manuscript markup as plain text', async () => {
@@ -384,6 +506,7 @@ async function createEditor() {
   const fixture = TestBed.createComponent(AuthoringChapterEditorPageComponent);
   fixture.detectChanges();
   await fixture.whenStable();
+  await flushMicrotasks();
   fixture.detectChanges();
   return fixture;
 }

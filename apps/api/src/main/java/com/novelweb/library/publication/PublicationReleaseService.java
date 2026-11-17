@@ -181,6 +181,169 @@ public class PublicationReleaseService {
     }
   }
 
+  /** Atomically releases an approved draft chapter on an existing public work. */
+  public ChapterReleaseResult releaseChapter(
+      UUID actorId, UUID workId, UUID chapterId, String ifMatch, String idempotencyKey) {
+    Objects.requireNonNull(actorId, "actor id is required");
+    Objects.requireNonNull(workId, "work id is required");
+    Objects.requireNonNull(chapterId, "chapter id is required");
+    Objects.requireNonNull(ifMatch, "If-Match is required");
+    Objects.requireNonNull(idempotencyKey, "idempotency key is required");
+
+    PolicyService.RequiredAcceptance initialAcceptance = policyService.requiredAcceptance(actorId);
+    if (initialAcceptance != PolicyService.RequiredAcceptance.COMPLETE) {
+      return initialAcceptance == PolicyService.RequiredAcceptance.NOT_CONFIGURED
+          ? ChapterReleaseResult.policyNotConfigured()
+          : ChapterReleaseResult.policyRequired();
+    }
+    byte[] keyDigest = chapterKeyDigest(actorId, workId, chapterId, idempotencyKey);
+    byte[] requestDigest = chapterRequestDigest(actorId, workId, chapterId, ifMatch);
+
+    try (Connection connection = dataSource.getConnection()) {
+      connection.setAutoCommit(false);
+      try {
+        Optional<ChapterReleaseReceipt> prior =
+            findChapterReleaseReceipt(connection, actorId, workId, keyDigest);
+        if (prior.isPresent()) {
+          ChapterReleaseReceipt receipt = prior.orElseThrow();
+          if (!MessageDigest.isEqual(receipt.requestSha256(), requestDigest)) {
+            connection.commit();
+            return ChapterReleaseResult.keyReused();
+          }
+          connection.commit();
+          return ChapterReleaseResult.replayed(receipt);
+        }
+
+        Optional<ChapterTarget> target =
+            lockEligiblePublicChapter(connection, actorId, workId, chapterId);
+        if (target.isEmpty()) {
+          connection.commit();
+          return ChapterReleaseResult.chapterNotFound();
+        }
+
+        try (PreparedStatement lock =
+            connection.prepareStatement(
+                "LOCK TABLE publication_rights_policy_documents IN SHARE MODE")) {
+          lock.execute();
+        }
+        Optional<CurrentPolicy> currentPolicy = readCurrentPolicy(connection);
+        if (currentPolicy.isEmpty()) {
+          connection.commit();
+          return ChapterReleaseResult.rightsPolicyNotConfigured();
+        }
+        CurrentPolicy policy = currentPolicy.orElseThrow();
+        Optional<Instant> acceptedAt =
+            findAcceptance(connection, actorId, workId, policy.version(), policy.sha256());
+        if (acceptedAt.isEmpty()) {
+          connection.commit();
+          return ChapterReleaseResult.rightsPolicyNotAccepted();
+        }
+
+        ReadinessSnapshot readiness = readChapterReadinessSnapshot(connection, workId, chapterId);
+        String currentEtag = readiness.etag(workId, policy, acceptedAt.orElseThrow());
+        if (!currentEtag.equals(ifMatch)) {
+          connection.commit();
+          return ChapterReleaseResult.stale(currentEtag);
+        }
+
+        Optional<ApprovedChapterRequest> latest = latestApprovedChapterRequest(connection, workId);
+        if (latest.isEmpty()) {
+          connection.commit();
+          return ChapterReleaseResult.approvalRequired();
+        }
+        ApprovedChapterRequest request = latest.orElseThrow();
+        if (!chapterId.equals(request.targetChapterId())
+            || !"APPROVED_UNPUBLISHED".equals(request.state())) {
+          connection.commit();
+          return ChapterReleaseResult.approvalRequired();
+        }
+        if (!policy.version().equals(request.policyVersion())
+            || !MessageDigest.isEqual(policy.sha256(), request.policySha256())) {
+          connection.commit();
+          return ChapterReleaseResult.rightsPolicyStale();
+        }
+        List<String> currentScopes = currentChapterScopes(connection, workId, chapterId, request);
+        if (!currentScopes.contains("PUBLIC_METADATA") || !currentScopes.contains("CHAPTER_TEXT")) {
+          connection.commit();
+          return ChapterReleaseResult.approvalRequired();
+        }
+        UUID reviewerId = latestApprovingReviewer(connection, request.id()).orElse(null);
+        if (reviewerId == null || actorId.equals(reviewerId)) {
+          connection.commit();
+          return ChapterReleaseResult.approvalRequired();
+        }
+
+        ChapterReleaseReceipt receipt =
+            insertChapterReleaseEvent(
+                connection,
+                actorId,
+                reviewerId,
+                workId,
+                chapterId,
+                request,
+                keyDigest,
+                requestDigest,
+                target.orElseThrow().contentVersion(),
+                target.orElseThrow().contentVersion() + 1);
+        connection.commit();
+        return ChapterReleaseResult.created(receipt);
+      } catch (SQLException | RuntimeException exception) {
+        rollback(connection, exception);
+        if (exception instanceof SQLException sqlException
+            && "23514".equals(sqlException.getSQLState())) {
+          LOGGER.warn(
+              "Chapter release rejected by current-state database guard; workId={}, chapterId={}, reason={}",
+              workId,
+              chapterId,
+              sqlException.getMessage());
+          return ChapterReleaseResult.approvalChanged();
+        }
+        throw exception;
+      }
+    } catch (SQLException exception) {
+      LOGGER.error(
+          "Chapter release transaction failed; workId={}, chapterId={}",
+          workId,
+          chapterId,
+          exception);
+      throw new IllegalStateException("Unable to publish the approved draft chapter", exception);
+    }
+  }
+
+  private static Optional<ChapterTarget> lockEligiblePublicChapter(
+      Connection connection, UUID actorId, UUID workId, UUID chapterId) throws SQLException {
+    try (PreparedStatement select =
+        connection.prepareStatement(
+            """
+                SELECT work.publication_content_version
+                  FROM works work
+                  JOIN users owner ON owner.id = work.owner_user_id AND owner.status = 'active'
+                  JOIN libraries library ON library.id = work.library_id
+                    AND library.owner_user_id = work.owner_user_id
+                    AND library.deleted_at IS NULL AND library.workspace_id IS NULL
+                  JOIN authoring_manuscript_creations creation
+                    ON creation.work_id = work.id AND creation.actor_user_id = work.owner_user_id
+                  JOIN chapters chapter ON chapter.work_id = work.id AND chapter.id = ?
+                    AND chapter.status = 'draft' AND chapter.deleted_at IS NULL
+                  JOIN chapter_revisions revision ON revision.id = chapter.source_revision_id
+                    AND revision.chapter_id = chapter.id
+                    AND revision.created_by_user_id = work.owner_user_id
+                 WHERE work.id = ? AND work.owner_user_id = ?
+                   AND work.source_kind = 'authored' AND work.visibility = 'public'
+                   AND work.status = 'active' AND work.deleted_at IS NULL
+                 FOR UPDATE OF work, owner, library, creation, chapter, revision
+                """)) {
+      select.setObject(1, chapterId);
+      select.setObject(2, workId);
+      select.setObject(3, actorId);
+      try (ResultSet row = select.executeQuery()) {
+        return row.next()
+            ? Optional.of(new ChapterTarget(row.getLong("publication_content_version")))
+            : Optional.empty();
+      }
+    }
+  }
+
   private static Optional<LockedWork> lockEligibleWork(
       Connection connection, UUID actorId, UUID workId) throws SQLException {
     try (PreparedStatement select =
@@ -364,6 +527,200 @@ public class PublicationReleaseService {
     }
   }
 
+  private static ReadinessSnapshot readChapterReadinessSnapshot(
+      Connection connection, UUID workId, UUID chapterId) throws SQLException {
+    try (PreparedStatement select =
+        connection.prepareStatement(
+            """
+                SELECT work.publication_content_version,
+                       (SELECT COUNT(*) FROM chapters chapter
+                         WHERE chapter.work_id = work.id AND chapter.status = 'ready'
+                           AND chapter.deleted_at IS NULL AND chapter.source_revision_id IS NOT NULL) + 1
+                           AS ready_chapter_count,
+                       publication_work_scope_snapshot_for_chapter(work.id, 'PUBLIC_METADATA', ?)::text
+                           AS metadata_snapshot,
+                       publication_work_scope_snapshot_for_chapter(work.id, 'CHAPTER_TEXT', ?)::text
+                           AS chapter_text_snapshot,
+                       publication_work_scope_snapshot_for_chapter(work.id, 'COMMERCIAL_SALE', ?)::text
+                           AS commercial_sale_snapshot,
+                       publication_work_scope_snapshot_for_chapter(work.id, 'TRANSLATION_ADAPTATION', ?)::text
+                           AS translation_adaptation_snapshot,
+                       (SELECT state.current_state FROM publication_requests request
+                         JOIN publication_request_current_state state ON state.request_id = request.id
+                        WHERE request.work_id = work.id
+                        ORDER BY request.request_version DESC, request.id DESC LIMIT 1)
+                           AS current_request_state
+                  FROM works work WHERE work.id = ?
+                """)) {
+      for (int parameter = 1; parameter <= 4; parameter++) select.setObject(parameter, chapterId);
+      select.setObject(5, workId);
+      try (ResultSet row = select.executeQuery()) {
+        if (!row.next()) throw new SQLException("The locked public work disappeared");
+        return new ReadinessSnapshot(
+            row.getLong("publication_content_version"),
+            row.getInt("ready_chapter_count"),
+            row.getString("metadata_snapshot"),
+            row.getString("chapter_text_snapshot"),
+            row.getString("commercial_sale_snapshot"),
+            row.getString("translation_adaptation_snapshot"),
+            row.getString("current_request_state"));
+      }
+    }
+  }
+
+  private static Optional<ApprovedChapterRequest> latestApprovedChapterRequest(
+      Connection connection, UUID workId) throws SQLException {
+    try (PreparedStatement select =
+        connection.prepareStatement(
+            """
+                SELECT request.id, request.target_chapter_id, request.request_version,
+                       request.policy_version, request.policy_sha256, request.snapshot_sha256,
+                       state.current_state
+                  FROM publication_requests request
+                  JOIN publication_request_current_state state ON state.request_id = request.id
+                 WHERE request.work_id = ?
+                 ORDER BY request.request_version DESC, request.id DESC
+                 LIMIT 1 FOR UPDATE OF request
+                """)) {
+      select.setObject(1, workId);
+      try (ResultSet row = select.executeQuery()) {
+        return row.next()
+            ? Optional.of(
+                new ApprovedChapterRequest(
+                    row.getObject("id", UUID.class),
+                    row.getObject("target_chapter_id", UUID.class),
+                    row.getInt("request_version"),
+                    row.getString("policy_version"),
+                    row.getBytes("policy_sha256"),
+                    row.getBytes("snapshot_sha256"),
+                    row.getString("current_state")))
+            : Optional.empty();
+      }
+    }
+  }
+
+  private static List<String> currentChapterScopes(
+      Connection connection, UUID workId, UUID chapterId, ApprovedChapterRequest request)
+      throws SQLException {
+    List<String> scopes = new ArrayList<>();
+    try (PreparedStatement select =
+        connection.prepareStatement(
+            """
+                SELECT scope.scope_code, scope.scope_snapshot::text AS requested_snapshot,
+                       scope.snapshot_sha256,
+                       publication_work_scope_snapshot_for_chapter(?, scope.scope_code, ?)::text
+                           AS current_snapshot
+                  FROM publication_request_scope_snapshots scope
+                 WHERE scope.request_id = ?
+                 ORDER BY scope.scope_code FOR SHARE OF scope
+                """)) {
+      select.setObject(1, workId);
+      select.setObject(2, chapterId);
+      select.setObject(3, request.id());
+      try (ResultSet rows = select.executeQuery()) {
+        while (rows.next()) {
+          String scopeJson = rows.getString("requested_snapshot");
+          if (!MessageDigest.isEqual(rows.getBytes("snapshot_sha256"), sha256(scopeJson))
+              || !Objects.equals(scopeJson, rows.getString("current_snapshot"))) {
+            return List.of();
+          }
+          scopes.add(rows.getString("scope_code"));
+        }
+      }
+    }
+    return List.copyOf(scopes);
+  }
+
+  private static Optional<UUID> latestApprovingReviewer(Connection connection, UUID requestId)
+      throws SQLException {
+    try (PreparedStatement select =
+        connection.prepareStatement(
+            """
+                SELECT actor_user_id FROM publication_review_events
+                 WHERE request_id = ? AND action_code = 'APPROVED'
+                 ORDER BY event_sequence DESC LIMIT 1
+                """)) {
+      select.setObject(1, requestId);
+      try (ResultSet row = select.executeQuery()) {
+        return row.next() ? Optional.of(row.getObject(1, UUID.class)) : Optional.empty();
+      }
+    }
+  }
+
+  private static Optional<ChapterReleaseReceipt> findChapterReleaseReceipt(
+      Connection connection, UUID actorId, UUID workId, byte[] keyDigest) throws SQLException {
+    try (PreparedStatement select =
+        connection.prepareStatement(
+            """
+                SELECT id, work_id, chapter_id, request_id, publication_content_version,
+                       released_at, request_sha256
+                  FROM chapter_publication_release_events
+                 WHERE actor_user_id = ? AND work_id = ? AND idempotency_key_sha256 = ?
+                """)) {
+      select.setObject(1, actorId);
+      select.setObject(2, workId);
+      select.setBytes(3, keyDigest);
+      try (ResultSet row = select.executeQuery()) {
+        return row.next() ? Optional.of(readChapterReleaseReceipt(row)) : Optional.empty();
+      }
+    }
+  }
+
+  private static ChapterReleaseReceipt insertChapterReleaseEvent(
+      Connection connection,
+      UUID actorId,
+      UUID reviewerId,
+      UUID workId,
+      UUID chapterId,
+      ApprovedChapterRequest request,
+      byte[] keyDigest,
+      byte[] requestDigest,
+      long previousContentVersion,
+      long publicationContentVersion)
+      throws SQLException {
+    try (PreparedStatement insert =
+        connection.prepareStatement(
+            """
+                INSERT INTO chapter_publication_release_events (
+                    id, work_id, chapter_id, request_id, actor_user_id, reviewer_user_id,
+                    policy_version, policy_sha256, snapshot_sha256, previous_content_version,
+                    publication_content_version, idempotency_key_sha256, request_sha256)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                RETURNING id, work_id, chapter_id, request_id, publication_content_version,
+                          released_at, request_sha256
+                """)) {
+      insert.setObject(1, UUID.randomUUID());
+      insert.setObject(2, workId);
+      insert.setObject(3, chapterId);
+      insert.setObject(4, request.id());
+      insert.setObject(5, actorId);
+      insert.setObject(6, reviewerId);
+      insert.setString(7, request.policyVersion());
+      insert.setBytes(8, request.policySha256());
+      insert.setBytes(9, request.snapshotSha256());
+      insert.setLong(10, previousContentVersion);
+      insert.setLong(11, publicationContentVersion);
+      insert.setBytes(12, keyDigest);
+      insert.setBytes(13, requestDigest);
+      try (ResultSet row = insert.executeQuery()) {
+        if (!row.next()) throw new SQLException("Chapter release returned no receipt");
+        return readChapterReleaseReceipt(row);
+      }
+    }
+  }
+
+  private static ChapterReleaseReceipt readChapterReleaseReceipt(ResultSet row)
+      throws SQLException {
+    return new ChapterReleaseReceipt(
+        row.getObject("id", UUID.class),
+        row.getObject("work_id", UUID.class),
+        row.getObject("chapter_id", UUID.class),
+        row.getObject("request_id", UUID.class),
+        row.getLong("publication_content_version"),
+        row.getObject("released_at", OffsetDateTime.class).toInstant(),
+        row.getBytes("request_sha256"));
+  }
+
   private static List<String> currentApprovedScopes(Connection connection, ApprovedRequest request)
       throws SQLException {
     List<String> scopes = new ArrayList<>();
@@ -514,6 +871,29 @@ public class PublicationReleaseService {
             "\n", REQUEST_DOMAIN, actorId.toString(), workId.toString(), "PUBLISH_NOW", ifMatch));
   }
 
+  private static byte[] chapterKeyDigest(UUID actorId, UUID workId, UUID chapterId, String key) {
+    return sha256(
+        String.join(
+            "\n",
+            "chapter-publication-release-key-v1",
+            actorId.toString(),
+            workId.toString(),
+            chapterId.toString(),
+            key));
+  }
+
+  private static byte[] chapterRequestDigest(
+      UUID actorId, UUID workId, UUID chapterId, String ifMatch) {
+    return sha256(
+        String.join(
+            "\n",
+            "chapter-publication-release-request-v1",
+            actorId.toString(),
+            workId.toString(),
+            chapterId.toString(),
+            ifMatch));
+  }
+
   private static byte[] sha256(String value) {
     try {
       return MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8));
@@ -531,6 +911,32 @@ public class PublicationReleaseService {
   }
 
   private record LockedWork(UUID id, long contentVersion) {}
+
+  private record ChapterTarget(long contentVersion) {}
+
+  private record ApprovedChapterRequest(
+      UUID id,
+      UUID targetChapterId,
+      int requestVersion,
+      String policyVersion,
+      byte[] policySha256,
+      byte[] snapshotSha256,
+      String state) {
+    private ApprovedChapterRequest {
+      policySha256 = policySha256.clone();
+      snapshotSha256 = snapshotSha256.clone();
+    }
+
+    @Override
+    public byte[] policySha256() {
+      return policySha256.clone();
+    }
+
+    @Override
+    public byte[] snapshotSha256() {
+      return snapshotSha256.clone();
+    }
+  }
 
   private record CurrentPolicy(String version, Instant effectiveAt, byte[] sha256) {
     private CurrentPolicy {
@@ -607,6 +1013,91 @@ public class PublicationReleaseService {
     public byte[] requestSha256() {
       return requestSha256.clone();
     }
+  }
+
+  public record ChapterReleaseReceipt(
+      UUID eventId,
+      UUID workId,
+      UUID chapterId,
+      UUID requestId,
+      long publicationContentVersion,
+      Instant publishedAt,
+      byte[] requestSha256) {
+    public ChapterReleaseReceipt {
+      requestSha256 = requestSha256.clone();
+    }
+
+    @Override
+    public byte[] requestSha256() {
+      return requestSha256.clone();
+    }
+  }
+
+  public record ChapterReleaseResult(
+      ChapterReleaseOutcome outcome, ChapterReleaseReceipt receipt, String currentEtag) {
+    static ChapterReleaseResult created(ChapterReleaseReceipt receipt) {
+      return new ChapterReleaseResult(ChapterReleaseOutcome.CREATED, receipt, null);
+    }
+
+    static ChapterReleaseResult replayed(ChapterReleaseReceipt receipt) {
+      return new ChapterReleaseResult(ChapterReleaseOutcome.REPLAYED, receipt, null);
+    }
+
+    static ChapterReleaseResult keyReused() {
+      return new ChapterReleaseResult(ChapterReleaseOutcome.KEY_REUSED, null, null);
+    }
+
+    static ChapterReleaseResult chapterNotFound() {
+      return new ChapterReleaseResult(ChapterReleaseOutcome.CHAPTER_NOT_FOUND, null, null);
+    }
+
+    static ChapterReleaseResult approvalRequired() {
+      return new ChapterReleaseResult(ChapterReleaseOutcome.APPROVAL_REQUIRED, null, null);
+    }
+
+    static ChapterReleaseResult policyRequired() {
+      return new ChapterReleaseResult(ChapterReleaseOutcome.POLICY_REQUIRED, null, null);
+    }
+
+    static ChapterReleaseResult policyNotConfigured() {
+      return new ChapterReleaseResult(ChapterReleaseOutcome.POLICY_NOT_CONFIGURED, null, null);
+    }
+
+    static ChapterReleaseResult rightsPolicyNotConfigured() {
+      return new ChapterReleaseResult(
+          ChapterReleaseOutcome.RIGHTS_POLICY_NOT_CONFIGURED, null, null);
+    }
+
+    static ChapterReleaseResult rightsPolicyNotAccepted() {
+      return new ChapterReleaseResult(ChapterReleaseOutcome.RIGHTS_POLICY_NOT_ACCEPTED, null, null);
+    }
+
+    static ChapterReleaseResult rightsPolicyStale() {
+      return new ChapterReleaseResult(ChapterReleaseOutcome.RIGHTS_POLICY_STALE, null, null);
+    }
+
+    static ChapterReleaseResult approvalChanged() {
+      return new ChapterReleaseResult(ChapterReleaseOutcome.APPROVAL_CHANGED, null, null);
+    }
+
+    static ChapterReleaseResult stale(String currentEtag) {
+      return new ChapterReleaseResult(ChapterReleaseOutcome.STALE, null, currentEtag);
+    }
+  }
+
+  public enum ChapterReleaseOutcome {
+    CREATED,
+    REPLAYED,
+    KEY_REUSED,
+    CHAPTER_NOT_FOUND,
+    APPROVAL_REQUIRED,
+    POLICY_REQUIRED,
+    POLICY_NOT_CONFIGURED,
+    RIGHTS_POLICY_NOT_CONFIGURED,
+    RIGHTS_POLICY_NOT_ACCEPTED,
+    RIGHTS_POLICY_STALE,
+    APPROVAL_CHANGED,
+    STALE
   }
 
   public record ReleaseResult(Outcome outcome, ReleaseReceipt receipt, String currentEtag) {

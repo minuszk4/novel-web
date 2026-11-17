@@ -110,6 +110,16 @@ export interface PublicationReleaseReceipt {
   publicationContentVersion: number;
 }
 
+export interface ChapterPublicationReleaseReceipt {
+  eventId: string;
+  workId: string;
+  chapterId: string;
+  requestId: string;
+  state: 'PUBLISHED';
+  publishedAt: string;
+  publicationContentVersion: number;
+}
+
 export type PublicationRightsBasisCode =
   'ORIGINAL_WORK' | 'LICENSE_OR_PERMISSION' | 'PUBLIC_DOMAIN' | 'NEEDS_REVIEW';
 
@@ -481,6 +491,34 @@ export class AuthoringApiService {
     }
   }
 
+  async getChapterPublicationReadiness(
+    workId: string,
+    chapterId: string,
+  ): Promise<PublicationReadiness> {
+    if (!isUuid(workId) || !isUuid(chapterId)) {
+      throw new AuthoringApiError(400, 'INVALID_PUBLICATION_READINESS_QUERY');
+    }
+    try {
+      const response = await firstValueFrom(
+        this.http
+          .get<unknown>(`${manuscriptsUrl}/${workId}/publication/readiness/chapters/${chapterId}`, {
+            observe: 'response',
+          })
+          .pipe(timeout(requestTimeoutMs)),
+      );
+      if (
+        response.status !== 200 ||
+        response.headers.get('Cache-Control') !== 'no-store' ||
+        response.headers.get('Pragma') !== 'no-cache'
+      ) {
+        throw invalidPublicationReadinessResponse();
+      }
+      return parsePublicationReadiness(response.body, workId, response.headers.get('ETag'));
+    } catch (error) {
+      throw toAuthoringApiError(error);
+    }
+  }
+
   async getPublicationRequestHistory(
     workId: string,
     cursor: string | null = null,
@@ -559,6 +597,47 @@ export class AuthoringApiService {
     }
   }
 
+  async publishChapterNow(
+    workId: string,
+    chapterId: string,
+    readinessEtag: string,
+    idempotencyKey: string,
+  ): Promise<ChapterPublicationReleaseReceipt> {
+    if (
+      !isUuid(workId) ||
+      !isUuid(chapterId) ||
+      !isPublicationReadinessEtag(readinessEtag) ||
+      !idempotencyKeyPattern.test(idempotencyKey)
+    ) {
+      throw new AuthoringApiError(400, 'INVALID_CHAPTER_PUBLICATION_ACTION');
+    }
+    try {
+      const headers = (await this.csrfHeaders())
+        .set('Content-Type', 'application/json')
+        .set('If-Match', readinessEtag)
+        .set('Idempotency-Key', idempotencyKey);
+      const response = await firstValueFrom(
+        this.http
+          .post<unknown>(
+            `${manuscriptsUrl}/${workId}/chapters/${chapterId}/publication-release`,
+            { actionCode: 'PUBLISH_NOW' },
+            { headers, observe: 'response' },
+          )
+          .pipe(timeout(requestTimeoutMs)),
+      );
+      if (
+        (response.status !== 201 && response.status !== 200) ||
+        response.headers.get('Cache-Control') !== 'no-store' ||
+        response.headers.get('Pragma') !== 'no-cache'
+      ) {
+        throw invalidChapterPublicationReleaseResponse();
+      }
+      return parseChapterPublicationReleaseReceipt(response.body, workId, chapterId);
+    } catch (error) {
+      throw toAuthoringApiError(error);
+    }
+  }
+
   async submitPublicationRequest(
     workId: string,
     readinessEtag: string,
@@ -585,6 +664,49 @@ export class AuthoringApiService {
             headers,
             observe: 'response',
           })
+          .pipe(timeout(requestTimeoutMs)),
+      );
+      if (
+        response.status !== 201 ||
+        response.headers.get('Cache-Control') !== 'no-store' ||
+        response.headers.get('Pragma') !== 'no-cache'
+      ) {
+        throw invalidPublicationRequestResponse();
+      }
+      return parsePublicationRequestReceipt(response.body, submission.policyVersion);
+    } catch (error) {
+      throw toAuthoringApiError(error);
+    }
+  }
+
+  async submitChapterPublicationRequest(
+    workId: string,
+    chapterId: string,
+    readinessEtag: string,
+    submission: PublicationRequestSubmission,
+    idempotencyKey: string,
+  ): Promise<PublicationRequestReceipt> {
+    if (
+      !isUuid(workId) ||
+      !isUuid(chapterId) ||
+      !isPublicationReadinessEtag(readinessEtag) ||
+      !idempotencyKeyPattern.test(idempotencyKey) ||
+      !isValidPublicationRequestSubmission(submission)
+    ) {
+      throw new AuthoringApiError(400, 'INVALID_CHAPTER_PUBLICATION_REQUEST');
+    }
+    try {
+      const headers = (await this.csrfHeaders())
+        .set('Content-Type', 'application/json')
+        .set('If-Match', readinessEtag)
+        .set('Idempotency-Key', idempotencyKey);
+      const response = await firstValueFrom(
+        this.http
+          .post<unknown>(
+            `${manuscriptsUrl}/${workId}/publication/requests/chapters/${chapterId}`,
+            submission,
+            { headers, observe: 'response' },
+          )
           .pipe(timeout(requestTimeoutMs)),
       );
       if (
@@ -1175,6 +1297,36 @@ function parsePublicationReleaseReceipt(
     throw invalidPublicationReleaseResponse();
   }
   return value as unknown as PublicationReleaseReceipt;
+}
+
+function parseChapterPublicationReleaseReceipt(
+  value: unknown,
+  expectedWorkId: string,
+  expectedChapterId: string,
+): ChapterPublicationReleaseReceipt {
+  if (
+    !isRecord(value) ||
+    hasUnexpectedFields(value, [
+      'eventId',
+      'workId',
+      'chapterId',
+      'requestId',
+      'state',
+      'publishedAt',
+      'publicationContentVersion',
+    ]) ||
+    !isUuid(value['eventId']) ||
+    value['workId'] !== expectedWorkId ||
+    value['chapterId'] !== expectedChapterId ||
+    !isUuid(value['requestId']) ||
+    value['state'] !== 'PUBLISHED' ||
+    !isInstant(value['publishedAt']) ||
+    !Number.isSafeInteger(value['publicationContentVersion']) ||
+    (value['publicationContentVersion'] as number) < 1
+  ) {
+    throw invalidChapterPublicationReleaseResponse();
+  }
+  return value as unknown as ChapterPublicationReleaseReceipt;
 }
 
 function parsePublicationRequestReceipt(
@@ -1791,6 +1943,10 @@ function invalidPublicationReadinessResponse(): AuthoringApiError {
 
 function invalidPublicationReleaseResponse(): AuthoringApiError {
   return new AuthoringApiError(502, 'INVALID_PUBLICATION_RELEASE_RESPONSE');
+}
+
+function invalidChapterPublicationReleaseResponse(): AuthoringApiError {
+  return new AuthoringApiError(502, 'INVALID_CHAPTER_PUBLICATION_RELEASE_RESPONSE');
 }
 
 function invalidPublicationRequestResponse(): AuthoringApiError {

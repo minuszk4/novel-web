@@ -124,6 +124,7 @@ public class PublicationReviewQueryService {
         ReviewDetail detail =
             new ReviewDetail(
                 header.id(),
+                header.targetChapterId(),
                 header.requestVersion(),
                 header.submittedAt(),
                 header.policyVersion(),
@@ -197,7 +198,8 @@ public class PublicationReviewQueryService {
                 + " (request.submitted_at = ? AND request.id < ?))";
     String sql =
         """
-            SELECT request.id, request.request_version, request.submitted_at,
+            SELECT request.id, request.target_chapter_id,
+                   request.request_version, request.submitted_at,
                    request.policy_version, encode(request.snapshot_sha256, 'hex') AS snapshot_sha256,
                    metadata.scope_snapshot #>> '{work,title}' AS work_title,
                    metadata.scope_snapshot #>> '{work,author}' AS work_author,
@@ -222,7 +224,9 @@ public class PublicationReviewQueryService {
               JOIN publication_request_scope_snapshots metadata
                 ON metadata.request_id = request.id AND metadata.scope_code = 'PUBLIC_METADATA'
              WHERE request.owner_user_id <> ?
-               AND work.source_kind = 'authored' AND work.visibility = 'private'
+               AND work.source_kind = 'authored'
+               AND ((request.target_chapter_id IS NULL AND work.visibility = 'private')
+                 OR (request.target_chapter_id IS NOT NULL AND work.visibility = 'public'))
                AND work.status = 'active' AND work.deleted_at IS NULL
                AND library.workspace_id IS NULL AND library.deleted_at IS NULL
             """
@@ -244,6 +248,7 @@ public class PublicationReviewQueryService {
           items.add(
               new QueueItem(
                   rows.getObject("id", UUID.class),
+                  rows.getObject("target_chapter_id", UUID.class),
                   rows.getInt("request_version"),
                   rows.getObject("submitted_at", OffsetDateTime.class).toInstant(),
                   rows.getString("policy_version"),
@@ -263,7 +268,8 @@ public class PublicationReviewQueryService {
     try (PreparedStatement select =
         connection.prepareStatement(
             """
-                SELECT request.id, request.request_version, request.submitted_at,
+                SELECT request.id, request.target_chapter_id,
+                       request.request_version, request.submitted_at,
                        request.policy_version, request.snapshot_sha256, state.current_state,
                        state.event_sequence, work.publication_content_version,
                        current_policy.version AS current_policy_version,
@@ -287,7 +293,9 @@ public class PublicationReviewQueryService {
                         LIMIT 1
                   ) current_policy ON TRUE
                  WHERE request.id = ? AND request.owner_user_id <> ?
-                   AND work.source_kind = 'authored' AND work.visibility = 'private'
+                   AND work.source_kind = 'authored'
+                   AND ((request.target_chapter_id IS NULL AND work.visibility = 'private')
+                     OR (request.target_chapter_id IS NOT NULL AND work.visibility = 'public'))
                    AND work.status = 'active' AND work.deleted_at IS NULL
                    AND library.workspace_id IS NULL AND library.deleted_at IS NULL
                 """)) {
@@ -298,6 +306,7 @@ public class PublicationReviewQueryService {
         return Optional.of(
             new RequestHeader(
                 row.getObject("id", UUID.class),
+                row.getObject("target_chapter_id", UUID.class),
                 row.getInt("request_version"),
                 row.getObject("submitted_at", OffsetDateTime.class).toInstant(),
                 row.getString("policy_version"),
@@ -351,6 +360,7 @@ public class PublicationReviewQueryService {
         JsonNode segments = chapter.get("segments");
         chapterPreviews.add(
             new ChapterPreview(
+                UUID.fromString(textValue(chapter, "id")),
                 integerValue(chapter, "ordinal"),
                 textValue(chapter, "title"),
                 textValue(chapter, "sourceLanguage"),
@@ -471,6 +481,7 @@ public class PublicationReviewQueryService {
 
   private record RequestHeader(
       UUID id,
+      UUID targetChapterId,
       int requestVersion,
       Instant submittedAt,
       String policyVersion,
@@ -499,6 +510,7 @@ public class PublicationReviewQueryService {
 
   public record QueueItem(
       UUID requestId,
+      UUID targetChapterId,
       int requestVersion,
       Instant submittedAt,
       String policyVersion,
@@ -521,7 +533,12 @@ public class PublicationReviewQueryService {
   public record WorkPreview(String title, String author, String sourceLanguage) {}
 
   public record ChapterPreview(
-      int ordinal, String title, String sourceLanguage, String contentHash, Integer segmentCount) {}
+      UUID chapterId,
+      int ordinal,
+      String title,
+      String sourceLanguage,
+      String contentHash,
+      Integer segmentCount) {}
 
   public record ScopePreview(
       String scopeCode, String snapshotSha256, WorkPreview work, List<ChapterPreview> chapters) {
@@ -543,6 +560,7 @@ public class PublicationReviewQueryService {
 
   public record ReviewDetail(
       UUID requestId,
+      UUID targetChapterId,
       int requestVersion,
       Instant submittedAt,
       String policyVersion,

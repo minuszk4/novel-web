@@ -159,7 +159,7 @@ public class PublicationReviewDecisionService {
                 keyDigest,
                 requestDigest,
                 command);
-        if (command.actionCode().equals("APPROVED")) {
+        if (command.actionCode().equals("APPROVED") && request.targetChapterId() == null) {
           insertScopeApprovals(
               connection, reviewerId, request, snapshots, policy, command.reasonCode());
         }
@@ -218,7 +218,8 @@ public class PublicationReviewDecisionService {
             """
                 SELECT request.id, request.work_id, request.owner_user_id,
                        request.request_version, request.policy_version, request.policy_sha256,
-                       request.snapshot_sha256, work.publication_content_version
+                       request.snapshot_sha256, request.target_chapter_id,
+                       work.publication_content_version
                   FROM publication_requests request
                   JOIN works work
                     ON work.id = request.work_id AND work.owner_user_id = request.owner_user_id
@@ -229,7 +230,9 @@ public class PublicationReviewDecisionService {
                   JOIN authoring_manuscript_creations creation
                     ON creation.work_id = work.id AND creation.actor_user_id = work.owner_user_id
                  WHERE request.id = ? AND request.owner_user_id <> ?
-                   AND work.source_kind = 'authored' AND work.visibility = 'private'
+                   AND work.source_kind = 'authored'
+                   AND ((request.target_chapter_id IS NULL AND work.visibility = 'private')
+                     OR (request.target_chapter_id IS NOT NULL AND work.visibility = 'public'))
                    AND work.status = 'active' AND work.deleted_at IS NULL
                    AND library.workspace_id IS NULL AND library.deleted_at IS NULL
                  FOR UPDATE OF work, owner, library, creation, request
@@ -247,6 +250,7 @@ public class PublicationReviewDecisionService {
                 row.getString("policy_version"),
                 row.getBytes("policy_sha256"),
                 row.getBytes("snapshot_sha256"),
+                row.getObject("target_chapter_id", UUID.class),
                 row.getLong("publication_content_version")));
       }
     }
@@ -337,20 +341,25 @@ public class PublicationReviewDecisionService {
 
   private static List<ScopeSnapshot> readScopeSnapshots(
       Connection connection, LockedRequest request) throws SQLException {
-    try (PreparedStatement select =
-        connection.prepareStatement(
+    String snapshotExpression =
+        request.targetChapterId() == null
+            ? "publication_work_scope_snapshot(?, scope.scope_code)"
+            : "publication_work_scope_snapshot_for_chapter(?, scope.scope_code, ?)";
+    String sql =
+        """
+            SELECT scope.scope_code, scope.scope_snapshot::text AS scope_snapshot,
+                   scope.snapshot_sha256, %s::text AS current_snapshot
+              FROM publication_request_scope_snapshots scope
+             WHERE scope.request_id = ?
+             ORDER BY CASE scope.scope_code WHEN 'PUBLIC_METADATA' THEN 0
+                  WHEN 'CHAPTER_TEXT' THEN 1 WHEN 'COMMERCIAL_SALE' THEN 2
+                  WHEN 'TRANSLATION_ADAPTATION' THEN 3 ELSE 4 END
             """
-                SELECT scope.scope_code, scope.scope_snapshot::text AS scope_snapshot,
-                       scope.snapshot_sha256, publication_work_scope_snapshot(?, scope.scope_code)::text
-                           AS current_snapshot
-                  FROM publication_request_scope_snapshots scope
-                 WHERE scope.request_id = ?
-                 ORDER BY CASE scope.scope_code WHEN 'PUBLIC_METADATA' THEN 0
-                      WHEN 'CHAPTER_TEXT' THEN 1 WHEN 'COMMERCIAL_SALE' THEN 2
-                      WHEN 'TRANSLATION_ADAPTATION' THEN 3 ELSE 4 END
-                """)) {
+            .formatted(snapshotExpression);
+    try (PreparedStatement select = connection.prepareStatement(sql)) {
       select.setObject(1, request.workId());
-      select.setObject(2, request.id());
+      if (request.targetChapterId() != null) select.setObject(2, request.targetChapterId());
+      select.setObject(request.targetChapterId() == null ? 2 : 3, request.id());
       try (ResultSet rows = select.executeQuery()) {
         List<ScopeSnapshot> snapshots = new ArrayList<>();
         while (rows.next()) {
@@ -567,6 +576,7 @@ public class PublicationReviewDecisionService {
       String policyVersion,
       byte[] policyDigest,
       byte[] snapshotDigest,
+      UUID targetChapterId,
       long currentContentVersion) {
     private LockedRequest {
       policyDigest = policyDigest.clone();

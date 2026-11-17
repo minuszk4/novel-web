@@ -132,6 +132,47 @@ describe('PublicationRequestFormComponent', () => {
     expect(fixture.nativeElement.textContent).toContain('snapshot nội dung phiên bản 8');
   });
 
+  it('counts and previews the saved private target chapter in a chapter review request', async () => {
+    const targetChapter: PrivateChapterOutlineItem = {
+      id: '44444444-4444-4444-8444-444444444444',
+      ordinal: 4,
+      title: 'Chương nháp cần duyệt',
+      language: 'vi',
+      status: 'draft',
+      contentAvailable: false,
+      hasSavedDraftContent: true,
+      createdAt: baseTime,
+    };
+    api.listPrivateChapters.mockResolvedValue({
+      items: [...chapters, targetChapter],
+      nextCursor: null,
+    });
+    fixture.componentRef.setInput('targetChapterId', targetChapter.id);
+    fixture.componentRef.setInput('readiness', readyState({ readyChapterCount: 4 }));
+    fixture.detectChanges();
+
+    await clickButton('Chuẩn bị yêu cầu duyệt');
+
+    const targetRow = Array.from(
+      fixture.nativeElement.querySelectorAll('li') as NodeListOf<HTMLLIElement>,
+    ).find((item) => item.textContent?.includes(targetChapter.title));
+    expect(targetRow?.textContent).toContain('Bản lưu mục tiêu · chưa công khai');
+    const previewButton = targetRow?.querySelector('button') as HTMLButtonElement | null;
+    expect(previewButton?.textContent).toContain('Xem bản đã lưu');
+    previewButton?.click();
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    expect(api.getPrivateChapterDraft).toHaveBeenCalledWith(workId, targetChapter.id);
+    expect(fixture.nativeElement.textContent).toContain('đây vẫn là văn bản đã lưu');
+    await chooseBasis('publication-request-metadata-basis', 'ORIGINAL_WORK');
+    await chooseBasis('publication-request-chapter-basis', 'ORIGINAL_WORK');
+    await setCheckbox('Tôi đã rà soát các phạm vi', true);
+
+    expect(button('Gửi yêu cầu duyệt')?.disabled).toBe(false);
+  });
+
   it('loads the saved chapter preview only after activation and renders content as text', async () => {
     await clickButton('Chuẩn bị yêu cầu duyệt');
     await clickButton('Xem bản đã lưu');

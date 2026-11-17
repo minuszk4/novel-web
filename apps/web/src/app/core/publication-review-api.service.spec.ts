@@ -14,6 +14,7 @@ const sha256 = 'b'.repeat(64);
 
 const queueItem = {
   requestId,
+  targetChapterId: null,
   requestVersion: 1,
   submittedAt: '2026-11-16T10:00:00Z',
   policyVersion: 'rights-policy-1',
@@ -26,6 +27,7 @@ const queueItem = {
 
 const detail = {
   requestId,
+  targetChapterId: null,
   requestVersion: 1,
   submittedAt: '2026-11-16T10:00:00Z',
   policyVersion: 'rights-policy-1',
@@ -44,6 +46,7 @@ const detail = {
       work: { title: 'The Quiet Mountain', author: 'An Example', sourceLanguage: 'vi' },
       chapters: [
         {
+          chapterId: '22222222-2222-4222-8222-222222222222',
           ordinal: 1,
           title: 'First Steps',
           sourceLanguage: 'vi',

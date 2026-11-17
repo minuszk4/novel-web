@@ -3,16 +3,21 @@ import { expect, expectNoAxeViolations, test } from './support';
 
 const baseUrl = 'http://localhost:4300';
 
-test('assigned reviewer approves a submitted snapshot through the real API and PostgreSQL', async ({
+test('reviewer approval and owner-confirmed staged chapter release use the real API and PostgreSQL', async ({
   page,
 }) => {
   const ownerSessionToken = process.env['LIBRARY_LIVE_TEST_SESSION_TOKEN'];
   const reviewerSessionToken = process.env['PUBLICATION_REVIEW_LIVE_TEST_REVIEWER_SESSION_TOKEN'];
   const workId = process.env['PUBLICATION_REVIEW_LIVE_TEST_WORK_ID'];
   const screenshotPath = process.env['PUBLICATION_REVIEW_LIVE_TEST_SCREENSHOT'];
+  const chapterScreenshotPath = process.env['PUBLICATION_REVIEW_LIVE_TEST_CHAPTER_SCREENSHOT'];
 
   test.skip(
-    !ownerSessionToken || !reviewerSessionToken || !workId || !screenshotPath,
+    !ownerSessionToken ||
+      !reviewerSessionToken ||
+      !workId ||
+      !screenshotPath ||
+      !chapterScreenshotPath,
     'run tools/e2e/run-library-postgres.ps1 -IncludePublicationReviewWorkspace for disposable reviewer and manuscript fixtures',
   );
   expect(ownerSessionToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
@@ -149,6 +154,148 @@ test('assigned reviewer approves a submitted snapshot through the real API and P
   await expectNoAxeViolations(page);
   await expectNoHorizontalOverflow(page);
   await page.screenshot({ path: screenshotPath!, fullPage: true });
+
+  // Release the reviewed work through the real API so the following browser steps exercise a
+  // newly staged chapter on an already-public work. The test runner enables this gate only in
+  // its disposable API process.
+  await addSession(ownerSessionToken!);
+  const ownerCsrfResponse = await page.request.get(`${baseUrl}/api/v1/auth/csrf`);
+  expect(ownerCsrfResponse.status()).toBe(200);
+  const ownerCsrf = (await ownerCsrfResponse.json()) as { token: string };
+  const liveSystemStatus = await page.request.get(`${baseUrl}/api/v1/system/status`);
+  expect(liveSystemStatus.status()).toBe(200);
+  expect((await liveSystemStatus.json()).features.publicationReleaseEnabled).toBe(true);
+  const wholeWorkReadiness = await page.request.get(
+    `${baseUrl}/api/v1/authoring/manuscripts/${workId}/publication/readiness`,
+  );
+  expect(wholeWorkReadiness.status()).toBe(200);
+  const wholeWorkEtag = wholeWorkReadiness.headers()['etag'];
+  expect(wholeWorkEtag).toMatch(/^"publication-snapshot-[a-f0-9]{64}"$/);
+  const wholeWorkRelease = await page.request.post(
+    `${baseUrl}/api/v1/authoring/manuscripts/${workId}/publication-actions`,
+    {
+      data: { actionCode: 'PUBLISH_NOW' },
+      headers: {
+        'X-CSRF-Token': ownerCsrf.token,
+        'If-Match': wholeWorkEtag,
+        'Idempotency-Key': `live-whole-release-${randomUUID()}`,
+      },
+    },
+  );
+  expect(wholeWorkRelease.status(), await wholeWorkRelease.text()).toBe(201);
+
+  await page.goto(`${baseUrl}/app/authoring/${workId}/chapters`);
+  await expect(page.getByRole('heading', { name: 'Live E2E Novel Two' })).toBeVisible();
+  await expect(page.getByText(/TÁC PHẨM ĐANG PHÁT HÀNH/)).toBeVisible();
+  await page.getByRole('button', { name: 'Thêm chương' }).click();
+  await page.locator('#authoring-chapter-title').fill('Live E2E Staged Chapter');
+  const chapterCreateResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' &&
+      new URL(response.url()).pathname === `/api/v1/authoring/manuscripts/${workId}/chapters`,
+  );
+  await page.getByRole('button', { name: 'Thêm chương trống' }).click();
+  const createdChapter = await chapterCreateResponse;
+  expect(createdChapter.status()).toBe(201);
+  const createdChapterBody = (await createdChapter.json()) as { id: string };
+  expect(createdChapterBody.id).toMatch(/^[0-9a-f-]{36}$/i);
+  await page.getByRole('link', { name: 'Viết chương' }).click();
+  await expect(page.getByRole('heading', { name: 'Live E2E Staged Chapter' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Duyệt chương mới' })).toHaveCount(0);
+  await page
+    .locator('#chapter-draft-content')
+    .fill('A privately staged chapter, released only after review.');
+  await page.getByRole('button', { name: 'Lưu ngay' }).click();
+  await expect(page.locator('.chapter-editor-save-state')).toContainText('Đã lưu · phiên bản 1');
+  await expect(page.getByRole('heading', { name: 'Duyệt chương mới' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Chuẩn bị yêu cầu duyệt' })).toBeVisible();
+  await page.getByRole('button', { name: 'Chuẩn bị yêu cầu duyệt' }).click();
+  await expect(
+    page.getByRole('heading', { name: 'Rà soát bản đã lưu và khai báo phạm vi' }),
+  ).toBeFocused();
+  const targetChapterRow = page
+    .locator('.publication-request-chapters li')
+    .filter({ hasText: 'Live E2E Staged Chapter' });
+  await expect(targetChapterRow).toContainText('Bản lưu mục tiêu · chưa công khai');
+  await targetChapterRow.getByRole('button', { name: 'Xem bản đã lưu' }).click();
+  await expect(page.getByLabel('Nội dung văn bản của bản chương đã lưu')).toContainText(
+    'A privately staged chapter, released only after review.',
+  );
+  await page.getByRole('button', { name: 'Đóng xem trước' }).click();
+  await page.locator('#publication-request-metadata-basis').selectOption('ORIGINAL_WORK');
+  await page.locator('#publication-request-chapter-basis').selectOption('ORIGINAL_WORK');
+  await page.getByLabel(/Tôi cũng yêu cầu xem xét quyền thương mại/).check();
+  await page.locator('#publication-request-commercial-basis').selectOption('ORIGINAL_WORK');
+  await page.getByLabel(/Tôi đã rà soát các phạm vi/).check();
+  const chapterSubmissionResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' &&
+      new URL(response.url()).pathname ===
+        `/api/v1/authoring/manuscripts/${workId}/publication/requests/chapters/${createdChapterBody.id}`,
+  );
+  await expect(page.getByRole('button', { name: 'Gửi yêu cầu duyệt' })).toBeEnabled();
+  await page.getByRole('button', { name: 'Gửi yêu cầu duyệt' }).click();
+  const chapterSubmission = await chapterSubmissionResponse;
+  expect(chapterSubmission.status()).toBe(201);
+  const chapterRequest = (await chapterSubmission.json()) as { requestId: string };
+  expect(chapterRequest.requestId).toMatch(/^[0-9a-f-]{36}$/i);
+  await expect(page.locator('.chapter-release-status')).toContainText(
+    'Đã gửi yêu cầu duyệt chương',
+  );
+  await expect(page.locator('.chapter-editor-privacy')).toContainText('chưa được xuất bản');
+
+  await addSession(reviewerSessionToken!);
+  await page.goto(`${baseUrl}/app/review`);
+  await expect(
+    page.getByRole('link', { name: 'Xem yêu cầu của Live E2E Novel Two' }),
+  ).toBeVisible();
+  await page.getByRole('link', { name: 'Xem yêu cầu của Live E2E Novel Two' }).click();
+  await expect(page).toHaveURL(new RegExp(`/app/review/${chapterRequest.requestId}$`));
+  const reviewedChapterSnapshot = page.locator('.chapter-preview').first();
+  await reviewedChapterSnapshot.locator('summary').click();
+  await expect(reviewedChapterSnapshot.getByText('CHƯƠNG ĐANG XIN DUYỆT')).toBeVisible();
+  await expect(
+    reviewedChapterSnapshot.getByText('Chương 2 · Live E2E Staged Chapter'),
+  ).toBeVisible();
+  await expect(
+    page.getByText('A privately staged chapter, released only after review.'),
+  ).toHaveCount(0);
+  await expectNoAxeViolations(page);
+  await page.getByRole('button', { name: 'Chấp thuận quyền' }).click();
+  const chapterDecisionDialog = page.getByRole('dialog', {
+    name: 'Chấp thuận quyền cho snapshot này?',
+  });
+  await expect(chapterDecisionDialog).toBeVisible();
+  await chapterDecisionDialog.getByLabel('Đã xem xét khai báo quyền').check();
+  const chapterDecisionResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' &&
+      new URL(response.url()).pathname ===
+        `/api/v1/review/publications/${chapterRequest.requestId}/decisions`,
+  );
+  await chapterDecisionDialog.getByRole('button', { name: 'Xác nhận quyết định' }).click();
+  expect((await chapterDecisionResponse).status()).toBe(201);
+  await expect(page.locator('.publication-review-result')).toContainText(
+    'Đã ghi nhận: Được duyệt · Chưa công khai.',
+  );
+  await expectNoAxeViolations(page);
+
+  await addSession(ownerSessionToken!);
+  await page.goto(`${baseUrl}/app/authoring/${workId}/chapters/${createdChapterBody.id}`);
+  await expect(page.getByRole('heading', { name: 'Reviewer đã duyệt chương' })).toBeVisible();
+  await page.getByLabel('Tôi xác nhận công khai chương này ngay bây giờ.').check();
+  const chapterReleaseResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' &&
+      new URL(response.url()).pathname ===
+        `/api/v1/authoring/manuscripts/${workId}/chapters/${createdChapterBody.id}/publication-release`,
+  );
+  await page.getByRole('button', { name: 'Xác nhận xuất bản chương' }).click();
+  expect((await chapterReleaseResponse).status()).toBe(201);
+  await expect(page.locator('.chapter-release-status')).toContainText('Đã công khai chương');
+  await expectNoAxeViolations(page);
+  await expectNoHorizontalOverflow(page);
+  await page.screenshot({ path: chapterScreenshotPath!, fullPage: true });
 });
 
 async function expectNoHorizontalOverflow(page: import('@playwright/test').Page): Promise<void> {

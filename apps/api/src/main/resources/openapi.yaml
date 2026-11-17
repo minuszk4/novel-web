@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 10.7.0
+  version: 10.8.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -13,10 +13,10 @@ info:
     commit are implemented. Markdown uses CommonMark core only, strips raw HTML and link destinations, and derives chapter boundaries from repeated top-level headings.
     Source-only Reader manifest, chapter-content, progress, reader-preferences, bookmarks, private annotations and private reading-history routes are implemented in the PostgreSQL profile.
     History is derived from the latest saved progress per accessible readable work, is visible for 365 days, and never returns chapter body text.
-    Versioned cultivation catalogs, authenticated profile settings, private daily XP activity and bounded private Reader sessions with atomic XP awards are implemented in the PostgreSQL profile. The approved starting policy awards 1 XP per complete active Reader minute, capped at 120 XP per UTC day; same-day sub-minute remainder does not cross UTC midnight; top-ups and unlocks award none. Cultivation is feature-gated and off by default pending the rank-threshold pilot and release reviews.
+    Versioned cultivation catalogs, authenticated profile settings, private daily XP activity and bounded private Reader sessions with atomic XP awards are implemented in the PostgreSQL profile. The approved starting policy awards 1 XP per complete active Reader minute, capped at 120 XP per UTC day; same-day sub-minute remainder does not cross UTC midnight; top-ups and unlocks award none. The user selected the existing rank thresholds for the pilot; cultivation remains feature-gated and off by default pending implementation verification and release review.
     Scoped glossary storage, actor-scoped catalog listing/creation, active and writer-only latest-revision reads, version-checked immutable draft creation, authenticated diff/lint/match preview, lint-gated revision publication with append-only audit, strict JSON/CSV/TSV import preview and resolved atomic draft apply, and active/writer-only latest snapshot export are implemented in the PostgreSQL profile. Translation job enqueue/status/retry/cancel are available only as an explicit fake-local development preview and never call an external NMT provider. Manual translation readiness/submission plus assigned-reviewer queue, frozen-snapshot detail and append-only accept/reject decisions are available only behind `NOVEL_TRANSLATION_REVIEW_ENABLED`; the flag defaults off. Writer and reviewer UI are implemented behind the default-off manual-review gate. Owner release requires a second default-off `NOVEL_TRANSLATION_PUBLICATION_ENABLED` flag, an accepted current human snapshot, active adaptation rights and explicit owner confirmation; rollback and translated Reader delivery remain separate work. `features.translationFakePreviewEnabled` is true only when both required profiles and the provider/API/worker opt-in flags are active.
     The authenticated PostgreSQL profile also exposes the current actor's available paid and non-expired bonus credit totals from the rebuildable balance projection; the response is no-store and does not expose another account's ledger. When the MoMo TEST gate is explicitly enabled with valid TEST configuration, the profile also exposes server-priced public-chapter unlock quotes and an idempotent paid-credit unlock that commits the debit with an immutable entitlement; private/draft chapters remain unavailable and no production purchase is enabled.
-    An opt-in, metadata-only guest catalog endpoint is available in the PostgreSQL profile. It is disabled by default and returns only authored, active, explicitly public works owned by active users with at least one ready chapter; it does not return descriptions or chapter bodies. Admin-only publication-reviewer role assignment, bounded eligible-account search and status-filtered assignment history are implemented in the PostgreSQL profile; the current-user response exposes the caller's server-derived security capability for navigation only. Author-owned private drafts can read the current effective publication-rights policy, record a work-scoped acknowledgement and submit an immutable rights-review request with scoped declarations. Submission is owner-only, CSRF-protected, snapshot-checked, bounded and persistently rate-limited. Active reviewers can read an actor-bound pending queue and privacy-filtered request snapshot, then append needs-information, reject or approve decisions with exact idempotency and current ETag checks; approval only grants immutable scope access and leaves the work unpublished. An owner-only immediate release route exists behind `NOVEL_PUBLICATION_RELEASE_ENABLED`, which remains off by default and is reported through server feature status; it rechecks current approval and snapshots when the owner confirms release. The API does not bootstrap system administrators, let authors define policy or self-review. Following currently stores only the current actor's public-work preference; chapter-published outbox delivery, email digest, scheduled release, owner unpublish, edge rate limits and guest reader access remain separate work.
+    An opt-in, metadata-only guest catalog endpoint is available in the PostgreSQL profile. It is disabled by default and returns only authored, active, explicitly public works owned by active users with at least one ready chapter; it does not return descriptions or chapter bodies. Admin-only publication-reviewer role assignment, bounded eligible-account search and status-filtered assignment history are implemented in the PostgreSQL profile; the current-user response exposes the caller's server-derived security capability for navigation only. Owners can submit private manuscripts and staged draft chapters on public works for immutable rights review. Active assigned reviewers receive an actor-bound queue and privacy-filtered scope snapshots; decisions are idempotent, ETag-bound and never publish content. Owner-confirmed release for a manuscript or staged chapter is behind `NOVEL_PUBLICATION_RELEASE_ENABLED`, which remains off by default. Chapter release atomically makes the reviewed revision ready, refreshes previously granted scope approvals and writes an identifier-only publication outbox event. The API does not bootstrap system administrators, let authors define policy or self-review. Following stores the current actor's public-work preference; outbox delivery consumers, email digest, scheduled release, owner unpublish, edge rate limits and guest reader access remain separate work.
 servers:
   - url: http://127.0.0.1:8080
 tags:
@@ -2206,6 +2206,62 @@ paths:
           $ref: '#/components/responses/Problem'
         '503':
           $ref: '#/components/responses/Problem'
+  /api/v1/authoring/manuscripts/{workId}/publication/readiness/chapters/{chapterId}:
+    get:
+      operationId: getStagedChapterPublicationReadiness
+      tags: [Authoring]
+      x-implementation-status: implemented-postgres-profile
+      summary: Read the prospective publication snapshot for one staged chapter
+      description: >-
+        Owner-only endpoint for one current draft chapter on an active public owner-authored work. It returns the
+        same content-free readiness shape as whole-work publication, but each scope snapshot includes the selected
+        draft revision alongside already published chapters. The strong ETag binds the draft revision, current
+        rights policy, owner acceptance and request state. Private work, foreign work, stale chapter IDs and
+        non-current draft revisions are concealed as 404. This endpoint neither submits for review nor publishes.
+      security:
+        - appSession: []
+      parameters:
+        - name: workId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: chapterId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Prospective chapter readiness with no manuscript content.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
+            ETag:
+              description: Strong validator for the exact current staged chapter and all selected scopes.
+              schema:
+                type: string
+                pattern: '^"publication-snapshot-[a-f0-9]{64}"$'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicationReadiness'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
   /api/v1/authoring/manuscripts/{workId}/publication-actions:
     post:
       operationId: publishApprovedManuscriptNow
@@ -2275,6 +2331,91 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/PublicationReleaseReceipt'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '412':
+          $ref: '#/components/responses/Problem'
+        '428':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/authoring/manuscripts/{workId}/chapters/{chapterId}/publication-release:
+    post:
+      operationId: publishApprovedStagedChapterNow
+      tags: [Authoring]
+      x-implementation-status: implemented-postgres-profile
+      summary: Let the owner publish one currently approved draft chapter
+      description: >-
+        Requires the active public-work owner, CSRF, current account and publication-rights acceptance, the exact
+        staged-chapter readiness ETag and a safe Idempotency-Key. Only a current APPROVED_UNPUBLISHED request for
+        this chapter can be released. PostgreSQL rechecks the assigned reviewer, policy, accepted rights scope and
+        exact revision, then changes the chapter to ready, refreshes every previously granted scope and queues a
+        chapter-published outbox event in the same transaction. Exact retries return the same receipt. The route is
+        disabled unless NOVEL_PUBLICATION_RELEASE_ENABLED=true.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - name: workId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: chapterId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: If-Match
+          in: header
+          required: true
+          schema:
+            type: string
+            pattern: '^"publication-snapshot-[a-f0-9]{64}"$'
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            minLength: 16
+            maxLength: 128
+            pattern: '^[A-Za-z0-9._~-]{16,128}$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PublicationActionRequest'
+      responses:
+        '201':
+          description: Chapter release, refreshed scope access and outbox event committed atomically.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicationChapterReleaseReceipt'
+        '200':
+          description: Exact replay of the chapter release receipt.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicationChapterReleaseReceipt'
         '401':
           $ref: '#/components/responses/Problem'
         '403':
@@ -2392,6 +2533,93 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/authoring/manuscripts/{workId}/publication/requests/chapters/{chapterId}:
+    post:
+      operationId: submitPublicationRequestForStagedChapter
+      tags: [Authoring]
+      x-implementation-status: implemented-postgres-profile
+      summary: Submit one public-work draft chapter for rights review
+      description: >-
+        Owner-only, CSRF-protected and idempotent submission for the exact current revision of one draft chapter
+        on a public authored work. Requires current Terms and Privacy acceptance, acknowledgement of the active
+        publication-rights policy, a strong staged-chapter readiness ETag and required PUBLIC_METADATA and
+        CHAPTER_TEXT declarations. The immutable request snapshots all selected scopes and is reviewed through
+        the assigned-reviewer queue. Review approval never makes the chapter public; the owner must use the
+        explicit chapter publication-release action after review.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - name: workId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: chapterId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: If-Match
+          in: header
+          required: true
+          schema:
+            type: string
+            pattern: '^"publication-snapshot-[a-f0-9]{64}"$'
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            minLength: 16
+            maxLength: 128
+            pattern: '^[A-Za-z0-9._~-]{16,128}$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PublicationRequestSubmission'
+      responses:
+        '201':
+          description: Staged-chapter request and initial audit event recorded.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicationRequestReceipt'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '412':
+          $ref: '#/components/responses/Problem'
+        '413':
+          $ref: '#/components/responses/Problem'
+        '415':
+          $ref: '#/components/responses/Problem'
+        '428':
+          $ref: '#/components/responses/Problem'
+        '429':
+          $ref: '#/components/responses/Problem'
         '503':
           $ref: '#/components/responses/Problem'
   /api/v1/authoring/manuscripts/{workId}/publication/requests/withdrawal:
@@ -9207,6 +9435,39 @@ components:
         publicationContentVersion:
           type: integer
           minimum: 1
+    PublicationChapterReleaseReceipt:
+      type: object
+      additionalProperties: false
+      required:
+        - eventId
+        - workId
+        - chapterId
+        - requestId
+        - state
+        - publishedAt
+        - publicationContentVersion
+      properties:
+        eventId:
+          type: string
+          format: uuid
+        workId:
+          type: string
+          format: uuid
+        chapterId:
+          type: string
+          format: uuid
+        requestId:
+          type: string
+          format: uuid
+        state:
+          type: string
+          const: PUBLISHED
+        publishedAt:
+          type: string
+          format: date-time
+        publicationContentVersion:
+          type: integer
+          minimum: 1
     PublicationScopeReadiness:
       type: object
       additionalProperties: false
@@ -9376,6 +9637,7 @@ components:
       additionalProperties: false
       required:
         - requestId
+        - targetChapterId
         - requestVersion
         - submittedAt
         - policyVersion
@@ -9387,6 +9649,9 @@ components:
       properties:
         requestId:
           type: string
+          format: uuid
+        targetChapterId:
+          type: [string, 'null']
           format: uuid
         requestVersion:
           type: integer
@@ -9422,6 +9687,7 @@ components:
       additionalProperties: false
       required:
         - requestId
+        - targetChapterId
         - requestVersion
         - submittedAt
         - policyVersion
@@ -9433,6 +9699,9 @@ components:
       properties:
         requestId:
           type: string
+          format: uuid
+        targetChapterId:
+          type: [string, 'null']
           format: uuid
         requestVersion:
           type: integer
@@ -9580,8 +9849,11 @@ components:
     PublicationReviewChapterPreview:
       type: object
       additionalProperties: false
-      required: [ordinal, title, sourceLanguage, contentHash, segmentCount]
+      required: [chapterId, ordinal, title, sourceLanguage, contentHash, segmentCount]
       properties:
+        chapterId:
+          type: string
+          format: uuid
         ordinal:
           type: integer
           minimum: 1

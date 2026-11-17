@@ -82,6 +82,63 @@ public class PublicationReadinessController {
     }
   }
 
+  @GetMapping("/chapters/{chapterId}")
+  public ResponseEntity<?> chapterReadiness(
+      Authentication authentication,
+      @PathVariable UUID workId,
+      @PathVariable UUID chapterId,
+      HttpServletRequest request) {
+    UUID correlationId = correlationId(request);
+    SessionService.SessionPrincipal principal = principal(authentication);
+    if (principal == null) {
+      return problem(
+          HttpStatus.UNAUTHORIZED,
+          "UNAUTHENTICATED",
+          "Sign in as the work owner to prepare this draft chapter for review.",
+          correlationId);
+    }
+    try {
+      PublicationRightsPolicyService.ReadinessResult result =
+          publicationService.readinessForChapter(principal.userId(), workId, chapterId);
+      return switch (result.outcome()) {
+        case AVAILABLE -> {
+          PublicationRightsPolicyService.PublicationReadiness body = result.readiness();
+          yield noStore(HttpStatus.OK).header(HttpHeaders.ETAG, body.snapshotEtag()).body(body);
+        }
+        case WORK_NOT_FOUND ->
+            problem(
+                HttpStatus.NOT_FOUND,
+                "DRAFT_CHAPTER_NOT_FOUND",
+                "The current draft chapter is not available for this public work.",
+                correlationId);
+        case POLICY_REQUIRED ->
+            problem(
+                HttpStatus.FORBIDDEN,
+                "POLICY_ACCEPTANCE_REQUIRED",
+                "Accept the current Terms and acknowledge the Privacy Notice first.",
+                correlationId);
+        case POLICY_NOT_CONFIGURED ->
+            problem(
+                HttpStatus.SERVICE_UNAVAILABLE,
+                "POLICY_NOT_CONFIGURED",
+                "Current approved policy documents are not available.",
+                correlationId);
+        default ->
+            problem(
+                HttpStatus.SERVICE_UNAVAILABLE,
+                "PUBLICATION_READINESS_UNAVAILABLE",
+                "Publication readiness could not be loaded.",
+                correlationId);
+      };
+    } catch (IllegalStateException exception) {
+      return problem(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          "PUBLICATION_READINESS_UNAVAILABLE",
+          "Publication readiness could not be loaded.",
+          correlationId);
+    }
+  }
+
   private static ResponseEntity.BodyBuilder noStore(HttpStatus status) {
     return ResponseEntity.status(status)
         .cacheControl(CacheControl.noStore())

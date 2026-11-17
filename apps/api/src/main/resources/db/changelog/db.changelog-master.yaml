@@ -188,3 +188,6 @@ databaseChangeLog:
   - include:
       file: changes/071-work-subscription-owner-page-index.sql
       relativeToChangelogFile: true
+  - include:
+      file: changes/072-public-work-chapter-release.sql
+      relativeToChangelogFile: true

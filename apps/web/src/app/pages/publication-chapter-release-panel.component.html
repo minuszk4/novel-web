@@ -1,0 +1,111 @@
+<section class="chapter-release-panel" aria-labelledby="chapter-release-title">
+  <div class="chapter-release-heading">
+    <div>
+      <p class="eyebrow">QUYỀN XUẤT BẢN</p>
+      <h2 id="chapter-release-title">Duyệt chương mới</h2>
+      <p>Chương nháp chỉ được công khai sau khi reviewer duyệt và bạn xác nhận xuất bản.</p>
+    </div>
+    <button
+      class="button button-outline"
+      type="button"
+      (click)="refresh()"
+      [disabled]="loading() || releasing()"
+    >
+      {{ loading() ? 'Đang kiểm tra…' : 'Kiểm tra trạng thái duyệt' }}
+    </button>
+  </div>
+
+  @if (error(); as failure) {
+    <div class="chapter-release-message" role="alert">
+      <p>{{ errorMessage(failure) }}</p>
+      <button class="button button-outline" type="button" (click)="refresh()">Thử lại</button>
+    </div>
+  } @else if (loading() && !readiness()) {
+    <p class="chapter-release-message" role="status" aria-live="polite">
+      Đang kiểm tra điều kiện duyệt chương…
+    </p>
+  }
+
+  @if (readiness(); as current) {
+    <app-publication-rights-policy-panel
+      [workId]="workId"
+      [workTitle]="workTitle"
+      [openRequest]="openPolicyRequest()"
+      (policyAccepted)="onPolicyAccepted()"
+    />
+
+    @if (statusMessage()) {
+      <p class="chapter-release-status" role="status" aria-live="polite">{{ statusMessage() }}</p>
+    }
+
+    @if (policyNeedsAcceptance) {
+      <div class="chapter-release-message" role="note">
+        <p>Đọc và xác nhận chính sách quyền xuất bản trước khi gửi chương đi duyệt.</p>
+        <button class="button button-outline" type="button" (click)="openPolicy()">
+          Mở chính sách quyền xuất bản
+        </button>
+      </div>
+    } @else if (requestIsPending) {
+      <div class="chapter-release-message" role="status">
+        <h3>Đang chờ người duyệt</h3>
+        <p>
+          Tác phẩm và chương hiện tại vẫn được giữ nguyên. Hãy kiểm tra lại sau khi reviewer quyết
+          định.
+        </p>
+      </div>
+    } @else if (approvedForRelease && !releaseFeatureEnabled) {
+      <div class="chapter-release-message" role="status">
+        <h3>Reviewer đã duyệt chương</h3>
+        <p>
+          Chương chưa được công khai. Tác vụ xuất bản đang tắt trong môi trường này; bản nháp và bản
+          đang phát hành vẫn được giữ nguyên.
+        </p>
+      </div>
+    } @else if (approvedForRelease) {
+      <div class="chapter-release-confirm" aria-labelledby="chapter-release-confirm-title">
+        <h3 id="chapter-release-confirm-title">Reviewer đã duyệt chương</h3>
+        <p>Chương sẽ xuất hiện trong tác phẩm công khai và được áp dụng quyền hiện hành.</p>
+        <label>
+          <input
+            type="checkbox"
+            [checked]="confirmRelease()"
+            (change)="updateReleaseConfirmation($event)"
+          />
+          <span>Tôi xác nhận công khai chương này ngay bây giờ.</span>
+        </label>
+        @if (releaseError(); as failure) {
+          <p class="chapter-release-error" role="alert">{{ errorMessage(failure) }}</p>
+          @if (failure.status === 0 || failure.status >= 500) {
+            <p role="status">Thử lại sẽ dùng cùng mã giao dịch để tránh xuất bản lặp.</p>
+          }
+        }
+        <button
+          class="button button-primary"
+          type="button"
+          [disabled]="!canRelease"
+          (click)="publishChapter()"
+        >
+          {{ releasing() ? 'Đang xuất bản…' : 'Xác nhận xuất bản chương' }}
+        </button>
+      </div>
+    } @else if (current.canSubmit) {
+      <app-publication-request-form
+        [workId]="workId"
+        [targetChapterId]="chapterId"
+        [readiness]="current"
+        (requestSubmitted)="onRequestSubmitted($event)"
+        (readinessUpdated)="onReadinessUpdated($event)"
+        (requestPolicyReview)="openPolicy()"
+      />
+    } @else {
+      <div class="chapter-release-message" role="note">
+        <h3>Chưa thể gửi yêu cầu duyệt</h3>
+        <ul>
+          @for (code of current.blockerCodes; track code) {
+            <li>{{ blockerLabel(code) }}</li>
+          }
+        </ul>
+      </div>
+    }
+  }
+</section>

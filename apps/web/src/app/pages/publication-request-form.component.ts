@@ -31,6 +31,7 @@ const pageSize = 100;
 
 interface RequestAttempt {
   workId: string;
+  targetChapterId: string | null;
   readinessEtag: string;
   submission: PublicationRequestSubmission;
   idempotencyKey: string;
@@ -53,6 +54,9 @@ export class PublicationRequestFormComponent implements OnChanges, OnDestroy {
 
   @Input({ required: true })
   readiness!: PublicationReadiness;
+
+  @Input()
+  targetChapterId: string | null = null;
 
   @Output()
   requestSubmitted = new EventEmitter<PublicationRequestReceipt>();
@@ -113,6 +117,7 @@ export class PublicationRequestFormComponent implements OnChanges, OnDestroy {
 
   ngOnChanges(changes: SimpleChanges): void {
     if (changes['workId']) this.reset();
+    if (changes['targetChapterId']) this.reset();
     if (changes['readiness'] && !changes['readiness'].firstChange) {
       const prior = changes['readiness'].previousValue as PublicationReadiness | undefined;
       const current = changes['readiness'].currentValue as PublicationReadiness;
@@ -156,7 +161,15 @@ export class PublicationRequestFormComponent implements OnChanges, OnDestroy {
     const readyCount = this.chapters().filter(
       (chapter) => chapter.status === 'ready' && chapter.contentAvailable,
     ).length;
-    return readyCount === this.readiness.readyChapterCount;
+    const targetDraftCount = this.targetChapterId
+      ? this.chapters().filter(
+          (chapter) =>
+            chapter.id === this.targetChapterId &&
+            chapter.status === 'draft' &&
+            chapter.hasSavedDraftContent,
+        ).length
+      : 0;
+    return readyCount + targetDraftCount === this.readiness.readyChapterCount;
   }
 
   protected get canSubmitRequest(): boolean {
@@ -207,7 +220,7 @@ export class PublicationRequestFormComponent implements OnChanges, OnDestroy {
   }
 
   protected async previewChapter(chapter: PrivateChapterOutlineItem): Promise<void> {
-    if (chapter.status !== 'ready' || !chapter.contentAvailable || this.isBusy) return;
+    if (!this.canPreviewChapter(chapter) || this.isBusy) return;
     const generation = ++this.loadGeneration;
     this.previewLoading.set(true);
     this.previewError.set(null);
@@ -310,9 +323,25 @@ export class PublicationRequestFormComponent implements OnChanges, OnDestroy {
   }
 
   protected chapterStateLabel(chapter: PrivateChapterOutlineItem): string {
+    if (
+      chapter.id === this.targetChapterId &&
+      chapter.status === 'draft' &&
+      chapter.hasSavedDraftContent
+    ) {
+      return 'Bản lưu mục tiêu · chưa công khai';
+    }
     if (chapter.status === 'ready' && chapter.contentAvailable) return 'Bản đã lưu sẵn sàng';
     if (chapter.hasSavedDraftContent) return 'Có bản nháp đã lưu, chưa sẵn sàng';
     return 'Chưa có nội dung đã lưu';
+  }
+
+  protected canPreviewChapter(chapter: PrivateChapterOutlineItem): boolean {
+    return (
+      (chapter.status === 'ready' && chapter.contentAvailable) ||
+      (chapter.id === this.targetChapterId &&
+        chapter.status === 'draft' &&
+        chapter.hasSavedDraftContent)
+    );
   }
 
   protected basisLabel(code: PublicationRightsBasisCode): string {
@@ -414,6 +443,7 @@ export class PublicationRequestFormComponent implements OnChanges, OnDestroy {
     const submission: PublicationRequestSubmission = { policyVersion, scopeClaims };
     return {
       workId: this.workId,
+      targetChapterId: this.targetChapterId,
       readinessEtag: this.readiness.snapshotEtag,
       submission,
       idempotencyKey: newAuthoringIdempotencyKey(),
@@ -425,13 +455,23 @@ export class PublicationRequestFormComponent implements OnChanges, OnDestroy {
     this.requestError.set(null);
     this.announcement.set('Đang gửi yêu cầu duyệt quyền xuất bản…');
     try {
-      const receipt = await this.api.submitPublicationRequest(
-        attempt.workId,
-        attempt.readinessEtag,
-        attempt.submission,
-        attempt.idempotencyKey,
-      );
-      if (attempt.workId !== this.workId) return;
+      const receipt =
+        attempt.targetChapterId === null
+          ? await this.api.submitPublicationRequest(
+              attempt.workId,
+              attempt.readinessEtag,
+              attempt.submission,
+              attempt.idempotencyKey,
+            )
+          : await this.api.submitChapterPublicationRequest(
+              attempt.workId,
+              attempt.targetChapterId,
+              attempt.readinessEtag,
+              attempt.submission,
+              attempt.idempotencyKey,
+            );
+      if (attempt.workId !== this.workId || attempt.targetChapterId !== this.targetChapterId)
+        return;
       this.requestAttempt = null;
       this.uncertain.set(false);
       this.submittedReceipt.set(receipt);
@@ -477,7 +517,10 @@ export class PublicationRequestFormComponent implements OnChanges, OnDestroy {
 
   private async refreshSnapshotAndChapterList(): Promise<void> {
     try {
-      const latest = await this.api.getPublicationReadiness(this.workId);
+      const latest =
+        this.targetChapterId === null
+          ? await this.api.getPublicationReadiness(this.workId)
+          : await this.api.getChapterPublicationReadiness(this.workId, this.targetChapterId);
       if (this.workId !== latest.workId) return;
       this.readiness = latest;
       this.readinessUpdated.emit(latest);

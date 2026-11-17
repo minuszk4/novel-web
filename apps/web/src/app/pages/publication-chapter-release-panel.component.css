@@ -1,0 +1,74 @@
+.chapter-release-panel {
+  display: grid;
+  gap: 1.25rem;
+  margin-top: 1.5rem;
+  padding: clamp(1rem, 3vw, 1.5rem);
+  border: 1px solid var(--border-subtle, #ded8cf);
+  border-radius: 1rem;
+  background: var(--surface-raised, #fffdf9);
+}
+
+.chapter-release-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.chapter-release-heading h2,
+.chapter-release-message h3,
+.chapter-release-confirm h3 {
+  margin: 0.2rem 0 0.5rem;
+}
+
+.chapter-release-heading p,
+.chapter-release-message p,
+.chapter-release-confirm p {
+  max-width: 68ch;
+  margin: 0.35rem 0;
+  color: var(--text-secondary, #625d57);
+}
+
+.chapter-release-message,
+.chapter-release-confirm {
+  display: grid;
+  gap: 0.8rem;
+  padding: 1rem;
+  border: 1px solid var(--border-subtle, #ded8cf);
+  border-radius: 0.75rem;
+  background: var(--surface-base, #fff);
+}
+
+.chapter-release-confirm label {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  font-weight: 600;
+}
+
+.chapter-release-confirm input {
+  min-width: 1.1rem;
+  min-height: 1.1rem;
+  margin-top: 0.15rem;
+  accent-color: var(--brand-primary, #5c4632);
+}
+
+.chapter-release-status {
+  margin: 0;
+  color: var(--text-secondary, #625d57);
+}
+
+.chapter-release-error {
+  color: var(--danger, #9d2929) !important;
+}
+
+@media (max-width: 640px) {
+  .chapter-release-heading {
+    flex-direction: column;
+  }
+
+  .chapter-release-heading > button,
+  .chapter-release-confirm > button {
+    width: 100%;
+  }
+}

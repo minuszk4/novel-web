@@ -32,6 +32,7 @@ export type PublicationReviewReason =
 
 export interface PublicationReviewQueueItem {
   requestId: string;
+  targetChapterId: string | null;
   requestVersion: number;
   submittedAt: string;
   policyVersion: string;
@@ -59,6 +60,7 @@ export interface PublicationReviewWorkPreview {
 }
 
 export interface PublicationReviewChapterPreview {
+  chapterId: string;
   ordinal: number;
   title: string;
   sourceLanguage: string;
@@ -86,6 +88,7 @@ export interface PublicationReviewEvent {
 
 export interface PublicationReviewDetail {
   requestId: string;
+  targetChapterId: string | null;
   requestVersion: number;
   submittedAt: string;
   policyVersion: string;
@@ -238,9 +241,10 @@ function parseQueueItem(value: unknown): PublicationReviewQueueItem {
   if (
     !hasExactKeys(
       value,
-      'author,policyVersion,requestId,requestVersion,scopeCodes,snapshotSha256,sourceLanguage,submittedAt,title',
+      'author,policyVersion,requestId,requestVersion,scopeCodes,snapshotSha256,sourceLanguage,submittedAt,targetChapterId,title',
     ) ||
     !isUuid(value['requestId']) ||
+    !(value['targetChapterId'] === null || isUuid(value['targetChapterId'])) ||
     !isPositiveInteger(value['requestVersion']) ||
     !isDateTime(value['submittedAt']) ||
     !isText(value['policyVersion'], 64) ||
@@ -254,6 +258,7 @@ function parseQueueItem(value: unknown): PublicationReviewQueueItem {
   }
   return {
     requestId: value['requestId'],
+    targetChapterId: value['targetChapterId'],
     requestVersion: value['requestVersion'],
     submittedAt: value['submittedAt'],
     policyVersion: value['policyVersion'],
@@ -269,9 +274,10 @@ function parseDetail(value: unknown): PublicationReviewDetail {
   if (
     !hasExactKeys(
       value,
-      'claims,events,policyVersion,requestId,requestVersion,scopes,snapshotSha256,state,submittedAt',
+      'claims,events,policyVersion,requestId,requestVersion,scopes,snapshotSha256,state,submittedAt,targetChapterId',
     ) ||
     !isUuid(value['requestId']) ||
+    !(value['targetChapterId'] === null || isUuid(value['targetChapterId'])) ||
     !isPositiveInteger(value['requestVersion']) ||
     !isDateTime(value['submittedAt']) ||
     !isText(value['policyVersion'], 64) ||
@@ -302,6 +308,7 @@ function parseDetail(value: unknown): PublicationReviewDetail {
   }
   return {
     requestId: value['requestId'],
+    targetChapterId: value['targetChapterId'],
     requestVersion: value['requestVersion'],
     submittedAt: value['submittedAt'],
     policyVersion: value['policyVersion'],
@@ -341,7 +348,8 @@ function parseScopePreview(value: unknown): PublicationReviewScopePreview {
 
 function parseChapterPreview(value: unknown): PublicationReviewChapterPreview {
   if (
-    !hasExactKeys(value, 'contentHash,ordinal,segmentCount,sourceLanguage,title') ||
+    !hasExactKeys(value, 'chapterId,contentHash,ordinal,segmentCount,sourceLanguage,title') ||
+    !isUuid(value['chapterId']) ||
     !isPositiveInteger(value['ordinal']) ||
     !isText(value['title'], 500) ||
     !isText(value['sourceLanguage'], 35) ||
@@ -351,6 +359,7 @@ function parseChapterPreview(value: unknown): PublicationReviewChapterPreview {
     throw invalidResponse();
   }
   return {
+    chapterId: value['chapterId'],
     ordinal: value['ordinal'],
     title: value['title'],
     sourceLanguage: value['sourceLanguage'],

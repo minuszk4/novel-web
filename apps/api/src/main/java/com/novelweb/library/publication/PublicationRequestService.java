@@ -18,6 +18,8 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import javax.sql.DataSource;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Service;
 
@@ -26,6 +28,7 @@ import org.springframework.stereotype.Service;
 @Profile("postgres")
 public class PublicationRequestService {
 
+  private static final Logger LOGGER = LoggerFactory.getLogger(PublicationRequestService.class);
   private static final String KEY_DOMAIN = "publication-request-idempotency-v1";
   private static final String REQUEST_DOMAIN = "publication-request-body-v1";
   private static final String WITHDRAWAL_KEY_DOMAIN = "publication-request-withdrawal-key-v1";
@@ -52,6 +55,28 @@ public class PublicationRequestService {
       String expectedSnapshotEtag,
       String idempotencyKey,
       Submission submission) {
+    return submit(userId, workId, null, expectedSnapshotEtag, idempotencyKey, submission);
+  }
+
+  /** Submits one current draft chapter from an already public owner-authored work. */
+  public SubmitResult submitChapter(
+      UUID userId,
+      UUID workId,
+      UUID chapterId,
+      String expectedSnapshotEtag,
+      String idempotencyKey,
+      Submission submission) {
+    Objects.requireNonNull(chapterId, "chapter id is required");
+    return submit(userId, workId, chapterId, expectedSnapshotEtag, idempotencyKey, submission);
+  }
+
+  private SubmitResult submit(
+      UUID userId,
+      UUID workId,
+      UUID targetChapterId,
+      String expectedSnapshotEtag,
+      String idempotencyKey,
+      Submission submission) {
     Objects.requireNonNull(userId, "user id is required");
     Objects.requireNonNull(workId, "work id is required");
     Objects.requireNonNull(expectedSnapshotEtag, "snapshot ETag is required");
@@ -60,12 +85,13 @@ public class PublicationRequestService {
 
     List<ScopeClaim> claims = submission.claims().stream().sorted().toList();
     byte[] idempotencyDigest = idempotencyDigest(userId, workId, idempotencyKey);
-    byte[] requestDigest = requestDigest(userId, workId, expectedSnapshotEtag, submission, claims);
+    byte[] requestDigest =
+        requestDigest(userId, workId, targetChapterId, expectedSnapshotEtag, submission, claims);
 
     try (Connection connection = dataSource.getConnection()) {
       connection.setAutoCommit(false);
       try {
-        if (!lockEligibleWork(connection, userId, workId)) {
+        if (!lockEligibleWork(connection, userId, workId, targetChapterId)) {
           connection.commit();
           return SubmitResult.workNotFound();
         }
@@ -116,8 +142,8 @@ public class PublicationRequestService {
           return SubmitResult.rightsPolicyAcceptanceRequired();
         }
 
-        WorkSnapshot workSnapshot = readWorkSnapshot(connection, workId);
-        Optional<RequestHistory> previous = latestRequest(connection, workId);
+        WorkSnapshot workSnapshot = readWorkSnapshot(connection, workId, targetChapterId);
+        Optional<RequestHistory> previous = latestRequest(connection, workId, targetChapterId);
         String currentRequestState = previous.map(RequestHistory::state).orElse(null);
         if ("PENDING_REVIEW".equals(currentRequestState)) {
           connection.commit();
@@ -171,7 +197,7 @@ public class PublicationRequestService {
           return SubmitResult.rateLimited(rateDecision.retryAfterSeconds());
         }
 
-        int requestVersion = previous.map(history -> history.requestVersion() + 1).orElse(1);
+        int requestVersion = latestRequestVersion(connection, workId) + 1;
         UUID supersedesRequestId = previous.map(RequestHistory::id).orElse(null);
         if (previous.isPresent() && SUPERSEDEABLE_STATES.contains(currentRequestState)) {
           appendSupersededEvent(
@@ -185,6 +211,7 @@ public class PublicationRequestService {
                 workId,
                 requestVersion,
                 supersedesRequestId,
+                targetChapterId,
                 policy,
                 snapshotDigest,
                 idempotencyDigest,
@@ -204,6 +231,11 @@ public class PublicationRequestService {
         throw exception;
       }
     } catch (SQLException exception) {
+      LOGGER.error(
+          "Publication request transaction failed; workId={}, sqlState={}",
+          workId,
+          exception.getSQLState(),
+          exception);
       throw new IllegalStateException("Unable to submit publication request", exception);
     }
   }
@@ -221,7 +253,7 @@ public class PublicationRequestService {
     try (Connection connection = dataSource.getConnection()) {
       connection.setAutoCommit(false);
       try {
-        if (!lockEligibleWork(connection, userId, workId)) {
+        if (!lockEligibleWork(connection, userId, workId, null)) {
           connection.commit();
           return WithdrawalResult.workNotFound();
         }
@@ -258,8 +290,8 @@ public class PublicationRequestService {
           }
         }
 
-        WorkSnapshot workSnapshot = readWorkSnapshot(connection, workId);
-        Optional<RequestHistory> latest = latestRequest(connection, workId);
+        WorkSnapshot workSnapshot = readWorkSnapshot(connection, workId, null);
+        Optional<RequestHistory> latest = latestRequest(connection, workId, null);
         String currentState = latest.map(RequestHistory::state).orElse(null);
         String metadataEtag =
             PublicationSnapshotEtags.scope("PUBLIC_METADATA", workSnapshot.metadataSnapshot());
@@ -307,8 +339,16 @@ public class PublicationRequestService {
     }
   }
 
-  private static boolean lockEligibleWork(Connection connection, UUID userId, UUID workId)
-      throws SQLException {
+  private static boolean lockEligibleWork(
+      Connection connection, UUID userId, UUID workId, UUID targetChapterId) throws SQLException {
+    String visibilityPredicate =
+        targetChapterId == null
+            ? "w.visibility = 'private'"
+            : "w.visibility = 'public' AND EXISTS ("
+                + "SELECT 1 FROM chapters chapter JOIN chapter_revisions revision "
+                + "ON revision.id = chapter.source_revision_id AND revision.chapter_id = chapter.id "
+                + "WHERE chapter.id = ? AND chapter.work_id = w.id AND chapter.status = 'draft' "
+                + "AND chapter.deleted_at IS NULL AND revision.created_by_user_id = w.owner_user_id)";
     try (PreparedStatement select =
         connection.prepareStatement(
             """
@@ -319,13 +359,15 @@ public class PublicationRequestService {
                 JOIN authoring_manuscript_creations creation
                   ON creation.work_id = w.id AND creation.actor_user_id = w.owner_user_id
                 WHERE u.id = ? AND u.status = 'active'
-                  AND w.id = ? AND w.source_kind = 'authored' AND w.visibility = 'private'
+                  AND w.id = ? AND w.source_kind = 'authored' AND %s
                   AND w.status = 'active' AND w.deleted_at IS NULL
                   AND l.deleted_at IS NULL AND l.workspace_id IS NULL
                 FOR UPDATE OF u, w, l, creation
-                """)) {
+                """
+                .formatted(visibilityPredicate))) {
       select.setObject(1, userId);
       select.setObject(2, workId);
+      if (targetChapterId != null) select.setObject(3, targetChapterId);
       try (ResultSet row = select.executeQuery()) {
         return row.next();
       }
@@ -451,30 +493,36 @@ public class PublicationRequestService {
     }
   }
 
-  private static WorkSnapshot readWorkSnapshot(Connection connection, UUID workId)
-      throws SQLException {
-    try (PreparedStatement select =
-        connection.prepareStatement(
+  private static WorkSnapshot readWorkSnapshot(
+      Connection connection, UUID workId, UUID targetChapterId) throws SQLException {
+    String scopeSnapshotFunction =
+        targetChapterId == null
+            ? "publication_work_scope_snapshot(w.id, '%s')"
+            : "publication_work_scope_snapshot_for_chapter(w.id, '%s', ?)";
+    String query =
+        """
+            SELECT w.publication_content_version,
+                   (SELECT COUNT(*) FROM chapters chapter WHERE chapter.work_id = w.id
+                     AND chapter.status = 'ready' AND chapter.deleted_at IS NULL
+                     AND chapter.source_revision_id IS NOT NULL) + %s AS ready_chapter_count,
+                   %s::text AS metadata_snapshot,
+                   %s::text AS chapter_text_snapshot,
+                   %s::text AS commercial_sale_snapshot,
+                   %s::text AS translation_adaptation_snapshot
+              FROM works w WHERE w.id = ?
             """
-                SELECT w.publication_content_version,
-                       (SELECT COUNT(*)
-                          FROM chapters chapter
-                         WHERE chapter.work_id = w.id
-                           AND chapter.status = 'ready'
-                           AND chapter.deleted_at IS NULL
-                           AND chapter.source_revision_id IS NOT NULL) AS ready_chapter_count,
-                       publication_work_scope_snapshot(w.id, 'PUBLIC_METADATA')::text
-                           AS metadata_snapshot,
-                       publication_work_scope_snapshot(w.id, 'CHAPTER_TEXT')::text
-                           AS chapter_text_snapshot,
-                       publication_work_scope_snapshot(w.id, 'COMMERCIAL_SALE')::text
-                           AS commercial_sale_snapshot,
-                       publication_work_scope_snapshot(w.id, 'TRANSLATION_ADAPTATION')::text
-                           AS translation_adaptation_snapshot
-                  FROM works w
-                 WHERE w.id = ?
-                """)) {
-      select.setObject(1, workId);
+            .formatted(
+                targetChapterId == null ? "0" : "1",
+                scopeSnapshotFunction.formatted("PUBLIC_METADATA"),
+                scopeSnapshotFunction.formatted("CHAPTER_TEXT"),
+                scopeSnapshotFunction.formatted("COMMERCIAL_SALE"),
+                scopeSnapshotFunction.formatted("TRANSLATION_ADAPTATION"));
+    try (PreparedStatement select = connection.prepareStatement(query)) {
+      int parameter = 1;
+      if (targetChapterId != null) {
+        for (int i = 0; i < 4; i++) select.setObject(parameter++, targetChapterId);
+      }
+      select.setObject(parameter, workId);
       try (ResultSet row = select.executeQuery()) {
         if (!row.next())
           throw new SQLException("Eligible manuscript disappeared during submission");
@@ -489,8 +537,8 @@ public class PublicationRequestService {
     }
   }
 
-  private static Optional<RequestHistory> latestRequest(Connection connection, UUID workId)
-      throws SQLException {
+  private static Optional<RequestHistory> latestRequest(
+      Connection connection, UUID workId, UUID targetChapterId) throws SQLException {
     try (PreparedStatement select =
         connection.prepareStatement(
             """
@@ -499,11 +547,13 @@ public class PublicationRequestService {
                   FROM publication_requests request
                   JOIN publication_request_current_state state ON state.request_id = request.id
                  WHERE request.work_id = ?
+                   AND request.target_chapter_id IS NOT DISTINCT FROM ?::uuid
                  ORDER BY request.request_version DESC, request.id DESC
                  LIMIT 1
                  FOR UPDATE OF request
                 """)) {
       select.setObject(1, workId);
+      select.setObject(2, targetChapterId);
       try (ResultSet row = select.executeQuery()) {
         if (!row.next()) return Optional.empty();
         return Optional.of(
@@ -513,6 +563,18 @@ public class PublicationRequestService {
                 row.getBytes("snapshot_sha256"),
                 row.getString("current_state"),
                 row.getInt("event_sequence")));
+      }
+    }
+  }
+
+  private static int latestRequestVersion(Connection connection, UUID workId) throws SQLException {
+    try (PreparedStatement select =
+        connection.prepareStatement(
+            "SELECT COALESCE(MAX(request_version), 0) FROM publication_requests WHERE work_id = ?")) {
+      select.setObject(1, workId);
+      try (ResultSet row = select.executeQuery()) {
+        if (!row.next()) throw new SQLException("Could not read the latest request version");
+        return row.getInt(1);
       }
     }
   }
@@ -602,6 +664,7 @@ public class PublicationRequestService {
       UUID workId,
       int requestVersion,
       UUID supersedesRequestId,
+      UUID targetChapterId,
       PolicyDocument policy,
       byte[] snapshotDigest,
       byte[] idempotencyDigest,
@@ -612,9 +675,14 @@ public class PublicationRequestService {
             """
                 INSERT INTO publication_requests (
                     id, work_id, owner_user_id, request_version, supersedes_request_id,
+                    target_chapter_id, target_revision_id,
                     policy_version, policy_sha256, snapshot_sha256,
                     idempotency_key_sha256, request_sha256)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?,
+                        CASE WHEN ?::UUID IS NULL THEN NULL ELSE (
+                            SELECT source_revision_id FROM chapters WHERE id = ? AND work_id = ?
+                        ) END,
+                        ?, ?, ?, ?, ?)
                 RETURNING id, request_version, policy_version, snapshot_sha256,
                           request_sha256, submitted_at
                 """)) {
@@ -623,11 +691,15 @@ public class PublicationRequestService {
       insert.setObject(3, ownerId);
       insert.setInt(4, requestVersion);
       insert.setObject(5, supersedesRequestId);
-      insert.setString(6, policy.version());
-      insert.setBytes(7, policy.sha256());
-      insert.setBytes(8, snapshotDigest);
-      insert.setBytes(9, idempotencyDigest);
-      insert.setBytes(10, requestDigest);
+      insert.setObject(6, targetChapterId);
+      insert.setObject(7, targetChapterId);
+      insert.setObject(8, targetChapterId);
+      insert.setObject(9, workId);
+      insert.setString(10, policy.version());
+      insert.setBytes(11, policy.sha256());
+      insert.setBytes(12, snapshotDigest);
+      insert.setBytes(13, idempotencyDigest);
+      insert.setBytes(14, requestDigest);
       try (ResultSet row = insert.executeQuery()) {
         if (!row.next()) throw new SQLException("Publication request insert returned no receipt");
         return readRequestRow(row);
@@ -772,13 +844,20 @@ public class PublicationRequestService {
   }
 
   private static byte[] requestDigest(
-      UUID userId, UUID workId, String ifMatch, Submission submission, List<ScopeClaim> claims) {
+      UUID userId,
+      UUID workId,
+      UUID targetChapterId,
+      String ifMatch,
+      Submission submission,
+      List<ScopeClaim> claims) {
     String canonical =
         REQUEST_DOMAIN
             + "\n"
             + userId
             + "\n"
             + workId
+            + "\n"
+            + Objects.toString(targetChapterId, "whole-work")
             + "\n"
             + submission.policyVersion()
             + "\n"

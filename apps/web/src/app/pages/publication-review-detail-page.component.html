@@ -43,6 +43,12 @@
         {{ detail()!.scopes[0].work.title }}
       </h1>
       <p>{{ detail()!.scopes[0].work.author }} · {{ detail()!.scopes[0].work.sourceLanguage }}</p>
+      @if (detail()!.targetChapterId) {
+        <aside class="publication-review-boundary" aria-label="Phạm vi yêu cầu">
+          Đang xét duyệt một chương nháp mới cho tác phẩm đã công khai. Chương chỉ xuất hiện sau khi
+          tác giả xác nhận xuất bản.
+        </aside>
+      }
       <dl class="publication-review-metadata">
         <div>
           <dt>Trạng thái</dt>
@@ -158,6 +164,9 @@
                 <ol>
                   @for (chapter of scope.chapters; track chapter.ordinal) {
                     <li>
+                      @if (chapter.chapterId === detail()!.targetChapterId) {
+                        <span class="eyebrow">CHƯƠNG ĐANG XIN DUYỆT</span>
+                      }
                       <strong>Chương {{ chapter.ordinal }} · {{ chapter.title }}</strong>
                       <span>{{ chapter.sourceLanguage }}</span>
                       <span>{{ chapter.segmentCount ?? 'Không có' }} đoạn</span>

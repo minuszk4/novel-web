@@ -87,12 +87,22 @@ public class PublicationRightsPolicyService {
    * text.
    */
   public ReadinessResult readiness(UUID userId, UUID workId) {
+    return readiness(userId, workId, null);
+  }
+
+  /** Returns the exact prospective snapshot for one current draft chapter on a public work. */
+  public ReadinessResult readinessForChapter(UUID userId, UUID workId, UUID chapterId) {
+    Objects.requireNonNull(chapterId, "chapter id is required");
+    return readiness(userId, workId, chapterId);
+  }
+
+  private ReadinessResult readiness(UUID userId, UUID workId, UUID targetChapterId) {
     Objects.requireNonNull(userId, "user id is required");
     Objects.requireNonNull(workId, "work id is required");
     try (Connection connection = dataSource.getConnection()) {
       connection.setAutoCommit(false);
       try {
-        if (!lockEligibleWorkForRead(connection, userId, workId)) {
+        if (!lockEligibleWorkForRead(connection, userId, workId, targetChapterId)) {
           connection.commit();
           return ReadinessResult.workNotFound();
         }
@@ -120,7 +130,7 @@ public class PublicationRightsPolicyService {
               findAcceptance(connection, userId, workId, activePolicy.orElseThrow().version())
                   .orElse(null);
         }
-        ReadinessSnapshot snapshot = readReadinessSnapshot(connection, workId);
+        ReadinessSnapshot snapshot = readReadinessSnapshot(connection, workId, targetChapterId);
         connection.commit();
 
         List<String> blockers = new java.util.ArrayList<>();
@@ -283,7 +293,8 @@ public class PublicationRightsPolicyService {
                 JOIN authoring_manuscript_creations creation
                   ON creation.work_id = w.id AND creation.actor_user_id = w.owner_user_id
                 WHERE u.id = ? AND u.status = 'active'
-                  AND w.id = ? AND w.source_kind = 'authored' AND w.visibility = 'private'
+                  AND w.id = ? AND w.source_kind = 'authored'
+                  AND w.visibility IN ('private', 'public')
                   AND w.status = 'active' AND w.deleted_at IS NULL
                   AND l.deleted_at IS NULL AND l.workspace_id IS NULL
                 FOR UPDATE OF u, w, l, creation
@@ -296,8 +307,16 @@ public class PublicationRightsPolicyService {
     }
   }
 
-  private boolean lockEligibleWorkForRead(Connection connection, UUID userId, UUID workId)
-      throws SQLException {
+  private boolean lockEligibleWorkForRead(
+      Connection connection, UUID userId, UUID workId, UUID targetChapterId) throws SQLException {
+    String visibilityPredicate =
+        targetChapterId == null
+            ? "w.visibility = 'private'"
+            : "w.visibility = 'public' AND EXISTS ("
+                + "SELECT 1 FROM chapters chapter JOIN chapter_revisions revision "
+                + "ON revision.id = chapter.source_revision_id AND revision.chapter_id = chapter.id "
+                + "WHERE chapter.id = ? AND chapter.work_id = w.id AND chapter.status = 'draft' "
+                + "AND chapter.deleted_at IS NULL AND revision.created_by_user_id = w.owner_user_id)";
     try (PreparedStatement select =
         connection.prepareStatement(
             """
@@ -308,50 +327,57 @@ public class PublicationRightsPolicyService {
                 JOIN authoring_manuscript_creations creation
                   ON creation.work_id = w.id AND creation.actor_user_id = w.owner_user_id
                 WHERE u.id = ? AND u.status = 'active'
-                  AND w.id = ? AND w.source_kind = 'authored' AND w.visibility = 'private'
+                  AND w.id = ? AND w.source_kind = 'authored' AND %s
                   AND w.status = 'active' AND w.deleted_at IS NULL
                   AND l.deleted_at IS NULL AND l.workspace_id IS NULL
                 FOR SHARE OF u, w, l, creation
-                """)) {
+                """
+                .formatted(visibilityPredicate))) {
       select.setObject(1, userId);
       select.setObject(2, workId);
+      if (targetChapterId != null) select.setObject(3, targetChapterId);
       try (ResultSet row = select.executeQuery()) {
         return row.next();
       }
     }
   }
 
-  private ReadinessSnapshot readReadinessSnapshot(Connection connection, UUID workId)
-      throws SQLException {
-    try (PreparedStatement select =
-        connection.prepareStatement(
+  private ReadinessSnapshot readReadinessSnapshot(
+      Connection connection, UUID workId, UUID targetChapterId) throws SQLException {
+    String scopeSnapshotFunction =
+        targetChapterId == null
+            ? "publication_work_scope_snapshot(w.id, '%s')"
+            : "publication_work_scope_snapshot_for_chapter(w.id, '%s', ?)";
+    String query =
+        """
+            SELECT w.publication_content_version,
+                   (SELECT COUNT(*) FROM chapters chapter WHERE chapter.work_id = w.id
+                     AND chapter.status = 'ready' AND chapter.deleted_at IS NULL
+                     AND chapter.source_revision_id IS NOT NULL) + %s AS ready_chapter_count,
+                   %s::text AS metadata_snapshot,
+                   %s::text AS chapter_text_snapshot,
+                   %s::text AS commercial_sale_snapshot,
+                   %s::text AS translation_adaptation_snapshot,
+                   (SELECT state.current_state FROM publication_requests request
+                     JOIN publication_request_current_state state ON state.request_id = request.id
+                    WHERE request.work_id = w.id
+                      AND request.target_chapter_id IS NOT DISTINCT FROM ?::uuid
+                    ORDER BY request.request_version DESC, request.id DESC LIMIT 1) AS current_request_state
+              FROM works w WHERE w.id = ?
             """
-                SELECT w.publication_content_version,
-                       (SELECT COUNT(*)
-                          FROM chapters chapter
-                         WHERE chapter.work_id = w.id
-                           AND chapter.status = 'ready'
-                           AND chapter.deleted_at IS NULL
-                           AND chapter.source_revision_id IS NOT NULL) AS ready_chapter_count,
-                       publication_work_scope_snapshot(w.id, 'PUBLIC_METADATA')::text
-                           AS metadata_snapshot,
-                       publication_work_scope_snapshot(w.id, 'CHAPTER_TEXT')::text
-                           AS chapter_text_snapshot,
-                       publication_work_scope_snapshot(w.id, 'COMMERCIAL_SALE')::text
-                           AS commercial_sale_snapshot,
-                       publication_work_scope_snapshot(w.id, 'TRANSLATION_ADAPTATION')::text
-                           AS translation_adaptation_snapshot,
-                       (SELECT state.current_state
-                          FROM publication_requests request
-                          JOIN publication_request_current_state state
-                            ON state.request_id = request.id
-                         WHERE request.work_id = w.id
-                         ORDER BY request.request_version DESC, request.id DESC
-                         LIMIT 1) AS current_request_state
-                  FROM works w
-                 WHERE w.id = ?
-                """)) {
-      select.setObject(1, workId);
+            .formatted(
+                targetChapterId == null ? "0" : "1",
+                scopeSnapshotFunction.formatted("PUBLIC_METADATA"),
+                scopeSnapshotFunction.formatted("CHAPTER_TEXT"),
+                scopeSnapshotFunction.formatted("COMMERCIAL_SALE"),
+                scopeSnapshotFunction.formatted("TRANSLATION_ADAPTATION"));
+    try (PreparedStatement select = connection.prepareStatement(query)) {
+      int parameter = 1;
+      if (targetChapterId != null) {
+        for (int i = 0; i < 4; i++) select.setObject(parameter++, targetChapterId);
+      }
+      select.setObject(parameter++, targetChapterId);
+      select.setObject(parameter, workId);
       try (ResultSet row = select.executeQuery()) {
         if (!row.next()) {
           throw new SQLException("Eligible manuscript disappeared during readiness read");

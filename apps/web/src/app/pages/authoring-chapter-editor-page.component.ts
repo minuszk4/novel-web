@@ -9,7 +9,7 @@ import {
   signal,
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { ActivatedRoute, RouterLink } from '@angular/router';
+import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import {
   AuthoringApiError,
   AuthoringApiService,
@@ -20,6 +20,7 @@ import {
   newAuthoringIdempotencyKey,
 } from '../core/authoring-api.service';
 import { PolicyOnboardingService } from '../core/policy-onboarding.service';
+import { PublicationChapterReleasePanelComponent } from './publication-chapter-release-panel.component';
 
 type PageState = 'loading' | 'guest' | 'error' | 'ready';
 type SaveState = 'saved' | 'dirty' | 'saving' | 'uncertain' | 'conflict' | 'error';
@@ -37,7 +38,7 @@ const maxDraftSegmentBytes = 1_048_576;
 
 @Component({
   selector: 'app-authoring-chapter-editor-page',
-  imports: [DecimalPipe, RouterLink],
+  imports: [DecimalPipe, RouterLink, PublicationChapterReleasePanelComponent],
   templateUrl: './authoring-chapter-editor-page.component.html',
   styleUrl: './authoring-chapter-editor-page.component.css',
 })
@@ -57,9 +58,12 @@ export class AuthoringChapterEditorPageComponent {
   protected readonly byteLength = signal(0);
   protected readonly hasOversizedSegment = signal(false);
   protected readonly isPreviewMode = signal(false);
+  protected readonly isPublicWork = signal(false);
+  protected readonly workTitle = signal('');
 
   private readonly route = inject(ActivatedRoute);
   private readonly api = inject(AuthoringApiService);
+  private readonly router = inject(Router);
   private readonly destroyRef = inject(DestroyRef);
   private workId: string | null = null;
   private chapterId: string | null = null;
@@ -197,6 +201,10 @@ export class AuthoringChapterEditorPageComponent {
 
   async retryLoad(): Promise<void> {
     await this.load(++this.loadToken);
+  }
+
+  protected returnToOutlineAfterPublication(): void {
+    void this.router.navigateByUrl(this.returnTo);
   }
 
   async saveNow(): Promise<void> {
@@ -388,8 +396,13 @@ export class AuthoringChapterEditorPageComponent {
 
     this.pageState.set('loading');
     try {
-      const draft = await this.api.getPrivateChapterDraft(this.workId, this.chapterId);
+      const [draft, manuscript] = await Promise.all([
+        this.api.getPrivateChapterDraft(this.workId, this.chapterId),
+        this.api.getPrivateManuscript(this.workId),
+      ]);
       if (token !== this.loadToken) return;
+      this.isPublicWork.set(manuscript.visibility === 'public');
+      this.workTitle.set(manuscript.title);
       this.draft.set(draft);
       this.sourceFormat = draft.sourceFormat ?? 'plain_text';
       this.currentEtag = draft.etag;

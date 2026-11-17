@@ -75,6 +75,9 @@
                   <span>Gửi {{ formatDate(item.submittedAt) }}</span>
                   <span>Chính sách {{ item.policyVersion }}</span>
                   <span>Yêu cầu {{ item.requestVersion }}</span>
+                  @if (item.targetChapterId) {
+                    <span>Đang duyệt chương mới</span>
+                  }
                 </p>
                 <h3>
                   <a [routerLink]="['/app/review', item.requestId]">{{ item.title }}</a>

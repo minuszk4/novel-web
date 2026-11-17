@@ -57,6 +57,20 @@ public class PublicationRequestController {
   @PostMapping
   public ResponseEntity<?> submit(
       Authentication authentication, @PathVariable UUID workId, HttpServletRequest request) {
+    return submitRequest(authentication, workId, null, request);
+  }
+
+  @PostMapping("/chapters/{chapterId}")
+  public ResponseEntity<?> submitChapter(
+      Authentication authentication,
+      @PathVariable UUID workId,
+      @PathVariable UUID chapterId,
+      HttpServletRequest request) {
+    return submitRequest(authentication, workId, chapterId, request);
+  }
+
+  private ResponseEntity<?> submitRequest(
+      Authentication authentication, UUID workId, UUID chapterId, HttpServletRequest request) {
     UUID correlationId = correlationId(request);
     SessionService.SessionPrincipal principal = principal(authentication);
     if (principal == null) {
@@ -143,8 +157,11 @@ public class PublicationRequestController {
 
     try {
       PublicationRequestService.SubmitResult result =
-          publicationService.submit(
-              principal.userId(), workId, ifMatch, idempotencyKey, submission);
+          chapterId == null
+              ? publicationService.submit(
+                  principal.userId(), workId, ifMatch, idempotencyKey, submission)
+              : publicationService.submitChapter(
+                  principal.userId(), workId, chapterId, ifMatch, idempotencyKey, submission);
       return response(result, correlationId);
     } catch (IllegalStateException exception) {
       return problem(

@@ -86,7 +86,7 @@
                     <strong>Chương {{ chapter.ordinal }} · {{ chapter.title }}</strong>
                     <span>{{ chapterStateLabel(chapter) }}</span>
                   </div>
-                  @if (chapter.status === 'ready' && chapter.contentAvailable) {
+                  @if (canPreviewChapter(chapter)) {
                     <button
                       class="button button-outline"
                       type="button"

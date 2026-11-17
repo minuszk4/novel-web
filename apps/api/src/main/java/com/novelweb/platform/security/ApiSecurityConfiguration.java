@@ -211,6 +211,7 @@ public class ApiSecurityConfiguration {
                         "/api/v1/authoring/manuscripts/*/public-drafting-context",
                         "/api/v1/authoring/manuscripts/*/publication/rights-policy",
                         "/api/v1/authoring/manuscripts/*/publication/readiness",
+                        "/api/v1/authoring/manuscripts/*/publication/readiness/chapters/*",
                         "/api/v1/authoring/manuscripts/*/publication/requests/history",
                         "/api/v1/authoring/manuscripts/*/chapters",
                         "/api/v1/authoring/manuscripts/*/chapters/*/draft")
@@ -221,7 +222,9 @@ public class ApiSecurityConfiguration {
                         "/api/v1/authoring/manuscripts",
                         "/api/v1/authoring/manuscripts/*/publication/rights-policy/acceptance",
                         "/api/v1/authoring/manuscripts/*/publication/requests",
+                        "/api/v1/authoring/manuscripts/*/publication/requests/chapters/*",
                         "/api/v1/authoring/manuscripts/*/publication/requests/withdrawal",
+                        "/api/v1/authoring/manuscripts/*/chapters/*/publication-release",
                         "/api/v1/authoring/manuscripts/*/publication-actions",
                         "/api/v1/authoring/manuscripts/*/chapters",
                         "/api/v1/authoring/manuscripts/*/chapters/*/revisions")
