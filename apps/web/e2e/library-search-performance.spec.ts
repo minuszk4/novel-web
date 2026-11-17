@@ -11,6 +11,13 @@ const catalogPageSize = 20;
 const catalogWorkCount = 1_000;
 const initialLoadSamples = 10;
 const searchSamples = 10;
+type LongTaskSample = { startTime: number; duration: number };
+type CatalogTimingWindow = Window & {
+  __catalogLongTasks?: LongTaskSample[];
+  __catalogSearchDomDurations?: Array<{ query: string; durationMs: number }>;
+  __catalogSearchSequence?: number;
+  __catalogExpectedFirstTitle?: string;
+};
 
 const account = {
   user: {
@@ -359,9 +366,80 @@ test('public catalog paginates 200 works and measures search over a 1,000-work s
     readyChapterCount: 1 + (index % 40),
   }));
   const requests: URL[] = [];
+  const mockResponseDurationsMs: Array<{ query: string; durationMs: number }> = [];
   await page.addInitScript(() => performance.mark('catalog-navigation-start'));
+  await page.addInitScript(() => {
+    const target = window as CatalogTimingWindow;
+    target.__catalogLongTasks = [];
+    target.__catalogSearchDomDurations = [];
+    if (typeof PerformanceObserver !== 'undefined') {
+      const observer = new PerformanceObserver((list) => {
+        const entries = target.__catalogLongTasks ?? [];
+        for (const entry of list.getEntries()) {
+          entries.push({ startTime: entry.startTime, duration: entry.duration });
+        }
+        target.__catalogLongTasks = entries;
+      });
+      try {
+        observer.observe({ type: 'longtask', buffered: true });
+      } catch {
+        // Long-task timing is optional diagnostic data; the functional performance run still works.
+      }
+    }
+    document.addEventListener(
+      'submit',
+      (event) => {
+        const form = event.target;
+        if (!(form instanceof HTMLFormElement) || !form.matches('.public-catalog-filters')) return;
+        const query =
+          form
+            .querySelector<HTMLInputElement>('#public-catalog-query')
+            ?.value.trim()
+            .normalize('NFKC')
+            .toLowerCase() ?? '';
+        const language =
+          form
+            .querySelector<HTMLInputElement>('#public-catalog-language')
+            ?.value.trim()
+            .toLowerCase() ?? '';
+        const sequence = (target.__catalogSearchSequence ?? 0) + 1;
+        target.__catalogSearchSequence = sequence;
+        const startMark = `catalog-search-ui-start-${sequence}`;
+        performance.mark(startMark);
+        const observer = new MutationObserver(() => {
+          const params = new URL(window.location.href).searchParams;
+          const cards = document.querySelectorAll('.public-catalog-card');
+          const firstTitle =
+            document.querySelector('.public-catalog-card h3 a')?.textContent?.trim() ?? '';
+          const announcement =
+            document.querySelector('.public-catalog-announcement')?.textContent?.trim() ?? '';
+          if (
+            (params.get('q') ?? '') !== query ||
+            (params.get('language') ?? '') !== language ||
+            firstTitle !== target.__catalogExpectedFirstTitle ||
+            cards.length !== 20 ||
+            announcement !== '20 truyện đã được tải.'
+          ) {
+            return;
+          }
+          observer.disconnect();
+          const endMark = `catalog-search-ui-end-${sequence}`;
+          performance.mark(endMark);
+          const measure = performance.measure(`catalog-search-dom-${sequence}`, startMark, endMark);
+          target.__catalogSearchDomDurations?.push({ query, durationMs: measure.duration });
+        });
+        observer.observe(document.documentElement, {
+          childList: true,
+          characterData: true,
+          subtree: true,
+        });
+      },
+      true,
+    );
+  });
   await page.route('**/api/v1/system/status', (route) => json(route, publicCatalogEnabledStatus));
   await page.route('**/api/v1/catalog/works**', (route) => {
+    const startedAt = performance.now();
     const requestUrl = new URL(route.request().url());
     requests.push(requestUrl);
     const query = (requestUrl.searchParams.get('q') ?? '').toLowerCase();
@@ -378,10 +456,19 @@ test('public catalog paginates 200 works and measures search over a 1,000-work s
     const start = pageNumber * catalogPageSize;
     const items = filtered.slice(start, start + catalogPageSize);
     const hasMore = start + items.length < filtered.length;
-    return json(route, {
+    const response = json(route, {
       items,
       nextCursor: hasMore ? `catalog-page-${pageNumber + 1}` : null,
     });
+    void response.then(() => {
+      if (requestUrl.searchParams.has('q')) {
+        mockResponseDurationsMs.push({
+          query,
+          durationMs: performance.now() - startedAt,
+        });
+      }
+    });
+    return response;
   });
   await page.setViewportSize({ width: 1280, height: 720 });
   const session = await page.context().newCDPSession(page);
@@ -427,6 +514,8 @@ test('public catalog paginates 200 works and measures search over a 1,000-work s
   const domNodeCount = metric('Nodes');
 
   const searchSamplesMs: number[] = [];
+  const searchDriverWallSamplesMs: number[] = [];
+  const searchLongTasks: LongTaskSample[][] = [];
   const searchbox = page.getByRole('searchbox', { name: 'Tên truyện hoặc tác giả' });
   const languageField = page.getByLabel('Ngôn ngữ nguồn');
   for (let sample = 0; sample < searchSamples; sample += 1) {
@@ -435,13 +524,35 @@ test('public catalog paginates 200 works and measures search over a 1,000-work s
     const firstExpectedTitle = `Novel ${String(queryIndex * 100).padStart(4, '0')}`;
     await searchbox.fill(query);
     await languageField.fill('vi');
-    await page.evaluate(() => performance.mark('catalog-search-start'));
+    await page.evaluate((title) => {
+      const target = window as CatalogTimingWindow;
+      target.__catalogExpectedFirstTitle = title;
+      target.__catalogLongTasks = [];
+    }, firstExpectedTitle);
+    const driverStartedAt = performance.now();
     await page.getByRole('button', { name: 'Tìm truyện' }).click();
     await expect.poll(() => new URL(page.url()).searchParams.get('q')).toBe(query);
     await expect.poll(() => new URL(page.url()).searchParams.get('language')).toBe('vi');
     await expect(page.locator('.public-catalog-card')).toHaveCount(catalogPageSize);
     await expect(page.locator('.public-catalog-card h3 a').first()).toHaveText(firstExpectedTitle);
-    searchSamplesMs.push(await measure(page, 'catalog-search-render', 'catalog-search-start'));
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => (window as CatalogTimingWindow).__catalogSearchDomDurations?.length ?? 0,
+        ),
+      )
+      .toBe(sample + 1);
+    const browserDomDurations = await page.evaluate(
+      () => (window as CatalogTimingWindow).__catalogSearchDomDurations ?? [],
+    );
+    searchSamplesMs.push(browserDomDurations.at(-1)?.durationMs ?? 0);
+    searchDriverWallSamplesMs.push(performance.now() - driverStartedAt);
+    searchLongTasks.push(
+      await page.evaluate(() => {
+        const target = window as CatalogTimingWindow;
+        return target.__catalogLongTasks ?? [];
+      }),
+    );
   }
 
   await page.setViewportSize({ width: 360, height: 800 });
@@ -480,8 +591,12 @@ test('public catalog paginates 200 works and measures search over a 1,000-work s
       initialLoadSamplesMs,
       appendPageP95Ms: percentile95(pageAppendSamplesMs),
       appendPageSamplesMs: pageAppendSamplesMs,
-      searchP95Ms: percentile95(searchSamplesMs),
-      searchSamplesMs,
+      browserSearchDomUpdateP95Ms: percentile95(searchSamplesMs),
+      browserSearchDomUpdateSamplesMs: searchSamplesMs,
+      searchDriverWallP95Ms: percentile95(searchDriverWallSamplesMs),
+      searchDriverWallSamplesMs,
+      searchLongTasks,
+      mockSearchResponseDurationsMs: mockResponseDurationsMs,
       firstSearchAfterAppending200CardsMs: searchSamplesMs[0] ?? 0,
       followUpSearchP95Ms: percentile95(searchSamplesMs.slice(1)),
       chromiumJsHeapDeltaMiB: heapDeltaMiB,
@@ -504,8 +619,11 @@ test('public catalog paginates 200 works and measures search over a 1,000-work s
     `- Dataset: ${catalogWorkCount.toLocaleString('en-US')} synthetic works; ten ${catalogPageSize}-item pages appended; each search matches at least 100 works`,
     `- Initial page p95 (${initialLoadSamplesMs.length} samples): ${result.measurements.initialLoadP95Ms.toFixed(1)} ms`,
     `- Page-append p95 (${pageAppendSamplesMs.length} samples): ${result.measurements.appendPageP95Ms.toFixed(1)} ms`,
-    `- Search-to-results p95 (${searchSamplesMs.length} samples): ${result.measurements.searchP95Ms.toFixed(1)} ms`,
+    `- Browser submit-to-results DOM update p95 (${searchSamplesMs.length} samples): ${result.measurements.browserSearchDomUpdateP95Ms.toFixed(1)} ms`,
     `- First search after appending 200 cards: ${result.measurements.firstSearchAfterAppending200CardsMs.toFixed(1)} ms; follow-up search p95 (${searchSamplesMs.length - 1} samples): ${result.measurements.followUpSearchP95Ms.toFixed(1)} ms`,
+    `- Playwright driver wall p95: ${result.measurements.searchDriverWallP95Ms.toFixed(1)} ms`,
+    `- Mock search response p95: ${percentile95(mockResponseDurationsMs.map(({ durationMs }) => durationMs)).toFixed(2)} ms`,
+    `- First search browser long tasks: ${(searchLongTasks[0] ?? []).map(({ duration }) => `${duration.toFixed(1)} ms`).join(', ') || 'none'}`,
     `- Chromium JS heap after GC: ${heapDeltaMiB.toFixed(1)} MiB; DOM nodes: ${domNodeCount.toLocaleString('en-US')}`,
     `- Mobile 360×800 document width: ${mobileDimensions.documentWidth}px / viewport ${mobileDimensions.viewportWidth}px; overflow: none; axe: 0 violations`,
     '',
