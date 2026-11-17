@@ -24,6 +24,7 @@ public class SystemStatusController {
   private final boolean publicationReleaseEnabled;
   private final boolean translationFakePreviewEnabled;
   private final boolean translationManualSubmissionEnabled;
+  private final boolean translationPublicationEnabled;
 
   public SystemStatusController(
       @Value("${novel.environment:local}") String environment,
@@ -35,6 +36,8 @@ public class SystemStatusController {
       @Value("${novel.translation.fake.worker.enabled:false}") boolean fakeTranslationWorkerEnabled,
       @Value("${novel.translation.review.enabled:false}")
           boolean manualTranslationSubmissionRequested,
+      @Value("${novel.translation.publication.enabled:false}")
+          boolean translationPublicationRequested,
       ObjectProvider<MomoTestGatewaySettings> momoSettings,
       ObjectProvider<PublicCatalogRateLimiter> publicCatalogRateLimiter,
       Environment springEnvironment) {
@@ -62,6 +65,8 @@ public class SystemStatusController {
             && fakeTranslationWorkerEnabled;
     this.translationManualSubmissionEnabled =
         this.translationFakePreviewEnabled && manualTranslationSubmissionRequested;
+    this.translationPublicationEnabled =
+        this.translationManualSubmissionEnabled && translationPublicationRequested;
   }
 
   @GetMapping("/status")
@@ -78,6 +83,7 @@ public class SystemStatusController {
             publicCatalogEnabled,
             publicationReleaseEnabled,
             translationFakePreviewEnabled,
-            translationManualSubmissionEnabled));
+            translationManualSubmissionEnabled,
+            translationPublicationEnabled));
   }
 }

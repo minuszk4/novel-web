@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 10.0.0
+  version: 10.2.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -14,7 +14,7 @@ info:
     Source-only Reader manifest, chapter-content, progress, reader-preferences, bookmarks, private annotations and private reading-history routes are implemented in the PostgreSQL profile.
     History is derived from the latest saved progress per accessible readable work, is visible for 365 days, and never returns chapter body text.
     Versioned cultivation catalogs, authenticated profile settings, private daily XP activity and bounded private Reader sessions with atomic XP awards are implemented in the PostgreSQL profile. The approved starting policy awards 1 XP per complete active Reader minute, capped at 120 XP per UTC day; same-day sub-minute remainder does not cross UTC midnight; top-ups and unlocks award none. Cultivation is feature-gated and off by default pending the rank-threshold pilot and release reviews.
-    Scoped glossary storage, actor-scoped catalog listing/creation, active and writer-only latest-revision reads, version-checked immutable draft creation, authenticated diff/lint/match preview, lint-gated revision publication with append-only audit, strict JSON/CSV/TSV import preview and resolved atomic draft apply, and active/writer-only latest snapshot export are implemented in the PostgreSQL profile. Translation job enqueue/status/retry/cancel are available only as an explicit fake-local development preview and never call an external NMT provider. Manual translation readiness/submission plus assigned-reviewer queue, frozen-snapshot detail and append-only accept/reject decisions are available only behind `NOVEL_TRANSLATION_REVIEW_ENABLED`; the flag defaults off. Writer and reviewer UI are implemented behind the default-off manual-review gate; translation publication and rollback remain open. `features.translationFakePreviewEnabled` is true only when both required profiles and the provider/API/worker opt-in flags are active.
+    Scoped glossary storage, actor-scoped catalog listing/creation, active and writer-only latest-revision reads, version-checked immutable draft creation, authenticated diff/lint/match preview, lint-gated revision publication with append-only audit, strict JSON/CSV/TSV import preview and resolved atomic draft apply, and active/writer-only latest snapshot export are implemented in the PostgreSQL profile. Translation job enqueue/status/retry/cancel are available only as an explicit fake-local development preview and never call an external NMT provider. Manual translation readiness/submission plus assigned-reviewer queue, frozen-snapshot detail and append-only accept/reject decisions are available only behind `NOVEL_TRANSLATION_REVIEW_ENABLED`; the flag defaults off. Writer and reviewer UI are implemented behind the default-off manual-review gate. Owner release requires a second default-off `NOVEL_TRANSLATION_PUBLICATION_ENABLED` flag, an accepted current human snapshot, active adaptation rights and explicit owner confirmation; rollback and translated Reader delivery remain separate work. `features.translationFakePreviewEnabled` is true only when both required profiles and the provider/API/worker opt-in flags are active.
     The authenticated PostgreSQL profile also exposes the current actor's available paid and non-expired bonus credit totals from the rebuildable balance projection; the response is no-store and does not expose another account's ledger. When the MoMo TEST gate is explicitly enabled with valid TEST configuration, the profile also exposes server-priced public-chapter unlock quotes and an idempotent paid-credit unlock that commits the debit with an immutable entitlement; private/draft chapters remain unavailable and no production purchase is enabled.
     An opt-in, metadata-only guest catalog endpoint is available in the PostgreSQL profile. It is disabled by default and returns only authored, active, explicitly public works owned by active users with at least one ready chapter; it does not return descriptions or chapter bodies. Admin-only publication-reviewer role assignment, bounded eligible-account search and status-filtered assignment history are implemented in the PostgreSQL profile; the current-user response exposes the caller's server-derived security capability for navigation only. Author-owned private drafts can read the current effective publication-rights policy, record a work-scoped acknowledgement and submit an immutable rights-review request with scoped declarations. Submission is owner-only, CSRF-protected, snapshot-checked, bounded and persistently rate-limited. Active reviewers can read an actor-bound pending queue and privacy-filtered request snapshot, then append needs-information, reject or approve decisions with exact idempotency and current ETag checks; approval only grants immutable scope access and leaves the work unpublished. An owner-only immediate release route exists behind `NOVEL_PUBLICATION_RELEASE_ENABLED`, which remains off by default and is reported through server feature status; it rechecks current approval and snapshots when the owner confirms release. The API does not bootstrap system administrators, let authors define policy or self-review. Public follow, notifications, scheduled release, owner unpublish, edge rate limits and guest reader access remain separate work.
 servers:
@@ -2379,6 +2379,272 @@ paths:
           $ref: '#/components/responses/Problem'
         '503':
           $ref: '#/components/responses/Problem'
+  /api/v1/authoring/manuscripts/{workId}/translations/accepted:
+    get:
+      operationId: listOwnerAcceptedTranslations
+      tags: [Translation]
+      x-implementation-status: local-preview
+      summary: List accepted manual translation snapshots awaiting owner release
+      description: >-
+        Requires the authenticated work owner, current Terms and Privacy acceptance, the postgres and translation-fake
+        profiles, and both translation review/publication opt-ins. Returns metadata only and is paginated with a
+        cursor bound to the owner and manuscript. Only accepted snapshots for the current source revision are listed.
+        A rightsCurrent=false item cannot be released. Responses are no-store. Reviewer acceptance alone never
+        publishes or grants Reader access.
+      security:
+        - appSession: []
+      parameters:
+        - name: workId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: cursor
+          in: query
+          schema:
+            type: string
+            maxLength: 2048
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+      responses:
+        '200':
+          description: Owner-only, metadata-only accepted translation page.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TranslationAcceptedQueue'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/authoring/translations/review-submissions/{submissionId}/release:
+    post:
+      operationId: releaseAcceptedTranslationSnapshot
+      tags: [Translation]
+      x-implementation-status: local-preview
+      summary: Explicitly release an accepted human translation snapshot
+      description: >-
+        Accepts headers only and never accepts chapter or translation text. Requires the authenticated work owner,
+        current Terms and Privacy acceptance, CSRF, the strong ETag from the accepted snapshot, a fresh
+        Idempotency-Key, an unchanged source revision/hash, current TRANSLATION_ADAPTATION approval and current
+        publication-rights policy. One PostgreSQL transaction supersedes any current language version, copies the
+        exact accepted manual edits into immutable version segments and appends a release event. Exact retry returns
+        the same receipt. This release does not charge credits; current public Reader delivery has separate access
+        gates. Available only when review and translation-publication opt-ins are both enabled; both default off.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - name: submissionId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: If-Match
+          in: header
+          required: true
+          schema:
+            type: string
+            pattern: '^"translation-review-[a-f0-9]{64}"$'
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            minLength: 16
+            maxLength: 128
+            pattern: '^[A-Za-z0-9._~-]{16,128}$'
+      responses:
+        '201':
+          description: A new immutable translation version was released.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            ETag:
+              schema:
+                type: string
+                pattern: '^"translation-review-[a-f0-9]{64}"$'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TranslationPublicationReceipt'
+        '200':
+          description: The original release receipt for an exact retry.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TranslationPublicationReceipt'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '412':
+          $ref: '#/components/responses/Problem'
+        '428':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/authoring/manuscripts/{workId}/translations/history:
+    get:
+      operationId: listOwnerTranslationReleaseHistory
+      tags: [Translation]
+      x-implementation-status: local-preview
+      summary: List immutable released translation versions for the work owner
+      description: >-
+        Returns metadata only, newest first, using a cursor bound to the owner and manuscript. A rollback target is
+        offered only when the retained version matches the current source, another version is current, and the current
+        TRANSLATION_ADAPTATION rights approval remains valid. All pages are no-store.
+      security:
+        - appSession: []
+      parameters:
+        - name: workId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: cursor
+          in: query
+          schema:
+            type: string
+            maxLength: 2048
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+      responses:
+        '200':
+          description: Owner-only release history metadata.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TranslationReleaseHistoryPage'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/authoring/translations/versions/{versionId}/rollback:
+    post:
+      operationId: rollbackReleasedTranslationVersion
+      tags: [Translation]
+      x-implementation-status: local-preview
+      summary: Restore a retained translation version as a new current version
+      description: >-
+        Accepts headers only. Requires the work owner, current policy and current TRANSLATION_ADAPTATION approval.
+        If-Match must identify the current version. The transaction supersedes the current version, copies the exact
+        immutable retained segments into a new version, and appends a ROLLBACK release event. It never edits or
+        deletes an older version. Exact retries return the original receipt.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - name: versionId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: If-Match
+          in: header
+          required: true
+          schema:
+            type: string
+            pattern: '^"translation-version-[0-9a-fA-F-]{36}-[1-9][0-9]*"$'
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            minLength: 16
+            maxLength: 128
+            pattern: '^[A-Za-z0-9._~-]{16,128}$'
+      responses:
+        '201':
+          description: A new immutable current version was restored from the retained version.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            ETag:
+              schema:
+                type: string
+                pattern: '^"translation-review-[a-f0-9]{64}"$'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TranslationPublicationReceipt'
+        '200':
+          description: Original rollback receipt for an exact retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TranslationPublicationReceipt'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '412':
+          $ref: '#/components/responses/Problem'
+        '428':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
   /api/v1/review/translations:
     get:
       operationId: listAssignedTranslationReviewSubmissions
@@ -4037,6 +4303,112 @@ paths:
               schema:
                 $ref: '#/components/schemas/Problem'
         '404':
+          $ref: '#/components/responses/Problem'
+  /api/v1/chapters/{chapterId}/translations:
+    get:
+      operationId: listReadableChapterTranslations
+      tags: [Reader]
+      x-implementation-status: local-preview
+      summary: List published translation languages for a readable chapter
+      description: >-
+        Requires an authenticated reader, current Terms and Privacy acceptance, current public metadata/chapter-text/
+        translation-adaptation approvals, and chapter access. Only current released human-reviewed versions are
+        listed. Fake-local output and unpublished candidates are never returned. Response is no-store.
+      security:
+        - appSession: []
+      parameters:
+        - name: chapterId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Available released language tags, without chapter text.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvailableTranslationLanguages'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/chapters/{chapterId}/translations/{targetLanguage}/content:
+    get:
+      operationId: getReleasedTranslatedChapterContent
+      tags: [Reader]
+      x-implementation-status: local-preview
+      summary: Read a current released human translation
+      description: >-
+        Rechecks the current source revision, translation version, adaptation rights, public text rights, and reader
+        entitlement on every page. Cursors are HMAC-bound to the reader, chapter, and immutable translation version.
+        Returns plain text only; unpublished, stale-source, revoked-rights, locked, or inaccessible content is masked.
+        Response is no-store. Available only when translation review/publication gates are enabled.
+      security:
+        - appSession: []
+      parameters:
+        - name: chapterId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: targetLanguage
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$'
+            maxLength: 35
+        - name: cursor
+          in: query
+          schema:
+            type: string
+            maxLength: 2048
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 250
+      responses:
+        '200':
+          description: Current released translated segments for one immutable translation version.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TranslatedChapterContent'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '503':
           $ref: '#/components/responses/Problem'
   /api/v1/imports/rights-statement/current:
     get:
@@ -6886,6 +7258,138 @@ components:
         nextCursor:
           type: [string, 'null']
           maxLength: 256
+    TranslationAcceptedQueue:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor, hasMore]
+      properties:
+        items:
+          type: array
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/TranslationAcceptedItem'
+        nextCursor:
+          type: [string, 'null']
+          maxLength: 2048
+        hasMore:
+          type: boolean
+    TranslationAcceptedItem:
+      type: object
+      additionalProperties: false
+      required: [submissionId, chapterId, workTitle, chapterTitle, targetLanguage, snapshotDigest, segmentCount, submittedAt, rightsCurrent, currentVersionId, currentVersionNo]
+      properties:
+        submissionId:
+          type: string
+          format: uuid
+        chapterId:
+          type: string
+          format: uuid
+        workTitle:
+          type: string
+          maxLength: 300
+        chapterTitle:
+          type: string
+          maxLength: 300
+        targetLanguage:
+          type: string
+          maxLength: 35
+        snapshotDigest:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        segmentCount:
+          type: integer
+          minimum: 1
+          maximum: 5000
+        submittedAt:
+          type: string
+          format: date-time
+        rightsCurrent:
+          type: boolean
+        currentVersionId:
+          type: [string, 'null']
+          format: uuid
+        currentVersionNo:
+          type: [integer, 'null']
+          minimum: 1
+    TranslationPublicationReceipt:
+      type: object
+      additionalProperties: false
+      required: [versionId, versionNo, snapshotDigest, releasedAt, replayed]
+      properties:
+        versionId:
+          type: string
+          format: uuid
+        versionNo:
+          type: integer
+          minimum: 1
+        snapshotDigest:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        releasedAt:
+          type: string
+          format: date-time
+        replayed:
+          type: boolean
+    TranslationReleaseHistoryPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor, hasMore]
+      properties:
+        items:
+          type: array
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/TranslationReleaseHistoryItem'
+        nextCursor:
+          type: [string, 'null']
+          maxLength: 2048
+        hasMore:
+          type: boolean
+    TranslationReleaseHistoryItem:
+      type: object
+      additionalProperties: false
+      required: [eventId, versionId, chapterId, chapterTitle, targetLanguage, versionNo, actionCode, rollbackOfVersionId, releasedAt, current, currentVersionId, currentVersionNo, currentVersionEtag, rollbackAllowed]
+      properties:
+        eventId:
+          type: string
+          format: uuid
+        versionId:
+          type: string
+          format: uuid
+        chapterId:
+          type: string
+          format: uuid
+        chapterTitle:
+          type: string
+          maxLength: 300
+        targetLanguage:
+          type: string
+          maxLength: 35
+        versionNo:
+          type: integer
+          minimum: 1
+        actionCode:
+          type: string
+          enum: [PUBLISH, ROLLBACK]
+        rollbackOfVersionId:
+          type: [string, 'null']
+          format: uuid
+        releasedAt:
+          type: string
+          format: date-time
+        current:
+          type: boolean
+        currentVersionId:
+          type: [string, 'null']
+          format: uuid
+        currentVersionNo:
+          type: [integer, 'null']
+          minimum: 1
+        currentVersionEtag:
+          type: [string, 'null']
+          pattern: '^"translation-version-[0-9a-fA-F-]{36}-[1-9][0-9]*"$'
+        rollbackAllowed:
+          type: boolean
     TranslationReviewQueuePage:
       type: object
       additionalProperties: false
@@ -7300,7 +7804,7 @@ components:
               const: TEST
         features:
           type: object
-          required: [importProcessingEnabled, cultivationEnabled, commerceSandboxEnabled, publicCatalogEnabled, publicationReleaseEnabled, translationFakePreviewEnabled, translationManualSubmissionEnabled]
+          required: [importProcessingEnabled, cultivationEnabled, commerceSandboxEnabled, publicCatalogEnabled, publicationReleaseEnabled, translationFakePreviewEnabled, translationManualSubmissionEnabled, translationPublicationEnabled]
           properties:
             importProcessingEnabled:
               type: boolean
@@ -7324,8 +7828,14 @@ components:
               type: boolean
               description: >-
                 True only when the fake preview is fully enabled and NOVEL_TRANSLATION_REVIEW_ENABLED is true.
-                This advertises writer readiness/submission APIs only; reviewer queue, decisions and publication are
-                not available yet and the flag must remain off outside local API verification.
+                This advertises writer readiness/submission plus assigned reviewer queue/decision APIs; it does not
+                imply that a reviewer accepted any snapshot or that an owner released it.
+            translationPublicationEnabled:
+              type: boolean
+              description: >-
+                True only when fake preview, manual review and NOVEL_TRANSLATION_PUBLICATION_ENABLED are active
+                together. Source hash, owner authority, accepted snapshot, current rights and policy are still
+                rechecked at release time. Rollback and translated Reader delivery remain separate.
     GoogleSignInBootstrap:
       type: object
       additionalProperties: false
@@ -7906,6 +8416,70 @@ components:
         sourceText:
           type: string
           maxLength: 20000
+    AvailableTranslationLanguages:
+      type: object
+      additionalProperties: false
+      required: [languages]
+      properties:
+        languages:
+          type: array
+          maxItems: 50
+          uniqueItems: true
+          items:
+            type: string
+            pattern: '^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$'
+            maxLength: 35
+    TranslatedChapterContent:
+      type: object
+      additionalProperties: false
+      required: [chapterId, workId, sourceRevisionId, translationVersionId, translationVersionNo, sourceLanguage, targetLanguage, segments, nextSegmentCursor]
+      properties:
+        chapterId:
+          type: string
+          format: uuid
+        workId:
+          type: string
+          format: uuid
+        sourceRevisionId:
+          type: string
+          format: uuid
+        translationVersionId:
+          type: string
+          format: uuid
+        translationVersionNo:
+          type: integer
+          minimum: 1
+        sourceLanguage:
+          type: string
+          maxLength: 35
+        targetLanguage:
+          type: string
+          pattern: '^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$'
+          maxLength: 35
+        segments:
+          type: array
+          maxItems: 1000
+          items:
+            $ref: '#/components/schemas/TranslatedSegment'
+        nextSegmentCursor:
+          type: [string, 'null']
+          maxLength: 2048
+    TranslatedSegment:
+      type: object
+      additionalProperties: false
+      required: [anchor, type, translatedText]
+      properties:
+        anchor:
+          type: string
+          minLength: 1
+          maxLength: 160
+        type:
+          type: string
+          enum: [heading, paragraph, quote]
+        translatedText:
+          type: string
+          minLength: 1
+          maxLength: 1048576
     PublicationRightsPolicy:
       type: object
       additionalProperties: false

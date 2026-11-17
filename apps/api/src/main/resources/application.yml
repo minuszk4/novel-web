@@ -62,6 +62,8 @@ novel:
       api-enabled: ${NOVEL_TRANSLATION_FAKE_API_ENABLED:false}
     review:
       enabled: ${NOVEL_TRANSLATION_REVIEW_ENABLED:false}
+    publication:
+      enabled: ${NOVEL_TRANSLATION_PUBLICATION_ENABLED:false}
   payment:
     momo:
       test:

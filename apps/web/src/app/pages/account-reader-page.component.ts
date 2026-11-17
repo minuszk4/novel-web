@@ -19,6 +19,7 @@ import {
   CreateReaderAnnotationRequest,
   ReaderChapter,
   ReaderContentPage,
+  ReaderTranslationContentPage,
   ReaderManifestPage,
   ReaderPreferences,
   ReaderProgress,
@@ -126,6 +127,14 @@ export class AccountReaderPageComponent {
   protected readonly chapters = signal<ReaderChapter[]>([]);
   protected readonly activeChapter = signal<ReaderChapter | null>(null);
   protected readonly segments = signal<ReaderSourceSegment[]>([]);
+  protected readonly availableTranslationLanguages = signal<string[]>([]);
+  protected readonly selectedReaderLanguage = signal('');
+  protected readonly canChooseTranslation = computed(
+    () =>
+      this.work()?.visibility === 'public' &&
+      this.systemStatus.status()?.features.translationPublicationEnabled === true &&
+      this.availableTranslationLanguages().length > 0,
+  );
   protected readonly renderedSegments = computed(() => this.buildRenderedSegments());
   protected readonly sourceRevisionId = signal<string | null>(null);
   protected readonly manifestState = signal<'loading' | 'ready' | 'error'>('loading');
@@ -495,6 +504,19 @@ export class AccountReaderPageComponent {
     this.navigateToChapter(chapter);
   }
 
+  protected async changeReaderLanguage(event: Event): Promise<void> {
+    const chapter = this.activeChapter();
+    if (!chapter || ['loading', 'locked', 'unavailable'].includes(this.contentState())) return;
+    const language = (event.target as HTMLSelectElement).value;
+    if (language && !this.availableTranslationLanguages().includes(language)) return;
+    if (language === this.selectedReaderLanguage()) return;
+    this.closePanel(false);
+    this.selectedReaderLanguage.set(language);
+    const token = ++this.loadToken;
+    this.contentState.set('loading');
+    await this.activateChapter(chapter, token, undefined, true);
+  }
+
   protected beginUnlockConfirmation(): void {
     if (this.contentState() !== 'locked' || !this.canAffordUnlock() || this.unlockSubmitting()) {
       return;
@@ -619,12 +641,17 @@ export class AccountReaderPageComponent {
   }
 
   protected preserveTextSelection(event: PointerEvent): void {
+    if (this.selectedReaderLanguage()) return;
     this.pendingTextSelection = this.readSelectionDraft();
     event.preventDefault();
   }
 
   @HostListener('document:selectionchange')
   protected cacheTextSelection(): void {
+    if (this.selectedReaderLanguage()) {
+      this.pendingTextSelection = null;
+      return;
+    }
     const draft = this.readSelectionDraft();
     if (draft) {
       this.pendingTextSelection = draft;
@@ -645,6 +672,7 @@ export class AccountReaderPageComponent {
   }
 
   protected toggleAnnotations(event?: Event): void {
+    if (this.selectedReaderLanguage()) return;
     if (this.annotationsOpen()) {
       this.closePanel();
       return;
@@ -1219,11 +1247,14 @@ export class AccountReaderPageComponent {
     chapter: ReaderChapter,
     token: number,
     restoreProgress: ReaderProgress | null = null,
+    preserveLanguage = false,
   ): Promise<void> {
     if (this.activeChapter() && this.activeChapter()?.id !== chapter.id) {
       void this.flushProgress();
     }
     this.pendingTextSelection = null;
+    if (!preserveLanguage) this.selectedReaderLanguage.set('');
+    this.availableTranslationLanguages.set([]);
     this.activeChapter.set(chapter);
     this.segments.set([]);
     this.sourceRevisionId.set(null);
@@ -1252,22 +1283,50 @@ export class AccountReaderPageComponent {
     }
     this.contentState.set('loading');
     try {
+      const targetLanguage = this.selectedReaderLanguage();
+      if (targetLanguage) {
+        const status = await this.systemStatus.waitForStatus();
+        if (token !== this.loadToken) return;
+        if (
+          this.work()?.visibility !== 'public' ||
+          status?.features.translationPublicationEnabled !== true
+        ) {
+          throw new ReaderApiError('TRANSLATION_NOT_AVAILABLE', 404, 'TRANSLATION_NOT_AVAILABLE');
+        }
+        const languages = await this.api.getAvailableTranslations(chapter.id);
+        if (token !== this.loadToken) return;
+        this.availableTranslationLanguages.set(languages);
+        if (!languages.includes(targetLanguage)) {
+          throw new ReaderApiError('TRANSLATION_NOT_AVAILABLE', 404, 'TRANSLATION_NOT_AVAILABLE');
+        }
+      } else {
+        void this.loadTranslationChoices(chapter, token);
+      }
       let cursor: string | undefined;
       let revisionId: string | undefined;
       let workId: string | null = null;
+      let translationVersionId: string | null = null;
       const segments: ReaderSourceSegment[] = [];
       for (let pageIndex = 0; pageIndex < maxContentPages; pageIndex += 1) {
-        const page: ReaderContentPage = await this.api.getContentPage(
-          chapter.id,
-          revisionId,
-          cursor,
-          contentPageSize,
-        );
+        const page: ReaderContentPage | ReaderTranslationContentPage = targetLanguage
+          ? await this.api.getTranslatedContentPage(
+              chapter.id,
+              targetLanguage,
+              cursor,
+              contentPageSize,
+            )
+          : await this.api.getContentPage(chapter.id, revisionId, cursor, contentPageSize);
         if (token !== this.loadToken) return;
         if (workId && page.workId !== workId)
           throw new ReaderApiError('INVALID_READER_RESPONSE', 502, 'INVALID_READER_RESPONSE');
         if (revisionId && page.sourceRevisionId !== revisionId) {
           throw new ReaderApiError('INVALID_READER_RESPONSE', 502, 'INVALID_READER_RESPONSE');
+        }
+        if ('translationVersionId' in page && typeof page.translationVersionId === 'string') {
+          if (translationVersionId && page.translationVersionId !== translationVersionId) {
+            throw new ReaderApiError('INVALID_READER_RESPONSE', 502, 'INVALID_READER_RESPONSE');
+          }
+          translationVersionId = page.translationVersionId;
         }
         workId = page.workId;
         revisionId = page.sourceRevisionId;
@@ -1300,7 +1359,8 @@ export class AccountReaderPageComponent {
       this.sourceRevisionId.set(revisionId);
       this.contentState.set('ready');
       this.startCultivationSession(workId, chapter.id, token);
-      void this.loadChapterAnnotations(workId, chapter.id, token);
+      if (!targetLanguage) void this.loadChapterAnnotations(workId, chapter.id, token);
+      else this.chapterAnnotations.set([]);
       if (restoreProgress?.chapterId === chapter.id) {
         this.restoreProgressPosition(restoreProgress);
       } else if (this.pendingBookmarkPosition?.chapterId === chapter.id) {
@@ -1314,6 +1374,26 @@ export class AccountReaderPageComponent {
       if (token !== this.loadToken) return;
       this.contentError.set(asReaderApiError(error));
       this.contentState.set('error');
+    }
+  }
+
+  private async loadTranslationChoices(chapter: ReaderChapter, token: number): Promise<void> {
+    if (this.work()?.visibility !== 'public') return;
+    const status = await this.systemStatus.waitForStatus();
+    if (
+      token !== this.loadToken ||
+      this.activeChapter()?.id !== chapter.id ||
+      status?.features.translationPublicationEnabled !== true
+    ) {
+      return;
+    }
+    try {
+      const languages = await this.api.getAvailableTranslations(chapter.id);
+      if (token !== this.loadToken || this.activeChapter()?.id !== chapter.id) return;
+      this.availableTranslationLanguages.set(languages);
+    } catch {
+      // Translation availability is optional; source reading remains available.
+      this.availableTranslationLanguages.set([]);
     }
   }
 

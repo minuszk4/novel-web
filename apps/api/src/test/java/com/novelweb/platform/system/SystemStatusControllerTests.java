@@ -180,6 +180,58 @@ class SystemStatusControllerTests {
     assertFalse(profileMissing.features().translationManualSubmissionEnabled());
   }
 
+  @Test
+  void translationPublicationRequiresReviewPreviewAndItsOwnOptIn() {
+    ApiSystemStatus enabled =
+        controllerWithTranslationPublication(true, true, true, true, true).status();
+    ApiSystemStatus publicationOptInMissing =
+        controllerWithTranslationPublication(true, true, true, true, false).status();
+    ApiSystemStatus reviewOptInMissing =
+        controllerWithTranslationPublication(true, true, true, false, true).status();
+    ApiSystemStatus workerGateMissing =
+        controllerWithTranslationPublication(true, true, false, true, true).status();
+    ApiSystemStatus profileMissing =
+        controllerWithTranslationPublication(true, true, true, true, true, "postgres").status();
+
+    assertTrue(enabled.features().translationPublicationEnabled());
+    assertFalse(publicationOptInMissing.features().translationPublicationEnabled());
+    assertFalse(reviewOptInMissing.features().translationPublicationEnabled());
+    assertFalse(workerGateMissing.features().translationPublicationEnabled());
+    assertFalse(profileMissing.features().translationPublicationEnabled());
+  }
+
+  private static SystemStatusController controllerWithTranslationPublication(
+      boolean translationEnabled,
+      boolean translationApiEnabled,
+      boolean translationWorkerEnabled,
+      boolean reviewRequested,
+      boolean publicationRequested,
+      String... activeProfiles) {
+    MockEnvironment environment = new MockEnvironment();
+    environment.setActiveProfiles(
+        activeProfiles.length == 0
+            ? new String[] {"postgres", "translation-fake"}
+            : activeProfiles);
+    StaticListableBeanFactory beanFactory = new StaticListableBeanFactory();
+    ObjectProvider<MomoTestGatewaySettings> momoSettings =
+        beanFactory.getBeanProvider(MomoTestGatewaySettings.class);
+    ObjectProvider<PublicCatalogRateLimiter> catalogRateLimiter =
+        beanFactory.getBeanProvider(PublicCatalogRateLimiter.class);
+    return new SystemStatusController(
+        "test",
+        new GoogleSignInConfiguration("", "", ""),
+        false,
+        false,
+        translationEnabled,
+        translationApiEnabled,
+        translationWorkerEnabled,
+        reviewRequested,
+        publicationRequested,
+        momoSettings,
+        catalogRateLimiter,
+        environment);
+  }
+
   private static SystemStatusController controllerWithManualSubmission(
       boolean reviewRequested,
       boolean translationEnabled,
@@ -202,6 +254,7 @@ class SystemStatusControllerTests {
         translationApiEnabled,
         translationWorkerEnabled,
         reviewRequested,
+        false,
         momoSettings,
         catalogRateLimiter,
         environment);
@@ -221,6 +274,7 @@ class SystemStatusControllerTests {
     return new SystemStatusController(
         "test",
         new GoogleSignInConfiguration("", "", ""),
+        false,
         false,
         false,
         false,
@@ -258,6 +312,7 @@ class SystemStatusControllerTests {
         translationApiEnabled,
         translationWorkerEnabled,
         false,
+        false,
         momoSettings,
         catalogRateLimiter,
         environment);
@@ -287,6 +342,7 @@ class SystemStatusControllerTests {
     return new SystemStatusController(
         "test",
         new GoogleSignInConfiguration("", "", ""),
+        false,
         false,
         false,
         false,

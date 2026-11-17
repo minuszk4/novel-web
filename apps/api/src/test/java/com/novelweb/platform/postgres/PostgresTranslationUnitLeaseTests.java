@@ -16,6 +16,8 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import com.novelweb.identity.auth.PolicyService;
 import com.novelweb.identity.session.SessionService;
 import com.novelweb.library.LibraryCursorCodec;
+import com.novelweb.library.reader.ReaderCursorCodec;
+import com.novelweb.library.reader.TranslatedReaderService;
 import com.novelweb.translation.jobs.TranslationAttemptCompletionRepository;
 import com.novelweb.translation.jobs.TranslationAttemptCompletionService;
 import com.novelweb.translation.jobs.TranslationAttemptFailureRepository;
@@ -37,6 +39,7 @@ import com.novelweb.translation.jobs.TranslationJobRetryRepository;
 import com.novelweb.translation.jobs.TranslationJobRetryService;
 import com.novelweb.translation.jobs.TranslationJobService;
 import com.novelweb.translation.jobs.TranslationJobStatusService;
+import com.novelweb.translation.jobs.TranslationPublicationService;
 import com.novelweb.translation.jobs.TranslationReviewDecisionService;
 import com.novelweb.translation.jobs.TranslationReviewQueryService;
 import com.novelweb.translation.jobs.TranslationReviewSnapshotHasher;
@@ -97,6 +100,7 @@ class PostgresTranslationUnitLeaseTests {
   private final Map<UUID, UUID> workspaceByLibrary = new HashMap<>();
   private final Map<UUID, List<UUID>> additionalJobsByFixture = new HashMap<>();
   private final List<UUID> extraUserFixtures = new ArrayList<>();
+  private final List<String> publicationPolicyFixtures = new ArrayList<>();
 
   @Autowired private DataSource dataSource;
 
@@ -130,6 +134,10 @@ class PostgresTranslationUnitLeaseTests {
   void cleanFixtures() throws Exception {
     for (Fixture fixture : fixtures) deleteFixture(fixture);
     fixtures.clear();
+    for (String policyVersion : publicationPolicyFixtures) {
+      deletePublicationPolicyFixture(policyVersion);
+    }
+    publicationPolicyFixtures.clear();
     try (Connection connection = dataSource.getConnection()) {
       for (UUID userId : extraUserFixtures) {
         execute(connection, "DELETE FROM users WHERE id = ?", userId);
@@ -2001,6 +2009,198 @@ class PostgresTranslationUnitLeaseTests {
   }
 
   @Test
+  void reviewerAcceptanceDoesNotReleaseOrExposeTranslationWithoutCurrentOwnerRights()
+      throws Exception {
+    Fixture fixture = createQueuedJob(2);
+    UUID submissionId = createSubmittedManualSnapshot(fixture, fixture.userId());
+    UUID reviewerId = createAssignedReviewer("Manual review without release rights");
+    TranslationReviewQueryService.TranslationReviewDetail detail =
+        translationReviewQueryService().detail(reviewerId, submissionId).detail();
+    TranslationReviewDecisionService.DecisionResult accepted =
+        translationReviewDecisionService()
+            .decide(
+                reviewerId,
+                submissionId,
+                detailEtag(detail),
+                "translation-review-no-rights-accept-01",
+                new TranslationReviewDecisionService.DecisionCommand("ACCEPT", "ACCURATE"));
+    assertEquals(TranslationReviewDecisionService.DecisionOutcome.CREATED, accepted.outcome());
+
+    makeAuthoredPublic(fixture);
+    PolicyService policyService = mock(PolicyService.class);
+    when(policyService.requiredAcceptance(fixture.userId()))
+        .thenReturn(PolicyService.RequiredAcceptance.COMPLETE);
+    TranslationPublicationService publicationService =
+        new TranslationPublicationService(dataSource, policyService, libraryCursorCodec);
+    String snapshotEtag = detailEtag(detail);
+    TranslationPublicationService.AcceptedQueue queue =
+        publicationService.accepted(fixture.userId(), fixture.workId(), null, 20);
+
+    assertEquals(TranslationPublicationService.QueueOutcome.AVAILABLE, queue.outcome());
+    assertEquals(1, queue.items().size());
+    assertFalse(queue.items().getFirst().rightsCurrent());
+    TranslationPublicationService.ReleaseResult release =
+        publicationService.publish(
+            fixture.userId(),
+            submissionId,
+            snapshotEtag,
+            "translation-publication-no-rights-key-01");
+    assertEquals(TranslationPublicationService.ReleaseOutcome.RIGHTS_REQUIRED, release.outcome());
+    assertEquals(0, countTranslationVersions(fixture.chapterId()));
+    assertEquals(0, countTranslationReleaseEvents(fixture.workId()));
+    assertEquals(
+        List.of(),
+        new TranslatedReaderService(
+                dataSource, new ReaderCursorCodec("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"))
+            .availableLanguages(fixture.userId(), fixture.chapterId()));
+  }
+
+  @Test
+  void ownerReleaseIsConcurrentIdempotentAndRollbackCreatesImmutableReaderVersion()
+      throws Exception {
+    Fixture fixture = createQueuedJob(2);
+    UUID reviewerId = createAssignedReviewer("Translation release rights reviewer");
+    UUID firstSubmissionId = createSubmittedManualSnapshot(fixture, fixture.userId());
+    TranslationReviewQueryService.TranslationReviewDetail firstDetail =
+        acceptTranslationSnapshot(
+            reviewerId, firstSubmissionId, "translation-release-first-accept");
+    UUID secondSubmissionId = createRevisedManualSnapshot(fixture);
+    TranslationReviewQueryService.TranslationReviewDetail secondDetail =
+        acceptTranslationSnapshot(
+            reviewerId, secondSubmissionId, "translation-release-second-accept");
+    UUID rightsBlockedSubmissionId = createRevisedManualSnapshot(fixture);
+    TranslationReviewQueryService.TranslationReviewDetail rightsBlockedDetail =
+        acceptTranslationSnapshot(
+            reviewerId, rightsBlockedSubmissionId, "translation-release-rights-failure-accept");
+    UUID staleSourceSubmissionId = createRevisedManualSnapshot(fixture);
+    TranslationReviewQueryService.TranslationReviewDetail staleSourceDetail =
+        acceptTranslationSnapshot(
+            reviewerId, staleSourceSubmissionId, "translation-release-stale-source-accept");
+    makeAuthoredPublic(fixture);
+    createCurrentTranslationRights(fixture, reviewerId);
+
+    PolicyService policyService = mock(PolicyService.class);
+    when(policyService.requiredAcceptance(fixture.userId()))
+        .thenReturn(PolicyService.RequiredAcceptance.COMPLETE);
+    TranslationPublicationService publicationService =
+        new TranslationPublicationService(dataSource, policyService, libraryCursorCodec);
+    String firstSnapshotEtag = detailEtag(firstDetail);
+    String firstReleaseKey = "translation-release-first-owner-key-01";
+    CountDownLatch start = new CountDownLatch(1);
+    ExecutorService executor = Executors.newFixedThreadPool(2);
+    TranslationPublicationService.ReleaseResult concurrentFirst;
+    TranslationPublicationService.ReleaseResult concurrentSecond;
+    try {
+      Future<TranslationPublicationService.ReleaseResult> first =
+          executor.submit(
+              () -> {
+                start.await();
+                return publicationService.publish(
+                    fixture.userId(), firstSubmissionId, firstSnapshotEtag, firstReleaseKey);
+              });
+      Future<TranslationPublicationService.ReleaseResult> second =
+          executor.submit(
+              () -> {
+                start.await();
+                return publicationService.publish(
+                    fixture.userId(), firstSubmissionId, firstSnapshotEtag, firstReleaseKey);
+              });
+      start.countDown();
+      concurrentFirst = first.get(10, TimeUnit.SECONDS);
+      concurrentSecond = second.get(10, TimeUnit.SECONDS);
+    } finally {
+      executor.shutdownNow();
+    }
+    assertEquals(
+        1,
+        List.of(concurrentFirst.outcome(), concurrentSecond.outcome()).stream()
+            .filter(outcome -> outcome == TranslationPublicationService.ReleaseOutcome.CREATED)
+            .count());
+    assertEquals(
+        1,
+        List.of(concurrentFirst.outcome(), concurrentSecond.outcome()).stream()
+            .filter(outcome -> outcome == TranslationPublicationService.ReleaseOutcome.REPLAYED)
+            .count());
+    TranslationPublicationService.ReleaseReceipt firstReceipt =
+        (concurrentFirst.receipt() != null && !concurrentFirst.receipt().replayed())
+            ? concurrentFirst.receipt()
+            : concurrentSecond.receipt();
+    assertEquals(1, countTranslationVersions(fixture.chapterId()));
+    assertEquals(1, countTranslationReleaseEvents(fixture.workId()));
+
+    TranslationPublicationService.ReleaseResult secondRelease =
+        publicationService.publish(
+            fixture.userId(),
+            secondSubmissionId,
+            detailEtag(secondDetail),
+            "translation-release-second-owner-key-01");
+    assertEquals(TranslationPublicationService.ReleaseOutcome.CREATED, secondRelease.outcome());
+    assertEquals(2, secondRelease.receipt().versionNo());
+    assertEquals(2, countTranslationVersions(fixture.chapterId()));
+
+    String currentEtag =
+        TranslationPublicationService.versionEtag(
+            secondRelease.receipt().versionId(), secondRelease.receipt().versionNo());
+    TranslationPublicationService.ReleaseResult rollback =
+        publicationService.rollbackToVersion(
+            fixture.userId(),
+            firstReceipt.versionId(),
+            currentEtag,
+            "translation-release-rollback-key-01");
+    assertEquals(TranslationPublicationService.ReleaseOutcome.ROLLED_BACK, rollback.outcome());
+    assertEquals(3, rollback.receipt().versionNo());
+    assertEquals(3, countTranslationVersions(fixture.chapterId()));
+    assertEquals(3, countTranslationReleaseEvents(fixture.workId()));
+
+    TranslationPublicationService.ReleaseHistory history =
+        publicationService.releaseHistory(fixture.userId(), fixture.workId(), null, 10);
+    assertEquals(TranslationPublicationService.HistoryOutcome.AVAILABLE, history.outcome());
+    assertEquals(3, history.items().size());
+    assertEquals("ROLLBACK", history.items().getFirst().actionCode());
+    assertEquals(firstReceipt.versionId(), history.items().getFirst().rollbackOfVersionId());
+    assertTrue(history.items().getFirst().current());
+
+    TranslatedReaderService readerService =
+        new TranslatedReaderService(
+            dataSource, new ReaderCursorCodec("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
+    assertEquals(
+        List.of("en"), readerService.availableLanguages(fixture.userId(), fixture.chapterId()));
+    TranslatedReaderService.TranslationContent translatedContent =
+        readerService.content(fixture.userId(), fixture.chapterId(), "en", null, 10);
+    assertEquals(2, translatedContent.segments().size());
+    assertEquals("Manual translation 1", translatedContent.segments().getFirst().translatedText());
+
+    revokeTranslationAdaptationRights(fixture, reviewerId);
+    TranslationPublicationService.ReleaseResult rightsBlockedRelease =
+        publicationService.publish(
+            fixture.userId(),
+            rightsBlockedSubmissionId,
+            detailEtag(rightsBlockedDetail),
+            "translation-release-rights-failure-key-01");
+    assertEquals(
+        TranslationPublicationService.ReleaseOutcome.RIGHTS_REQUIRED,
+        rightsBlockedRelease.outcome());
+    assertEquals(3, countTranslationVersions(fixture.chapterId()));
+    assertEquals(1, countCurrentTranslationVersions(fixture.chapterId()));
+    assertEquals(rollback.receipt().versionId(), currentTranslationVersion(fixture.chapterId()));
+
+    advanceCurrentSourceRevision(fixture);
+    TranslationPublicationService.ReleaseResult staleSourceRelease =
+        publicationService.publish(
+            fixture.userId(),
+            staleSourceSubmissionId,
+            detailEtag(staleSourceDetail),
+            "translation-release-stale-source-key-01");
+    assertEquals(
+        TranslationPublicationService.ReleaseOutcome.STALE_SOURCE, staleSourceRelease.outcome());
+    assertEquals(3, countTranslationVersions(fixture.chapterId()));
+    assertEquals(1, countCurrentTranslationVersions(fixture.chapterId()));
+    assertEquals(rollback.receipt().versionId(), currentTranslationVersion(fixture.chapterId()));
+    assertEquals(
+        List.of(), readerService.availableLanguages(fixture.userId(), fixture.chapterId()));
+  }
+
+  @Test
   void rejectedTranslationSnapshotAllowsASeparateCorrectedSubmission() throws Exception {
     Fixture fixture = createQueuedJob(1);
     UUID submissionId = createSubmittedManualSnapshot(fixture, fixture.userId());
@@ -2187,6 +2387,133 @@ class PostgresTranslationUnitLeaseTests {
     return submission.receipt().submissionId();
   }
 
+  private UUID createRevisedManualSnapshot(Fixture fixture) throws Exception {
+    String revisionKey =
+        "translation-release-revision-" + UUID.randomUUID().toString().replace("-", "");
+    TranslationCandidatePreviewService.CandidatePreview preview =
+        candidatePreviewService
+            .findCurrentReadyForReview(fixture.userId(), fixture.jobId(), 0, 25)
+            .orElseThrow();
+    for (TranslationCandidatePreviewService.PreviewSegment segment : preview.segments()) {
+      candidateEditService.save(
+          fixture.userId(),
+          fixture.jobId(),
+          segment.sourceSegmentId(),
+          segment.editRevision(),
+          revisionKey + "-edit-" + segment.ordinal(),
+          "Updated manual translation " + segment.ordinal());
+    }
+    TranslationCandidateReviewRepository.Readiness readiness =
+        candidateReviewService.readiness(fixture.userId(), fixture.jobId());
+    TranslationCandidateReviewRepository.SubmissionResult submission =
+        candidateReviewService.submit(
+            fixture.userId(),
+            fixture.jobId(),
+            TranslationReviewSnapshotHasher.etag(readiness.snapshotDigest()),
+            revisionKey + "-submit");
+    assertEquals(TranslationCandidateReviewRepository.Outcome.CREATED, submission.outcome());
+    return submission.receipt().submissionId();
+  }
+
+  private TranslationReviewQueryService.TranslationReviewDetail acceptTranslationSnapshot(
+      UUID reviewerId, UUID submissionId, String idempotencyKey) {
+    TranslationReviewQueryService.TranslationReviewDetail detail =
+        translationReviewQueryService().detail(reviewerId, submissionId).detail();
+    TranslationReviewDecisionService.DecisionResult accepted =
+        translationReviewDecisionService()
+            .decide(
+                reviewerId,
+                submissionId,
+                detailEtag(detail),
+                idempotencyKey,
+                new TranslationReviewDecisionService.DecisionCommand("ACCEPT", "ACCURATE"));
+    assertEquals(
+        TranslationReviewDecisionService.DecisionOutcome.CREATED,
+        accepted.outcome(),
+        "review snapshot should be visible to the assigned reviewer before owner publication");
+    return detail;
+  }
+
+  private void createCurrentTranslationRights(Fixture fixture, UUID reviewerId) throws Exception {
+    String policyVersion = "translation-test-" + UUID.randomUUID().toString().replace("-", "");
+    String policyText = "Synthetic rights fixture for translation release tests.";
+    byte[] policyDigest = sha256(policyText);
+    publicationPolicyFixtures.add(policyVersion);
+    execute(
+        "INSERT INTO publication_rights_policy_documents "
+            + "(version, effective_at, display_text, policy_sha256) "
+            + "VALUES (?, clock_timestamp() - INTERVAL '1 second', ?, ?)",
+        policyVersion,
+        policyText,
+        policyDigest);
+    execute(
+        "UPDATE publication_rights_policy_documents SET status = 'APPROVED', "
+            + "approved_at = clock_timestamp(), approved_by = ? WHERE version = ?",
+        reviewerId,
+        policyVersion);
+    execute(
+        "INSERT INTO publication_rights_policy_acceptances "
+            + "(id, user_id, work_id, idempotency_key, policy_version, policy_sha256, source) "
+            + "VALUES (?, ?, ?, ?, ?, ?, 'web-authoring-publication')",
+        UUID.randomUUID(),
+        fixture.userId(),
+        fixture.workId(),
+        UUID.randomUUID(),
+        policyVersion,
+        policyDigest);
+    for (String scopeCode : List.of("PUBLIC_METADATA", "CHAPTER_TEXT", "TRANSLATION_ADAPTATION")) {
+      String snapshot;
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement select =
+              connection.prepareStatement("SELECT publication_work_scope_snapshot(?, ?)::text")) {
+        select.setObject(1, fixture.workId());
+        select.setString(2, scopeCode);
+        try (ResultSet row = select.executeQuery()) {
+          assertTrue(row.next());
+          snapshot = row.getString(1);
+        }
+      }
+      execute(
+          "INSERT INTO publication_scope_access_approvals "
+              + "(id, work_id, scope_code, approved_snapshot, policy_version, policy_sha256, "
+              + "approved_by_user_id, reason_code) "
+              + "VALUES (?, ?, ?, CAST(? AS JSONB), ?, ?, ?, 'RIGHTS_REVIEWED')",
+          UUID.randomUUID(),
+          fixture.workId(),
+          scopeCode,
+          snapshot,
+          policyVersion,
+          policyDigest,
+          reviewerId);
+    }
+  }
+
+  private void deletePublicationPolicyFixture(String policyVersion) throws SQLException {
+    try (Connection connection = dataSource.getConnection()) {
+      connection.setAutoCommit(false);
+      try {
+        try (java.sql.Statement disable = connection.createStatement()) {
+          disable.execute(
+              "ALTER TABLE publication_rights_policy_documents "
+                  + "DISABLE TRIGGER trg_publication_rights_policy_immutable");
+        }
+        execute(
+            connection,
+            "DELETE FROM publication_rights_policy_documents WHERE version = ?",
+            policyVersion);
+        try (java.sql.Statement enable = connection.createStatement()) {
+          enable.execute(
+              "ALTER TABLE publication_rights_policy_documents "
+                  + "ENABLE TRIGGER trg_publication_rights_policy_immutable");
+        }
+        connection.commit();
+      } catch (SQLException exception) {
+        connection.rollback();
+        throw exception;
+      }
+    }
+  }
+
   private TranslationReviewDecisionService translationReviewDecisionService() {
     PolicyService policyService = mock(PolicyService.class);
     when(policyService.requiredAcceptance(org.mockito.ArgumentMatchers.any(UUID.class)))
@@ -2258,6 +2585,61 @@ class PostgresTranslationUnitLeaseTests {
         return row.getInt(1);
       }
     }
+  }
+
+  private UUID currentTranslationVersion(UUID chapterId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT id FROM translation_versions WHERE chapter_id = ? AND status = 'current'")) {
+      select.setObject(1, chapterId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getObject(1, UUID.class);
+      }
+    }
+  }
+
+  private void revokeTranslationAdaptationRights(Fixture fixture, UUID reviewerId)
+      throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement revoke =
+            connection.prepareStatement(
+                "INSERT INTO publication_scope_access_revocations "
+                    + "(approval_id, revoked_by_user_id, reason_code) "
+                    + "SELECT id, ?, 'RIGHTS_WITHDRAWN' "
+                    + "FROM publication_scope_access_approvals "
+                    + "WHERE work_id = ? AND scope_code = 'TRANSLATION_ADAPTATION'")) {
+      revoke.setObject(1, reviewerId);
+      revoke.setObject(2, fixture.workId());
+      assertEquals(1, revoke.executeUpdate());
+    }
+  }
+
+  private int countTranslationReleaseEvents(UUID workId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT count(*) FROM translation_release_events WHERE work_id = ?")) {
+      select.setObject(1, workId);
+      try (ResultSet row = select.executeQuery()) {
+        row.next();
+        return row.getInt(1);
+      }
+    }
+  }
+
+  private void makeAuthoredPublic(Fixture fixture) throws Exception {
+    execute(
+        "INSERT INTO authoring_manuscript_creations "
+            + "(actor_user_id, idempotency_key, request_sha256, work_id) VALUES (?, ?, ?, ?)",
+        fixture.userId(),
+        "translation-authored-test-" + UUID.randomUUID().toString().replace("-", ""),
+        sha256("translation-authored-public:" + fixture.workId()),
+        fixture.workId());
+    execute(
+        "UPDATE works SET source_kind = 'authored', visibility = 'public' WHERE id = ?",
+        fixture.workId());
   }
 
   private String readWorkVisibility(UUID workId) throws SQLException {
@@ -2760,6 +3142,24 @@ class PostgresTranslationUnitLeaseTests {
     try (Connection connection = dataSource.getConnection()) {
       connection.setAutoCommit(false);
       try {
+        try (java.sql.Statement disable = connection.createStatement()) {
+          disable.execute(
+              "ALTER TABLE translation_release_events "
+                  + "DISABLE TRIGGER trg_translation_release_events_immutable");
+        }
+        execute(
+            connection,
+            "DELETE FROM translation_release_events WHERE work_id = ?",
+            fixture.workId());
+        try (java.sql.Statement enable = connection.createStatement()) {
+          enable.execute(
+              "ALTER TABLE translation_release_events "
+                  + "ENABLE TRIGGER trg_translation_release_events_immutable");
+        }
+        try (java.sql.Statement disable = connection.createStatement()) {
+          disable.execute(
+              "ALTER TABLE translation_versions DISABLE TRIGGER trg_translation_versions_history");
+        }
         List<UUID> jobIds = new ArrayList<>();
         jobIds.add(fixture.jobId());
         jobIds.addAll(additionalJobsByFixture.getOrDefault(fixture.jobId(), List.of()));
@@ -2773,6 +3173,28 @@ class PostgresTranslationUnitLeaseTests {
           execute(connection, "DELETE FROM translation_candidates WHERE job_id = ?", jobId);
           execute(connection, "DELETE FROM translation_jobs WHERE id = ?", jobId);
         }
+        try (java.sql.Statement enable = connection.createStatement()) {
+          enable.execute(
+              "ALTER TABLE translation_versions ENABLE TRIGGER trg_translation_versions_history");
+        }
+        try (java.sql.Statement disable = connection.createStatement()) {
+          disable.execute(
+              "ALTER TABLE publication_rights_policy_acceptances "
+                  + "DISABLE TRIGGER trg_publication_rights_acceptance_immutable");
+        }
+        execute(
+            connection,
+            "DELETE FROM publication_rights_policy_acceptances WHERE work_id = ?",
+            fixture.workId());
+        try (java.sql.Statement enable = connection.createStatement()) {
+          enable.execute(
+              "ALTER TABLE publication_rights_policy_acceptances "
+                  + "ENABLE TRIGGER trg_publication_rights_acceptance_immutable");
+        }
+        execute(
+            connection,
+            "DELETE FROM authoring_manuscript_creations WHERE work_id = ?",
+            fixture.workId());
         execute(
             connection,
             "DELETE FROM segments WHERE chapter_revision_id IN "

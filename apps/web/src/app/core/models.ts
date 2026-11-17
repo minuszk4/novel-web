@@ -44,5 +44,6 @@ export interface ApiSystemStatus {
     publicationReleaseEnabled?: boolean;
     translationFakePreviewEnabled: boolean;
     translationManualSubmissionEnabled?: boolean;
+    translationPublicationEnabled?: boolean;
   };
 }

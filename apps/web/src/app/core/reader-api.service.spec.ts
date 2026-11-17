@@ -147,6 +147,67 @@ describe('ReaderApiService', () => {
     });
   });
 
+  it('loads only unique, valid languages with currently released translations', async () => {
+    const result = service.getAvailableTranslations(chapterId);
+    http.expectOne({ method: 'GET', url: `/api/v1/chapters/${chapterId}/translations` }).flush({
+      languages: ['en', 'ja-JP'],
+    });
+    await expect(result).resolves.toEqual(['en', 'ja-JP']);
+
+    const malformed = service.getAvailableTranslations(chapterId);
+    http.expectOne({ method: 'GET', url: `/api/v1/chapters/${chapterId}/translations` }).flush({
+      languages: ['en', 'en'],
+    });
+    await expect(malformed).rejects.toMatchObject({ status: 502, code: 'INVALID_READER_RESPONSE' });
+  });
+
+  it('requests a released translation page and maps plain translation text into Reader segments', async () => {
+    const result = service.getTranslatedContentPage(chapterId, 'en', cursor, 100);
+    const request = http.expectOne(
+      (candidate) =>
+        candidate.method === 'GET' &&
+        candidate.url === `/api/v1/chapters/${chapterId}/translations/en/content` &&
+        candidate.params.get('cursor') === cursor &&
+        candidate.params.get('limit') === '100',
+    );
+    request.flush({
+      chapterId,
+      workId,
+      sourceRevisionId: revisionId,
+      translationVersionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      translationVersionNo: 2,
+      sourceLanguage: 'vi',
+      targetLanguage: 'en',
+      segments: [
+        { anchor: 'chapter-1-p1', type: 'paragraph', translatedText: 'The translated paragraph.' },
+      ],
+      nextSegmentCursor: null,
+    });
+    await expect(result).resolves.toMatchObject({
+      targetLanguage: 'en',
+      translationVersionNo: 2,
+      segments: [{ anchor: 'chapter-1-p1', sourceText: 'The translated paragraph.' }],
+    });
+
+    const malformed = service.getTranslatedContentPage(chapterId, 'en');
+    http
+      .expectOne(
+        (candidate) => candidate.url === `/api/v1/chapters/${chapterId}/translations/en/content`,
+      )
+      .flush({
+        chapterId,
+        workId,
+        sourceRevisionId: revisionId,
+        translationVersionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        translationVersionNo: 2,
+        sourceLanguage: 'vi',
+        targetLanguage: 'ja',
+        segments: [],
+        nextSegmentCursor: null,
+      });
+    await expect(malformed).rejects.toMatchObject({ status: 502, code: 'INVALID_READER_RESPONSE' });
+  });
+
   it('loads, validates, and conditionally saves persisted reader progress', async () => {
     const progress = {
       workId,

@@ -111,6 +111,13 @@
               >
                 Mở dàn ý chương
               </a>
+              <a
+                class="button button-outline authoring-manuscript-open"
+                [routerLink]="['/app/authoring', manuscript.id, 'translations']"
+                [attr.aria-label]="'Mở các bản dịch đã duyệt của ' + manuscript.title"
+              >
+                Bản dịch đã duyệt
+              </a>
             </li>
           }
         </ol>

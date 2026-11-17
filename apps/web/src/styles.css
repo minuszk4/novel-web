@@ -4086,6 +4086,26 @@ label:has(input:focus-visible) {
 .reader-account-source {
   color: #626871;
 }
+.reader-language-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #626871;
+}
+.reader-language-picker select {
+  min-height: 36px;
+  max-width: min(240px, 40vw);
+  padding: 5px 28px 5px 8px;
+  border: 1px solid #b8b9b5;
+  border-radius: 8px;
+  color: #32353a;
+  background: #fff;
+  font: inherit;
+}
+.reader-language-picker select:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 2px;
+}
 .reader-account-sync {
   color: #626871;
 }
@@ -4555,8 +4575,14 @@ button.reader-chapter-nav {
 }
 .reader-dark .reader-account-private,
 .reader-dark .reader-account-source,
+.reader-dark .reader-language-picker,
 .reader-dark .reader-account-sync {
   color: #c9c5b9;
+}
+.reader-dark .reader-language-picker select {
+  border-color: #64666d;
+  color: #ececf0;
+  background: #303139;
 }
 .reader-dark .account-reader-bookmark-global-message {
   color: #c9cff8 !important;

@@ -95,7 +95,9 @@ public class ApiSecurityConfiguration {
                         "/api/v1/works/*/annotations",
                         "/api/v1/me/reader-preferences",
                         "/api/v1/me/reading-history",
-                        "/api/v1/chapters/*/content")
+                        "/api/v1/chapters/*/content",
+                        "/api/v1/chapters/*/translations",
+                        "/api/v1/chapters/*/translations/*/content")
                     .permitAll();
                 authorize.requestMatchers(HttpMethod.PUT, "/api/v1/works/*/progress").permitAll();
                 authorize.requestMatchers(HttpMethod.POST, "/api/v1/works/*/bookmarks").permitAll();
@@ -293,6 +295,18 @@ public class ApiSecurityConfiguration {
                 authorize
                     .requestMatchers(
                         HttpMethod.POST, "/api/v1/translation/jobs/*/candidate/review-submissions")
+                    .permitAll();
+                authorize
+                    .requestMatchers(
+                        HttpMethod.GET,
+                        "/api/v1/authoring/manuscripts/*/translations/accepted",
+                        "/api/v1/authoring/manuscripts/*/translations/history")
+                    .permitAll();
+                authorize
+                    .requestMatchers(
+                        HttpMethod.POST,
+                        "/api/v1/authoring/translations/review-submissions/*/release",
+                        "/api/v1/authoring/translations/versions/*/rollback")
                     .permitAll();
                 authorize
                     .requestMatchers(

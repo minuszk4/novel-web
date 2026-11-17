@@ -1,0 +1,350 @@
+<div class="page-wrap translation-publication-page">
+  <header class="translation-publication-heading">
+    <p class="eyebrow">AUTHOR STUDIO · BẢN DỊCH</p>
+    <h1 #pageHeading tabindex="-1">Bản dịch đã được duyệt</h1>
+    <p>Chỉ bạn, với tư cách chủ sở hữu tác phẩm, mới có thể chọn phát hành bản dịch.</p>
+  </header>
+
+  <aside class="translation-publication-boundary" role="note">
+    <strong>Duyệt không đồng nghĩa với phát hành.</strong>
+    <span>
+      Hệ thống chỉ đưa bản chỉnh sửa thủ công đã được duyệt lên làm bản dịch hiện hành sau xác nhận
+      của bạn và khi quyền khai thác bản dịch còn hiệu lực. Nội dung chương không được gửi lại trong
+      thao tác này.
+    </span>
+  </aside>
+
+  <p class="visually-hidden" role="status" aria-live="polite" aria-atomic="true">
+    {{ announcement() }}
+  </p>
+
+  @if (!featureAvailable()) {
+    <section class="translation-publication-state" role="status">
+      <h2>Tính năng phát hành bản dịch đang tắt</h2>
+      <p>Luồng này cần được bật cùng chế độ dịch thử và duyệt thủ công.</p>
+      <a class="button button-outline" routerLink="/app/authoring">Về Tác phẩm của tôi</a>
+    </section>
+  } @else if (accessState() === 'unauthenticated') {
+    <section class="translation-publication-state" role="alert">
+      <h2>Phiên đăng nhập đã hết hạn</h2>
+      <p>Đăng nhập lại để xem các bản dịch của tác phẩm.</p>
+      <a
+        class="button button-primary"
+        [routerLink]="['/sign-in']"
+        [queryParams]="{ returnTo: '/app/authoring/' + workId + '/translations' }"
+        >Đăng nhập lại</a
+      >
+    </section>
+  } @else if (accessState() === 'policy-required') {
+    <section class="translation-publication-state" role="alert">
+      <h2>Cần xác nhận chính sách tài khoản</h2>
+      <p>Hãy xem và chấp nhận Điều khoản cùng Thông báo quyền riêng tư hiện hành.</p>
+      <a class="button button-primary" routerLink="/app/setup">Xem chính sách</a>
+    </section>
+  } @else if (accessState() === 'owner-required') {
+    <section class="translation-publication-state" role="alert">
+      <h2>Không thể mở danh sách này</h2>
+      <p>Chỉ chủ sở hữu của tác phẩm mới được xem và phát hành bản dịch đã duyệt.</p>
+      <a class="button button-outline" routerLink="/app/authoring">Về Tác phẩm của tôi</a>
+    </section>
+  } @else if (loading() && items().length === 0) {
+    <section class="translation-publication-state" role="status" aria-busy="true">
+      <p>Đang tải các bản dịch đã duyệt…</p>
+    </section>
+  } @else {
+    @if (pendingReceipt(); as receipt) {
+      <section
+        class="translation-publication-receipt"
+        role="status"
+        aria-labelledby="release-result-title"
+      >
+        <p class="eyebrow">ĐÃ XÁC NHẬN</p>
+        <h2 id="release-result-title">
+          @if (receiptAction() === 'rollback') {
+            Đã khôi phục bản dịch phiên bản {{ receipt.versionNo }}
+          } @else {
+            Bản dịch phiên bản {{ receipt.versionNo }} đã được phát hành
+          }
+        </h2>
+        <p>Hệ thống đã lưu bản dịch hiện hành từ đúng snapshot được duyệt.</p>
+      </section>
+    }
+
+    @if (releaseError(); as message) {
+      <section class="translation-publication-error" role="alert">
+        <p>{{ message }}</p>
+        @if (pendingConfirmation(); as item) {
+          <button
+            class="button button-outline"
+            type="button"
+            [disabled]="releasingSubmissionId() !== null"
+            (click)="retryUncertainRelease(item)"
+          >
+            Thử lại cùng yêu cầu
+          </button>
+        }
+        <button class="button button-outline" type="button" (click)="refresh()">
+          Làm mới danh sách
+        </button>
+      </section>
+    }
+
+    @if (errorMessage(); as message) {
+      <section class="translation-publication-error" role="alert">
+        <p>{{ message }}</p>
+        <button class="button button-outline" type="button" (click)="refresh()">Tải lại</button>
+      </section>
+    }
+
+    @if (items().length === 0 && !loading()) {
+      <section class="translation-publication-state" role="status">
+        <h2>Chưa có bản dịch nào chờ phát hành</h2>
+        <p>Bản dịch chỉ xuất hiện ở đây sau khi reviewer chấp thuận snapshot thủ công.</p>
+      </section>
+    } @else {
+      <section aria-labelledby="accepted-translations-title">
+        <div class="translation-publication-list-heading">
+          <div>
+            <p class="eyebrow">CHỦ SỞ HỮU TÁC PHẨM</p>
+            <h2 id="accepted-translations-title">Snapshot được chấp thuận</h2>
+          </div>
+          <button
+            class="button button-outline"
+            type="button"
+            [disabled]="loading() || loadingMore()"
+            (click)="refresh()"
+          >
+            Làm mới
+          </button>
+        </div>
+
+        <ol class="translation-publication-list">
+          @for (item of items(); track item.submissionId) {
+            <li class="translation-publication-card">
+              <div class="translation-publication-card-main">
+                <p class="translation-publication-card-state">
+                  <span aria-hidden="true">●</span>
+                  {{
+                    item.rightsCurrent
+                      ? 'Đã duyệt · đủ điều kiện quyền hiện tại'
+                      : 'Đã duyệt · thiếu quyền bản dịch hiện tại'
+                  }}
+                </p>
+                <h3>{{ item.chapterTitle }}</h3>
+                <p>
+                  {{ item.workTitle }} · {{ item.targetLanguage }} · {{ item.segmentCount }} đoạn
+                </p>
+                <p class="translation-publication-card-meta">
+                  Gửi duyệt {{ formatDate(item.submittedAt) }} · snapshot
+                  {{ item.snapshotDigest.slice(0, 12) }}…
+                </p>
+                @if (item.currentVersionNo !== null) {
+                  <p class="translation-publication-current">
+                    Bản dịch hiện hành: phiên bản {{ item.currentVersionNo }}
+                  </p>
+                } @else {
+                  <p class="translation-publication-current">Chưa có bản dịch nào được phát hành</p>
+                }
+              </div>
+
+              <div class="translation-publication-card-actions">
+                @if (item.rightsCurrent) {
+                  <button
+                    class="button button-primary"
+                    type="button"
+                    [disabled]="releasingSubmissionId() !== null"
+                    (click)="requestRelease(item)"
+                  >
+                    {{
+                      item.currentVersionNo === null
+                        ? 'Phát hành bản dịch'
+                        : 'Thay bản dịch hiện hành'
+                    }}
+                  </button>
+                } @else {
+                  <span class="translation-publication-blocked"
+                    >Cần được duyệt quyền khai thác bản dịch</span
+                  >
+                }
+                @if (pendingConfirmation()?.submissionId === item.submissionId) {
+                  <section
+                    class="translation-publication-confirm"
+                    aria-labelledby="translation-release-confirm-title"
+                    role="group"
+                  >
+                    <h4 id="translation-release-confirm-title">Xác nhận phát hành</h4>
+                    <p>
+                      @if (item.currentVersionNo !== null) {
+                        Bản này sẽ thay phiên bản {{ item.currentVersionNo }} đang hiện hành.
+                      } @else {
+                        Snapshot đã duyệt sẽ trở thành bản dịch hiện hành.
+                      }
+                      Thao tác không tốn credit.
+                    </p>
+                    <div>
+                      <button
+                        class="button button-primary"
+                        type="button"
+                        [disabled]="releasingSubmissionId() !== null"
+                        (click)="confirmRelease(item)"
+                      >
+                        {{
+                          releasingSubmissionId() === item.submissionId
+                            ? 'Đang phát hành…'
+                            : 'Xác nhận phát hành'
+                        }}
+                      </button>
+                      <button
+                        class="button button-outline"
+                        type="button"
+                        [disabled]="releasingSubmissionId() !== null"
+                        (click)="cancelRelease()"
+                      >
+                        Quay lại
+                      </button>
+                    </div>
+                  </section>
+                }
+              </div>
+            </li>
+          }
+        </ol>
+
+        @if (nextCursor()) {
+          <button
+            class="button button-outline translation-publication-more"
+            type="button"
+            [disabled]="loadingMore()"
+            (click)="loadMore()"
+          >
+            {{ loadingMore() ? 'Đang tải…' : 'Tải thêm bản dịch' }}
+          </button>
+        }
+      </section>
+    }
+
+    <section class="translation-history" aria-labelledby="translation-history-title">
+      <div class="translation-publication-list-heading">
+        <div>
+          <p class="eyebrow">PHIÊN BẢN ĐÃ PHÁT HÀNH</p>
+          <h2 id="translation-history-title">Lịch sử bản dịch</h2>
+        </div>
+        <button
+          class="button button-outline"
+          type="button"
+          [disabled]="historyLoading()"
+          (click)="refreshHistory()"
+        >
+          {{ historyLoading() ? 'Đang tải…' : 'Làm mới lịch sử' }}
+        </button>
+      </div>
+      @if (rollbackError(); as message) {
+        <section class="translation-publication-error" role="alert">
+          <p>{{ message }}</p>
+          @if (pendingRollback(); as item) {
+            <button
+              class="button button-outline"
+              type="button"
+              [disabled]="rollingBackVersionId() !== null"
+              (click)="retryUncertainRollback(item)"
+            >
+              Thử lại cùng yêu cầu
+            </button>
+          }
+          <button class="button button-outline" type="button" (click)="refreshHistory()">
+            Tải lại lịch sử
+          </button>
+        </section>
+      }
+      @if (historyLoading() && historyItems().length === 0) {
+        <p class="translation-publication-state" role="status">Đang tải lịch sử…</p>
+      } @else if (historyItems().length === 0) {
+        <p class="translation-publication-state" role="status">
+          Chưa có bản dịch nào được phát hành cho tác phẩm này.
+        </p>
+      } @else {
+        <ol class="translation-publication-list">
+          @for (item of historyItems(); track item.eventId) {
+            <li class="translation-publication-card">
+              <div class="translation-publication-card-main">
+                <p class="translation-publication-card-state">
+                  {{ item.current ? 'Đang được dùng trong Reader' : 'Phiên bản lưu trữ' }}
+                </p>
+                <h3>{{ item.chapterTitle }} · {{ item.targetLanguage }}</h3>
+                <p>
+                  Phiên bản {{ item.versionNo }} ·
+                  {{
+                    item.actionCode === 'ROLLBACK' ? 'Khôi phục từ phiên bản lưu trữ' : 'Phát hành'
+                  }}
+                  · {{ formatDate(item.releasedAt) }}
+                </p>
+                @if (item.currentVersionNo !== null && !item.current) {
+                  <p class="translation-publication-current">
+                    Hiện hành: phiên bản {{ item.currentVersionNo }}
+                  </p>
+                }
+              </div>
+              <div class="translation-publication-card-actions">
+                @if (item.rollbackAllowed) {
+                  <button
+                    class="button button-outline"
+                    type="button"
+                    [disabled]="rollingBackVersionId() !== null"
+                    (click)="requestRollback(item)"
+                  >
+                    Khôi phục phiên bản {{ item.versionNo }}
+                  </button>
+                }
+                @if (pendingRollback()?.versionId === item.versionId) {
+                  <section
+                    class="translation-publication-confirm"
+                    aria-labelledby="translation-rollback-confirm-title"
+                    role="group"
+                  >
+                    <h4 id="translation-rollback-confirm-title">Xác nhận khôi phục</h4>
+                    <p>
+                      Hệ thống sẽ tạo phiên bản mới từ nội dung phiên bản {{ item.versionNo }} và
+                      lưu phiên bản hiện hành vào lịch sử. Không có nội dung văn bản nào bị ghi đè.
+                    </p>
+                    <div>
+                      <button
+                        class="button button-primary"
+                        type="button"
+                        [disabled]="rollingBackVersionId() !== null"
+                        (click)="confirmRollback(item)"
+                      >
+                        {{
+                          rollingBackVersionId() === item.versionId
+                            ? 'Đang khôi phục…'
+                            : 'Xác nhận khôi phục'
+                        }}
+                      </button>
+                      <button
+                        class="button button-outline"
+                        type="button"
+                        [disabled]="rollingBackVersionId() !== null"
+                        (click)="cancelRollback()"
+                      >
+                        Quay lại
+                      </button>
+                    </div>
+                  </section>
+                }
+              </div>
+            </li>
+          }
+        </ol>
+        @if (historyCursor()) {
+          <button
+            class="button button-outline translation-publication-more"
+            type="button"
+            [disabled]="historyLoading()"
+            (click)="loadMoreHistory()"
+          >
+            {{ historyLoading() ? 'Đang tải…' : 'Tải thêm lịch sử' }}
+          </button>
+        }
+      }
+    </section>
+  }
+</div>

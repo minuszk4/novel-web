@@ -25,63 +25,67 @@
       }
     </div>
     <div class="reader-tools">
-      <button
-        class="reader-tool"
-        type="button"
-        (click)="toggleToc($event)"
-        aria-label="Mở mục lục"
-        aria-haspopup="dialog"
-        title="Mục lục · Alt+Shift+T"
-        [attr.aria-expanded]="tocOpen()"
-        [disabled]="!chapters().length"
-      >
-        <span aria-hidden="true">☷</span><span>Mục lục</span>
-      </button>
-      <button
-        class="reader-tool"
-        type="button"
-        (click)="toggleSettings($event)"
-        aria-label="Cài đặt trình đọc"
-        aria-haspopup="dialog"
-        title="Cài đặt đọc"
-        [attr.aria-expanded]="settingsOpen()"
-        [disabled]="preferencesSyncState() === 'loading'"
-      >
-        <span aria-hidden="true">Aa</span>
-      </button>
-      <button
-        class="reader-tool"
-        type="button"
-        (click)="toggleBookmarks($event)"
-        aria-label="Mở dấu trang"
-        aria-haspopup="dialog"
-        title="Dấu trang của tác phẩm"
-        [attr.aria-expanded]="bookmarksOpen()"
-        [disabled]="!work()"
-      >
-        <span aria-hidden="true">♧</span><span>Dấu trang</span>
-      </button>
-      <button
-        class="reader-tool"
-        type="button"
-        (pointerdown)="preserveTextSelection($event)"
-        (click)="toggleAnnotations($event)"
-        aria-label="Mở ghi chú và đoạn đánh dấu"
-        aria-haspopup="dialog"
-        title="Ghi chú riêng tư và tô sáng"
-        [attr.aria-expanded]="annotationsOpen()"
-        [disabled]="!work()"
-      >
-        <span aria-hidden="true">▧</span><span>Ghi chú</span>
-      </button>
+      @if (!selectedReaderLanguage()) {
+        <button
+          class="reader-tool"
+          type="button"
+          (click)="toggleToc($event)"
+          aria-label="Mở mục lục"
+          aria-haspopup="dialog"
+          title="Mục lục · Alt+Shift+T"
+          [attr.aria-expanded]="tocOpen()"
+          [disabled]="!chapters().length"
+        >
+          <span aria-hidden="true">☷</span><span>Mục lục</span>
+        </button>
+        <button
+          class="reader-tool"
+          type="button"
+          (click)="toggleSettings($event)"
+          aria-label="Cài đặt trình đọc"
+          aria-haspopup="dialog"
+          title="Cài đặt đọc"
+          [attr.aria-expanded]="settingsOpen()"
+          [disabled]="preferencesSyncState() === 'loading'"
+        >
+          <span aria-hidden="true">Aa</span>
+        </button>
+        <button
+          class="reader-tool"
+          type="button"
+          (click)="toggleBookmarks($event)"
+          aria-label="Mở dấu trang"
+          aria-haspopup="dialog"
+          title="Dấu trang của tác phẩm"
+          [attr.aria-expanded]="bookmarksOpen()"
+          [disabled]="!work()"
+        >
+          <span aria-hidden="true">♧</span><span>Dấu trang</span>
+        </button>
+        <button
+          class="reader-tool"
+          type="button"
+          (pointerdown)="preserveTextSelection($event)"
+          (click)="toggleAnnotations($event)"
+          aria-label="Mở ghi chú và đoạn đánh dấu"
+          aria-haspopup="dialog"
+          title="Ghi chú riêng tư và tô sáng"
+          [attr.aria-expanded]="annotationsOpen()"
+          [disabled]="!work()"
+        >
+          <span aria-hidden="true">▧</span><span>Ghi chú</span>
+        </button>
+      }
     </div>
   </header>
 
-  <app-translation-preview-action
-    [chapterId]="activeChapter()?.id ?? null"
-    [sourceRevisionId]="sourceRevisionId()"
-    [sourceLanguage]="work()?.language ?? null"
-  />
+  @if (!selectedReaderLanguage()) {
+    <app-translation-preview-action
+      [chapterId]="activeChapter()?.id ?? null"
+      [sourceRevisionId]="sourceRevisionId()"
+      [sourceLanguage]="work()?.language ?? null"
+    />
+  }
 
   <div class="reader-account-bar" aria-label="Thông tin nội dung">
     <span class="reader-account-private"
@@ -89,7 +93,29 @@
       {{ work()?.visibility === 'public' ? 'TÁC PHẨM CÔNG KHAI' : 'THƯ VIỆN TÀI KHOẢN' }}</span
     >
     @if (work(); as currentWork) {
-      <span class="reader-account-source">Nguyên tác · {{ currentWork.language }}</span>
+      <span class="reader-account-source">
+        {{
+          selectedReaderLanguage()
+            ? 'Bản dịch · ' + selectedReaderLanguage()
+            : 'Nguyên tác · ' + currentWork.language
+        }}
+      </span>
+      @if (canChooseTranslation()) {
+        <label class="reader-language-picker" for="account-reader-language">
+          <span>Ngôn ngữ</span>
+          <select
+            id="account-reader-language"
+            [value]="selectedReaderLanguage()"
+            [disabled]="contentState() === 'loading'"
+            (change)="changeReaderLanguage($event)"
+          >
+            <option value="">Nguyên tác · {{ currentWork.language }}</option>
+            @for (language of availableTranslationLanguages(); track language) {
+              <option [value]="language">Bản dịch · {{ language }}</option>
+            }
+          </select>
+        </label>
+      }
     }
     <span class="reader-account-sync" role="status" aria-live="polite"
       >{{ progressStatusLabel() }} · {{ bookmarkStatusLabel() }}</span
@@ -897,7 +923,14 @@
         >
           <p class="reader-work-label">{{ work()?.title }}</p>
           <h1 id="account-reader-title" tabindex="-1">{{ chapter.title || 'Chưa có tiêu đề' }}</h1>
-          <p class="reader-byline">Chương {{ chapter.ordinal }} · Nội dung gốc</p>
+          <p class="reader-byline">
+            Chương {{ chapter.ordinal }} ·
+            {{
+              selectedReaderLanguage()
+                ? 'Bản dịch đã được duyệt · ' + selectedReaderLanguage()
+                : 'Nội dung gốc'
+            }}
+          </p>
           <div class="reader-body account-reader-body">
             @for (segment of renderedSegments(); track $index) {
               @switch (segment.type) {

@@ -75,6 +75,14 @@ export const routes: Routes = [
         title: 'Tạo bản thảo — Novel',
       },
       {
+        path: 'authoring/:workId/translations',
+        loadComponent: () =>
+          import('./pages/translation-publication-page.component').then(
+            (page) => page.TranslationPublicationPageComponent,
+          ),
+        title: 'Bản dịch đã được duyệt — Novel',
+      },
+      {
         path: 'authoring/:workId/chapters',
         loadComponent: () =>
           import('./pages/authoring-outline-page.component').then(

@@ -20,6 +20,7 @@ const validStatus = {
     publicationReleaseEnabled: false,
     translationFakePreviewEnabled: false,
     translationManualSubmissionEnabled: false,
+    translationPublicationEnabled: false,
   },
 };
 

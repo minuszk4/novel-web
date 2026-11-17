@@ -101,6 +101,28 @@ public class LibraryCursorCodec {
         "translation-review-queue-v1");
   }
 
+  public static CursorContext translationPublicationQueueContext(UUID ownerUserId, UUID workId) {
+    return new CursorContext(
+        Kind.TRANSLATION_PUBLICATION_QUEUE,
+        ownerUserId,
+        workId,
+        "",
+        "",
+        "accepted_unreleased",
+        "translation-publication-queue-v1");
+  }
+
+  public static CursorContext translationReleaseHistoryContext(UUID ownerUserId, UUID workId) {
+    return new CursorContext(
+        Kind.TRANSLATION_RELEASE_HISTORY,
+        ownerUserId,
+        workId,
+        "",
+        "",
+        "release_history",
+        "translation-release-history-v1");
+  }
+
   public static CursorContext publicationRequestHistoryContext(UUID ownerUserId, UUID workId) {
     return new CursorContext(
         Kind.PUBLICATION_REQUEST_HISTORY,
@@ -265,7 +287,9 @@ public class LibraryCursorCodec {
     PUBLIC_CATALOG(3),
     PUBLICATION_REVIEW_QUEUE(4),
     PUBLICATION_REQUEST_HISTORY(5),
-    TRANSLATION_REVIEW_QUEUE(6);
+    TRANSLATION_REVIEW_QUEUE(6),
+    TRANSLATION_PUBLICATION_QUEUE(7),
+    TRANSLATION_RELEASE_HISTORY(8);
 
     private final int code;
 
@@ -329,6 +353,22 @@ public class LibraryCursorCodec {
               || !accessScopeFingerprint.equals("translation-review-queue-v1"))) {
         throw new IllegalArgumentException("Invalid translation-review cursor context");
       }
+      if (kind == Kind.TRANSLATION_PUBLICATION_QUEUE
+          && (scopeId.equals(NO_SCOPE)
+              || !query.isEmpty()
+              || !tag.isEmpty()
+              || !status.equals("accepted_unreleased")
+              || !accessScopeFingerprint.equals("translation-publication-queue-v1"))) {
+        throw new IllegalArgumentException("Invalid translation-publication cursor context");
+      }
+      if (kind == Kind.TRANSLATION_RELEASE_HISTORY
+          && (scopeId.equals(NO_SCOPE)
+              || !query.isEmpty()
+              || !tag.isEmpty()
+              || !status.equals("release_history")
+              || !accessScopeFingerprint.equals("translation-release-history-v1"))) {
+        throw new IllegalArgumentException("Invalid translation release-history cursor context");
+      }
       if (kind == Kind.PUBLICATION_REQUEST_HISTORY
           && (scopeId.equals(NO_SCOPE)
               || !query.isEmpty()
@@ -347,11 +387,14 @@ public class LibraryCursorCodec {
         updateUuid(digest, scopeId);
         updateString(
             digest,
-            kind == Kind.PUBLICATION_REVIEW_QUEUE
-                    || kind == Kind.PUBLICATION_REQUEST_HISTORY
-                    || kind == Kind.TRANSLATION_REVIEW_QUEUE
-                ? "submitted_at_desc,id_desc"
-                : "created_at_desc,id_desc");
+            kind == Kind.TRANSLATION_RELEASE_HISTORY
+                ? "released_at_desc,id_desc"
+                : kind == Kind.PUBLICATION_REVIEW_QUEUE
+                        || kind == Kind.PUBLICATION_REQUEST_HISTORY
+                        || kind == Kind.TRANSLATION_REVIEW_QUEUE
+                        || kind == Kind.TRANSLATION_PUBLICATION_QUEUE
+                    ? "submitted_at_desc,id_desc"
+                    : "created_at_desc,id_desc");
         updateString(digest, query);
         updateString(digest, tag);
         updateString(digest, status);

@@ -1,0 +1,190 @@
+:host {
+  display: block;
+  color: #26221f;
+}
+
+.translation-publication-page {
+  max-width: 960px;
+}
+
+.translation-history {
+  margin-top: 2.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid #ded4ca;
+}
+
+.translation-publication-heading,
+.translation-publication-list-heading,
+.translation-publication-card,
+.translation-publication-card-actions,
+.translation-publication-confirm > div {
+  display: flex;
+  gap: 1rem;
+}
+
+.translation-publication-heading,
+.translation-publication-list-heading {
+  align-items: end;
+  justify-content: space-between;
+}
+
+.translation-publication-heading {
+  display: block;
+  margin-bottom: 1.5rem;
+}
+
+.translation-publication-heading h1,
+.translation-publication-list-heading h2,
+.translation-publication-card h3,
+.translation-publication-confirm h4,
+.translation-publication-state h2,
+.translation-publication-receipt h2 {
+  margin: 0.3rem 0;
+  color: #2c201a;
+}
+
+.translation-publication-heading h1 {
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: clamp(2rem, 6vw, 3rem);
+}
+
+.translation-publication-heading p:last-child,
+.translation-publication-boundary span,
+.translation-publication-state p,
+.translation-publication-card-main > p,
+.translation-publication-confirm p,
+.translation-publication-receipt p:last-child {
+  color: #625952;
+  line-height: 1.6;
+}
+
+.translation-publication-boundary,
+.translation-publication-state,
+.translation-publication-error,
+.translation-publication-receipt,
+.translation-publication-card,
+.translation-publication-confirm {
+  border: 1px solid #ded4ca;
+  border-radius: 1rem;
+  background: #fffdfb;
+  padding: 1rem;
+}
+
+.translation-publication-boundary {
+  display: grid;
+  gap: 0.4rem;
+  margin-bottom: 1.5rem;
+  border-color: #e6c9a7;
+  background: #fff8ed;
+}
+
+.translation-publication-list-heading {
+  margin: 1.5rem 0 0.75rem;
+}
+
+.translation-publication-list {
+  display: grid;
+  gap: 0.75rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.translation-publication-card {
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1.5rem;
+  box-shadow: 0 2px 12px rgb(43 30 20 / 5%);
+}
+
+.translation-publication-card-main {
+  min-width: 0;
+}
+
+.translation-publication-card-state,
+.translation-publication-card-meta,
+.translation-publication-current {
+  margin: 0.25rem 0;
+  font-size: 0.88rem;
+}
+
+.translation-publication-card-state {
+  color: #315e47;
+  font-weight: 700;
+}
+
+.translation-publication-card-state span {
+  margin-right: 0.3rem;
+}
+
+.translation-publication-card-meta {
+  overflow-wrap: anywhere;
+}
+
+.translation-publication-current {
+  color: #5d3f26;
+  font-weight: 700;
+}
+
+.translation-publication-card-actions {
+  flex: 0 0 min(18rem, 42%);
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.translation-publication-blocked {
+  color: #765027;
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.translation-publication-confirm {
+  background: #fff8ed;
+}
+
+.translation-publication-confirm > div {
+  flex-wrap: wrap;
+}
+
+.translation-publication-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  margin: 1rem 0;
+  border-color: #bd5b44;
+  color: #743b2c;
+}
+
+.translation-publication-receipt {
+  margin: 1rem 0;
+  border-color: #74a186;
+  background: #f2faf4;
+}
+
+.translation-history .translation-publication-list-heading h2 {
+  color: #2c201a;
+}
+
+.translation-publication-more {
+  display: block;
+  margin: 1rem auto;
+}
+
+@media (max-width: 640px) {
+  .translation-publication-card,
+  .translation-publication-list-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .translation-publication-card-actions {
+    flex-basis: auto;
+    width: 100%;
+  }
+}
+
+.translation-publication-page :focus-visible {
+  outline: 3px solid #bb5a36;
+  outline-offset: 3px;
+}

@@ -45,6 +45,18 @@ export interface ReaderContentPage {
   nextSegmentCursor: string | null;
 }
 
+export interface ReaderTranslationContentPage {
+  chapterId: string;
+  workId: string;
+  sourceRevisionId: string;
+  translationVersionId: string;
+  translationVersionNo: number;
+  sourceLanguage: string;
+  targetLanguage: string;
+  segments: ReaderSourceSegment[];
+  nextSegmentCursor: string | null;
+}
+
 export interface ReaderProgress {
   workId: string;
   chapterId: string | null;
@@ -194,6 +206,9 @@ export class ReaderApiError extends Error {
 
 const manifestUrl = (workId: string) => `/api/v1/works/${workId}/reader-manifest`;
 const contentUrl = (chapterId: string) => `/api/v1/chapters/${chapterId}/content`;
+const translationsUrl = (chapterId: string) => `/api/v1/chapters/${chapterId}/translations`;
+const translatedContentUrl = (chapterId: string, language: string) =>
+  `/api/v1/chapters/${chapterId}/translations/${encodeURIComponent(language)}/content`;
 const progressUrl = (workId: string) => `/api/v1/works/${workId}/progress`;
 const readerPreferencesUrl = '/api/v1/me/reader-preferences';
 const bookmarksUrl = (workId: string) => `/api/v1/works/${workId}/bookmarks`;
@@ -495,6 +510,52 @@ export class ReaderApiService {
         this.http.get<unknown>(contentUrl(chapterId), { params }).pipe(timeout(requestTimeoutMs)),
       );
       return parseContentPage(response, chapterId, limit);
+    } catch (error) {
+      throw toReaderApiError(error);
+    }
+  }
+
+  async getAvailableTranslations(chapterId: string): Promise<string[]> {
+    if (!isUuid(chapterId)) throw invalidResponse('INVALID_READER_QUERY');
+    try {
+      const response: unknown = await firstValueFrom(
+        this.http.get<unknown>(translationsUrl(chapterId)).pipe(timeout(requestTimeoutMs)),
+      );
+      if (!isRecord(response) || !Array.isArray(response['languages'])) {
+        throw invalidResponse('INVALID_READER_RESPONSE');
+      }
+      const languages = response['languages'];
+      if (
+        languages.length > 50 ||
+        languages.some((language) => typeof language !== 'string' || !isLanguage(language)) ||
+        new Set(languages).size !== languages.length
+      ) {
+        throw invalidResponse('INVALID_READER_RESPONSE');
+      }
+      return [...languages] as string[];
+    } catch (error) {
+      throw toReaderApiError(error);
+    }
+  }
+
+  async getTranslatedContentPage(
+    chapterId: string,
+    language: string,
+    cursor?: string,
+    limit = 1000,
+  ): Promise<ReaderTranslationContentPage> {
+    if (!isUuid(chapterId) || !isLanguage(language) || !isValidPageRequest(cursor, limit, 1000)) {
+      throw invalidResponse('INVALID_READER_QUERY');
+    }
+    try {
+      let params = new HttpParams().set('limit', limit);
+      if (cursor) params = params.set('cursor', cursor);
+      const response: unknown = await firstValueFrom(
+        this.http
+          .get<unknown>(translatedContentUrl(chapterId, language), { params })
+          .pipe(timeout(requestTimeoutMs)),
+      );
+      return parseTranslatedContentPage(response, chapterId, language, limit);
     } catch (error) {
       throw toReaderApiError(error);
     }
@@ -1114,6 +1175,68 @@ function parseContentPage(
     sourceLanguage: value['sourceLanguage'],
     segments,
     nextSegmentCursor: value['nextSegmentCursor'],
+  };
+}
+
+function parseTranslatedContentPage(
+  value: unknown,
+  expectedChapterId: string,
+  expectedLanguage: string,
+  limit: number,
+): ReaderTranslationContentPage {
+  if (
+    !isRecord(value) ||
+    value['chapterId'] !== expectedChapterId ||
+    !isUuid(value['workId']) ||
+    !isUuid(value['sourceRevisionId']) ||
+    !isUuid(value['translationVersionId']) ||
+    !Number.isSafeInteger(value['translationVersionNo']) ||
+    (value['translationVersionNo'] as number) < 1 ||
+    !isLanguage(value['sourceLanguage']) ||
+    value['targetLanguage'] !== expectedLanguage ||
+    !Array.isArray(value['segments']) ||
+    value['segments'].length > limit ||
+    !isCursor(value['nextSegmentCursor'])
+  ) {
+    throw invalidResponse('INVALID_READER_RESPONSE');
+  }
+  const segments = value['segments'].map(parseTranslatedSegment);
+  if (
+    new Set(segments.flatMap((segment) => (segment.anchor ? [segment.anchor] : []))).size !==
+    segments.filter((segment) => segment.anchor).length
+  ) {
+    throw invalidResponse('INVALID_READER_RESPONSE');
+  }
+  return {
+    chapterId: expectedChapterId,
+    workId: value['workId'],
+    sourceRevisionId: value['sourceRevisionId'],
+    translationVersionId: value['translationVersionId'],
+    translationVersionNo: value['translationVersionNo'] as number,
+    sourceLanguage: value['sourceLanguage'],
+    targetLanguage: expectedLanguage,
+    segments,
+    nextSegmentCursor: value['nextSegmentCursor'],
+  };
+}
+
+function parseTranslatedSegment(value: unknown): ReaderSourceSegment {
+  const text = isRecord(value) ? value['translatedText'] : null;
+  if (
+    !isRecord(value) ||
+    (value['anchor'] !== null &&
+      (typeof value['anchor'] !== 'string' || value['anchor'].length > 160)) ||
+    (value['type'] !== 'paragraph' && value['type'] !== 'heading' && value['type'] !== 'quote') ||
+    typeof text !== 'string' ||
+    [...text].length > 1_048_576 ||
+    new TextEncoder().encode(text).length > 1_048_576
+  ) {
+    throw invalidResponse('INVALID_READER_RESPONSE');
+  }
+  return {
+    anchor: value['anchor'] as string | null,
+    type: value['type'],
+    sourceText: text,
   };
 }
 

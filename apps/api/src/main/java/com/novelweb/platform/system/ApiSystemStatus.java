@@ -13,5 +13,6 @@ public record ApiSystemStatus(
       boolean publicCatalogEnabled,
       boolean publicationReleaseEnabled,
       boolean translationFakePreviewEnabled,
-      boolean translationManualSubmissionEnabled) {}
+      boolean translationManualSubmissionEnabled,
+      boolean translationPublicationEnabled) {}
 }
