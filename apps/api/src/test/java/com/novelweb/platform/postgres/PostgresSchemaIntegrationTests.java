@@ -461,7 +461,7 @@ class PostgresSchemaIntegrationTests {
             connection.prepareStatement("SELECT COUNT(*) FROM databasechangelog");
         ResultSet changesets = changesetCount.executeQuery()) {
       changesets.next();
-      assertEquals(173, changesets.getInt(1), "unexpected number of applied changesets");
+      assertEquals(174, changesets.getInt(1), "unexpected number of applied changesets");
     }
 
     Set<String> actualTables = new HashSet<>();
@@ -2899,6 +2899,15 @@ class PostgresSchemaIntegrationTests {
       assertEquals(
           "\"subscription-absent\"",
           otherActorSubscription.getResponse().getHeader(HttpHeaders.ETAG));
+      MvcResult emptyOtherActorList =
+          mockMvc.perform(get("/api/v1/me/subscriptions").cookie(otherActorCookie)).andReturn();
+      assertEquals(200, emptyOtherActorList.getResponse().getStatus());
+      assertEquals(
+          0,
+          objectMapper
+              .readTree(emptyOtherActorList.getResponse().getContentAsString())
+              .path("items")
+              .size());
       MvcResult mutationWithoutCsrf =
           mockMvc
               .perform(
@@ -2924,6 +2933,40 @@ class PostgresSchemaIntegrationTests {
       assertEquals(200, createdSubscription.getResponse().getStatus());
       assertEquals(
           "\"subscription-1\"", createdSubscription.getResponse().getHeader(HttpHeaders.ETAG));
+      MvcResult ownedSubscriptionList =
+          mockMvc.perform(get("/api/v1/me/subscriptions?limit=1").cookie(ownerCookie)).andReturn();
+      assertEquals(200, ownedSubscriptionList.getResponse().getStatus());
+      assertTrue(
+          ownedSubscriptionList
+              .getResponse()
+              .getHeader(HttpHeaders.CACHE_CONTROL)
+              .contains("no-store"));
+      JsonNode ownedSubscriptionPage =
+          objectMapper.readTree(ownedSubscriptionList.getResponse().getContentAsString());
+      assertEquals(1, ownedSubscriptionPage.path("items").size());
+      assertTrue(ownedSubscriptionPage.path("items").get(0).path("available").asBoolean());
+      assertTrue(
+          ownedSubscriptionPage.path("items").get(0).path("notificationsEnabled").asBoolean());
+      assertEquals(
+          approvableFixture.workId().toString(),
+          ownedSubscriptionPage.path("items").get(0).path("workId").asText());
+      assertEquals("no-cache", ownedSubscriptionList.getResponse().getHeader(HttpHeaders.PRAGMA));
+
+      MvcResult otherActorFollow =
+          mockMvc
+              .perform(
+                  put(subscriptionPath)
+                      .cookie(otherActorCookie)
+                      .header(
+                          SessionCsrfTokenService.TOKEN_HEADER_NAME,
+                          csrfTokenService.tokenFor(staleContentOwnerSession.cookieValue()))
+                      .header(HttpHeaders.IF_MATCH, "\"subscription-absent\"")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"notificationsEnabled\":true}"))
+              .andReturn();
+      assertEquals(200, otherActorFollow.getResponse().getStatus());
+      assertEquals(
+          "\"subscription-1\"", otherActorFollow.getResponse().getHeader(HttpHeaders.ETAG));
       MvcResult mutedSubscription =
           mockMvc
               .perform(
@@ -3291,6 +3334,29 @@ class PostgresSchemaIntegrationTests {
       assertFalse(publicationScopeIsCurrent(approvableFixture.workId(), "PUBLIC_METADATA"));
       assertFalse(publicationScopeIsCurrent(approvableFixture.workId(), "CHAPTER_TEXT"));
       assertFalse(publicationScopeIsCurrent(approvableFixture.workId(), "COMMERCIAL_SALE"));
+      MvcResult neutralWithdrawnSubscription =
+          mockMvc.perform(get("/api/v1/me/subscriptions").cookie(otherActorCookie)).andReturn();
+      assertEquals(200, neutralWithdrawnSubscription.getResponse().getStatus());
+      JsonNode neutralWithdrawnPage =
+          objectMapper.readTree(neutralWithdrawnSubscription.getResponse().getContentAsString());
+      assertEquals(1, neutralWithdrawnPage.path("items").size());
+      assertFalse(neutralWithdrawnPage.path("items").get(0).path("available").asBoolean());
+      assertTrue(neutralWithdrawnPage.path("items").get(0).path("title").isNull());
+      assertTrue(neutralWithdrawnPage.path("items").get(0).path("author").isNull());
+      MvcResult retireWithdrawnSubscription =
+          mockMvc
+              .perform(
+                  delete(subscriptionPath)
+                      .cookie(otherActorCookie)
+                      .header(
+                          SessionCsrfTokenService.TOKEN_HEADER_NAME,
+                          csrfTokenService.tokenFor(staleContentOwnerSession.cookieValue()))
+                      .header(HttpHeaders.IF_MATCH, "\"subscription-1\""))
+              .andReturn();
+      assertEquals(204, retireWithdrawnSubscription.getResponse().getStatus());
+      assertEquals(
+          "\"subscription-2\"",
+          retireWithdrawnSubscription.getResponse().getHeader(HttpHeaders.ETAG));
       MvcResult maskedSubscription =
           mockMvc.perform(get(subscriptionPath).cookie(ownerCookie)).andReturn();
       assertEquals(404, maskedSubscription.getResponse().getStatus());

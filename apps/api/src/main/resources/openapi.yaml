@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 10.6.0
+  version: 10.7.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -6968,6 +6968,61 @@ paths:
           $ref: '#/components/responses/Problem'
         '503':
           $ref: '#/components/responses/Problem'
+  /api/v1/me/subscriptions:
+    get:
+      operationId: listMyWorkSubscriptions
+      tags: [Follow]
+      x-implementation-status: implemented-postgres-profile
+      summary: List the current actor's followed-work controls
+      description: >-
+        Requires an active session and current Terms/Privacy acceptance. Uses an actor-bound HMAC keyset cursor and
+        returns at most 50 active follow rows per page. Current public metadata is included only while the work,
+        owner, library and PUBLIC_METADATA approval remain current. If a previously followed work is no longer
+        public, the row retains only opaque actor-owned controls and a neutral unavailable state; title and author are
+        null so this list cannot reveal withdrawn metadata. Responses are no-store. This route lists saved preferences;
+        it does not imply that chapter alerts are currently delivered.
+      security:
+        - appSession: []
+      parameters:
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 2048
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+      responses:
+        '200':
+          description: Actor-owned followed-work settings page.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MyWorkSubscriptionPage'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
   /api/v1/works/{workId}/subscription:
     parameters:
       - name: workId
@@ -7101,8 +7156,8 @@ paths:
         Requires an active session, current Terms/Privacy acceptance and session-bound CSRF. Active rows require the
         current strong ETag in If-Match. The transition retains an inactive versioned row; repeating an already
         completed unfollow is harmless. A persistent per-actor token bucket limits mutations across API instances; a
-        rejected mutation returns 429 with Retry-After. A hidden or withdrawn work returns the same concealed 404 as an
-        unknown work.
+        rejected mutation returns 429 with Retry-After. An actor may retire their own subscription after a work is
+        withdrawn; unknown or absent rows remain an idempotent no-content result and expose no work metadata.
       security:
         - appSession: []
           csrfToken: []
@@ -7172,6 +7227,48 @@ components:
         type: string
         pattern: '^"annotation-[1-9][0-9]*"$'
   schemas:
+    MyWorkSubscriptionPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/MyWorkSubscriptionItem'
+        nextCursor:
+          type: [string, 'null']
+          maxLength: 2048
+    MyWorkSubscriptionItem:
+      type: object
+      additionalProperties: false
+      required: [id, workId, available, notificationsEnabled, version, followedAt, title, author]
+      properties:
+        id:
+          type: string
+          format: uuid
+        workId:
+          type: string
+          format: uuid
+        available:
+          type: boolean
+          description: Whether current public metadata scope still permits showing work metadata.
+        notificationsEnabled:
+          type: boolean
+          description: Effective current preference; false when the work is no longer publicly available.
+        version:
+          type: integer
+          minimum: 1
+        followedAt:
+          type: string
+          format: date-time
+        title:
+          type: [string, 'null']
+          maxLength: 300
+        author:
+          type: [string, 'null']
+          maxLength: 300
     WorkSubscriptionState:
       type: object
       additionalProperties: false

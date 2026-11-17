@@ -26,6 +26,86 @@ describe('WorkSubscriptionApiService', () => {
 
   afterEach(() => http.verify());
 
+  it('loads a strict paged actor-owned subscription list without caching', async () => {
+    const result = api.listMine();
+    http.expectOne('/api/v1/me/subscriptions?limit=20').flush(
+      {
+        items: [
+          {
+            id: workId,
+            workId,
+            available: true,
+            notificationsEnabled: true,
+            version: 3,
+            followedAt: '2026-11-17T12:00:00Z',
+            title: 'Hành trình tu luyện',
+            author: 'Bút danh',
+          },
+        ],
+        nextCursor: 'signed-cursor',
+      },
+      { headers: noStore },
+    );
+    await expect(result).resolves.toMatchObject({
+      items: [{ title: 'Hành trình tu luyện', notificationsEnabled: true, version: 3 }],
+      nextCursor: 'signed-cursor',
+    });
+  });
+
+  it('loads a withdrawn follow as neutral metadata that can be retired', async () => {
+    const result = api.listMine();
+    http.expectOne('/api/v1/me/subscriptions?limit=20').flush(
+      {
+        items: [
+          {
+            id: workId,
+            workId,
+            available: false,
+            notificationsEnabled: false,
+            version: 4,
+            followedAt: '2026-11-17T12:00:00Z',
+            title: null,
+            author: null,
+          },
+        ],
+        nextCursor: null,
+      },
+      { headers: noStore },
+    );
+    await expect(result).resolves.toMatchObject({ items: [{ available: false, title: null }] });
+  });
+
+  it('binds a continuation request to the provided opaque cursor', async () => {
+    const result = api.listMine('opaque+cursor');
+    http
+      .expectOne('/api/v1/me/subscriptions?limit=20&cursor=opaque%2Bcursor')
+      .flush({ items: [], nextCursor: null }, { headers: noStore });
+    await expect(result).resolves.toEqual({ items: [], nextCursor: null });
+  });
+
+  it('rejects private metadata in an unavailable work row', async () => {
+    const result = api.listMine();
+    http.expectOne('/api/v1/me/subscriptions?limit=20').flush(
+      {
+        items: [
+          {
+            id: workId,
+            workId,
+            available: false,
+            notificationsEnabled: false,
+            version: 4,
+            followedAt: '2026-11-17T12:00:00Z',
+            title: 'No longer public',
+            author: null,
+          },
+        ],
+        nextCursor: null,
+      },
+      { headers: noStore },
+    );
+    await expect(result).rejects.toMatchObject({ code: 'INVALID_SUBSCRIPTION_RESPONSE' });
+  });
+
   it('loads the allow-listed actor subscription state and strong ETag', async () => {
     const result = api.get(workId);
     http

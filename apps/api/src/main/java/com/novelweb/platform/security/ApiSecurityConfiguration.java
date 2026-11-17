@@ -97,6 +97,7 @@ public class ApiSecurityConfiguration {
                         "/api/v1/works/*/subscription",
                         "/api/v1/me/reader-preferences",
                         "/api/v1/me/reading-history",
+                        "/api/v1/me/subscriptions",
                         "/api/v1/chapters/*/content",
                         "/api/v1/chapters/*/translations",
                         "/api/v1/chapters/*/translations/*/content")

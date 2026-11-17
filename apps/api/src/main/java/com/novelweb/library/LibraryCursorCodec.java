@@ -134,6 +134,11 @@ public class LibraryCursorCodec {
         "publication-request-history-v1");
   }
 
+  public static CursorContext workSubscriptionsContext(UUID actorUserId) {
+    return new CursorContext(
+        Kind.WORK_SUBSCRIPTIONS, actorUserId, NO_SCOPE, "", "", "active", "work-subscriptions-v1");
+  }
+
   public void requireConfigured() {
     if (hmacKey == null) throw new SigningUnavailableException();
   }
@@ -289,7 +294,8 @@ public class LibraryCursorCodec {
     PUBLICATION_REQUEST_HISTORY(5),
     TRANSLATION_REVIEW_QUEUE(6),
     TRANSLATION_PUBLICATION_QUEUE(7),
-    TRANSLATION_RELEASE_HISTORY(8);
+    TRANSLATION_RELEASE_HISTORY(8),
+    WORK_SUBSCRIPTIONS(9);
 
     private final int code;
 
@@ -377,6 +383,14 @@ public class LibraryCursorCodec {
               || !accessScopeFingerprint.equals("publication-request-history-v1"))) {
         throw new IllegalArgumentException("Invalid publication-history cursor context");
       }
+      if (kind == Kind.WORK_SUBSCRIPTIONS
+          && (!scopeId.equals(NO_SCOPE)
+              || !query.isEmpty()
+              || !tag.isEmpty()
+              || !status.equals("active")
+              || !accessScopeFingerprint.equals("work-subscriptions-v1"))) {
+        throw new IllegalArgumentException("Invalid work-subscriptions cursor context");
+      }
     }
 
     byte[] filterHash() {
@@ -389,12 +403,14 @@ public class LibraryCursorCodec {
             digest,
             kind == Kind.TRANSLATION_RELEASE_HISTORY
                 ? "released_at_desc,id_desc"
-                : kind == Kind.PUBLICATION_REVIEW_QUEUE
-                        || kind == Kind.PUBLICATION_REQUEST_HISTORY
-                        || kind == Kind.TRANSLATION_REVIEW_QUEUE
-                        || kind == Kind.TRANSLATION_PUBLICATION_QUEUE
-                    ? "submitted_at_desc,id_desc"
-                    : "created_at_desc,id_desc");
+                : kind == Kind.WORK_SUBSCRIPTIONS
+                    ? "followed_at_desc,id_desc"
+                    : kind == Kind.PUBLICATION_REVIEW_QUEUE
+                            || kind == Kind.PUBLICATION_REQUEST_HISTORY
+                            || kind == Kind.TRANSLATION_REVIEW_QUEUE
+                            || kind == Kind.TRANSLATION_PUBLICATION_QUEUE
+                        ? "submitted_at_desc,id_desc"
+                        : "created_at_desc,id_desc");
         updateString(digest, query);
         updateString(digest, tag);
         updateString(digest, status);

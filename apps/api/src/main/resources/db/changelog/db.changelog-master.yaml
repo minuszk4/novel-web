@@ -185,3 +185,6 @@ databaseChangeLog:
   - include:
       file: changes/070-work-subscription-rate-limits.sql
       relativeToChangelogFile: true
+  - include:
+      file: changes/071-work-subscription-owner-page-index.sql
+      relativeToChangelogFile: true

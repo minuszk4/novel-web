@@ -4,6 +4,10 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
@@ -92,7 +96,8 @@ public class WorkSubscriptionRepository {
       connection.setAutoCommit(false);
       try {
         requireActiveActor(connection, actorUserId);
-        requirePublicWork(connection, workId, true);
+        // A previously-followed work may have been withdrawn or taken down. Its owner-scoped
+        // subscription row is still safe to retire and must not become impossible to clean up.
         Optional<SubscriptionState> existing = select(connection, actorUserId, workId, true);
         if (existing.isEmpty()) {
           connection.commit();
@@ -118,6 +123,124 @@ public class WorkSubscriptionRepository {
       throw exception;
     } catch (SQLException exception) {
       throw new IllegalStateException("Unable to stop work subscription", exception);
+    }
+  }
+
+  public SubscriptionSlice listActive(
+      UUID actorUserId, LibraryCursorCodec.Position position, int fetchLimit) {
+    Objects.requireNonNull(actorUserId, "actor user id is required");
+    if (fetchLimit < 1 || fetchLimit > 51) {
+      throw new IllegalArgumentException("subscription fetch limit must be 1 to 51");
+    }
+    try (Connection connection = dataSource.getConnection()) {
+      connection.setAutoCommit(false);
+      connection.setTransactionIsolation(Connection.TRANSACTION_REPEATABLE_READ);
+      try {
+        requireActiveActor(connection, actorUserId);
+        List<SubscriptionItem> selected =
+            readActiveSubscriptions(connection, actorUserId, position, fetchLimit);
+        boolean hasMore = selected.size() == fetchLimit;
+        List<SubscriptionItem> page =
+            hasMore ? List.copyOf(selected.subList(0, selected.size() - 1)) : List.copyOf(selected);
+        LibraryCursorCodec.Position nextPosition =
+            hasMore && !page.isEmpty()
+                ? new LibraryCursorCodec.Position(
+                    0, page.get(page.size() - 1).followedAt(), page.get(page.size() - 1).id())
+                : null;
+        connection.commit();
+        return new SubscriptionSlice(page, nextPosition);
+      } catch (SQLException | RuntimeException exception) {
+        connection.rollback();
+        throw exception;
+      }
+    } catch (SQLException exception) {
+      throw new IllegalStateException("Unable to list actor work subscriptions", exception);
+    }
+  }
+
+  private static List<SubscriptionItem> readActiveSubscriptions(
+      Connection connection, UUID actorUserId, LibraryCursorCodec.Position position, int fetchLimit)
+      throws SQLException {
+    String cursorPredicate =
+        position == null
+            ? ""
+            : " AND (subscription.followed_at < ? OR"
+                + " (subscription.followed_at = ? AND subscription.id < ?))";
+    try (PreparedStatement select =
+        connection.prepareStatement(
+            """
+                SELECT subscription.id, subscription.work_id, subscription.version,
+                       subscription.notifications_enabled, subscription.followed_at,
+                       CASE WHEN work.visibility = 'public' AND work.status = 'active'
+                                  AND work.deleted_at IS NULL AND owner.status = 'active'
+                                  AND library.deleted_at IS NULL AND library.workspace_id IS NULL
+                                  AND publication_scope_access_is_current(work.id, 'PUBLIC_METADATA')
+                                  AND EXISTS (
+                                      SELECT 1 FROM chapters chapter
+                                       WHERE chapter.work_id = work.id
+                                         AND chapter.status = 'ready'
+                                         AND chapter.deleted_at IS NULL
+                                         AND chapter.source_revision_id IS NOT NULL
+                                  )
+                            THEN TRUE ELSE FALSE END AS available,
+                       CASE WHEN work.visibility = 'public' AND work.status = 'active'
+                                  AND work.deleted_at IS NULL AND owner.status = 'active'
+                                  AND library.deleted_at IS NULL AND library.workspace_id IS NULL
+                                  AND publication_scope_access_is_current(work.id, 'PUBLIC_METADATA')
+                                  AND EXISTS (
+                                      SELECT 1 FROM chapters chapter
+                                       WHERE chapter.work_id = work.id
+                                         AND chapter.status = 'ready'
+                                         AND chapter.deleted_at IS NULL
+                                         AND chapter.source_revision_id IS NOT NULL
+                                  )
+                            THEN work.title ELSE NULL END AS title,
+                       CASE WHEN work.visibility = 'public' AND work.status = 'active'
+                                  AND work.deleted_at IS NULL AND owner.status = 'active'
+                                  AND library.deleted_at IS NULL AND library.workspace_id IS NULL
+                                  AND publication_scope_access_is_current(work.id, 'PUBLIC_METADATA')
+                                  AND EXISTS (
+                                      SELECT 1 FROM chapters chapter
+                                       WHERE chapter.work_id = work.id
+                                         AND chapter.status = 'ready'
+                                         AND chapter.deleted_at IS NULL
+                                         AND chapter.source_revision_id IS NOT NULL
+                                  )
+                            THEN work.author ELSE NULL END AS author
+                  FROM work_subscriptions subscription
+                  JOIN works work ON work.id = subscription.work_id
+                  JOIN users owner ON owner.id = work.owner_user_id
+                  JOIN libraries library ON library.id = work.library_id
+                 WHERE subscription.actor_user_id = ? AND subscription.active = TRUE
+                """
+                + cursorPredicate
+                + " ORDER BY subscription.followed_at DESC, subscription.id DESC LIMIT ?")) {
+      int parameter = 1;
+      select.setObject(parameter++, actorUserId);
+      if (position != null) {
+        OffsetDateTime cursorTime = OffsetDateTime.ofInstant(position.createdAt(), ZoneOffset.UTC);
+        select.setObject(parameter++, cursorTime);
+        select.setObject(parameter++, cursorTime);
+        select.setObject(parameter++, position.itemId());
+      }
+      select.setInt(parameter, fetchLimit);
+      try (ResultSet rows = select.executeQuery()) {
+        List<SubscriptionItem> items = new ArrayList<>(fetchLimit);
+        while (rows.next()) {
+          boolean available = rows.getBoolean("available");
+          items.add(
+              new SubscriptionItem(
+                  rows.getObject("id", UUID.class),
+                  rows.getObject("work_id", UUID.class),
+                  available,
+                  available && rows.getBoolean("notifications_enabled"),
+                  rows.getLong("version"),
+                  rows.getObject("followed_at", java.time.OffsetDateTime.class).toInstant(),
+                  rows.getString("title"),
+                  rows.getString("author")));
+        }
+        return List.copyOf(items);
+      }
     }
   }
 
@@ -234,6 +357,23 @@ public class WorkSubscriptionRepository {
   public record SubscriptionState(boolean following, boolean notificationsEnabled, long version) {
     static SubscriptionState absent() {
       return new SubscriptionState(false, false, 0);
+    }
+  }
+
+  public record SubscriptionItem(
+      UUID id,
+      UUID workId,
+      boolean available,
+      boolean notificationsEnabled,
+      long version,
+      java.time.Instant followedAt,
+      String title,
+      String author) {}
+
+  public record SubscriptionSlice(
+      List<SubscriptionItem> items, LibraryCursorCodec.Position nextPosition) {
+    public SubscriptionSlice {
+      items = List.copyOf(items);
     }
   }
 

@@ -1,0 +1,110 @@
+<section
+  id="followed-works"
+  class="settings-card followed-works-card"
+  aria-labelledby="followed-works-title"
+>
+  <div class="settings-card-heading">
+    <p class="eyebrow">THEO DÕI</p>
+    <h2 id="followed-works-title">Tác phẩm đã theo dõi</h2>
+    <p>
+      Quản lý lựa chọn nhận cập nhật theo từng tác phẩm. Hệ thống hiện lưu lựa chọn này nhưng chưa
+      gửi thông báo chương mới.
+    </p>
+  </div>
+
+  @if (message()) {
+    <p class="follow-settings-message" role="status">{{ message() }}</p>
+  }
+  @if (error() && (state() !== 'error' || items().length > 0)) {
+    <p class="follow-settings-error" role="alert">{{ error() }}</p>
+  }
+
+  @if (state() === 'loading') {
+    <p role="status">Đang tải danh sách tác phẩm đã theo dõi…</p>
+  } @else if (state() === 'guest') {
+    <p>Đăng nhập để quản lý danh sách theo dõi trên tài khoản của bạn.</p>
+    <a
+      class="button button-outline button-small"
+      routerLink="/sign-in"
+      [queryParams]="{ returnTo: '/app/settings' }"
+    >
+      Đăng nhập
+    </a>
+  } @else if (state() === 'error' && items().length === 0) {
+    <p role="alert">{{ error() }}</p>
+    <button class="button button-outline button-small" type="button" (click)="retry()">
+      Thử tải lại
+    </button>
+  } @else if (state() === 'empty') {
+    <p>Bạn chưa theo dõi tác phẩm nào.</p>
+    <a class="text-link" routerLink="/">Khám phá tác phẩm công khai →</a>
+  } @else {
+    <ul class="followed-work-list">
+      @for (item of items(); track item.id) {
+        <li class="followed-work-row" [class.followed-work-unavailable]="!item.available">
+          <div class="followed-work-copy">
+            @if (item.available) {
+              <a class="followed-work-title" [routerLink]="['/works', item.workId]">{{
+                item.title
+              }}</a>
+              <p class="followed-work-author">{{ item.author }}</p>
+            } @else {
+              <strong class="followed-work-title"
+                >Một tác phẩm bạn đã theo dõi không còn công khai</strong
+              >
+              <p class="followed-work-author">Bạn có thể bỏ theo dõi để dọn mục này.</p>
+            }
+            <time class="followed-work-date" [attr.datetime]="item.followedAt">
+              {{ followedAtLabel(item.followedAt) }}
+            </time>
+          </div>
+          <div class="followed-work-actions">
+            @if (item.available) {
+              <button
+                class="button button-outline button-small"
+                type="button"
+                [disabled]="busyWorkId() !== null"
+                (click)="toggle(item)"
+              >
+                @if (busyWorkId() === item.workId) {
+                  Đang lưu…
+                } @else if (item.notificationsEnabled) {
+                  Tạm tắt lựa chọn
+                } @else {
+                  Bật lại lựa chọn
+                }
+              </button>
+            }
+            <button
+              class="button button-quiet button-small"
+              type="button"
+              [disabled]="busyWorkId() !== null"
+              [attr.aria-label]="
+                item.available
+                  ? 'Bỏ theo dõi: ' + item.title
+                  : 'Bỏ theo dõi tác phẩm không còn công khai'
+              "
+              (click)="unfollow(item)"
+            >
+              {{ busyWorkId() === item.workId ? 'Đang lưu…' : 'Bỏ theo dõi' }}
+            </button>
+          </div>
+        </li>
+      }
+    </ul>
+    @if (state() === 'error' && items().length > 0) {
+      <button class="button button-outline button-small" type="button" (click)="retry()">
+        Tải lại danh sách
+      </button>
+    } @else if (nextCursor()) {
+      <button
+        class="button button-outline button-small followed-work-more"
+        type="button"
+        [disabled]="loadingMore()"
+        (click)="loadMore()"
+      >
+        {{ loadingMore() ? 'Đang tải…' : 'Tải thêm' }}
+      </button>
+    }
+  }
+</section>

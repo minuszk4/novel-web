@@ -7,7 +7,8 @@
   <div class="settings-layout">
     <nav class="settings-nav" aria-label="Mục cài đặt">
       <a class="settings-nav-active" href="#reader-settings">Trình đọc</a
-      ><a href="#privacy-settings">Quyền riêng tư</a><a href="#account-settings">Tài khoản</a
+      ><a href="#followed-works">Theo dõi</a><a href="#privacy-settings">Quyền riêng tư</a
+      ><a href="#account-settings">Tài khoản</a
       ><a routerLink="/app/cultivation">Hành trình tu luyện</a>
     </nav>
     <div class="settings-content">
@@ -15,7 +16,7 @@
         <div class="settings-card-heading">
           <p class="eyebrow">TRẢI NGHIỆM ĐỌC</p>
           <h2>Trình đọc</h2>
-          <p>Thay đổi để dễ đọc hơn. Tùy chọn được giữ tạm trong phiên demo.</p>
+          <p>Thay đổi để dễ đọc hơn. Tùy chọn giao diện hiện được giữ tạm trong phiên demo.</p>
         </div>
         <label class="setting-control-label" for="font-size-setting"
           >Cỡ chữ <strong>{{ demo.readerFontSize() }} px</strong></label
@@ -70,6 +71,8 @@
           </button>
         </div>
       </section>
+
+      <app-work-subscription-settings />
 
       <section id="privacy-settings" class="settings-card">
         <div class="settings-card-heading">
@@ -141,8 +144,8 @@
         }
       </section>
       <p class="settings-save-note" role="status">
-        <span aria-hidden="true">i</span> Mọi thiết lập trên trang này chỉ nằm trong bộ nhớ của tab
-        hiện tại và sẽ đặt lại khi tải lại.
+        <span aria-hidden="true">i</span> Cỡ chữ, giao diện đọc và tùy chọn riêng tư trong bản demo
+        chỉ nằm trong bộ nhớ của tab. Danh sách theo dõi được lưu theo tài khoản khi API hỗ trợ.
       </p>
     </div>
   </div>
