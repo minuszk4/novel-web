@@ -2981,7 +2981,7 @@ class PostgresSchemaIntegrationTests {
                       .header(
                           HttpHeaders.IF_MATCH,
                           chapterReviewDetail.getResponse().getHeader(HttpHeaders.ETAG))
-                      .header("Idempotency-Key", "test-key-01")
+                      .header("Idempotency-Key", "test-test-key-01")
                       .contentType(MediaType.APPLICATION_JSON)
                       .content(approvalBody))
               .andReturn();
@@ -3089,7 +3089,7 @@ class PostgresSchemaIntegrationTests {
                       .header(
                           HttpHeaders.IF_MATCH,
                           updatedChapterReviewDetail.getResponse().getHeader(HttpHeaders.ETAG))
-                      .header("Idempotency-Key", "test-key-02")
+                      .header("Idempotency-Key", "test-test-key-02")
                       .contentType(MediaType.APPLICATION_JSON)
                       .content(approvalBody))
               .andReturn();
