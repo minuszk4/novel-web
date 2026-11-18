@@ -3,7 +3,7 @@ import { defineConfig, devices } from '@playwright/test';
 export default defineConfig({
   testDir: './e2e',
   testMatch:
-    /(?:authoring-create|authoring-outline|authoring-chapter-editor|publication-rights-policy|publication-review(?:-notifications)?|library|reader|work-detail|private-import(?:-formats)?|cultivation|glossary-import|translation|momo-payment-return|momo-commerce-settlement)-live-postgres\.spec\.ts/,
+    /(?:account-data-export|authoring-create|authoring-outline|authoring-chapter-editor|publication-rights-policy|publication-review(?:-notifications)?|library|reader|work-detail|private-import(?:-formats)?|cultivation|glossary-import|translation|momo-payment-return|momo-commerce-settlement)-live-postgres\.spec\.ts/,
   fullyParallel: false,
   forbidOnly: true,
   retries: 0,

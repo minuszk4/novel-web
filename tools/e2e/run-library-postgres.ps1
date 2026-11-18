@@ -11,6 +11,8 @@ param(
     [switch]$IncludePublicationReviewWorkspace,
     [switch]$IncludePaymentReturn,
     [switch]$IncludeCommerceSettlement,
+    [switch]$IncludeAccountDataExport,
+    [switch]$AccountDataExportOnly,
     [switch]$IncludeCultivationRankUp,
     [switch]$IncludeNotificationInbox,
     [switch]$IncludeDatabaseRestartRecovery
@@ -68,6 +70,9 @@ $environmentNames = @(
     'NOVEL_TRANSLATION_FAKE_WORKER_ENABLED', 'NOVEL_TRANSLATION_REVIEW_ENABLED',
     'NOVEL_TRANSLATION_PUBLICATION_ENABLED',
     'NOVEL_MOMO_TEST_ENABLED', 'NOVEL_MOMO_TEST_RECONCILIATION_ENABLED', 'MOMO_ENV',
+    'NOVEL_ACCOUNT_DATA_EXPORT_ENABLED', 'NOVEL_ACCOUNT_DATA_EXPORT_WORKER_ENABLED',
+    'NOVEL_ACCOUNT_EXPORT_ROOT', 'NOVEL_ACCOUNT_EXPORT_POLL_DELAY',
+    'ACCOUNT_EXPORT_LIVE_TEST_SESSION_TOKEN', 'ACCOUNT_EXPORT_LIVE_TEST_SCREENSHOT',
     'MOMO_TEST_PARTNER_CODE', 'MOMO_TEST_ACCESS_KEY', 'MOMO_TEST_SECRET_KEY',
     'MOMO_TEST_BASE_URL', 'MOMO_TEST_IPN_URL', 'MOMO_TEST_REDIRECT_URL',
     'LIBRARY_LIVE_TEST_SESSION_TOKEN', 'LIBRARY_LIVE_TEST_LIBRARY_ID',
@@ -117,6 +122,8 @@ $publicationRightsParts = @()
 $publicationReviewParts = @()
 $translationReviewParts = @()
 $notificationParts = @()
+$accountExportParts = @()
+$exportArtifactCleanup = 'Not created'
 $authoringEditorParts = @()
 $databaseRestartSummary = @()
 $startedAt = Get-Date
@@ -222,6 +229,15 @@ $apiStderr = Join-Path $evidenceDirectory 'api-stderr.log'
 $e2eLog = Join-Path $evidenceDirectory 'playwright.log'
 
 try {
+    if ($AccountDataExportOnly) {
+        if ($IncludeTranslationPreview -or $IncludeTranslationReviewWorkspace -or $IncludeAuthoringOutline -or
+            $IncludeAuthoringChapterEditor -or $IncludeAuthoringDraftApi -or $IncludeAuthoringEmptyChapterDelete -or
+            $IncludePublicationRightsAcceptance -or $IncludePublicationReviewWorkspace -or $IncludePaymentReturn -or
+            $IncludeCommerceSettlement -or $IncludeCultivationRankUp -or $IncludeNotificationInbox -or $IncludeDatabaseRestartRecovery) {
+            throw '-AccountDataExportOnly cannot be combined with another optional journey.'
+        }
+        $IncludeAccountDataExport = $true
+    }
     if ($IncludeAuthoringChapterEditor -and -not $IncludeAuthoringOutline) {
         throw '-IncludeAuthoringChapterEditor requires -IncludeAuthoringOutline to provide the authored-work fixture.'
     }
@@ -259,6 +275,8 @@ try {
     $env:NOVEL_TRANSLATION_PUBLICATION_ENABLED = 'false'
     $env:NOVEL_MOMO_TEST_ENABLED = 'false'
     $env:NOVEL_MOMO_TEST_RECONCILIATION_ENABLED = 'false'
+    $env:NOVEL_ACCOUNT_DATA_EXPORT_ENABLED = 'false'
+    $env:NOVEL_ACCOUNT_DATA_EXPORT_WORKER_ENABLED = 'false'
     if ($IncludeNotificationInbox) {
         # Enable only inside the random disposable API process used by this end-to-end journey.
         $env:NOVEL_NOTIFICATIONS_DELIVERY_ENABLED = 'true'
@@ -285,6 +303,13 @@ try {
         $env:MOMO_TEST_BASE_URL = 'https://test-payment.momo.vn'
         $env:MOMO_TEST_IPN_URL = 'https://localhost:4300/api/v1/payments/momo/ipn'
         $env:MOMO_TEST_REDIRECT_URL = 'https://localhost:4300/app/payment/result'
+    }
+    if ($IncludeAccountDataExport) {
+        # Enable only inside this disposable API process and keep generated archives in its evidence folder.
+        $env:NOVEL_ACCOUNT_DATA_EXPORT_ENABLED = 'true'
+        $env:NOVEL_ACCOUNT_DATA_EXPORT_WORKER_ENABLED = 'true'
+        $env:NOVEL_ACCOUNT_EXPORT_ROOT = Join-Path $evidenceDirectory 'account-export-artifacts'
+        $env:NOVEL_ACCOUNT_EXPORT_POLL_DELAY = 'PT1S'
     }
     $env:NOVEL_IMPORT_STAGING_ROOT = $importStagingRoot
     $env:NOVEL_WEB_CORS_ALLOWED_ORIGINS = 'http://localhost:4300'
@@ -615,6 +640,10 @@ COMMIT;
     $env:LIBRARY_LIVE_TEST_LIBRARY_ID = [string]$libraryId
     $env:LIBRARY_LIVE_TEST_WORK_IDS = "$firstWorkId,$secondWorkId"
     $env:LIBRARY_LIVE_TEST_SCREENSHOT = $screenshotPath
+    if ($IncludeAccountDataExport) {
+        $env:ACCOUNT_EXPORT_LIVE_TEST_SESSION_TOKEN = $sessionToken
+        $env:ACCOUNT_EXPORT_LIVE_TEST_SCREENSHOT = Join-Path $evidenceDirectory 'account-data-export-live.png'
+    }
     $paymentReturnScreenshotPath = Join-Path $evidenceDirectory 'momo-payment-return-pending-live.png'
     if ($IncludePaymentReturn) {
         $env:MOMO_PAYMENT_RETURN_LIVE_TEST_SESSION_TOKEN = $paymentReturnSessionToken
@@ -804,35 +833,54 @@ COMMIT;
             $hasPriorE2eLog = $true
         }
 
-        $e2eSpecs = @(
-            'e2e/authoring-create-live-postgres.spec.ts'
-        )
-        # The outline journey updates manuscript metadata consumed by later Library/commerce checks.
-        if ($IncludeAuthoringOutline) { $e2eSpecs += 'e2e/authoring-outline-live-postgres.spec.ts' }
-        $e2eSpecs += @(
-            'e2e/library-live-postgres.spec.ts',
-            'e2e/reader-live-postgres.spec.ts',
-            'e2e/work-detail-live-postgres.spec.ts',
-            'e2e/private-import-live-postgres.spec.ts',
-            'e2e/private-import-formats-live-postgres.spec.ts',
-            'e2e/glossary-import-live-postgres.spec.ts',
-            'e2e/cultivation-live-postgres.spec.ts'
-        )
-        if ($IncludePublicationRightsAcceptance) { $e2eSpecs += 'e2e/publication-rights-policy-live-postgres.spec.ts' }
-        if ($IncludePublicationReviewWorkspace -and -not $IncludeTranslationReviewWorkspace) { $e2eSpecs += 'e2e/publication-review-live-postgres.spec.ts' }
-        if ($IncludeNotificationInbox -and -not $IncludeTranslationReviewWorkspace) { $e2eSpecs += 'e2e/publication-review-notifications-live-postgres.spec.ts' }
-        if ($IncludeTranslationPreview -and -not $translationBeforeOutline -and -not $IncludeTranslationReviewWorkspace) {
-            $e2eSpecs += 'e2e/translation-live-postgres.spec.ts'
+        if ($AccountDataExportOnly) {
+            $e2eSpecs = @('e2e/account-data-export-live-postgres.spec.ts')
+        } else {
+            $e2eSpecs = @('e2e/authoring-create-live-postgres.spec.ts')
+            # The outline journey updates manuscript metadata consumed by later Library/commerce checks.
+            if ($IncludeAuthoringOutline) { $e2eSpecs += 'e2e/authoring-outline-live-postgres.spec.ts' }
+            $e2eSpecs += @(
+                'e2e/library-live-postgres.spec.ts',
+                'e2e/reader-live-postgres.spec.ts',
+                'e2e/work-detail-live-postgres.spec.ts',
+                'e2e/private-import-live-postgres.spec.ts',
+                'e2e/private-import-formats-live-postgres.spec.ts',
+                'e2e/glossary-import-live-postgres.spec.ts',
+                'e2e/cultivation-live-postgres.spec.ts'
+            )
+            if ($IncludePublicationRightsAcceptance) { $e2eSpecs += 'e2e/publication-rights-policy-live-postgres.spec.ts' }
+            if ($IncludePublicationReviewWorkspace -and -not $IncludeTranslationReviewWorkspace) { $e2eSpecs += 'e2e/publication-review-live-postgres.spec.ts' }
+            if ($IncludeNotificationInbox -and -not $IncludeTranslationReviewWorkspace) { $e2eSpecs += 'e2e/publication-review-notifications-live-postgres.spec.ts' }
+            if ($IncludeTranslationPreview -and -not $translationBeforeOutline -and -not $IncludeTranslationReviewWorkspace) {
+                $e2eSpecs += 'e2e/translation-live-postgres.spec.ts'
+            }
+            if ($IncludeAuthoringChapterEditor) { $e2eSpecs += 'e2e/authoring-chapter-editor-live-postgres.spec.ts' }
+            if ($IncludePaymentReturn) { $e2eSpecs += 'e2e/momo-payment-return-live-postgres.spec.ts' }
+            if ($IncludeCommerceSettlement) { $e2eSpecs += 'e2e/momo-commerce-settlement-live-postgres.spec.ts' }
+            if ($IncludeAccountDataExport) { $e2eSpecs += 'e2e/account-data-export-live-postgres.spec.ts' }
         }
-        if ($IncludeAuthoringChapterEditor) { $e2eSpecs += 'e2e/authoring-chapter-editor-live-postgres.spec.ts' }
-        if ($IncludePaymentReturn) { $e2eSpecs += 'e2e/momo-payment-return-live-postgres.spec.ts' }
-        if ($IncludeCommerceSettlement) { $e2eSpecs += 'e2e/momo-commerce-settlement-live-postgres.spec.ts' }
 
         & npm.cmd run test:e2e:postgres -- $e2eSpecs *>&1 |
             Tee-Object -FilePath $e2eLog -Append:$hasPriorE2eLog
         $e2eExit = $LASTEXITCODE
     } finally { Pop-Location }
     if ($e2eExit -ne 0) { throw "Live FE/API/PostgreSQL Playwright journey failed (exit $e2eExit)." }
+
+    if ($IncludeAccountDataExport) {
+        $accountExportSummary = & $docker @composeArguments exec -T postgres psql -v ON_ERROR_STOP=1 -tA -U novelweb -d novelweb -c "SELECT upper(status) || '|' || artifact_bytes::text || '|' || octet_length(artifact_sha256)::text || '|' || storage_key::text FROM account_data_exports WHERE user_id = '$userId' ORDER BY requested_at DESC LIMIT 1;"
+        if ($LASTEXITCODE -ne 0) { throw 'Could not verify the generated account export in disposable PostgreSQL.' }
+        $accountExportParts = ([string]$accountExportSummary).Trim() -split '\|'
+        if ($accountExportParts.Count -ne 4 -or $accountExportParts[0] -ne 'READY' -or [long]$accountExportParts[1] -le 100 -or $accountExportParts[2] -ne '32') {
+            throw "PostgreSQL account export invariants failed after the browser download: $accountExportSummary"
+        }
+        $accountExportPath = Join-Path $env:NOVEL_ACCOUNT_EXPORT_ROOT ($accountExportParts[3] + '.zip')
+        if (-not (Test-Path -LiteralPath $accountExportPath -PathType Leaf)) {
+            throw 'The ready account export points to an artifact that is missing from the disposable export directory.'
+        }
+        if ((Get-Item -LiteralPath $accountExportPath).Length -ne [long]$accountExportParts[1]) {
+            throw 'The account export artifact size does not match its PostgreSQL record.'
+        }
+    }
 
     if ($IncludeTranslationReviewWorkspace) {
         # Review a private submitted snapshot before the work is public. The publication journey
@@ -937,11 +985,13 @@ COMMIT;
         }
     }
 
-    $authoringSummary = & $docker @composeArguments exec -T postgres psql -v ON_ERROR_STOP=1 -tA -U novelweb -d novelweb -c "SELECT COUNT(*)::text || '|' || COALESCE(bool_and(w.source_kind = 'authored' AND w.visibility = 'private' AND w.status = 'active' AND w.author = 'E2E Pen Name' AND w.source_language = 'vi' AND l.owner_user_id = w.owner_user_id AND l.visibility = 'private' AND l.workspace_id IS NULL), FALSE)::text || '|' || COALESCE(SUM((SELECT COUNT(*) FROM authoring_manuscript_creations c WHERE c.actor_user_id = '$userId' AND c.work_id = w.id)), 0)::text || '|' || COALESCE(SUM((SELECT COUNT(*) FROM chapters ch WHERE ch.work_id = w.id)), 0)::text || '|' || COALESCE(SUM((SELECT COUNT(*) FROM volumes v WHERE v.work_id = w.id)), 0)::text FROM works w JOIN libraries l ON l.id = w.library_id WHERE w.owner_user_id = '$userId' AND w.title = '$authoringTitle';"
-    if ($LASTEXITCODE -ne 0) { throw 'Could not verify the authored private draft in disposable PostgreSQL.' }
-    $authoringParts = ([string]$authoringSummary).Trim() -split '\|'
-    if ($authoringParts.Count -ne 5 -or $authoringParts[0] -ne '1' -or $authoringParts[1] -notin @('t', 'true') -or $authoringParts[2] -ne '1' -or $authoringParts[3] -ne '0' -or $authoringParts[4] -ne '0') {
-        throw "PostgreSQL authoring invariants failed after browser journey: $authoringSummary"
+    if (-not $AccountDataExportOnly) {
+        $authoringSummary = & $docker @composeArguments exec -T postgres psql -v ON_ERROR_STOP=1 -tA -U novelweb -d novelweb -c "SELECT COUNT(*)::text || '|' || COALESCE(bool_and(w.source_kind = 'authored' AND w.visibility = 'private' AND w.status = 'active' AND w.author = 'E2E Pen Name' AND w.source_language = 'vi' AND l.owner_user_id = w.owner_user_id AND l.visibility = 'private' AND l.workspace_id IS NULL), FALSE)::text || '|' || COALESCE(SUM((SELECT COUNT(*) FROM authoring_manuscript_creations c WHERE c.actor_user_id = '$userId' AND c.work_id = w.id)), 0)::text || '|' || COALESCE(SUM((SELECT COUNT(*) FROM chapters ch WHERE ch.work_id = w.id)), 0)::text || '|' || COALESCE(SUM((SELECT COUNT(*) FROM volumes v WHERE v.work_id = w.id)), 0)::text FROM works w JOIN libraries l ON l.id = w.library_id WHERE w.owner_user_id = '$userId' AND w.title = '$authoringTitle';"
+        if ($LASTEXITCODE -ne 0) { throw 'Could not verify the authored private draft in disposable PostgreSQL.' }
+        $authoringParts = ([string]$authoringSummary).Trim() -split '\|'
+        if ($authoringParts.Count -ne 5 -or $authoringParts[0] -ne '1' -or $authoringParts[1] -notin @('t', 'true') -or $authoringParts[2] -ne '1' -or $authoringParts[3] -ne '0' -or $authoringParts[4] -ne '0') {
+            throw "PostgreSQL authoring invariants failed after browser journey: $authoringSummary"
+        }
     }
 
     $ledgerSummary = & $docker @composeArguments exec -T postgres psql -v ON_ERROR_STOP=1 -tA -U novelweb -d novelweb -c "SELECT COALESCE(SUM(xp_delta), 0)::text || '|' || COUNT(*)::text FROM cultivation_xp_ledger WHERE user_id = '$userId';"
@@ -950,14 +1000,16 @@ COMMIT;
     if ($ledgerParts.Count -ne 2) { throw "Unexpected cultivation ledger summary: $ledgerSummary" }
     $cultivationLedgerXp = [int]$ledgerParts[0]
     $cultivationLedgerEntries = [int]$ledgerParts[1]
-    if ($cultivationLedgerXp -lt 1 -or $cultivationLedgerEntries -lt 1) {
+    if (-not $AccountDataExportOnly -and ($cultivationLedgerXp -lt 1 -or $cultivationLedgerEntries -lt 1)) {
         throw "Expected at least one XP award in the disposable PostgreSQL ledger; found $cultivationLedgerXp XP across $cultivationLedgerEntries entries."
     }
-    $glossarySummary = & $docker @composeArguments exec -T postgres psql -v ON_ERROR_STOP=1 -tA -U novelweb -d novelweb -c "SELECT g.version::text || '|' || active.revision_no::text || '|' || latest.revision_no::text || '|' || (SELECT COUNT(*) FROM glossary_terms t JOIN glossary_revisions r ON r.id = t.revision_id WHERE r.glossary_id = g.id)::text || '|' || (SELECT COUNT(*) FROM glossary_aliases a JOIN glossary_revisions r ON r.id = a.revision_id WHERE r.glossary_id = g.id)::text || '|' || (SELECT COUNT(*) FROM glossary_import_apply_idempotency i WHERE i.glossary_id = g.id)::text || '|' || (SELECT COUNT(*) FROM glossary_import_apply_rows i WHERE i.glossary_id = g.id)::text || '|' || (SELECT COUNT(*) FROM glossary_terms t WHERE t.revision_id = latest.id AND t.source_term = '丹田' AND t.target_term = 'Đan điền khí hải') FROM glossaries g JOIN glossary_revisions active ON active.glossary_id = g.id AND active.id = g.active_revision_id JOIN LATERAL (SELECT id, revision_no FROM glossary_revisions WHERE glossary_id = g.id ORDER BY revision_no DESC LIMIT 1) latest ON TRUE WHERE g.id = '$glossaryId';"
-    if ($LASTEXITCODE -ne 0) { throw 'Could not verify the imported glossary draft in disposable PostgreSQL.' }
-    $glossaryParts = ([string]$glossarySummary).Trim() -split '\|'
-    if ($glossaryParts.Count -ne 8 -or $glossaryParts[0] -ne '6' -or $glossaryParts[1] -ne '1' -or $glossaryParts[2] -ne '4' -or $glossaryParts[3] -ne '6' -or $glossaryParts[4] -ne '6' -or $glossaryParts[5] -ne '1' -or $glossaryParts[6] -ne '1' -or $glossaryParts[7] -ne '1') {
-        throw "PostgreSQL glossary import/editor invariants failed after browser journeys: $glossarySummary"
+    if (-not $AccountDataExportOnly) {
+        $glossarySummary = & $docker @composeArguments exec -T postgres psql -v ON_ERROR_STOP=1 -tA -U novelweb -d novelweb -c "SELECT g.version::text || '|' || active.revision_no::text || '|' || latest.revision_no::text || '|' || (SELECT COUNT(*) FROM glossary_terms t JOIN glossary_revisions r ON r.id = t.revision_id WHERE r.glossary_id = g.id)::text || '|' || (SELECT COUNT(*) FROM glossary_aliases a JOIN glossary_revisions r ON r.id = a.revision_id WHERE r.glossary_id = g.id)::text || '|' || (SELECT COUNT(*) FROM glossary_import_apply_idempotency i WHERE i.glossary_id = g.id)::text || '|' || (SELECT COUNT(*) FROM glossary_import_apply_rows i WHERE i.glossary_id = g.id)::text || '|' || (SELECT COUNT(*) FROM glossary_terms t WHERE t.revision_id = latest.id AND t.source_term = '丹田' AND t.target_term = 'Đan điền khí hải') FROM glossaries g JOIN glossary_revisions active ON active.glossary_id = g.id AND active.id = g.active_revision_id JOIN LATERAL (SELECT id, revision_no FROM glossary_revisions WHERE glossary_id = g.id ORDER BY revision_no DESC LIMIT 1) latest ON TRUE WHERE g.id = '$glossaryId';"
+        if ($LASTEXITCODE -ne 0) { throw 'Could not verify the imported glossary draft in disposable PostgreSQL.' }
+        $glossaryParts = ([string]$glossarySummary).Trim() -split '\|'
+        if ($glossaryParts.Count -ne 8 -or $glossaryParts[0] -ne '6' -or $glossaryParts[1] -ne '1' -or $glossaryParts[2] -ne '4' -or $glossaryParts[3] -ne '6' -or $glossaryParts[4] -ne '6' -or $glossaryParts[5] -ne '1' -or $glossaryParts[6] -ne '1' -or $glossaryParts[7] -ne '1') {
+            throw "PostgreSQL glossary import/editor invariants failed after browser journeys: $glossarySummary"
+        }
     }
     if ($IncludeTranslationPreview) {
         $translationSummary = & $docker @composeArguments exec -T postgres psql -v ON_ERROR_STOP=1 -tA -U novelweb -d novelweb -c "SELECT COUNT(*)::text || '|' || COALESCE(bool_and(j.provider_id = 'fake-local' AND j.status = 'review_required' AND j.completed_units = 1 AND j.failed_units = 0 AND c.status = 'ready_for_review' AND s.translated_text = '[fake en->vi] $translationSourceText'), FALSE)::text || '|' || COUNT(DISTINCT a.id)::text || '|' || COUNT(DISTINCT s.candidate_id)::text FROM translation_jobs j JOIN translation_units u ON u.job_id = j.id JOIN translation_attempts a ON a.unit_id = u.id JOIN translation_candidates c ON c.job_id = j.id JOIN translation_candidate_segments s ON s.candidate_id = c.id WHERE j.chapter_id = '$translationChapterId' AND j.target_language = 'vi' AND a.provider_id = 'fake-local' AND a.outcome = 'succeeded';"
@@ -1015,6 +1067,15 @@ COMMIT;
         Remove-Item -LiteralPath $resolvedStagingRoot -Recurse -Force
         $stagingCleanup = 'Removed only this run private staging directory'
     }
+    if ($IncludeAccountDataExport -and (Test-Path -LiteralPath $env:NOVEL_ACCOUNT_EXPORT_ROOT)) {
+        $resolvedEvidenceRoot = [System.IO.Path]::GetFullPath($evidenceDirectory).TrimEnd('\') + '\'
+        $resolvedExportRoot = [System.IO.Path]::GetFullPath($env:NOVEL_ACCOUNT_EXPORT_ROOT)
+        if (-not $resolvedExportRoot.StartsWith($resolvedEvidenceRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Cleanup guard rejected export path outside this run evidence directory.'
+        }
+        Remove-Item -LiteralPath $resolvedExportRoot -Recurse -Force
+        $exportArtifactCleanup = 'Removed the synthetic account ZIP after validating download and database metadata'
+    }
     if ($composeStarted) {
         if ($project -notmatch '^novel-web-disposable-[a-f0-9]{8}$') { throw "Cleanup guard rejected project name: $project" }
         $ownedContainers = @(& $docker ps -a --filter "label=com.docker.compose.project=$project" --format '{{.Names}}')
@@ -1061,11 +1122,13 @@ COMMIT;
         $(if ($translationParts.Count -eq 4) { "- PostgreSQL fake-local translation: $($translationParts[0]) job, $($translationParts[2]) successful attempt and $($translationParts[3]) unpublished candidate segment verified with the fake marker" } else { '- PostgreSQL fake-local translation: not requested' })
         $(if ($IncludePaymentReturn) { '- MoMo TEST return: isolated synthetic actor/order remained PENDING after refresh; payment ledger and balance projection remained zero; browser made no create/IPN request; reconciliation worker was disabled; no MoMo network request was made' } else { '- MoMo TEST return: not requested' })
         $(if ($IncludeCommerceSettlement) { '- MoMo TEST commerce: a locally signed synthetic IPN was delivered twice to the real API; actor-owned order settled once, 100 paid credits were granted once, the Reader debited exactly 10 paid credits after explicit confirmation, one entitlement unlocked the public chapter and the saved balance is 90; a second actor received 404 for the order, empty histories/zero balance and no paid chapter body; no MoMo network request or reconciliation query was made' } else { '- MoMo TEST commerce settlement/unlock: not requested' })
+        $(if ($accountExportParts.Count -eq 4) { "- Account data export: Chromium requested and downloaded a ZIP through the real API; PostgreSQL records READY, $($accountExportParts[1]) bytes and a 32-byte SHA-256; synthetic ZIP removed after verification" } else { '- Account data export browser/API/PostgreSQL journey: not requested' })
         '- API route mocks: none'
         "- Elapsed: $duration seconds"
         "- Cleanup: $cleanup"
         "- Staging cleanup: $stagingCleanup"
-        "- Screenshots: $([System.IO.Path]::GetFileName($screenshotPath)), $([System.IO.Path]::GetFileName($workDetailScreenshotPath)), $([System.IO.Path]::GetFileName($readerScreenshotPath))$(if ($IncludeCultivationRankUp) { ', cultivation-rank-up-live.png' } else { '' }), $([System.IO.Path]::GetFileName($glossaryImportScreenshotPath)), $([System.IO.Path]::GetFileName($glossaryEditorScreenshotPath)), $([System.IO.Path]::GetFileName($authoringScreenshotPath))$(if ($IncludeAuthoringOutline) { ', authoring-outline-live.png' } else { '' })$(if ($IncludeAuthoringChapterEditor) { ', authoring-chapter-editor-live.png' } else { '' })$(if ($IncludePublicationRightsAcceptance) { ', publication-rights-policy-live.png' } else { '' })$(if ($IncludePublicationReviewWorkspace) { ', publication-review-workspace-live.png, publication-chapter-release-live.png' } else { '' })$(if ($IncludeNotificationInbox) { ', notification-inbox-live.png' } else { '' })$(if ($IncludeTranslationPreview) { ', translation-job-live.png' } else { '' })$(if ($IncludePaymentReturn) { ', momo-payment-return-pending-live.png, momo-payment-history-zero-live.png' } else { '' })$(if ($IncludeCommerceSettlement) { ', momo-commerce-success-live.png, momo-commerce-unlocked-chapter-live.png' } else { '' }), private-import-commit-live.png, private-import-detail-live.png, private-import-reader-live.png, private-import-html-commit-live.png, private-import-html-detail-live.png, private-import-html-reader-live.png, private-import-markdown-commit-live.png, private-import-markdown-detail-live.png, private-import-markdown-reader-live.png, private-import-epub-commit-live.png, private-import-epub-detail-live.png, private-import-epub-reader-live.png"
+        "- Account export cleanup: $exportArtifactCleanup"
+        "- Screenshots: $([System.IO.Path]::GetFileName($screenshotPath)), $([System.IO.Path]::GetFileName($workDetailScreenshotPath)), $([System.IO.Path]::GetFileName($readerScreenshotPath))$(if ($IncludeAccountDataExport) { ', account-data-export-live.png' } else { '' })$(if ($IncludeCultivationRankUp) { ', cultivation-rank-up-live.png' } else { '' }), $([System.IO.Path]::GetFileName($glossaryImportScreenshotPath)), $([System.IO.Path]::GetFileName($glossaryEditorScreenshotPath)), $([System.IO.Path]::GetFileName($authoringScreenshotPath))$(if ($IncludeAuthoringOutline) { ', authoring-outline-live.png' } else { '' })$(if ($IncludeAuthoringChapterEditor) { ', authoring-chapter-editor-live.png' } else { '' })$(if ($IncludePublicationRightsAcceptance) { ', publication-rights-policy-live.png' } else { '' })$(if ($IncludePublicationReviewWorkspace) { ', publication-review-workspace-live.png, publication-chapter-release-live.png' } else { '' })$(if ($IncludeNotificationInbox) { ', notification-inbox-live.png' } else { '' })$(if ($IncludeTranslationPreview) { ', translation-job-live.png' } else { '' })$(if ($IncludePaymentReturn) { ', momo-payment-return-pending-live.png, momo-payment-history-zero-live.png' } else { '' })$(if ($IncludeCommerceSettlement) { ', momo-commerce-success-live.png, momo-commerce-unlocked-chapter-live.png' } else { '' }), private-import-commit-live.png, private-import-detail-live.png, private-import-reader-live.png, private-import-html-commit-live.png, private-import-html-detail-live.png, private-import-html-reader-live.png, private-import-markdown-commit-live.png, private-import-markdown-detail-live.png, private-import-markdown-reader-live.png, private-import-epub-commit-live.png, private-import-epub-detail-live.png, private-import-epub-reader-live.png"
         $(if ($IncludeCultivationRankUp) { '- Cultivation response trace: cultivation-rank-up-trace.json' } else { '- Cultivation response trace: not requested' })
         $(if ($IncludeDatabaseRestartRecovery) { '- Database restart probes: database-restart-probes.txt, postgres-stop.log, postgres-start.log' } else { '- Database restart probes: not requested' })
         "- Logs: api-build.log, api-stdout.log, api-stderr.log, playwright.log$(if ($IncludeAuthoringDraftApi) { ', authoring-draft-api-test.log' } else { '' })$(if ($IncludeAuthoringEmptyChapterDelete) { ', authoring-empty-chapter-delete-api-test.log' } else { '' })"

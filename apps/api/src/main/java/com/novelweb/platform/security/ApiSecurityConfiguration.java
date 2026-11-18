@@ -68,6 +68,14 @@ public class ApiSecurityConfiguration {
                   .permitAll();
               if (environment.acceptsProfiles(Profiles.of("postgres"))) {
                 authorize.requestMatchers(HttpMethod.POST, MomoTestIpnController.PATH).permitAll();
+                authorize.requestMatchers(HttpMethod.POST, "/api/v1/me/data-exports").permitAll();
+                authorize
+                    .requestMatchers(
+                        HttpMethod.GET,
+                        "/api/v1/me/data-exports/latest",
+                        "/api/v1/me/data-exports/*",
+                        "/api/v1/me/data-exports/*/download")
+                    .permitAll();
                 authorize
                     .requestMatchers(
                         HttpMethod.GET, "/api/v1/credit-packs", "/api/v1/payment-orders/*")
