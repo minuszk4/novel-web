@@ -188,35 +188,159 @@ public class LibraryRepository {
   }
 
   public LibraryRecord createWorkspaceLibrary(UUID actorUserId, UUID workspaceId, String name) {
+    return createWorkspaceLibrary(actorUserId, workspaceId, UUID.randomUUID(), name);
+  }
+
+  public LibraryRecord createWorkspaceLibrary(
+      UUID actorUserId, UUID workspaceId, UUID libraryId, String name) {
     Objects.requireNonNull(actorUserId, "actor user id is required");
     Objects.requireNonNull(workspaceId, "workspace id is required");
-    UUID libraryId = UUID.randomUUID();
-    try (Connection connection = dataSource.getConnection();
-        PreparedStatement insert =
+    Objects.requireNonNull(libraryId, "library id is required");
+    try (Connection connection = dataSource.getConnection()) {
+      connection.setAutoCommit(false);
+      try {
+        lockWorkspaceLibraryScope(connection, actorUserId, workspaceId);
+        try (PreparedStatement existing =
             connection.prepareStatement(
                 """
-                     INSERT INTO libraries (id, owner_user_id, name, is_default, workspace_id)
-                     SELECT ?, m.user_id, ?, FALSE, w.id
-                     FROM workspaces w
-                     JOIN workspace_members m ON m.workspace_id = w.id
-                     JOIN users u ON u.id = m.user_id AND u.status = 'active'
-                     WHERE w.id = ? AND m.user_id = ? AND m.status = 'active'
-                       AND m.role IN ('owner', 'admin')
-                     RETURNING id, owner_user_id, name, visibility, is_default, created_at, workspace_id
-                     """)) {
-      insert.setObject(1, libraryId);
-      insert.setString(2, name);
-      insert.setObject(3, workspaceId);
-      insert.setObject(4, actorUserId);
-      try (ResultSet row = insert.executeQuery()) {
-        if (!row.next()) throw new LibraryNotFoundException();
-        return library(row);
+                    SELECT id, owner_user_id, name, visibility, is_default, created_at,
+                           workspace_id, deleted_at
+                    FROM libraries WHERE id = ? FOR UPDATE
+                    """)) {
+          existing.setObject(1, libraryId);
+          try (ResultSet row = existing.executeQuery()) {
+            if (row.next()) {
+              LibraryRecord prior = library(row);
+              boolean deleted = row.getObject("deleted_at") != null;
+              if (!deleted
+                  && actorUserId.equals(prior.ownerUserId())
+                  && workspaceId.equals(prior.workspaceId())
+                  && name.equals(prior.name())
+                  && !prior.isDefault()) {
+                connection.commit();
+                return prior;
+              }
+              throw new LibraryNameConflictException();
+            }
+          }
+        }
+
+        LibraryRecord created;
+        try (PreparedStatement insert =
+            connection.prepareStatement(
+                """
+                    INSERT INTO libraries (id, owner_user_id, name, is_default, workspace_id)
+                    VALUES (?, ?, ?, FALSE, ?)
+                    RETURNING id, owner_user_id, name, visibility, is_default, created_at, workspace_id
+                    """)) {
+          insert.setObject(1, libraryId);
+          insert.setObject(2, actorUserId);
+          insert.setString(3, name);
+          insert.setObject(4, workspaceId);
+          try (ResultSet row = insert.executeQuery()) {
+            row.next();
+            created = library(row);
+          }
+        }
+        bumpWorkspaceLibraryScope(connection, workspaceId);
+        connection.commit();
+        return created;
+      } catch (SQLException | RuntimeException exception) {
+        connection.rollback();
+        throw exception;
       }
     } catch (LibraryNotFoundException exception) {
+      throw exception;
+    } catch (LibraryNameConflictException exception) {
       throw exception;
     } catch (SQLException exception) {
       if ("23505".equals(exception.getSQLState())) throw new LibraryNameConflictException();
       throw new IllegalStateException("Unable to create a workspace library", exception);
+    }
+  }
+
+  public WorkspaceLibraryScope workspaceLibraryScope(UUID actorUserId, UUID workspaceId) {
+    Objects.requireNonNull(actorUserId, "actor user id is required");
+    Objects.requireNonNull(workspaceId, "workspace id is required");
+    try (Connection connection = dataSource.getConnection()) {
+      return workspaceLibraryScope(connection, actorUserId, workspaceId);
+    } catch (LibraryNotFoundException exception) {
+      throw exception;
+    } catch (SQLException exception) {
+      throw new IllegalStateException("Unable to load workspace library scope", exception);
+    }
+  }
+
+  public WorkspaceLibraryPageSlice findWorkspaceLibraries(
+      UUID actorUserId,
+      UUID workspaceId,
+      int limit,
+      LibraryCursorCodec.Position cursor,
+      String expectedScopeFingerprint) {
+    Objects.requireNonNull(actorUserId, "actor user id is required");
+    Objects.requireNonNull(workspaceId, "workspace id is required");
+    try (Connection connection = dataSource.getConnection()) {
+      connection.setAutoCommit(false);
+      connection.setTransactionIsolation(Connection.TRANSACTION_REPEATABLE_READ);
+      try {
+        WorkspaceLibraryScope scope = workspaceLibraryScope(connection, actorUserId, workspaceId);
+        if (expectedScopeFingerprint != null
+            && !expectedScopeFingerprint.equals(scope.accessScopeFingerprint())) {
+          throw new WorkspaceLibraryScopeChangedException();
+        }
+
+        StringBuilder sql =
+            new StringBuilder(
+                """
+                    SELECT l.id, l.owner_user_id, l.name, l.visibility, l.is_default,
+                           l.created_at, l.workspace_id
+                    FROM libraries l
+                    WHERE l.workspace_id = ? AND l.deleted_at IS NULL
+                      AND can_access_library(l.id, ?, FALSE)
+                    """);
+        if (cursor != null) {
+          sql.append(
+              """
+                        AND (l.created_at, l.id) < (CAST(? AS TIMESTAMPTZ), CAST(? AS UUID))
+                        """);
+        }
+        sql.append("ORDER BY l.created_at DESC, l.id DESC LIMIT ?");
+
+        Slice<LibraryRecord> slice;
+        try (PreparedStatement select = connection.prepareStatement(sql.toString())) {
+          select.setObject(1, workspaceId);
+          select.setObject(2, actorUserId);
+          int parameter = 3;
+          if (cursor != null) {
+            select.setObject(
+                parameter++,
+                OffsetDateTime.ofInstant(cursor.createdAt(), java.time.ZoneOffset.UTC));
+            select.setObject(parameter++, cursor.itemId());
+          }
+          select.setInt(parameter, limit + 1);
+          try (ResultSet rows = select.executeQuery()) {
+            List<LibraryRecord> result = new ArrayList<>();
+            while (rows.next()) result.add(library(rows));
+            boolean hasMore = result.size() > limit;
+            if (hasMore) result.remove(result.size() - 1);
+            LibraryCursorCodec.Position nextPosition = null;
+            if (hasMore && !result.isEmpty()) {
+              LibraryRecord last = result.get(result.size() - 1);
+              nextPosition = new LibraryCursorCodec.Position(0, last.createdAt(), last.id());
+            }
+            slice = new Slice<>(result, hasMore, nextPosition);
+          }
+        }
+        connection.commit();
+        return new WorkspaceLibraryPageSlice(scope, slice);
+      } catch (SQLException | RuntimeException exception) {
+        connection.rollback();
+        throw exception;
+      }
+    } catch (LibraryRepositoryException exception) {
+      throw exception;
+    } catch (SQLException exception) {
+      throw new IllegalStateException("Unable to load workspace libraries", exception);
     }
   }
 
@@ -312,6 +436,45 @@ public class LibraryRepository {
           throw new LibraryNotFoundException();
         }
       }
+    }
+  }
+
+  private static WorkspaceLibraryScope workspaceLibraryScope(
+      Connection connection, UUID actorUserId, UUID workspaceId) throws SQLException {
+    try (PreparedStatement select =
+        connection.prepareStatement(
+            """
+                SELECT w.scope_version, m.role
+                FROM workspaces w
+                JOIN workspace_members m ON m.workspace_id = w.id
+                WHERE w.id = ? AND m.user_id = ? AND m.status = 'active'
+                """)) {
+      select.setObject(1, workspaceId);
+      select.setObject(2, actorUserId);
+      try (ResultSet row = select.executeQuery()) {
+        if (!row.next()) throw new LibraryNotFoundException();
+        long scopeVersion = row.getLong("scope_version");
+        String role = row.getString("role");
+        MessageDigest digest = accessDigest("workspace-library-list-v1");
+        updateUuid(digest, workspaceId);
+        digest.update(ByteBuffer.allocate(Long.BYTES).putLong(scopeVersion).array());
+        updateFingerprintString(digest, role);
+        return new WorkspaceLibraryScope(scopeVersion, HexFormat.of().formatHex(digest.digest()));
+      }
+    }
+  }
+
+  private static void bumpWorkspaceLibraryScope(Connection connection, UUID workspaceId)
+      throws SQLException {
+    try (PreparedStatement update =
+        connection.prepareStatement(
+            """
+                UPDATE workspaces
+                SET scope_version = scope_version + 1, updated_at = clock_timestamp()
+                WHERE id = ?
+                """)) {
+      update.setObject(1, workspaceId);
+      if (update.executeUpdate() != 1) throw new LibraryNotFoundException();
     }
   }
 
@@ -1927,6 +2090,11 @@ public class LibraryRepository {
       Instant createdAt,
       UUID workspaceId) {}
 
+  public record WorkspaceLibraryScope(long scopeVersion, String accessScopeFingerprint) {}
+
+  public record WorkspaceLibraryPageSlice(
+      WorkspaceLibraryScope scope, Slice<LibraryRecord> slice) {}
+
   public record WorkRecord(
       UUID id,
       UUID libraryId,
@@ -2078,6 +2246,8 @@ public class LibraryRepository {
   public static class LibraryNameConflictException extends LibraryRepositoryException {}
 
   public static class LibraryNotFoundException extends LibraryRepositoryException {}
+
+  public static class WorkspaceLibraryScopeChangedException extends LibraryRepositoryException {}
 
   public static class DefaultLibraryCannotMoveException extends LibraryRepositoryException {}
 

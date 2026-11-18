@@ -95,6 +95,7 @@ public class ApiSecurityConfiguration {
                         "/api/v1/me/workspaces",
                         "/api/v1/workspaces/*",
                         "/api/v1/workspaces/*/members",
+                        "/api/v1/workspaces/*/libraries",
                         "/api/v1/catalog/works",
                         "/api/v1/catalog/works/**")
                     .permitAll();
@@ -103,6 +104,7 @@ public class ApiSecurityConfiguration {
                         HttpMethod.PUT,
                         "/api/v1/me/workspaces/*",
                         "/api/v1/workspaces/*/members/*",
+                        "/api/v1/workspaces/*/libraries/*",
                         "/api/v1/workspaces/*/owner")
                     .permitAll();
                 authorize

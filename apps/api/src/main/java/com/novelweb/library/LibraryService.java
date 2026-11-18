@@ -43,6 +43,15 @@ public class LibraryService {
     return repository.createWorkspaceLibrary(actorUserId, workspaceId, name);
   }
 
+  public LibraryRepository.LibraryRecord createWorkspaceLibrary(
+      UUID actorUserId, UUID workspaceId, UUID libraryId, String requestedName) {
+    Objects.requireNonNull(actorUserId, "actor user id is required");
+    Objects.requireNonNull(workspaceId, "workspace id is required");
+    Objects.requireNonNull(libraryId, "library id is required");
+    String name = requiredText(requestedName, "name", 120);
+    return repository.createWorkspaceLibrary(actorUserId, workspaceId, libraryId, name);
+  }
+
   public LibraryRepository.LibraryRecord movePersonalLibraryToWorkspace(
       UUID actorUserId, UUID libraryId, UUID workspaceId) {
     Objects.requireNonNull(actorUserId, "actor user id is required");
@@ -67,6 +76,47 @@ public class LibraryService {
     LibraryRepository.Slice<LibraryRepository.LibraryRecord> slice =
         repository.findLibraries(ownerUserId, requestedLimit, position);
     return page(slice, context);
+  }
+
+  public WorkspaceLibraryPage listWorkspaceLibraries(
+      UUID actorUserId, UUID workspaceId, String cursor, int requestedLimit) {
+    Objects.requireNonNull(actorUserId, "actor user id is required");
+    Objects.requireNonNull(workspaceId, "workspace id is required");
+    validateLimit(requestedLimit);
+    cursorCodec.requireConfigured();
+
+    LibraryRepository.WorkspaceLibraryScope currentScope = null;
+    LibraryCursorCodec.Position position = null;
+    if (cursor != null) {
+      currentScope = repository.workspaceLibraryScope(actorUserId, workspaceId);
+      position =
+          decodeCursor(
+              cursor,
+              LibraryCursorCodec.libraryContext(
+                  actorUserId,
+                  workspaceLibraryFingerprint(workspaceId, currentScope.accessScopeFingerprint())));
+    }
+
+    LibraryRepository.WorkspaceLibraryPageSlice result;
+    try {
+      result =
+          repository.findWorkspaceLibraries(
+              actorUserId,
+              workspaceId,
+              requestedLimit,
+              position,
+              currentScope == null ? null : currentScope.accessScopeFingerprint());
+    } catch (LibraryRepository.WorkspaceLibraryScopeChangedException exception) {
+      throw new LibraryCursorCodec.InvalidCursorException();
+    }
+
+    LibraryCursorCodec.CursorContext currentContext =
+        LibraryCursorCodec.libraryContext(
+            actorUserId,
+            workspaceLibraryFingerprint(workspaceId, result.scope().accessScopeFingerprint()));
+    Page<LibraryRepository.LibraryRecord> page = page(result.slice(), currentContext);
+    return new WorkspaceLibraryPage<>(
+        page.items(), page.nextCursor(), result.scope().scopeVersion());
   }
 
   public LibraryRepository.WorkRecord createPrivateImportedWork(
@@ -273,6 +323,10 @@ public class LibraryService {
       LibraryRepository.Slice<T> slice, LibraryCursorCodec.CursorContext context) {
     String nextCursor = slice.hasMore() ? cursorCodec.encode(context, slice.nextPosition()) : null;
     return new Page<>(slice.items(), nextCursor);
+  }
+
+  private static String workspaceLibraryFingerprint(UUID workspaceId, String scopeFingerprint) {
+    return "workspace:" + workspaceId + ":" + scopeFingerprint;
   }
 
   private static void validateLimit(int limit) {
@@ -562,6 +616,12 @@ public class LibraryService {
 
   public record Page<T>(List<T> items, String nextCursor) {
     public Page {
+      items = List.copyOf(items);
+    }
+  }
+
+  public record WorkspaceLibraryPage<T>(List<T> items, String nextCursor, long scopeVersion) {
+    public WorkspaceLibraryPage {
       items = List.copyOf(items);
     }
   }

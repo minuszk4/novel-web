@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 10.11.0
+  version: 10.12.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -17,6 +17,7 @@ info:
     Scoped glossary storage, actor-scoped catalog listing/creation, active and writer-only latest-revision reads, version-checked immutable draft creation, authenticated diff/lint/match preview, lint-gated revision publication with append-only audit, strict JSON/CSV/TSV import preview and resolved atomic draft apply, and active/writer-only latest snapshot export are implemented in the PostgreSQL profile. Translation job enqueue/status/retry/cancel are available only as an explicit fake-local development preview and never call an external NMT provider. Manual translation readiness/submission plus assigned-reviewer queue, frozen-snapshot detail and append-only accept/reject decisions are available only behind `NOVEL_TRANSLATION_REVIEW_ENABLED`; the flag defaults off. Writer and reviewer UI are implemented behind the default-off manual-review gate. Owner release requires a second default-off `NOVEL_TRANSLATION_PUBLICATION_ENABLED` flag, an accepted current human snapshot, active adaptation rights and explicit owner confirmation; rollback and translated Reader delivery remain separate work. `features.translationFakePreviewEnabled` is true only when both required profiles and the provider/API/worker opt-in flags are active.
     The authenticated PostgreSQL profile also exposes the current actor's available paid and non-expired bonus credit totals from the rebuildable balance projection; the response is no-store and does not expose another account's ledger. When the MoMo TEST gate is explicitly enabled with valid TEST configuration, the profile also exposes server-priced public-chapter unlock quotes and an idempotent paid-credit unlock that commits the debit with an immutable entitlement; private/draft chapters remain unavailable and no production purchase is enabled.
     Workspace management routes in the PostgreSQL profile expose the caller's active workspace list, idempotent workspace create by client-chosen UUID, member roster, role setting, member revocation and ownership transfer. Mutations require current policy acceptance and session CSRF; repository transactions recheck active workspace roles and update the membership-bound access-scope version. Member lookup uses an exact account UUID; email-based invitations and an immutable workspace audit stream are not provided yet.
+    Active workspace members can list the workspace's shared libraries; only owners/admins can idempotently create an empty shared library. Workspace membership and library-scope versions bind no-store ETags and signed cursors; deep links resolve through the actor's currently accessible library list.
     An opt-in, metadata-only guest catalog endpoint is available in the PostgreSQL profile. It is disabled by default and returns only authored, active, explicitly public works owned by active users with at least one ready chapter; it does not return descriptions or chapter bodies. Admin-only publication-reviewer role assignment, bounded eligible-account search and status-filtered assignment history are implemented in the PostgreSQL profile; the current-user response exposes the caller's server-derived security capability for navigation only. Owners can submit private manuscripts and staged draft chapters on public works for immutable rights review. Active assigned reviewers receive an actor-bound queue and privacy-filtered scope snapshots; decisions are idempotent, ETag-bound and never publish content. Owner-confirmed release for a manuscript or staged chapter is behind `NOVEL_PUBLICATION_RELEASE_ENABLED`, which remains off by default. Chapter release atomically makes the reviewed revision ready, refreshes previously granted scope approvals and writes an identifier-only publication outbox event. The API does not bootstrap system administrators, let authors define policy or self-review. Following stores the current actor's public-work preference; outbox delivery consumers, email digest, scheduled release, owner unpublish, edge rate limits and guest reader access remain separate work.
     Account export request, actor-scoped status and authenticated download routes are implemented in the PostgreSQL profile behind default-off API/worker gates. Exports require current Terms/Privacy acceptance and a session established by recent Google sign-in, use a repeatable-read snapshot and a bounded ZIP of JSONL data, and include full revisions/segments for account-owned works. Shared workspace data, provider-generated translation candidates, import staging bytes, external binary assets and session/provider secrets are listed as exclusions in the manifest. MoMo TEST orders/settlement/reconciliation, credit ledger and unlock entitlements for the actor are included; account deletion and legal retention workflows remain unimplemented.
 servers:
@@ -2003,6 +2004,130 @@ paths:
         '403':
           $ref: '#/components/responses/Problem'
         '404':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/workspaces/{workspaceId}/libraries:
+    get:
+      operationId: listCurrentUserWorkspaceLibraries
+      tags: [Workspace]
+      x-implementation-status: implemented-postgres-profile
+      summary: List libraries in an active member workspace
+      description: >-
+        Lists only non-deleted libraries currently accessible to the authenticated active member. A signed keyset
+        cursor is bound to actor, workspace, role and scope version; membership or library changes invalidate it.
+        Missing and inaccessible workspaces are masked as 404. Current Terms and Privacy acceptance is required;
+        the response is no-store and includes the workspace scope-version ETag.
+      security:
+        - appSession: []
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: cursor
+          in: query
+          schema:
+            type: string
+            maxLength: 2048
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 25
+      responses:
+        '200':
+          description: Workspace-scoped library summaries, ordered newest first.
+          headers:
+            ETag:
+              required: true
+              schema:
+                type: string
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceLibraryListResponse'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/workspaces/{workspaceId}/libraries/{libraryId}:
+    put:
+      operationId: createCurrentUserWorkspaceLibrary
+      tags: [Workspace]
+      x-implementation-status: implemented-postgres-profile
+      summary: Create or exactly retry an empty shared library
+      description: >-
+        Only active workspace owners and admins can create libraries. The path libraryId is a client-chosen request
+        identity; an exact retry with the same workspace, actor, ID and name returns the same library, while reusing
+        the ID with different details conflicts. Names are unique case-insensitively within a workspace. Creating a
+        library advances the workspace scope version exactly once, invalidating existing scoped cursors. Current
+        Terms and Privacy acceptance and session CSRF are required. Response bodies omit owner and member identifiers.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: libraryId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWorkspaceLibraryRequest'
+      responses:
+        '200':
+          description: Newly created library or the original summary for an exact request retry.
+          headers:
+            ETag:
+              required: true
+              schema:
+                type: string
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceLibrary'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
           $ref: '#/components/responses/Problem'
         '503':
           $ref: '#/components/responses/Problem'
@@ -9672,6 +9797,51 @@ components:
         newOwnerUserId:
           type: string
           format: uuid
+    CreateWorkspaceLibraryRequest:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+          pattern: '^.*\S.*$'
+    WorkspaceLibraryListResponse:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/WorkspaceLibrary'
+        nextCursor:
+          type: [string, 'null']
+          maxLength: 2048
+          description: Signed cursor bound to actor, workspace, role and current scope version.
+    WorkspaceLibrary:
+      type: object
+      additionalProperties: false
+      required: [id, name, visibility, isDefault, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+        visibility:
+          type: string
+          const: private
+        isDefault:
+          type: boolean
+          const: false
+        createdAt:
+          type: string
+          format: date-time
     LibrarySummary:
       type: object
       additionalProperties: false

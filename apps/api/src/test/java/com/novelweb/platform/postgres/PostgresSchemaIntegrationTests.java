@@ -15169,6 +15169,147 @@ class PostgresSchemaIntegrationTests {
           created.getResponse().getContentAsString(),
           exactReplay.getResponse().getContentAsString());
 
+      String libraryRoute = "/api/v1/workspaces/{workspaceId}/libraries/{libraryId}";
+      MvcResult anonymousLibraryList =
+          mockMvc
+              .perform(get("/api/v1/workspaces/{workspaceId}/libraries", workspaceId))
+              .andReturn();
+      assertEquals(401, anonymousLibraryList.getResponse().getStatus());
+      MvcResult policyBlockedLibraryList =
+          mockMvc
+              .perform(
+                  get("/api/v1/workspaces/{workspaceId}/libraries", workspaceId)
+                      .cookie(blockedCookie))
+              .andReturn();
+      assertEquals(403, policyBlockedLibraryList.getResponse().getStatus());
+      UUID firstLibraryId = UUID.randomUUID();
+      MvcResult createLibraryWithoutCsrf =
+          mockMvc
+              .perform(
+                  put(libraryRoute, workspaceId, firstLibraryId)
+                      .cookie(ownerCookie)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"name\":\"Shared Shelf A\"}"))
+              .andReturn();
+      assertEquals(403, createLibraryWithoutCsrf.getResponse().getStatus());
+      assertTrue(
+          createLibraryWithoutCsrf.getResponse().getContentAsString().contains("CSRF_FAILED"));
+
+      MvcResult createdLibrary =
+          mockMvc
+              .perform(
+                  put(libraryRoute, workspaceId, firstLibraryId)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"name\":\"Shared Shelf A\"}"))
+              .andReturn();
+      assertEquals(200, createdLibrary.getResponse().getStatus());
+      assertEquals(
+          "\"workspace-" + workspaceId + "-2\"", createdLibrary.getResponse().getHeader("ETag"));
+      String libraryBody = createdLibrary.getResponse().getContentAsString();
+      assertTrue(libraryBody.contains(firstLibraryId.toString()));
+      assertFalse(libraryBody.contains("ownerUserId"));
+      assertFalse(libraryBody.contains(ownerId.toString()));
+
+      MvcResult exactLibraryRetry =
+          mockMvc
+              .perform(
+                  put(libraryRoute, workspaceId, firstLibraryId)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"name\":\"Shared Shelf A\"}"))
+              .andReturn();
+      assertEquals(200, exactLibraryRetry.getResponse().getStatus());
+      assertEquals(libraryBody, exactLibraryRetry.getResponse().getContentAsString());
+
+      MvcResult changedLibraryRetry =
+          mockMvc
+              .perform(
+                  put(libraryRoute, workspaceId, firstLibraryId)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"name\":\"Changed Shelf Name\"}"))
+              .andReturn();
+      assertEquals(409, changedLibraryRetry.getResponse().getStatus());
+
+      MvcResult invalidLibraryBody =
+          mockMvc
+              .perform(
+                  put(libraryRoute, workspaceId, UUID.randomUUID())
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"name\":\"Unsafe\",\"ownerUserId\":\"" + ownerId + "\"}"))
+              .andReturn();
+      assertEquals(400, invalidLibraryBody.getResponse().getStatus());
+
+      MvcResult duplicateLibraryName =
+          mockMvc
+              .perform(
+                  put(libraryRoute, workspaceId, UUID.randomUUID())
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"name\":\"shared shelf a\"}"))
+              .andReturn();
+      assertEquals(409, duplicateLibraryName.getResponse().getStatus());
+
+      UUID secondLibraryId = UUID.randomUUID();
+      MvcResult secondLibrary =
+          mockMvc
+              .perform(
+                  put(libraryRoute, workspaceId, secondLibraryId)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"name\":\"Shared Shelf B\"}"))
+              .andReturn();
+      assertEquals(200, secondLibrary.getResponse().getStatus());
+      MvcResult firstLibraryPage =
+          mockMvc
+              .perform(
+                  get("/api/v1/workspaces/{workspaceId}/libraries", workspaceId)
+                      .cookie(ownerCookie)
+                      .param("limit", "1"))
+              .andReturn();
+      assertEquals(200, firstLibraryPage.getResponse().getStatus());
+      assertTrue(
+          firstLibraryPage.getResponse().getHeader(HttpHeaders.CACHE_CONTROL).contains("no-store"));
+      assertEquals("no-cache", firstLibraryPage.getResponse().getHeader(HttpHeaders.PRAGMA));
+      assertEquals(
+          "\"workspace-" + workspaceId + "-3\"", firstLibraryPage.getResponse().getHeader("ETag"));
+      String staleLibraryCursor =
+          objectMapper
+              .readTree(firstLibraryPage.getResponse().getContentAsString())
+              .path("nextCursor")
+              .asText();
+      assertFalse(staleLibraryCursor.isBlank());
+
+      MvcResult thirdLibrary =
+          mockMvc
+              .perform(
+                  put(libraryRoute, workspaceId, UUID.randomUUID())
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"name\":\"Shared Shelf C\"}"))
+              .andReturn();
+      assertEquals(200, thirdLibrary.getResponse().getStatus());
+      MvcResult expiredLibraryCursor =
+          mockMvc
+              .perform(
+                  get("/api/v1/workspaces/{workspaceId}/libraries", workspaceId)
+                      .cookie(ownerCookie)
+                      .param("limit", "1")
+                      .param("cursor", staleLibraryCursor))
+              .andReturn();
+      assertEquals(400, expiredLibraryCursor.getResponse().getStatus());
+      assertTrue(
+          expiredLibraryCursor.getResponse().getContentAsString().contains("INVALID_CURSOR"));
+
       MvcResult unknownField =
           mockMvc
               .perform(
@@ -15226,7 +15367,7 @@ class PostgresSchemaIntegrationTests {
               .perform(get("/api/v1/workspaces/{workspaceId}", workspaceId).cookie(ownerCookie))
               .andReturn();
       assertEquals(
-          "\"workspace-" + workspaceId + "-2\"",
+          "\"workspace-" + workspaceId + "-5\"",
           workspaceAfterRetry.getResponse().getHeader("ETag"));
 
       MvcResult roster =
@@ -15237,6 +15378,34 @@ class PostgresSchemaIntegrationTests {
       assertEquals(200, roster.getResponse().getStatus());
       assertTrue(roster.getResponse().getContentAsString().contains(ownerId.toString()));
       assertFalse(roster.getResponse().getContentAsString().contains("contactEmail"));
+
+      MvcResult readerLibraryList =
+          mockMvc
+              .perform(
+                  get("/api/v1/workspaces/{workspaceId}/libraries", workspaceId)
+                      .cookie(readerCookie))
+              .andReturn();
+      assertEquals(200, readerLibraryList.getResponse().getStatus());
+      assertTrue(
+          readerLibraryList.getResponse().getContentAsString().contains(firstLibraryId.toString()));
+      MvcResult readerCannotCreateLibrary =
+          mockMvc
+              .perform(
+                  put(libraryRoute, workspaceId, UUID.randomUUID())
+                      .cookie(readerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, readerCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"name\":\"Reader Cannot Create\"}"))
+              .andReturn();
+      assertEquals(404, readerCannotCreateLibrary.getResponse().getStatus());
+
+      MvcResult outsiderLibraryList =
+          mockMvc
+              .perform(
+                  get("/api/v1/workspaces/{workspaceId}/libraries", workspaceId)
+                      .cookie(outsiderCookie))
+              .andReturn();
+      assertEquals(404, outsiderLibraryList.getResponse().getStatus());
 
       MvcResult readerCannotManage =
           mockMvc
@@ -15290,7 +15459,18 @@ class PostgresSchemaIntegrationTests {
               .andReturn();
       assertEquals(200, transferred.getResponse().getStatus());
       assertEquals(
-          "\"workspace-" + workspaceId + "-5\"", transferred.getResponse().getHeader("ETag"));
+          "\"workspace-" + workspaceId + "-8\"", transferred.getResponse().getHeader("ETag"));
+
+      MvcResult formerOwnerAdminCreatesLibrary =
+          mockMvc
+              .perform(
+                  put(libraryRoute, workspaceId, UUID.randomUUID())
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"name\":\"Admin Created Shelf\"}"))
+              .andReturn();
+      assertEquals(200, formerOwnerAdminCreatesLibrary.getResponse().getStatus());
 
       MvcResult revoked =
           mockMvc
@@ -15323,6 +15503,7 @@ class PostgresSchemaIntegrationTests {
               .andReturn();
       assertEquals(404, readerLosesAccess.getResponse().getStatus());
     } finally {
+      deleteLibraryTestData(ownerId);
       deleteWorkspaceTestData(workspaceId);
       deleteSessionTestUser(ownerId);
       deleteSessionTestUser(adminId);
