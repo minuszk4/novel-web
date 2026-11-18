@@ -15084,6 +15084,255 @@ class PostgresSchemaIntegrationTests {
   }
 
   @Test
+  void workspaceManagementHttpRoutesEnforceSessionPolicyCsrfAndCurrentMembership()
+      throws Exception {
+    UUID ownerId = createSessionTestUser("Workspace HTTP Owner");
+    UUID adminId = createSessionTestUser("Workspace HTTP Admin");
+    UUID readerId = createSessionTestUser("Workspace HTTP Reader");
+    UUID outsiderId = createSessionTestUser("Workspace HTTP Outsider");
+    UUID blockedId = createSessionTestUser("Workspace HTTP Policy Blocked");
+    UUID workspaceId = UUID.randomUUID();
+    try {
+      addCurrentPolicyAcceptances(ownerId);
+      addCurrentPolicyAcceptances(adminId);
+      addCurrentPolicyAcceptances(readerId);
+      addCurrentPolicyAcceptances(outsiderId);
+      SessionService.IssuedSession ownerSession = sessionService.create(ownerId).orElseThrow();
+      SessionService.IssuedSession adminSession = sessionService.create(adminId).orElseThrow();
+      SessionService.IssuedSession readerSession = sessionService.create(readerId).orElseThrow();
+      SessionService.IssuedSession outsiderSession =
+          sessionService.create(outsiderId).orElseThrow();
+      SessionService.IssuedSession blockedSession = sessionService.create(blockedId).orElseThrow();
+      var ownerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", ownerSession.cookieValue());
+      var adminCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", adminSession.cookieValue());
+      var readerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", readerSession.cookieValue());
+      var outsiderCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", outsiderSession.cookieValue());
+      var blockedCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", blockedSession.cookieValue());
+      String ownerCsrf = csrfTokenService.tokenFor(ownerSession.cookieValue());
+      String adminCsrf = csrfTokenService.tokenFor(adminSession.cookieValue());
+      String readerCsrf = csrfTokenService.tokenFor(readerSession.cookieValue());
+      String createRoute = "/api/v1/me/workspaces/{workspaceId}";
+      String createBody = "{\"name\":\" Shared Reading Room \"}";
+
+      MvcResult noCsrf =
+          mockMvc
+              .perform(
+                  put(createRoute, workspaceId)
+                      .cookie(ownerCookie)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(createBody))
+              .andReturn();
+      assertEquals(403, noCsrf.getResponse().getStatus());
+      assertTrue(noCsrf.getResponse().getContentAsString().contains("CSRF_FAILED"));
+
+      MvcResult blockedByPolicy =
+          mockMvc.perform(get("/api/v1/me/workspaces").cookie(blockedCookie)).andReturn();
+      assertEquals(403, blockedByPolicy.getResponse().getStatus());
+      assertTrue(
+          blockedByPolicy
+              .getResponse()
+              .getContentAsString()
+              .contains("POLICY_ACCEPTANCE_REQUIRED"));
+
+      MvcResult created =
+          mockMvc
+              .perform(
+                  put(createRoute, workspaceId)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(createBody))
+              .andReturn();
+      assertEquals(200, created.getResponse().getStatus());
+      assertTrue(created.getResponse().getHeader(HttpHeaders.CACHE_CONTROL).contains("no-store"));
+      assertEquals("\"workspace-" + workspaceId + "-1\"", created.getResponse().getHeader("ETag"));
+      assertEquals(
+          "Shared Reading Room",
+          objectMapper.readTree(created.getResponse().getContentAsString()).path("name").asText());
+
+      MvcResult exactReplay =
+          mockMvc
+              .perform(
+                  put(createRoute, workspaceId)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(createBody))
+              .andReturn();
+      assertEquals(200, exactReplay.getResponse().getStatus());
+      assertEquals(
+          created.getResponse().getContentAsString(),
+          exactReplay.getResponse().getContentAsString());
+
+      MvcResult unknownField =
+          mockMvc
+              .perform(
+                  put(createRoute, workspaceId)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"name\":\"Other\",\"createdByUserId\":\"forbidden\"}"))
+              .andReturn();
+      assertEquals(400, unknownField.getResponse().getStatus());
+      assertTrue(unknownField.getResponse().getContentAsString().contains("INVALID_WORKSPACE"));
+
+      MvcResult changedReplay =
+          mockMvc
+              .perform(
+                  put(createRoute, workspaceId)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"name\":\"Changed Room\"}"))
+              .andReturn();
+      assertEquals(409, changedReplay.getResponse().getStatus());
+
+      MvcResult list =
+          mockMvc.perform(get("/api/v1/me/workspaces").cookie(ownerCookie)).andReturn();
+      assertEquals(200, list.getResponse().getStatus());
+      assertTrue(list.getResponse().getContentAsString().contains(workspaceId.toString()));
+      assertFalse(list.getResponse().getContentAsString().contains("createdByUserId"));
+
+      String memberRoute = "/api/v1/workspaces/{workspaceId}/members/{memberUserId}";
+      MvcResult added =
+          mockMvc
+              .perform(
+                  put(memberRoute, workspaceId, readerId)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"role\":\"reader\"}"))
+              .andReturn();
+      assertEquals(200, added.getResponse().getStatus());
+      assertTrue(added.getResponse().getContentAsString().contains("active"));
+
+      MvcResult exactMemberRetry =
+          mockMvc
+              .perform(
+                  put(memberRoute, workspaceId, readerId)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"role\":\"reader\"}"))
+              .andReturn();
+      assertEquals(200, exactMemberRetry.getResponse().getStatus());
+      MvcResult workspaceAfterRetry =
+          mockMvc
+              .perform(get("/api/v1/workspaces/{workspaceId}", workspaceId).cookie(ownerCookie))
+              .andReturn();
+      assertEquals(
+          "\"workspace-" + workspaceId + "-2\"",
+          workspaceAfterRetry.getResponse().getHeader("ETag"));
+
+      MvcResult roster =
+          mockMvc
+              .perform(
+                  get("/api/v1/workspaces/{workspaceId}/members", workspaceId).cookie(readerCookie))
+              .andReturn();
+      assertEquals(200, roster.getResponse().getStatus());
+      assertTrue(roster.getResponse().getContentAsString().contains(ownerId.toString()));
+      assertFalse(roster.getResponse().getContentAsString().contains("contactEmail"));
+
+      MvcResult readerCannotManage =
+          mockMvc
+              .perform(
+                  put(memberRoute, workspaceId, adminId)
+                      .cookie(readerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, readerCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"role\":\"editor\"}"))
+              .andReturn();
+      assertEquals(404, readerCannotManage.getResponse().getStatus());
+      assertTrue(
+          readerCannotManage.getResponse().getContentAsString().contains("WORKSPACE_NOT_FOUND"));
+
+      MvcResult outsiderCannotRead =
+          mockMvc
+              .perform(get("/api/v1/workspaces/{workspaceId}", workspaceId).cookie(outsiderCookie))
+              .andReturn();
+      assertEquals(404, outsiderCannotRead.getResponse().getStatus());
+
+      MvcResult secondReader =
+          mockMvc
+              .perform(
+                  put(memberRoute, workspaceId, outsiderId)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"role\":\"reader\"}"))
+              .andReturn();
+      assertEquals(200, secondReader.getResponse().getStatus());
+
+      MvcResult transferTarget =
+          mockMvc
+              .perform(
+                  put(memberRoute, workspaceId, adminId)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"role\":\"editor\"}"))
+              .andReturn();
+      assertEquals(200, transferTarget.getResponse().getStatus());
+
+      MvcResult transferred =
+          mockMvc
+              .perform(
+                  put("/api/v1/workspaces/{workspaceId}/owner", workspaceId)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"newOwnerUserId\":\"" + adminId + "\"}"))
+              .andReturn();
+      assertEquals(200, transferred.getResponse().getStatus());
+      assertEquals(
+          "\"workspace-" + workspaceId + "-5\"", transferred.getResponse().getHeader("ETag"));
+
+      MvcResult revoked =
+          mockMvc
+              .perform(
+                  delete(memberRoute, workspaceId, readerId)
+                      .cookie(adminCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, adminCsrf))
+              .andReturn();
+      assertEquals(200, revoked.getResponse().getStatus());
+      assertTrue(revoked.getResponse().getContentAsString().contains("revoked"));
+      MvcResult revokedHistory =
+          mockMvc
+              .perform(
+                  get("/api/v1/workspaces/{workspaceId}/members", workspaceId).cookie(adminCookie))
+              .andReturn();
+      assertEquals(200, revokedHistory.getResponse().getStatus());
+      assertTrue(revokedHistory.getResponse().getContentAsString().contains(readerId.toString()));
+      MvcResult currentRoster =
+          mockMvc
+              .perform(
+                  get("/api/v1/workspaces/{workspaceId}/members", workspaceId)
+                      .cookie(outsiderCookie))
+              .andReturn();
+      assertEquals(200, currentRoster.getResponse().getStatus());
+      assertFalse(currentRoster.getResponse().getContentAsString().contains(readerId.toString()));
+      MvcResult readerLosesAccess =
+          mockMvc
+              .perform(
+                  get("/api/v1/workspaces/{workspaceId}/members", workspaceId).cookie(readerCookie))
+              .andReturn();
+      assertEquals(404, readerLosesAccess.getResponse().getStatus());
+    } finally {
+      deleteWorkspaceTestData(workspaceId);
+      deleteSessionTestUser(ownerId);
+      deleteSessionTestUser(adminId);
+      deleteSessionTestUser(readerId);
+      deleteSessionTestUser(outsiderId);
+      deleteSessionTestUser(blockedId);
+    }
+  }
+
+  @Test
   void workspaceRolesScopeLibraryAndContentReadsWritesAndSearch() throws Exception {
     UUID ownerId = createSessionTestUser("Workspace Library Owner");
     UUID adminId = createSessionTestUser("Workspace Library Admin");

@@ -26,8 +26,12 @@ public class WorkspaceRepository {
   }
 
   public WorkspaceRecord createWorkspace(UUID actorUserId, String name) {
+    return createWorkspace(actorUserId, UUID.randomUUID(), name);
+  }
+
+  public WorkspaceRecord createWorkspace(UUID actorUserId, UUID workspaceId, String name) {
     Objects.requireNonNull(actorUserId, "actor user id is required");
-    UUID workspaceId = UUID.randomUUID();
+    Objects.requireNonNull(workspaceId, "workspace id is required");
     return inTransaction(
         "Unable to create a workspace",
         connection -> {
@@ -37,20 +41,164 @@ public class WorkspaceRepository {
                   """
                     INSERT INTO workspaces (id, name, created_by_user_id)
                     VALUES (?, ?, ?)
+                    ON CONFLICT (id) DO NOTHING
                     RETURNING id, name, created_by_user_id, scope_version, created_at
                     """)) {
             insert.setObject(1, workspaceId);
             insert.setString(2, name);
             insert.setObject(3, actorUserId);
-            WorkspaceRecord created;
             try (ResultSet row = insert.executeQuery()) {
-              row.next();
-              created = workspace(row);
+              if (row.next()) {
+                WorkspaceRecord created = workspace(row);
+                insertMember(connection, workspaceId, actorUserId, Role.OWNER);
+                return created;
+              }
             }
-            insertMember(connection, workspaceId, actorUserId, Role.OWNER);
-            return created;
+            return findIdempotentCreation(connection, actorUserId, workspaceId, name)
+                .orElseThrow(WorkspaceMemberConflictException::new);
           }
         });
+  }
+
+  private static Optional<WorkspaceRecord> findIdempotentCreation(
+      Connection connection, UUID actorUserId, UUID workspaceId, String name) throws SQLException {
+    try (PreparedStatement select =
+        connection.prepareStatement(
+            """
+                SELECT w.id, w.name, w.created_by_user_id, w.scope_version, w.created_at
+                FROM workspaces w
+                JOIN workspace_members m ON m.workspace_id = w.id
+                WHERE w.id = ? AND w.name = ? AND w.created_by_user_id = ?
+                  AND m.user_id = ? AND m.role = 'owner' AND m.status = 'active'
+                """)) {
+      select.setObject(1, workspaceId);
+      select.setString(2, name);
+      select.setObject(3, actorUserId);
+      select.setObject(4, actorUserId);
+      try (ResultSet row = select.executeQuery()) {
+        return row.next() ? Optional.of(workspace(row)) : Optional.empty();
+      }
+    }
+  }
+
+  public List<WorkspaceMembershipRecord> listWorkspaces(UUID actorUserId) {
+    Objects.requireNonNull(actorUserId, "actor user id is required");
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                """
+                    SELECT w.id, w.name, w.created_by_user_id, w.scope_version, w.created_at,
+                           member.role, member.joined_at
+                    FROM workspace_members member
+                    JOIN workspaces w ON w.id = member.workspace_id
+                    WHERE member.user_id = ? AND member.status = 'active'
+                    ORDER BY w.created_at DESC, w.id
+                    """)) {
+      select.setObject(1, actorUserId);
+      try (ResultSet rows = select.executeQuery()) {
+        List<WorkspaceMembershipRecord> workspaces = new ArrayList<>();
+        while (rows.next()) {
+          workspaces.add(
+              new WorkspaceMembershipRecord(
+                  workspace(rows),
+                  Role.fromValue(rows.getString("role")),
+                  rows.getObject("joined_at", OffsetDateTime.class).toInstant()));
+        }
+        return List.copyOf(workspaces);
+      }
+    } catch (SQLException exception) {
+      throw new IllegalStateException("Unable to list workspace memberships", exception);
+    }
+  }
+
+  public MemberRecord putMember(UUID actorUserId, UUID workspaceId, UUID memberUserId, Role role) {
+    Objects.requireNonNull(actorUserId, "actor user id is required");
+    Objects.requireNonNull(workspaceId, "workspace id is required");
+    Objects.requireNonNull(memberUserId, "member user id is required");
+    Objects.requireNonNull(role, "member role is required");
+    if (role == Role.OWNER) throw new OwnershipTransferRequiredException();
+    return inTransaction(
+        "Unable to set a workspace member role",
+        connection -> {
+          requireManager(connection, actorUserId, workspaceId);
+          requireActiveUser(connection, memberUserId);
+          MemberRecord existing = findMemberForUpdate(connection, workspaceId, memberUserId);
+          if (existing == null) {
+            try (PreparedStatement insert =
+                connection.prepareStatement(
+                    """
+                        INSERT INTO workspace_members (workspace_id, user_id, role, status, joined_at, revoked_at)
+                        VALUES (?, ?, ?, 'active', clock_timestamp(), NULL)
+                        RETURNING workspace_id, user_id, role, status, joined_at, revoked_at
+                        """)) {
+              insert.setObject(1, workspaceId);
+              insert.setObject(2, memberUserId);
+              insert.setString(3, role.value());
+              try (ResultSet row = insert.executeQuery()) {
+                row.next();
+                MemberRecord created = member(row);
+                bumpScopeVersion(connection, workspaceId);
+                return created;
+              }
+            }
+          }
+          if (existing.status() == MemberStatus.ACTIVE) {
+            if (existing.role() == Role.OWNER) throw new OwnershipTransferRequiredException();
+            if (existing.role() == role) return existing;
+            try (PreparedStatement update =
+                connection.prepareStatement(
+                    """
+                        UPDATE workspace_members SET role = ?, updated_at = clock_timestamp()
+                        WHERE workspace_id = ? AND user_id = ? AND status = 'active'
+                        RETURNING workspace_id, user_id, role, status, joined_at, revoked_at
+                        """)) {
+              update.setString(1, role.value());
+              update.setObject(2, workspaceId);
+              update.setObject(3, memberUserId);
+              try (ResultSet row = update.executeQuery()) {
+                row.next();
+                MemberRecord changed = member(row);
+                bumpScopeVersion(connection, workspaceId);
+                return changed;
+              }
+            }
+          }
+          try (PreparedStatement update =
+              connection.prepareStatement(
+                  """
+                      UPDATE workspace_members
+                      SET role = ?, status = 'active', joined_at = clock_timestamp(),
+                          revoked_at = NULL, updated_at = clock_timestamp()
+                      WHERE workspace_id = ? AND user_id = ? AND status = 'revoked'
+                      RETURNING workspace_id, user_id, role, status, joined_at, revoked_at
+                      """)) {
+            update.setString(1, role.value());
+            update.setObject(2, workspaceId);
+            update.setObject(3, memberUserId);
+            try (ResultSet row = update.executeQuery()) {
+              row.next();
+              MemberRecord reactivated = member(row);
+              bumpScopeVersion(connection, workspaceId);
+              return reactivated;
+            }
+          }
+        });
+  }
+
+  private static MemberRecord findMemberForUpdate(
+      Connection connection, UUID workspaceId, UUID memberUserId) throws SQLException {
+    try (PreparedStatement select =
+        connection.prepareStatement(
+            """
+                SELECT workspace_id, user_id, role, status, joined_at, revoked_at
+                FROM workspace_members WHERE workspace_id = ? AND user_id = ? FOR UPDATE
+                """)) {
+      select.setObject(1, workspaceId);
+      select.setObject(2, memberUserId);
+      try (ResultSet row = select.executeQuery()) {
+        return row.next() ? member(row) : null;
+      }
+    }
   }
 
   public MemberRecord addMember(UUID actorUserId, UUID workspaceId, UUID memberUserId, Role role) {
@@ -210,16 +358,17 @@ public class WorkspaceRepository {
     Objects.requireNonNull(actorUserId, "actor user id is required");
     Objects.requireNonNull(workspaceId, "workspace id is required");
     try (Connection connection = dataSource.getConnection()) {
-      requireActiveMember(connection, workspaceId, actorUserId);
+      Role actorRole = activeRole(connection, workspaceId, actorUserId);
       try (PreparedStatement select =
           connection.prepareStatement(
               """
                     SELECT workspace_id, user_id, role, status, joined_at, revoked_at
                     FROM workspace_members
-                    WHERE workspace_id = ?
+                    WHERE workspace_id = ? AND (? IN ('owner', 'admin') OR status = 'active')
                     ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END, joined_at, user_id
                     """)) {
         select.setObject(1, workspaceId);
+        select.setString(2, actorRole.value());
         try (ResultSet rows = select.executeQuery()) {
           List<MemberRecord> members = new ArrayList<>();
           while (rows.next()) members.add(member(rows));
@@ -228,6 +377,23 @@ public class WorkspaceRepository {
       }
     } catch (SQLException exception) {
       throw new IllegalStateException("Unable to load workspace members", exception);
+    }
+  }
+
+  private static Role activeRole(Connection connection, UUID workspaceId, UUID userId)
+      throws SQLException {
+    try (PreparedStatement select =
+        connection.prepareStatement(
+            """
+                SELECT role FROM workspace_members
+                WHERE workspace_id = ? AND user_id = ? AND status = 'active'
+                """)) {
+      select.setObject(1, workspaceId);
+      select.setObject(2, userId);
+      try (ResultSet row = select.executeQuery()) {
+        if (!row.next()) throw new WorkspaceAccessDeniedException();
+        return Role.fromValue(row.getString("role"));
+      }
     }
   }
 
@@ -440,6 +606,9 @@ public class WorkspaceRepository {
 
   public record WorkspaceRecord(
       UUID id, String name, UUID createdByUserId, long scopeVersion, java.time.Instant createdAt) {}
+
+  public record WorkspaceMembershipRecord(
+      WorkspaceRecord workspace, Role role, java.time.Instant joinedAt) {}
 
   public record MemberRecord(
       UUID workspaceId,

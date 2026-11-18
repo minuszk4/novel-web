@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 10.10.0
+  version: 10.11.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -16,6 +16,7 @@ info:
     Versioned cultivation catalogs, authenticated profile settings, private daily XP activity and bounded private Reader sessions with atomic XP awards are implemented in the PostgreSQL profile. The approved starting policy awards 1 XP per complete active Reader minute, capped at 120 XP per UTC day; same-day sub-minute remainder does not cross UTC midnight; top-ups and unlocks award none. The user selected the existing rank thresholds for the pilot; cultivation remains feature-gated and off by default pending implementation verification and release review.
     Scoped glossary storage, actor-scoped catalog listing/creation, active and writer-only latest-revision reads, version-checked immutable draft creation, authenticated diff/lint/match preview, lint-gated revision publication with append-only audit, strict JSON/CSV/TSV import preview and resolved atomic draft apply, and active/writer-only latest snapshot export are implemented in the PostgreSQL profile. Translation job enqueue/status/retry/cancel are available only as an explicit fake-local development preview and never call an external NMT provider. Manual translation readiness/submission plus assigned-reviewer queue, frozen-snapshot detail and append-only accept/reject decisions are available only behind `NOVEL_TRANSLATION_REVIEW_ENABLED`; the flag defaults off. Writer and reviewer UI are implemented behind the default-off manual-review gate. Owner release requires a second default-off `NOVEL_TRANSLATION_PUBLICATION_ENABLED` flag, an accepted current human snapshot, active adaptation rights and explicit owner confirmation; rollback and translated Reader delivery remain separate work. `features.translationFakePreviewEnabled` is true only when both required profiles and the provider/API/worker opt-in flags are active.
     The authenticated PostgreSQL profile also exposes the current actor's available paid and non-expired bonus credit totals from the rebuildable balance projection; the response is no-store and does not expose another account's ledger. When the MoMo TEST gate is explicitly enabled with valid TEST configuration, the profile also exposes server-priced public-chapter unlock quotes and an idempotent paid-credit unlock that commits the debit with an immutable entitlement; private/draft chapters remain unavailable and no production purchase is enabled.
+    Workspace management routes in the PostgreSQL profile expose the caller's active workspace list, idempotent workspace create by client-chosen UUID, member roster, role setting, member revocation and ownership transfer. Mutations require current policy acceptance and session CSRF; repository transactions recheck active workspace roles and update the membership-bound access-scope version. Member lookup uses an exact account UUID; email-based invitations and an immutable workspace audit stream are not provided yet.
     An opt-in, metadata-only guest catalog endpoint is available in the PostgreSQL profile. It is disabled by default and returns only authored, active, explicitly public works owned by active users with at least one ready chapter; it does not return descriptions or chapter bodies. Admin-only publication-reviewer role assignment, bounded eligible-account search and status-filtered assignment history are implemented in the PostgreSQL profile; the current-user response exposes the caller's server-derived security capability for navigation only. Owners can submit private manuscripts and staged draft chapters on public works for immutable rights review. Active assigned reviewers receive an actor-bound queue and privacy-filtered scope snapshots; decisions are idempotent, ETag-bound and never publish content. Owner-confirmed release for a manuscript or staged chapter is behind `NOVEL_PUBLICATION_RELEASE_ENABLED`, which remains off by default. Chapter release atomically makes the reviewed revision ready, refreshes previously granted scope approvals and writes an identifier-only publication outbox event. The API does not bootstrap system administrators, let authors define policy or self-review. Following stores the current actor's public-work preference; outbox delivery consumers, email digest, scheduled release, owner unpublish, edge rate limits and guest reader access remain separate work.
     Account export request, actor-scoped status and authenticated download routes are implemented in the PostgreSQL profile behind default-off API/worker gates. Exports require current Terms/Privacy acceptance and a session established by recent Google sign-in, use a repeatable-read snapshot and a bounded ZIP of JSONL data, and include full revisions/segments for account-owned works. Shared workspace data, provider-generated translation candidates, import staging bytes, external binary assets and session/provider secrets are listed as exclusions in the manifest. MoMo TEST orders/settlement/reconciliation, credit ledger and unlock entitlements for the actor are included; account deletion and legal retention workflows remain unimplemented.
 servers:
@@ -1869,6 +1870,346 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+  /api/v1/me/workspaces:
+    get:
+      operationId: listCurrentUserWorkspaces
+      tags: [Workspace]
+      x-implementation-status: implemented-postgres-profile
+      summary: List the current user's active workspaces
+      description: >-
+        Returns workspaces where the authenticated user is currently an active member. Membership revocation removes
+        the workspace from this response. The actor is derived from the session; creator and owner user IDs are never
+        returned. Current Terms and Privacy acceptance is required. Responses use Cache-Control no-store and Pragma
+        no-cache.
+      security:
+        - appSession: []
+      responses:
+        '200':
+          description: Active workspace memberships for the current user.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceListResponse'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/me/workspaces/{workspaceId}:
+    put:
+      operationId: createCurrentUserWorkspace
+      tags: [Workspace]
+      x-implementation-status: implemented-postgres-profile
+      summary: Create a workspace at a client-chosen UUID
+      description: >-
+        The authenticated actor becomes the initial owner. The path UUID makes an exact retry safe: it returns the
+        existing workspace only when the same active owner retries with the same normalized name; another actor or
+        changed name receives 409. Current Terms and Privacy acceptance and session-bound CSRF are required. The
+        request never accepts creator, owner, role, scope version or timestamps.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWorkspaceRequest'
+      responses:
+        '200':
+          description: Created workspace or exact retry of the same create request.
+          headers:
+            ETag:
+              required: true
+              schema:
+                type: string
+                pattern: '^"workspace-[0-9a-f-]{36}-[0-9]+"$'
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceDetail'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '409':
+          description: The UUID already identifies a different workspace or owner.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/workspaces/{workspaceId}:
+    get:
+      operationId: getCurrentUserWorkspace
+      tags: [Workspace]
+      x-implementation-status: implemented-postgres-profile
+      summary: Read an active member's workspace metadata
+      description: >-
+        Only active members can read the workspace. Missing and inaccessible workspaces share a 404 response. The
+        response exposes a scope-version ETag so clients can detect membership changes. Current Terms and Privacy
+        acceptance is required; response is no-store.
+      security:
+        - appSession: []
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Workspace metadata visible to the current active member.
+          headers:
+            ETag:
+              required: true
+              schema:
+                type: string
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceDetail'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/workspaces/{workspaceId}/members:
+    get:
+      operationId: listCurrentUserWorkspaceMembers
+      tags: [Workspace]
+      x-implementation-status: implemented-postgres-profile
+      summary: List the workspace member roster
+      description: >-
+        Available to active members only. The roster contains account UUID, role and membership status but no email
+        or profile data. Owner/admin can see revoked memberships; editor/reader see active members only. Missing and
+        inaccessible workspaces share a 404 response. Current Terms and Privacy acceptance is required; response is
+        no-store and includes the workspace scope-version ETag.
+      security:
+        - appSession: []
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: A safe member roster for the current active member.
+          headers:
+            ETag:
+              required: true
+              schema:
+                type: string
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceMemberListResponse'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/workspaces/{workspaceId}/members/{memberUserId}:
+    put:
+      operationId: setCurrentUserWorkspaceMemberRole
+      tags: [Workspace]
+      x-implementation-status: implemented-postgres-profile
+      summary: Add, reactivate or change a member's non-owner role
+      description: >-
+        Only active owner/admin members can mutate membership. The target must be an active account. Repeating the
+        same role is a no-op; changing, adding or reactivating increments the workspace scope version transactionally.
+        An owner role can only be assigned through the ownership-transfer route. Exact account UUID is required;
+        this API does not search accounts by email or send invitations. Current Terms and Privacy acceptance and
+        session CSRF are required. Inaccessible workspaces are masked as 404.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: memberUserId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetWorkspaceMemberRoleRequest'
+      responses:
+        '200':
+          description: Current resulting membership.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceMember'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+    delete:
+      operationId: revokeCurrentUserWorkspaceMember
+      tags: [Workspace]
+      x-implementation-status: implemented-postgres-profile
+      summary: Revoke a non-owner workspace membership
+      description: >-
+        Only active owner/admin members can revoke another non-owner. The active owner cannot be revoked. Revocation
+        commits before success and invalidates workspace-bound library cursors. Current Terms and Privacy acceptance
+        and session-bound CSRF are required. Inaccessible workspace/member IDs are masked as 404.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: memberUserId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Revoked membership record.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceMember'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/workspaces/{workspaceId}/owner:
+    put:
+      operationId: transferCurrentUserWorkspaceOwnership
+      tags: [Workspace]
+      x-implementation-status: implemented-postgres-profile
+      summary: Transfer ownership to an existing active member
+      description: >-
+        Only the current owner can transfer ownership. The target must already be an active member; the target becomes
+        owner and the previous owner becomes admin in one transaction. Assigning owner via the member-role operation is
+        forbidden. Current Terms and Privacy acceptance and session-bound CSRF are required. Inaccessible workspaces
+        are masked as 404; the response's ETag reflects the updated membership scope version.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransferWorkspaceOwnershipRequest'
+      responses:
+        '200':
+          description: Workspace after ownership transfer.
+          headers:
+            ETag:
+              required: true
+              schema:
+                type: string
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceDetail'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
   /api/v1/authoring/manuscripts:
     get:
       operationId: listPrivateAuthoredManuscripts
@@ -9225,6 +9566,112 @@ components:
         expiresAt:
           type: string
           format: date-time
+    WorkspaceListResponse:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/WorkspaceSummary'
+    WorkspaceSummary:
+      type: object
+      additionalProperties: false
+      required: [id, name, role, scopeVersion, createdAt, joinedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+        role:
+          type: string
+          enum: [owner, admin, editor, reader]
+        scopeVersion:
+          type: integer
+          minimum: 1
+        createdAt:
+          type: string
+          format: date-time
+        joinedAt:
+          type: string
+          format: date-time
+    WorkspaceDetail:
+      type: object
+      additionalProperties: false
+      required: [id, name, scopeVersion, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+        scopeVersion:
+          type: integer
+          minimum: 1
+        createdAt:
+          type: string
+          format: date-time
+    CreateWorkspaceRequest:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+          pattern: '^.*\S.*$'
+    WorkspaceMemberListResponse:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/WorkspaceMember'
+    WorkspaceMember:
+      type: object
+      additionalProperties: false
+      required: [userId, role, status, joinedAt, revokedAt]
+      properties:
+        userId:
+          type: string
+          format: uuid
+        role:
+          type: string
+          enum: [owner, admin, editor, reader]
+        status:
+          type: string
+          enum: [active, revoked]
+        joinedAt:
+          type: string
+          format: date-time
+        revokedAt:
+          type: [string, 'null']
+          format: date-time
+    SetWorkspaceMemberRoleRequest:
+      type: object
+      additionalProperties: false
+      required: [role]
+      properties:
+        role:
+          type: string
+          enum: [admin, editor, reader]
+    TransferWorkspaceOwnershipRequest:
+      type: object
+      additionalProperties: false
+      required: [newOwnerUserId]
+      properties:
+        newOwnerUserId:
+          type: string
+          format: uuid
     LibrarySummary:
       type: object
       additionalProperties: false

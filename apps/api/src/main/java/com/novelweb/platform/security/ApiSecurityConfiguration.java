@@ -92,8 +92,21 @@ public class ApiSecurityConfiguration {
                         HttpMethod.GET,
                         "/api/v1/libraries",
                         "/api/v1/works",
+                        "/api/v1/me/workspaces",
+                        "/api/v1/workspaces/*",
+                        "/api/v1/workspaces/*/members",
                         "/api/v1/catalog/works",
                         "/api/v1/catalog/works/**")
+                    .permitAll();
+                authorize
+                    .requestMatchers(
+                        HttpMethod.PUT,
+                        "/api/v1/me/workspaces/*",
+                        "/api/v1/workspaces/*/members/*",
+                        "/api/v1/workspaces/*/owner")
+                    .permitAll();
+                authorize
+                    .requestMatchers(HttpMethod.DELETE, "/api/v1/workspaces/*/members/*")
                     .permitAll();
                 authorize
                     .requestMatchers(

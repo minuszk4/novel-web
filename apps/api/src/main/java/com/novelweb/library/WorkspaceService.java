@@ -23,6 +23,27 @@ public class WorkspaceService {
     return repository.createWorkspace(actorUserId, requiredText(requestedName, "name", 120));
   }
 
+  public WorkspaceRepository.WorkspaceRecord createWorkspace(
+      UUID actorUserId, UUID workspaceId, String requestedName) {
+    Objects.requireNonNull(actorUserId, "actor user id is required");
+    Objects.requireNonNull(workspaceId, "workspace id is required");
+    return repository.createWorkspace(
+        actorUserId, workspaceId, requiredText(requestedName, "name", 120));
+  }
+
+  public List<WorkspaceRepository.WorkspaceMembershipRecord> listWorkspaces(UUID actorUserId) {
+    return repository.listWorkspaces(Objects.requireNonNull(actorUserId));
+  }
+
+  public WorkspaceRepository.MemberRecord putMember(
+      UUID actorUserId, UUID workspaceId, UUID memberUserId, WorkspaceRepository.Role role) {
+    Objects.requireNonNull(actorUserId, "actor user id is required");
+    Objects.requireNonNull(workspaceId, "workspace id is required");
+    Objects.requireNonNull(memberUserId, "member user id is required");
+    return repository.putMember(
+        actorUserId, workspaceId, memberUserId, Objects.requireNonNull(role));
+  }
+
   public WorkspaceRepository.MemberRecord addMember(
       UUID actorUserId, UUID workspaceId, UUID memberUserId, WorkspaceRepository.Role role) {
     Objects.requireNonNull(actorUserId, "actor user id is required");
