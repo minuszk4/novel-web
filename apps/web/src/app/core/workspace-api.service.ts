@@ -1,4 +1,4 @@
-import { HttpClient, HttpErrorResponse, HttpHeaders } from '@angular/common/http';
+import { HttpClient, HttpErrorResponse, HttpHeaders, HttpParams } from '@angular/common/http';
 import { Injectable, inject } from '@angular/core';
 import { firstValueFrom, timeout } from 'rxjs';
 
@@ -31,6 +31,19 @@ export interface WorkspaceMember {
   revokedAt: string | null;
 }
 
+export interface WorkspaceLibrary {
+  id: string;
+  name: string;
+  visibility: 'private';
+  isDefault: false;
+  createdAt: string;
+}
+
+export interface WorkspaceLibraryPage {
+  items: WorkspaceLibrary[];
+  nextCursor: string | null;
+}
+
 export class WorkspaceApiError extends Error {
   constructor(
     message: string,
@@ -48,6 +61,7 @@ const workspaceUrl = (workspaceId: string) =>
 const membersUrl = (workspaceId: string) => `${workspaceUrl(workspaceId)}/members`;
 const memberUrl = (workspaceId: string, userId: string) =>
   `${membersUrl(workspaceId)}/${encodeURIComponent(userId)}`;
+const librariesUrl = (workspaceId: string) => `${workspaceUrl(workspaceId)}/libraries`;
 const csrfUrl = '/api/v1/auth/csrf';
 const timeoutMs = 5_000;
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -118,6 +132,70 @@ export class WorkspaceApiService {
       const items = response['items'].map(parseWorkspaceMember);
       if (new Set(items.map(({ userId }) => userId)).size !== items.length) throw invalidResponse();
       return items;
+    } catch (error) {
+      throw toApiError(error);
+    }
+  }
+
+  async listLibraries(
+    workspaceId: string,
+    cursor?: string,
+    limit = 25,
+  ): Promise<WorkspaceLibraryPage> {
+    if (
+      !isUuid(workspaceId) ||
+      !Number.isInteger(limit) ||
+      limit < 1 ||
+      limit > 100 ||
+      (cursor !== undefined && (!cursor.length || cursor.length > 2048))
+    ) {
+      throw new WorkspaceApiError('INVALID_WORKSPACE_LIBRARY_QUERY', 400, null);
+    }
+    try {
+      let params = new HttpParams().set('limit', limit);
+      if (cursor) params = params.set('cursor', cursor);
+      const response: unknown = await firstValueFrom(
+        this.http.get<unknown>(librariesUrl(workspaceId), { params }).pipe(timeout(timeoutMs)),
+      );
+      if (
+        !isObject(response) ||
+        !hasExactKeys(response, ['items', 'nextCursor']) ||
+        !Array.isArray(response['items']) ||
+        !(response['nextCursor'] === null || isBoundedCursor(response['nextCursor'])) ||
+        response['items'].length > limit
+      ) {
+        throw invalidResponse();
+      }
+      const items = response['items'].map(parseWorkspaceLibrary);
+      if (new Set(items.map(({ id }) => id)).size !== items.length) throw invalidResponse();
+      return { items, nextCursor: response['nextCursor'] as string | null };
+    } catch (error) {
+      throw toApiError(error);
+    }
+  }
+
+  async createLibrary(
+    workspaceId: string,
+    libraryId: string,
+    requestedName: string,
+  ): Promise<WorkspaceLibrary> {
+    const name = requestedName.trim();
+    if (!isUuid(workspaceId) || !isUuid(libraryId) || !name || [...name].length > 120) {
+      throw new WorkspaceApiError('INVALID_WORKSPACE_LIBRARY', 400, null);
+    }
+    try {
+      const response: unknown = await firstValueFrom(
+        this.http
+          .put<unknown>(
+            `${librariesUrl(workspaceId)}/${encodeURIComponent(libraryId)}`,
+            { name },
+            { headers: await this.csrfHeaders() },
+          )
+          .pipe(timeout(timeoutMs)),
+      );
+      const library = parseWorkspaceLibrary(response);
+      if (library.id !== libraryId || library.name !== name) throw invalidResponse();
+      return library;
     } catch (error) {
       throw toApiError(error);
     }
@@ -300,6 +378,27 @@ function parseWorkspaceMember(value: unknown): WorkspaceMember {
   };
 }
 
+function parseWorkspaceLibrary(value: unknown): WorkspaceLibrary {
+  if (
+    !isObject(value) ||
+    !hasExactKeys(value, ['id', 'name', 'visibility', 'isDefault', 'createdAt']) ||
+    !isUuid(value['id']) ||
+    !isWorkspaceName(value['name']) ||
+    value['visibility'] !== 'private' ||
+    value['isDefault'] !== false ||
+    !isTimestamp(value['createdAt'])
+  ) {
+    throw invalidResponse();
+  }
+  return {
+    id: value['id'],
+    name: value['name'],
+    visibility: 'private',
+    isDefault: false,
+    createdAt: value['createdAt'],
+  };
+}
+
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -314,6 +413,10 @@ function isWorkspaceName(value: unknown): value is string {
 
 function isTimestamp(value: unknown): value is string {
   return typeof value === 'string' && Number.isFinite(Date.parse(value));
+}
+
+function isBoundedCursor(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= 2048;
 }
 
 function isPositiveInteger(value: unknown): value is number {

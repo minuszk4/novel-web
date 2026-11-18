@@ -7167,3 +7167,74 @@ a.followed-work-title:hover {
     width: 100%;
   }
 }
+/* Workspace shared-library layout (scoped globally to keep component CSS under budget). */
+.workspace-page .workspace-library-section {
+  display: grid;
+  gap: 16px;
+  margin: 0 0 28px;
+  padding: 20px;
+  border: 1px solid var(--border-subtle, #d8dce3);
+  border-radius: 16px;
+  background: var(--surface-muted, #f8f9fb);
+}
+
+.workspace-page .workspace-library-section .workspace-members-heading,
+.workspace-page .workspace-library-section .workspace-library-help,
+.workspace-page .workspace-library-section .workspace-library-create,
+.workspace-page .workspace-library-section .workspace-library-list {
+  margin: 0;
+}
+
+.workspace-page .workspace-library-help,
+.workspace-page .workspace-library-card p {
+  color: var(--text-muted, #5e6675);
+  font-size: 0.92rem;
+}
+
+.workspace-page .workspace-library-create {
+  display: grid;
+  gap: 8px;
+  padding: 16px;
+  border-radius: 12px;
+  background: var(--surface, #fff);
+}
+
+.workspace-page .workspace-library-list {
+  display: grid;
+  gap: 10px;
+}
+
+.workspace-page .workspace-library-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px;
+  border: 1px solid var(--border-subtle, #d8dce3);
+  border-radius: 12px;
+  background: var(--surface, #fff);
+}
+
+.workspace-page .workspace-library-card h3,
+.workspace-page .workspace-library-card p {
+  margin: 0;
+}
+
+.workspace-page .workspace-library-card p {
+  margin-top: 5px;
+}
+
+@media (max-width: 720px) {
+  .workspace-page .workspace-library-section {
+    padding: 14px;
+  }
+
+  .workspace-page .workspace-library-card {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .workspace-page .workspace-library-card .button {
+    width: 100%;
+  }
+}

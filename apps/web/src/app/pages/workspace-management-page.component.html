@@ -35,7 +35,7 @@
     <div>
       <p class="eyebrow">BẮT ĐẦU NHÓM MỚI</p>
       <h2 id="create-workspace-title">Tạo không gian</h2>
-      <p>Bạn sẽ là chủ sở hữu đầu tiên. Tính năng tạo thư viện chung đang được hoàn thiện.</p>
+      <p>Bạn sẽ là chủ sở hữu đầu tiên. Mỗi workspace có thể chứa nhiều thư viện chung.</p>
     </div>
     <form class="workspace-create-form" (submit)="$event.preventDefault(); createWorkspace()">
       <label for="workspace-name">Tên không gian</label>
@@ -102,6 +102,118 @@
       </div>
 
       @if (selectedWorkspace(); as workspace) {
+        <section class="workspace-library-section" aria-labelledby="workspace-libraries-title">
+          <div class="workspace-members-heading">
+            <div>
+              <p class="eyebrow">THƯ VIỆN ĐƯỢC CHIA SẺ TRONG NHÓM</p>
+              <h2 id="workspace-libraries-title">Thư viện chung</h2>
+            </div>
+            @if (libraryPhase() === 'ready') {
+              <span class="workspace-count">{{ libraries().length }} thư viện</span>
+            }
+          </div>
+          <p class="workspace-library-help">
+            Thành viên đang hoạt động có thể đọc nội dung. Biên tập viên, quản trị viên và chủ sở
+            hữu có thể chỉnh sửa; chỉ quản trị viên và chủ sở hữu được tạo thư viện.
+          </p>
+
+          @if (libraryMessage(); as message) {
+            <p class="workspace-inline-message" role="status" aria-live="polite">{{ message }}</p>
+          }
+          @if (libraryError(); as error) {
+            <p id="workspace-library-error" class="workspace-error" role="alert">{{ error }}</p>
+          }
+
+          @if (canCreateLibraries()) {
+            <form
+              class="workspace-library-create"
+              (submit)="$event.preventDefault(); createLibrary()"
+            >
+              <label for="workspace-library-name">Tạo thư viện</label>
+              <div class="workspace-form-row">
+                <input
+                  id="workspace-library-name"
+                  type="text"
+                  maxlength="120"
+                  autocomplete="off"
+                  placeholder="Ví dụ: Truyện đang dịch"
+                  [value]="libraryName()"
+                  [disabled]="libraryMutation() === 'saving'"
+                  [attr.aria-describedby]="
+                    libraryError() ? 'workspace-library-error' : 'workspace-library-hint'
+                  "
+                  (input)="updateLibraryName($event)"
+                />
+                <button
+                  class="button button-primary"
+                  type="submit"
+                  [disabled]="libraryMutation() === 'saving'"
+                >
+                  {{ libraryMutation() === 'saving' ? 'Đang tạo…' : 'Tạo thư viện' }}
+                </button>
+              </div>
+              <p id="workspace-library-hint" class="workspace-hint">
+                Tên cần duy nhất trong workspace. Nếu kết nối gián đoạn, thử lại sẽ dùng cùng yêu
+                cầu.
+              </p>
+            </form>
+          }
+
+          @if (libraryPhase() === 'loading' && libraries().length === 0) {
+            <p class="workspace-status" role="status" aria-live="polite">Đang tải thư viện…</p>
+          } @else if (libraryPhase() === 'error' && libraries().length === 0) {
+            <div class="workspace-error-panel" role="alert">
+              <button class="button button-outline" type="button" (click)="retryLibraries()">
+                Tải lại thư viện
+              </button>
+            </div>
+          } @else {
+            <div class="workspace-library-list" aria-label="Thư viện chung trong workspace">
+              @for (library of libraries(); track library.id) {
+                <article class="workspace-library-card">
+                  <div>
+                    <h3>{{ library.name }}</h3>
+                    <p>Thư viện riêng của workspace · nội dung chỉ dành cho thành viên</p>
+                  </div>
+                  <a
+                    class="button button-outline"
+                    [routerLink]="'/app/library'"
+                    [queryParams]="{ libraryId: library.id }"
+                    [attr.aria-label]="'Mở thư viện ' + library.name"
+                  >
+                    Mở thư viện
+                  </a>
+                </article>
+              } @empty {
+                <div class="workspace-empty-state">
+                  <h3>Workspace chưa có thư viện chung</h3>
+                  <p>
+                    @if (canCreateLibraries()) {
+                      Tạo thư viện đầu tiên để nhóm bắt đầu lưu và biên tập truyện cùng nhau.
+                    } @else {
+                      Hãy nhờ chủ sở hữu hoặc quản trị viên tạo thư viện cho nhóm.
+                    }
+                  </p>
+                </div>
+              }
+            </div>
+            @if (libraryPhase() === 'error' && libraries().length > 0) {
+              <button class="button button-outline" type="button" (click)="retryLibraries()">
+                Tải lại danh sách thư viện
+              </button>
+            } @else if (nextLibraryCursor()) {
+              <button
+                class="button button-outline"
+                type="button"
+                [disabled]="libraryPhase() === 'loading'"
+                (click)="loadMoreLibraries()"
+              >
+                {{ libraryPhase() === 'loading' ? 'Đang tải…' : 'Tải thêm thư viện' }}
+              </button>
+            }
+          }
+        </section>
+
         <div class="workspace-members-heading">
           <div>
             <p class="eyebrow">QUYỀN CỦA BẠN: {{ roleLabel(workspace.role) }}</p>

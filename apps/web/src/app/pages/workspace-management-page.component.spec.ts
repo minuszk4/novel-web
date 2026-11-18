@@ -6,6 +6,7 @@ import { PolicyOnboardingService } from '../core/policy-onboarding.service';
 import {
   WorkspaceApiService,
   WorkspaceDetail,
+  WorkspaceLibrary,
   WorkspaceMember,
   WorkspaceSummary,
 } from '../core/workspace-api.service';
@@ -36,12 +37,21 @@ const reader: WorkspaceMember = {
   joinedAt: '2026-11-18T01:01:00Z',
   revokedAt: null,
 };
+const sharedLibrary: WorkspaceLibrary = {
+  id: '44444444-4444-4444-8444-444444444444',
+  name: 'Truyện đang dịch',
+  visibility: 'private',
+  isDefault: false,
+  createdAt: '2026-11-18T02:00:00Z',
+};
 
 describe('WorkspaceManagementPageComponent', () => {
   let api: {
     listWorkspaces: ReturnType<typeof vi.fn>;
     createWorkspace: ReturnType<typeof vi.fn>;
     listMembers: ReturnType<typeof vi.fn>;
+    listLibraries: ReturnType<typeof vi.fn>;
+    createLibrary: ReturnType<typeof vi.fn>;
     setMemberRole: ReturnType<typeof vi.fn>;
     revokeMember: ReturnType<typeof vi.fn>;
     transferOwnership: ReturnType<typeof vi.fn>;
@@ -52,6 +62,8 @@ describe('WorkspaceManagementPageComponent', () => {
       listWorkspaces: vi.fn().mockResolvedValue([workspace]),
       createWorkspace: vi.fn(),
       listMembers: vi.fn().mockResolvedValue([owner, reader]),
+      listLibraries: vi.fn().mockResolvedValue({ items: [sharedLibrary], nextCursor: null }),
+      createLibrary: vi.fn().mockResolvedValue(sharedLibrary),
       setMemberRole: vi.fn().mockResolvedValue({ ...reader, role: 'editor' }),
       revokeMember: vi.fn().mockResolvedValue({
         ...reader,
@@ -128,5 +140,46 @@ describe('WorkspaceManagementPageComponent', () => {
     expect(element.querySelector('.workspace-transfer')).toBeNull();
     expect(element.textContent).not.toContain('Thu hồi quyền');
     expect(element.textContent).not.toContain('Lưu vai trò');
+  });
+
+  it('shows shared library deep links to members and only lets owners create libraries', async () => {
+    api.listWorkspaces.mockResolvedValue([{ ...workspace, role: 'reader' }]);
+    const fixture = TestBed.createComponent(WorkspaceManagementPageComponent);
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    const element: HTMLElement = fixture.nativeElement;
+    const libraryLink = element.querySelector<HTMLAnchorElement>('.workspace-library-card a');
+    expect(element.textContent).toContain('Truyện đang dịch');
+    expect(libraryLink?.getAttribute('href')).toContain(
+      `/app/library?libraryId=${sharedLibrary.id}`,
+    );
+    expect(element.querySelector('.workspace-library-create')).toBeNull();
+    expect(api.listLibraries).toHaveBeenCalledWith(workspaceId, undefined, 25);
+  });
+
+  it('creates a shared library with a stable client-selected retry ID', async () => {
+    const fixture = TestBed.createComponent(WorkspaceManagementPageComponent);
+    await fixture.whenStable();
+    fixture.detectChanges();
+    const root = fixture.nativeElement as HTMLElement;
+    const input = root.querySelector<HTMLInputElement>('#workspace-library-name');
+    expect(input).not.toBeNull();
+    input!.value = '  Truyện mới  ';
+    input!.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+    const form = root.querySelector<HTMLFormElement>('.workspace-library-create');
+    expect(form).not.toBeNull();
+    form!.dispatchEvent(new Event('submit'));
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    expect(api.createLibrary).toHaveBeenCalledOnce();
+    expect(api.createLibrary).toHaveBeenCalledWith(
+      workspaceId,
+      expect.stringMatching(/^[0-9a-f-]{36}$/i),
+      'Truyện mới',
+    );
+    expect(root.textContent).toContain('Đã tạo thư viện');
   });
 });

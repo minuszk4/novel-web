@@ -1,6 +1,7 @@
-import { Component, HostListener, computed, inject, signal } from '@angular/core';
+import { Component, DestroyRef, HostListener, computed, inject, signal } from '@angular/core';
 import { DatePipe } from '@angular/common';
-import { RouterLink } from '@angular/router';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { DemoStateService } from '../core/demo-state.service';
 import {
   AccountLibraryCollection,
@@ -41,6 +42,10 @@ export class LibraryPageComponent {
   protected readonly demo = inject(DemoStateService);
   protected readonly policy = inject(PolicyOnboardingService);
   private readonly api = inject(LibraryApiService);
+  private readonly route = inject(ActivatedRoute);
+  private readonly router = inject(Router);
+  private readonly destroyRef = inject(DestroyRef);
+  private requestedLibraryId: string | null = null;
   protected readonly activeFilter = signal<LibraryFilter>('all');
   protected readonly collectionName = signal('');
   protected readonly collectionError = signal<string | null>(null);
@@ -106,6 +111,19 @@ export class LibraryPageComponent {
   });
 
   constructor() {
+    this.requestedLibraryId = this.route.snapshot.queryParamMap.get('libraryId');
+    let initialQuery = true;
+    this.route.queryParamMap.pipe(takeUntilDestroyed(this.destroyRef)).subscribe((params) => {
+      const libraryId = params.get('libraryId');
+      if (initialQuery) {
+        initialQuery = false;
+        return;
+      }
+      if (libraryId !== this.requestedLibraryId) {
+        this.requestedLibraryId = libraryId;
+        if (this.isAccountMode()) void this.loadAccountCatalog();
+      }
+    });
     if (this.isAccountMode()) {
       void this.loadAccountCollections();
       void this.loadAccountCatalog();
@@ -333,6 +351,13 @@ export class LibraryPageComponent {
     const libraryId = (event.target as HTMLSelectElement).value;
     if (!this.accountLibraries().some((library) => library.id === libraryId)) return;
     this.selectedLibraryId.set(libraryId);
+    this.requestedLibraryId = libraryId;
+    void this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: { libraryId },
+      queryParamsHandling: 'merge',
+      replaceUrl: true,
+    });
     await this.loadWorks(libraryId);
   }
 
@@ -381,10 +406,17 @@ export class LibraryPageComponent {
         if (!cursor) break;
       }
       this.accountLibraries.set(libraries);
-      const selected = libraries.find((library) => library.isDefault) ?? libraries[0] ?? null;
+      const selected = this.requestedLibraryId
+        ? (libraries.find((library) => library.id === this.requestedLibraryId) ?? null)
+        : (libraries.find((library) => library.isDefault) ?? libraries[0] ?? null);
       this.selectedLibraryId.set(selected?.id ?? null);
       if (!selected) {
         this.accountWorks.set([]);
+        if (this.requestedLibraryId) {
+          this.catalogError.set('Thư viện này không tồn tại hoặc bạn không còn quyền truy cập.');
+          this.catalogSync.set('error');
+          return;
+        }
         this.catalogSync.set('ready');
         return;
       }

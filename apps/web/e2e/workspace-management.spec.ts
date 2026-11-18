@@ -27,6 +27,27 @@ for (const viewport of viewports) {
     await expect(api.createdId).toMatch(/^[0-9a-f-]{36}$/i);
     await expectNoAxeViolations(page);
 
+    await page.getByLabel('Tạo thư viện').fill('Truyện đang dịch');
+    await page.getByRole('button', { name: 'Tạo thư viện' }).click();
+    await expect.poll(() => api.libraryId).not.toBe('');
+    const createdLibraryId = api.libraryId;
+    const sharedLibraryLink = page.getByRole('link', { name: 'Mở thư viện Truyện đang dịch' });
+    await expect(sharedLibraryLink).toHaveAttribute(
+      'href',
+      `/app/library?libraryId=${createdLibraryId}`,
+    );
+    await sharedLibraryLink.click();
+    await expect(page).toHaveURL(new RegExp(`/app/library\\?libraryId=${createdLibraryId}`));
+    await expect.poll(() => api.libraryQueries).toContain(createdLibraryId);
+    const workReadsBeforeUnavailableLink = api.libraryQueries.length;
+    await page.goto('/app/library?libraryId=99999999-9999-4999-8999-999999999999');
+    await expect(
+      page.getByText('Thư viện này không tồn tại hoặc bạn không còn quyền truy cập.'),
+    ).toBeVisible();
+    expect(api.libraryQueries).toHaveLength(workReadsBeforeUnavailableLink);
+    await page.goto('/app/workspaces');
+    await expect(page.getByRole('heading', { name: 'Thành viên', exact: true })).toBeVisible();
+
     await page.getByLabel('UUID tài khoản thành viên').fill(readerId);
     await page.getByLabel('Vai trò ban đầu').selectOption('reader');
     await page.getByRole('button', { name: 'Cấp quyền thành viên' }).click();
@@ -60,7 +81,7 @@ for (const viewport of viewports) {
     await expect(transfer).toBeVisible();
     await transfer.getByRole('button', { name: 'Xác nhận chuyển quyền' }).click();
     await expect(page.locator('.workspace-heading')).toContainText('Không gian cộng tác');
-    await expect(page.locator('.workspace-members-heading')).toContainText(
+    await expect(page.locator('.workspace-detail-card > .workspace-members-heading')).toContainText(
       'QUYỀN CỦA BẠN: Quản trị viên',
     );
     await expect(page.locator('.workspace-footnote')).toContainText(
@@ -122,6 +143,9 @@ async function installSignedInOwner(page: Page) {
   ];
   const mutations: string[] = [];
   let createdId = '';
+  let createdLibraryId = '';
+  const sharedLibraries: Array<Record<string, unknown>> = [];
+  const libraryQueries: string[] = [];
 
   await page.route('**/api/v1/**', async (route) => {
     const request = route.request();
@@ -131,7 +155,7 @@ async function installSignedInOwner(page: Page) {
 
     if (path === '/api/v1/system/status' && method === 'GET') {
       return json(route, {
-        apiVersion: '10.11.0',
+        apiVersion: '10.12.0',
         environment: 'test',
         integrations: {
           googleOidcEnabled: false,
@@ -197,6 +221,46 @@ async function installSignedInOwner(page: Page) {
     }
     if (path === '/api/v1/me/workspaces' && method === 'GET') {
       return json(route, { items: workspace ? [workspaceSummary()] : [] });
+    }
+    if (createdId && path === `/api/v1/workspaces/${createdId}/libraries` && method === 'GET') {
+      return json(route, { items: sharedLibraries, nextCursor: null });
+    }
+    if (
+      createdId &&
+      path.startsWith(`/api/v1/workspaces/${createdId}/libraries/`) &&
+      method === 'PUT'
+    ) {
+      expect(request.headers()['x-csrf-token']).toBe(csrfToken);
+      const requestedId = path.split('/').at(-1)!;
+      const body = request.postDataJSON() as { name: string };
+      let library = sharedLibraries.find((candidate) => candidate.id === requestedId);
+      if (!library) {
+        if (sharedLibraries.some((candidate) => candidate.name === body.name)) {
+          return json(route, { code: 'LIBRARY_NAME_CONFLICT' }, 409);
+        }
+        library = {
+          id: requestedId,
+          name: body.name,
+          visibility: 'private',
+          isDefault: false,
+          createdAt: timestamp,
+        };
+        sharedLibraries.push(library);
+        createdLibraryId = requestedId;
+        scopeVersion += 1;
+        mutations.push('library:create');
+      } else if (library.name !== body.name) {
+        return json(route, { code: 'LIBRARY_NAME_CONFLICT' }, 409);
+      }
+      return json(route, library);
+    }
+    if (path === '/api/v1/me/library/collections' && method === 'GET') return json(route, []);
+    if (path === '/api/v1/libraries' && method === 'GET') {
+      return json(route, { items: sharedLibraries, nextCursor: null });
+    }
+    if (path === '/api/v1/works' && method === 'GET') {
+      libraryQueries.push(url.searchParams.get('libraryId') ?? '');
+      return json(route, { items: [], nextCursor: null });
     }
     if (path.startsWith('/api/v1/me/workspaces/') && method === 'PUT') {
       expect(request.headers()['x-csrf-token']).toBe(csrfToken);
@@ -280,7 +344,11 @@ async function installSignedInOwner(page: Page) {
     get createdId() {
       return createdId;
     },
+    get libraryId() {
+      return createdLibraryId;
+    },
     mutations,
+    libraryQueries,
   };
 }
 

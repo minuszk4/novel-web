@@ -4,6 +4,7 @@ import { PolicyOnboardingService } from '../core/policy-onboarding.service';
 import {
   WorkspaceApiError,
   WorkspaceApiService,
+  WorkspaceLibrary,
   WorkspaceMember,
   WorkspaceMemberRole,
   WorkspaceRole,
@@ -18,7 +19,14 @@ interface PendingWorkspaceCreate {
   name: string;
 }
 
+interface PendingLibraryCreate {
+  workspaceId: string;
+  id: string;
+  name: string;
+}
+
 const pendingCreateStorageKey = 'novel.workspace-create-attempt.v1';
+const pendingLibraryCreateStorageKey = 'novel.workspace-library-create-attempt.v1';
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const memberRoles: readonly WorkspaceMemberRole[] = ['admin', 'editor', 'reader'];
 
@@ -36,6 +44,13 @@ export class WorkspaceManagementPageComponent {
   protected readonly workspaces = signal<WorkspaceSummary[]>([]);
   protected readonly selectedWorkspaceId = signal<string | null>(null);
   protected readonly members = signal<WorkspaceMember[]>([]);
+  protected readonly libraries = signal<WorkspaceLibrary[]>([]);
+  protected readonly nextLibraryCursor = signal<string | null>(null);
+  protected readonly libraryPhase = signal<LoadPhase>('loading');
+  protected readonly libraryMutation = signal<MutationPhase>('idle');
+  protected readonly libraryName = signal('');
+  protected readonly libraryError = signal<string | null>(null);
+  protected readonly libraryMessage = signal<string | null>(null);
   protected readonly workspacePhase = signal<LoadPhase>('loading');
   protected readonly memberPhase = signal<LoadPhase>('loading');
   protected readonly workspaceMutation = signal<MutationPhase>('idle');
@@ -59,6 +74,7 @@ export class WorkspaceManagementPageComponent {
     const role = this.selectedWorkspace()?.role;
     return role === 'owner' || role === 'admin';
   });
+  protected readonly canCreateLibraries = this.canManageMembers;
   protected readonly canTransferOwnership = computed(
     () => this.selectedWorkspace()?.role === 'owner',
   );
@@ -70,6 +86,7 @@ export class WorkspaceManagementPageComponent {
   );
 
   private pendingCreate = this.readPendingCreate();
+  private pendingLibraryCreate = this.readPendingLibraryCreate();
 
   constructor() {
     void this.loadWorkspaces();
@@ -128,11 +145,23 @@ export class WorkspaceManagementPageComponent {
       const selected = this.selectedWorkspaceId();
       const nextSelected =
         (selected && items.some(({ id }) => id === selected) ? selected : items[0]?.id) ?? null;
+      if (nextSelected !== selected) {
+        this.members.set([]);
+        this.libraries.set([]);
+        this.nextLibraryCursor.set(null);
+      }
       this.selectedWorkspaceId.set(nextSelected);
-      if (nextSelected) await this.loadMembers(nextSelected);
+      if (this.pendingLibraryCreate?.workspaceId === nextSelected) {
+        this.libraryName.set(this.pendingLibraryCreate.name);
+      }
+      if (nextSelected)
+        await Promise.all([this.loadMembers(nextSelected), this.loadLibraries(nextSelected)]);
       else {
         this.members.set([]);
         this.memberPhase.set('ready');
+        this.libraries.set([]);
+        this.nextLibraryCursor.set(null);
+        this.libraryPhase.set('ready');
       }
     } catch (error) {
       this.workspacePhase.set('error');
@@ -144,11 +173,85 @@ export class WorkspaceManagementPageComponent {
     const id = (event.target as HTMLSelectElement).value;
     if (!this.workspaces().some((workspace) => workspace.id === id)) return;
     this.selectedWorkspaceId.set(id);
+    this.libraries.set([]);
+    this.nextLibraryCursor.set(null);
+    this.libraryPhase.set('loading');
     this.pendingRevokeUserId.set(null);
     this.transferConfirmationOpen.set(false);
     this.memberError.set(null);
     this.memberMessage.set(null);
-    await this.loadMembers(id);
+    this.libraryError.set(null);
+    this.libraryMessage.set(null);
+    await Promise.all([this.loadMembers(id), this.loadLibraries(id)]);
+  }
+
+  protected updateLibraryName(event: Event): void {
+    const value = (event.target as HTMLInputElement).value;
+    this.libraryName.set(value);
+    this.libraryError.set(null);
+    if (this.pendingLibraryCreate && value.trim() !== this.pendingLibraryCreate.name) {
+      this.clearPendingLibraryCreate();
+    }
+  }
+
+  protected async createLibrary(): Promise<void> {
+    const workspaceId = this.selectedWorkspaceId();
+    const name = this.libraryName().trim();
+    if (!workspaceId || !this.canCreateLibraries()) return;
+    if (!name || [...name].length > 120) {
+      this.libraryError.set('Tên thư viện cần có từ 1 đến 120 ký tự.');
+      return;
+    }
+    if (
+      !this.pendingLibraryCreate ||
+      this.pendingLibraryCreate.workspaceId !== workspaceId ||
+      this.pendingLibraryCreate.name !== name
+    ) {
+      this.pendingLibraryCreate = { workspaceId, id: crypto.randomUUID(), name };
+      this.writePendingLibraryCreate(this.pendingLibraryCreate);
+    }
+    this.libraryMutation.set('saving');
+    this.libraryError.set(null);
+    this.libraryMessage.set(null);
+    try {
+      const library = await this.api.createLibrary(workspaceId, this.pendingLibraryCreate.id, name);
+      this.clearPendingLibraryCreate();
+      this.libraryName.set('');
+      this.libraryMessage.set(`Đã tạo thư viện “${library.name}”.`);
+      await this.loadLibraries(workspaceId);
+    } catch (error) {
+      this.libraryError.set(
+        workspaceErrorMessage(error, 'Chưa xác nhận được kết quả. Thử lại sẽ dùng cùng yêu cầu.'),
+      );
+    } finally {
+      this.libraryMutation.set('idle');
+    }
+  }
+
+  protected async loadMoreLibraries(): Promise<void> {
+    const workspaceId = this.selectedWorkspaceId();
+    const cursor = this.nextLibraryCursor();
+    if (!workspaceId || !cursor || this.libraryPhase() === 'loading') return;
+    this.libraryPhase.set('loading');
+    this.libraryError.set(null);
+    try {
+      const page = await this.api.listLibraries(workspaceId, cursor, 25);
+      if (this.selectedWorkspaceId() !== workspaceId) return;
+      const seen = new Set(this.libraries().map(({ id }) => id));
+      this.libraries.update((items) => [...items, ...page.items.filter(({ id }) => !seen.has(id))]);
+      this.nextLibraryCursor.set(page.nextCursor);
+      this.libraryPhase.set('ready');
+    } catch (error) {
+      if (this.selectedWorkspaceId() === workspaceId) {
+        this.libraryPhase.set('error');
+        this.libraryError.set(workspaceErrorMessage(error, 'Không tải được thêm thư viện.'));
+      }
+    }
+  }
+
+  protected async retryLibraries(): Promise<void> {
+    const workspaceId = this.selectedWorkspaceId();
+    if (workspaceId) await this.loadLibraries(workspaceId);
   }
 
   protected async loadMembers(workspaceId = this.selectedWorkspaceId()): Promise<void> {
@@ -366,6 +469,29 @@ export class WorkspaceManagementPageComponent {
     await this.loadWorkspaces();
   }
 
+  private async loadLibraries(workspaceId = this.selectedWorkspaceId()): Promise<void> {
+    if (!workspaceId) {
+      this.libraries.set([]);
+      this.nextLibraryCursor.set(null);
+      this.libraryPhase.set('ready');
+      return;
+    }
+    this.libraryPhase.set('loading');
+    this.libraryError.set(null);
+    this.nextLibraryCursor.set(null);
+    try {
+      const page = await this.api.listLibraries(workspaceId, undefined, 25);
+      if (this.selectedWorkspaceId() !== workspaceId) return;
+      this.libraries.set(page.items);
+      this.nextLibraryCursor.set(page.nextCursor);
+      this.libraryPhase.set('ready');
+    } catch (error) {
+      if (this.selectedWorkspaceId() !== workspaceId) return;
+      this.libraryPhase.set('error');
+      this.libraryError.set(workspaceErrorMessage(error, 'Không tải được thư viện workspace.'));
+    }
+  }
+
   private readPendingCreate(): PendingWorkspaceCreate | null {
     if (typeof sessionStorage === 'undefined') return null;
     try {
@@ -402,6 +528,52 @@ export class WorkspaceManagementPageComponent {
     this.pendingCreate = null;
     try {
       sessionStorage.removeItem(pendingCreateStorageKey);
+    } catch {
+      // The current page can still safely retry from its in-memory state.
+    }
+  }
+
+  private readPendingLibraryCreate(): PendingLibraryCreate | null {
+    if (typeof sessionStorage === 'undefined') return null;
+    try {
+      const value: unknown = JSON.parse(
+        sessionStorage.getItem(pendingLibraryCreateStorageKey) ?? 'null',
+      );
+      if (
+        typeof value === 'object' &&
+        value !== null &&
+        'workspaceId' in value &&
+        'id' in value &&
+        'name' in value &&
+        typeof value.workspaceId === 'string' &&
+        uuidPattern.test(value.workspaceId) &&
+        typeof value.id === 'string' &&
+        uuidPattern.test(value.id) &&
+        typeof value.name === 'string' &&
+        value.name.trim().length > 0 &&
+        [...value.name].length <= 120
+      ) {
+        if (this.selectedWorkspaceId() === value.workspaceId) this.libraryName.set(value.name);
+        return { workspaceId: value.workspaceId, id: value.id, name: value.name };
+      }
+    } catch {
+      // An invalid attempt record is ignored; no work content is stored here.
+    }
+    return null;
+  }
+
+  private writePendingLibraryCreate(attempt: PendingLibraryCreate): void {
+    try {
+      sessionStorage.setItem(pendingLibraryCreateStorageKey, JSON.stringify(attempt));
+    } catch {
+      // The in-memory UUID remains stable until the current page is closed.
+    }
+  }
+
+  private clearPendingLibraryCreate(): void {
+    this.pendingLibraryCreate = null;
+    try {
+      sessionStorage.removeItem(pendingLibraryCreateStorageKey);
     } catch {
       // The current page can still safely retry from its in-memory state.
     }

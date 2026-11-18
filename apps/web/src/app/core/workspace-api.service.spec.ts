@@ -6,6 +6,7 @@ import {
   WorkspaceApiError,
   WorkspaceApiService,
   WorkspaceDetail,
+  WorkspaceLibrary,
   WorkspaceMember,
   WorkspaceSummary,
 } from './workspace-api.service';
@@ -33,6 +34,13 @@ const member: WorkspaceMember = {
   status: 'active',
   joinedAt: '2026-11-18T01:01:00Z',
   revokedAt: null,
+};
+const library: WorkspaceLibrary = {
+  id: '44444444-4444-4444-8444-444444444444',
+  name: 'Truyện đang dịch',
+  visibility: 'private',
+  isDefault: false,
+  createdAt: '2026-11-18T02:00:00Z',
 };
 
 describe('WorkspaceApiService', () => {
@@ -87,6 +95,43 @@ describe('WorkspaceApiService', () => {
       .expectOne({ method: 'GET', url: `/api/v1/workspaces/${workspaceId}/members` })
       .flush({ items: [{ ...member, contactEmail: 'private@example.test' }] });
     await expect(invalid).rejects.toMatchObject({ status: 502, code: null });
+  });
+
+  it('lists workspace libraries with a validated cursor page and rejects unsafe DTO fields', async () => {
+    const result = api.listLibraries(workspaceId, 'cursor-1', 10);
+    http
+      .expectOne(
+        (request) =>
+          request.method === 'GET' &&
+          request.url === `/api/v1/workspaces/${workspaceId}/libraries` &&
+          request.params.get('limit') === '10' &&
+          request.params.get('cursor') === 'cursor-1',
+      )
+      .flush({ items: [library], nextCursor: null });
+    await expect(result).resolves.toEqual({ items: [library], nextCursor: null });
+
+    const invalid = api.listLibraries(workspaceId);
+    http
+      .expectOne((request) => request.url.endsWith(`/workspaces/${workspaceId}/libraries`))
+      .flush({ items: [{ ...library, ownerUserId: memberId }], nextCursor: null });
+    await expect(invalid).rejects.toMatchObject({ status: 502, code: null });
+    await expect(api.listLibraries(workspaceId, 'x'.repeat(2049))).rejects.toMatchObject({
+      status: 400,
+    });
+  });
+
+  it('creates a shared library with a stable client UUID and session CSRF', async () => {
+    const result = api.createLibrary(workspaceId, library.id, '  Truyện đang dịch  ');
+    http.expectOne({ method: 'GET', url: '/api/v1/auth/csrf' }).flush({ token: csrf });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const request = http.expectOne({
+      method: 'PUT',
+      url: `/api/v1/workspaces/${workspaceId}/libraries/${library.id}`,
+    });
+    expect(request.request.headers.get('X-CSRF-Token')).toBe(csrf);
+    expect(request.request.body).toEqual({ name: library.name });
+    request.flush(library);
+    await expect(result).resolves.toEqual(library);
   });
 
   it('sets a role idempotently through PUT and validates the exact resulting member', async () => {
