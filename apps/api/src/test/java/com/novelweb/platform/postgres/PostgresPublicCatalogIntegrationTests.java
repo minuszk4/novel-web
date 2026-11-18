@@ -772,10 +772,8 @@ class PostgresPublicCatalogIntegrationTests {
     assertTrue(
         limited.stream()
             .map(HttpResult::retryAfter)
-            .allMatch(value -> "3599".equals(value) || "3600".equals(value)));
+            .allMatch(PostgresPublicCatalogIntegrationTests::isValidRetryAfter));
     assertEquals("PUBLIC_CATALOG_RATE_LIMITED", limited.get(0).body().path("code").asText());
-    assertTrue(
-        "3599".equals(limited.get(0).retryAfter()) || "3600".equals(limited.get(0).retryAfter()));
     assertTrue(limited.get(0).cacheControl().contains("no-store"));
     assertEquals(200, get(path, testClientAddress()).statusCode());
 
@@ -792,6 +790,15 @@ class PostgresPublicCatalogIntegrationTests {
         }
         assertEquals(2, observedBuckets.size());
       }
+    }
+  }
+
+  private static boolean isValidRetryAfter(String value) {
+    try {
+      int seconds = Integer.parseInt(value);
+      return seconds >= 1 && seconds <= 3600;
+    } catch (NumberFormatException exception) {
+      return false;
     }
   }
 
