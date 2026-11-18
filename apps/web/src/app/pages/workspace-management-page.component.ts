@@ -1,0 +1,434 @@
+import { Component, computed, inject, signal } from '@angular/core';
+import { RouterLink } from '@angular/router';
+import { PolicyOnboardingService } from '../core/policy-onboarding.service';
+import {
+  WorkspaceApiError,
+  WorkspaceApiService,
+  WorkspaceMember,
+  WorkspaceMemberRole,
+  WorkspaceRole,
+  WorkspaceSummary,
+} from '../core/workspace-api.service';
+
+type LoadPhase = 'loading' | 'ready' | 'error';
+type MutationPhase = 'idle' | 'saving';
+
+interface PendingWorkspaceCreate {
+  id: string;
+  name: string;
+}
+
+const pendingCreateStorageKey = 'novel.workspace-create-attempt.v1';
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const memberRoles: readonly WorkspaceMemberRole[] = ['admin', 'editor', 'reader'];
+
+@Component({
+  selector: 'app-workspace-management-page',
+  imports: [RouterLink],
+  templateUrl: './workspace-management-page.component.html',
+  styleUrl: './workspace-management-page.component.css',
+})
+export class WorkspaceManagementPageComponent {
+  protected readonly policy = inject(PolicyOnboardingService);
+  private readonly api = inject(WorkspaceApiService);
+
+  protected readonly accountId = computed(() => this.policy.accountIdentity()?.userId ?? null);
+  protected readonly workspaces = signal<WorkspaceSummary[]>([]);
+  protected readonly selectedWorkspaceId = signal<string | null>(null);
+  protected readonly members = signal<WorkspaceMember[]>([]);
+  protected readonly workspacePhase = signal<LoadPhase>('loading');
+  protected readonly memberPhase = signal<LoadPhase>('loading');
+  protected readonly workspaceMutation = signal<MutationPhase>('idle');
+  protected readonly memberMutation = signal<MutationPhase>('idle');
+  protected readonly workspaceName = signal('');
+  protected readonly workspaceError = signal<string | null>(null);
+  protected readonly workspaceMessage = signal<string | null>(null);
+  protected readonly memberUserId = signal('');
+  protected readonly memberRole = signal<WorkspaceMemberRole>('reader');
+  protected readonly memberError = signal<string | null>(null);
+  protected readonly memberMessage = signal<string | null>(null);
+  protected readonly memberRoleDrafts = signal<Record<string, WorkspaceMemberRole>>({});
+  protected readonly pendingRevokeUserId = signal<string | null>(null);
+  protected readonly transferTargetUserId = signal('');
+  protected readonly transferConfirmationOpen = signal(false);
+  protected readonly copyMessage = signal<string | null>(null);
+  protected readonly selectedWorkspace = computed(
+    () => this.workspaces().find(({ id }) => id === this.selectedWorkspaceId()) ?? null,
+  );
+  protected readonly canManageMembers = computed(() => {
+    const role = this.selectedWorkspace()?.role;
+    return role === 'owner' || role === 'admin';
+  });
+  protected readonly canTransferOwnership = computed(
+    () => this.selectedWorkspace()?.role === 'owner',
+  );
+  protected readonly transferableMembers = computed(() =>
+    this.members().filter(
+      ({ role, status, userId }) =>
+        status === 'active' && role !== 'owner' && userId !== this.accountId(),
+    ),
+  );
+
+  private pendingCreate = this.readPendingCreate();
+
+  constructor() {
+    void this.loadWorkspaces();
+  }
+
+  protected updateWorkspaceName(event: Event): void {
+    const value = (event.target as HTMLInputElement).value;
+    this.workspaceName.set(value);
+    this.workspaceError.set(null);
+    if (this.pendingCreate && value.trim() !== this.pendingCreate.name) this.clearPendingCreate();
+  }
+
+  protected async createWorkspace(): Promise<void> {
+    const name = this.workspaceName().trim();
+    if (!name || [...name].length > 120) {
+      this.workspaceError.set('Tên không gian cần có từ 1 đến 120 ký tự.');
+      return;
+    }
+    if (!this.accountId()) {
+      this.workspaceError.set(
+        'Không xác minh được tài khoản. Hãy tải lại trang sau khi đăng nhập.',
+      );
+      return;
+    }
+
+    if (!this.pendingCreate || this.pendingCreate.name !== name) {
+      this.pendingCreate = { id: crypto.randomUUID(), name };
+      this.writePendingCreate(this.pendingCreate);
+    }
+    this.workspaceError.set(null);
+    this.workspaceMessage.set(null);
+    this.workspaceMutation.set('saving');
+    try {
+      const created = await this.api.createWorkspace(this.pendingCreate.id, name);
+      this.clearPendingCreate();
+      this.workspaceName.set('');
+      this.selectedWorkspaceId.set(created.id);
+      this.workspaceMessage.set(`Đã tạo không gian “${created.name}”.`);
+      await this.loadWorkspaces();
+    } catch (error) {
+      this.workspaceError.set(
+        workspaceErrorMessage(error, 'Chưa xác nhận được kết quả. Thử lại sẽ dùng cùng yêu cầu.'),
+      );
+    } finally {
+      this.workspaceMutation.set('idle');
+    }
+  }
+
+  protected async loadWorkspaces(): Promise<void> {
+    this.workspacePhase.set('loading');
+    this.workspaceError.set(null);
+    try {
+      const items = await this.api.listWorkspaces();
+      this.workspaces.set(items);
+      this.workspacePhase.set('ready');
+      const selected = this.selectedWorkspaceId();
+      const nextSelected =
+        (selected && items.some(({ id }) => id === selected) ? selected : items[0]?.id) ?? null;
+      this.selectedWorkspaceId.set(nextSelected);
+      if (nextSelected) await this.loadMembers(nextSelected);
+      else {
+        this.members.set([]);
+        this.memberPhase.set('ready');
+      }
+    } catch (error) {
+      this.workspacePhase.set('error');
+      this.workspaceError.set(workspaceErrorMessage(error, 'Không tải được danh sách không gian.'));
+    }
+  }
+
+  protected async selectWorkspace(event: Event): Promise<void> {
+    const id = (event.target as HTMLSelectElement).value;
+    if (!this.workspaces().some((workspace) => workspace.id === id)) return;
+    this.selectedWorkspaceId.set(id);
+    this.pendingRevokeUserId.set(null);
+    this.transferConfirmationOpen.set(false);
+    this.memberError.set(null);
+    this.memberMessage.set(null);
+    await this.loadMembers(id);
+  }
+
+  protected async loadMembers(workspaceId = this.selectedWorkspaceId()): Promise<void> {
+    if (!workspaceId) {
+      this.members.set([]);
+      this.memberPhase.set('ready');
+      return;
+    }
+    this.memberPhase.set('loading');
+    this.memberError.set(null);
+    try {
+      const members = await this.api.listMembers(workspaceId);
+      this.members.set(members);
+      this.memberRoleDrafts.set(
+        Object.fromEntries(
+          members
+            .filter(({ role }) => role !== 'owner')
+            .map(({ userId, role }) => [userId, role as WorkspaceMemberRole]),
+        ),
+      );
+      this.memberPhase.set('ready');
+    } catch (error) {
+      this.memberPhase.set('error');
+      this.memberError.set(workspaceErrorMessage(error, 'Không tải được danh sách thành viên.'));
+    }
+  }
+
+  protected updateMemberUserId(event: Event): void {
+    this.memberUserId.set((event.target as HTMLInputElement).value.trim());
+    this.memberError.set(null);
+  }
+
+  protected updateMemberRole(event: Event): void {
+    const role = (event.target as HTMLSelectElement).value;
+    if (isMemberRole(role)) this.memberRole.set(role);
+  }
+
+  protected async saveMember(): Promise<void> {
+    const workspaceId = this.selectedWorkspaceId();
+    const userId = this.memberUserId().trim();
+    if (!workspaceId || !this.canManageMembers()) return;
+    if (!uuidPattern.test(userId)) {
+      this.memberError.set('Nhập UUID tài khoản hợp lệ do thành viên cung cấp.');
+      return;
+    }
+    if (userId === this.accountId()) {
+      this.memberError.set('Bạn đã là thành viên của không gian này.');
+      return;
+    }
+
+    this.memberMutation.set('saving');
+    this.memberError.set(null);
+    this.memberMessage.set(null);
+    try {
+      const member = await this.api.setMemberRole(workspaceId, userId, this.memberRole());
+      this.memberUserId.set('');
+      this.memberMessage.set(
+        member.status === 'active'
+          ? 'Đã cấp hoặc cập nhật quyền thành viên.'
+          : 'Đã cập nhật thành viên.',
+      );
+      await this.refreshWorkspaceState(workspaceId);
+    } catch (error) {
+      this.memberError.set(workspaceErrorMessage(error, 'Không cập nhật được thành viên.'));
+    } finally {
+      this.memberMutation.set('idle');
+    }
+  }
+
+  protected setRoleDraft(userId: string, event: Event): void {
+    const role = (event.target as HTMLSelectElement).value;
+    if (!isMemberRole(role)) return;
+    this.memberRoleDrafts.update((drafts) => ({ ...drafts, [userId]: role }));
+  }
+
+  protected roleDraft(userId: string): WorkspaceMemberRole {
+    return this.memberRoleDrafts()[userId] ?? 'reader';
+  }
+
+  protected async saveRole(member: WorkspaceMember): Promise<void> {
+    const workspaceId = this.selectedWorkspaceId();
+    const role = this.roleDraft(member.userId);
+    if (!workspaceId || !this.canManageMembers() || member.role === 'owner') return;
+    if (role === member.role) return;
+    this.memberMutation.set('saving');
+    this.memberError.set(null);
+    this.memberMessage.set(null);
+    try {
+      await this.api.setMemberRole(workspaceId, member.userId, role);
+      this.memberMessage.set('Đã cập nhật vai trò. Quyền trong workspace đã đổi ngay lập tức.');
+      await this.refreshWorkspaceState(workspaceId);
+    } catch (error) {
+      this.memberError.set(workspaceErrorMessage(error, 'Không lưu được vai trò thành viên.'));
+    } finally {
+      this.memberMutation.set('idle');
+    }
+  }
+
+  protected requestRevoke(member: WorkspaceMember): void {
+    if (!this.canManageMembers() || member.role === 'owner' || member.status !== 'active') return;
+    this.pendingRevokeUserId.set(member.userId);
+    this.memberError.set(null);
+  }
+
+  protected cancelRevoke(): void {
+    this.pendingRevokeUserId.set(null);
+  }
+
+  protected async confirmRevoke(member: WorkspaceMember): Promise<void> {
+    const workspaceId = this.selectedWorkspaceId();
+    if (
+      !workspaceId ||
+      this.pendingRevokeUserId() !== member.userId ||
+      !this.canManageMembers() ||
+      member.role === 'owner'
+    ) {
+      return;
+    }
+    this.memberMutation.set('saving');
+    this.memberError.set(null);
+    this.memberMessage.set(null);
+    try {
+      await this.api.revokeMember(workspaceId, member.userId);
+      this.pendingRevokeUserId.set(null);
+      this.memberMessage.set('Đã thu hồi quyền. Thành viên không thể mở nội dung workspace nữa.');
+      await this.refreshWorkspaceState(workspaceId);
+    } catch (error) {
+      this.memberError.set(workspaceErrorMessage(error, 'Không thu hồi được quyền thành viên.'));
+    } finally {
+      this.memberMutation.set('idle');
+    }
+  }
+
+  protected updateTransferTarget(event: Event): void {
+    this.transferTargetUserId.set((event.target as HTMLSelectElement).value);
+    this.transferConfirmationOpen.set(false);
+  }
+
+  protected requestOwnershipTransfer(): void {
+    if (
+      !this.canTransferOwnership() ||
+      !this.transferableMembers().some(({ userId }) => userId === this.transferTargetUserId())
+    ) {
+      this.memberError.set('Chọn thành viên đang hoạt động trước khi chuyển quyền sở hữu.');
+      return;
+    }
+    this.transferConfirmationOpen.set(true);
+    this.memberError.set(null);
+  }
+
+  protected cancelOwnershipTransfer(): void {
+    this.transferConfirmationOpen.set(false);
+  }
+
+  protected async confirmOwnershipTransfer(): Promise<void> {
+    const workspaceId = this.selectedWorkspaceId();
+    const target = this.transferTargetUserId();
+    if (
+      !workspaceId ||
+      !this.transferConfirmationOpen() ||
+      !this.canTransferOwnership() ||
+      !this.transferableMembers().some(({ userId }) => userId === target)
+    ) {
+      return;
+    }
+    this.memberMutation.set('saving');
+    this.memberError.set(null);
+    this.memberMessage.set(null);
+    try {
+      await this.api.transferOwnership(workspaceId, target);
+      this.transferConfirmationOpen.set(false);
+      this.transferTargetUserId.set('');
+      this.memberMessage.set('Đã chuyển quyền sở hữu. Vai trò của bạn hiện là quản trị viên.');
+      await this.refreshWorkspaceState(workspaceId);
+    } catch (error) {
+      this.memberError.set(workspaceErrorMessage(error, 'Không chuyển được quyền sở hữu.'));
+    } finally {
+      this.memberMutation.set('idle');
+    }
+  }
+
+  protected async copyAccountId(): Promise<void> {
+    const userId = this.accountId();
+    if (!userId || !navigator.clipboard) {
+      this.copyMessage.set('Không thể sao chép tự động. Hãy chọn và sao chép UUID bên trên.');
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(userId);
+      this.copyMessage.set('Đã sao chép UUID tài khoản.');
+    } catch {
+      this.copyMessage.set('Không thể sao chép tự động. Hãy chọn và sao chép UUID bên trên.');
+    }
+  }
+
+  protected roleLabel(role: WorkspaceRole): string {
+    return {
+      owner: 'Chủ sở hữu',
+      admin: 'Quản trị viên',
+      editor: 'Biên tập viên',
+      reader: 'Người đọc',
+    }[role];
+  }
+
+  protected memberStatusLabel(status: WorkspaceMember['status']): string {
+    return status === 'active' ? 'Đang hoạt động' : 'Đã thu hồi';
+  }
+
+  protected async retry(): Promise<void> {
+    await this.loadWorkspaces();
+  }
+
+  private async refreshWorkspaceState(workspaceId: string): Promise<void> {
+    this.selectedWorkspaceId.set(workspaceId);
+    await this.loadWorkspaces();
+  }
+
+  private readPendingCreate(): PendingWorkspaceCreate | null {
+    if (typeof sessionStorage === 'undefined') return null;
+    try {
+      const value: unknown = JSON.parse(sessionStorage.getItem(pendingCreateStorageKey) ?? 'null');
+      if (
+        typeof value === 'object' &&
+        value !== null &&
+        'id' in value &&
+        'name' in value &&
+        typeof value.id === 'string' &&
+        uuidPattern.test(value.id) &&
+        typeof value.name === 'string' &&
+        value.name.trim().length > 0 &&
+        [...value.name].length <= 120
+      ) {
+        this.workspaceName.set(value.name);
+        return { id: value.id, name: value.name };
+      }
+    } catch {
+      // An invalid or unavailable attempt record is ignored; no work content is stored here.
+    }
+    return null;
+  }
+
+  private writePendingCreate(attempt: PendingWorkspaceCreate): void {
+    try {
+      sessionStorage.setItem(pendingCreateStorageKey, JSON.stringify(attempt));
+    } catch {
+      // The in-memory UUID remains stable until the current page is closed.
+    }
+  }
+
+  private clearPendingCreate(): void {
+    this.pendingCreate = null;
+    try {
+      sessionStorage.removeItem(pendingCreateStorageKey);
+    } catch {
+      // The current page can still safely retry from its in-memory state.
+    }
+  }
+}
+
+function isMemberRole(value: string): value is WorkspaceMemberRole {
+  return memberRoles.includes(value as WorkspaceMemberRole);
+}
+
+function workspaceErrorMessage(error: unknown, fallback: string): string {
+  if (!(error instanceof WorkspaceApiError)) return fallback;
+  if (error.status === 401) return 'Phiên đăng nhập đã hết hạn. Hãy đăng nhập lại.';
+  if (error.status === 403 && error.code === 'POLICY_ACCEPTANCE_REQUIRED') {
+    return 'Hãy xác nhận chính sách hiện hành trước khi quản lý workspace.';
+  }
+  if (error.status === 404)
+    return 'Không gian hoặc thành viên không còn khả dụng. Danh sách đã được làm mới.';
+  if (error.status === 409 && error.code === 'WORKSPACE_MEMBER_CONFLICT') {
+    return 'UUID đang trùng với workspace khác hoặc yêu cầu trước đã dùng tên khác. Tải lại trước khi thử tiếp.';
+  }
+  if (error.status === 409 && error.code === 'WORKSPACE_OWNER_PROTECTED') {
+    return 'Chủ sở hữu chỉ có thể đổi qua thao tác chuyển quyền sở hữu.';
+  }
+  if (error.status === 403) return 'Tài khoản chưa có quyền thực hiện thao tác này.';
+  if (error.status === 0 || error.status >= 500) {
+    return 'Máy chủ chưa xác nhận thay đổi. Tải lại trạng thái; thao tác tạo có thể thử lại an toàn.';
+  }
+  return fallback;
+}

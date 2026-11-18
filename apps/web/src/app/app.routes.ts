@@ -121,6 +121,14 @@ export const routes: Routes = [
         title: 'Thư viện — Novel',
       },
       {
+        path: 'workspaces',
+        loadComponent: () =>
+          import('./pages/workspace-management-page.component').then(
+            (page) => page.WorkspaceManagementPageComponent,
+          ),
+        title: 'Không gian cộng tác — Novel',
+      },
+      {
         path: 'history',
         loadComponent: () =>
           import('./pages/reading-history-page.component').then(

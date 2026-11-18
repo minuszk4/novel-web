@@ -1,0 +1,314 @@
+<section class="page-wrap workspace-page" aria-labelledby="workspace-title">
+  <header class="workspace-heading">
+    <div>
+      <p class="eyebrow">CÙNG BIÊN TẬP VÀ ĐỌC</p>
+      <h1 id="workspace-title">Không gian cộng tác</h1>
+      <p>Chia sẻ thư viện riêng với thành viên và kiểm soát quyền truy cập theo vai trò.</p>
+    </div>
+    <a class="button button-outline" routerLink="/app/library">Về thư viện</a>
+  </header>
+
+  <section class="workspace-account-card" aria-labelledby="account-id-title">
+    <div>
+      <h2 id="account-id-title">UUID tài khoản của bạn</h2>
+      <p>Gửi mã này cho chủ workspace nếu họ muốn thêm bạn. Không cần chia sẻ email.</p>
+      @if (accountId(); as userId) {
+        <code class="workspace-account-id">{{ userId }}</code>
+      } @else {
+        <p class="workspace-muted">Đang xác minh tài khoản…</p>
+      }
+      @if (copyMessage(); as message) {
+        <p class="workspace-inline-message" role="status" aria-live="polite">{{ message }}</p>
+      }
+    </div>
+    <button
+      class="button button-outline"
+      type="button"
+      [disabled]="!accountId()"
+      (click)="copyAccountId()"
+    >
+      Sao chép UUID
+    </button>
+  </section>
+
+  <section class="workspace-create-card" aria-labelledby="create-workspace-title">
+    <div>
+      <p class="eyebrow">BẮT ĐẦU NHÓM MỚI</p>
+      <h2 id="create-workspace-title">Tạo không gian</h2>
+      <p>Bạn sẽ là chủ sở hữu đầu tiên. Tính năng tạo thư viện chung đang được hoàn thiện.</p>
+    </div>
+    <form class="workspace-create-form" (submit)="$event.preventDefault(); createWorkspace()">
+      <label for="workspace-name">Tên không gian</label>
+      <div class="workspace-form-row">
+        <input
+          id="workspace-name"
+          type="text"
+          maxlength="120"
+          autocomplete="off"
+          placeholder="Ví dụ: Nhóm dịch Tiên Hiệp"
+          [value]="workspaceName()"
+          [disabled]="workspaceMutation() === 'saving'"
+          [attr.aria-describedby]="workspaceError() ? 'workspace-error' : 'workspace-name-hint'"
+          (input)="updateWorkspaceName($event)"
+        />
+        <button
+          class="button button-primary"
+          type="submit"
+          [disabled]="workspaceMutation() === 'saving' || !accountId()"
+        >
+          {{ workspaceMutation() === 'saving' ? 'Đang tạo…' : 'Tạo không gian' }}
+        </button>
+      </div>
+      <p id="workspace-name-hint" class="workspace-hint">
+        Nếu kết nối gián đoạn, thử lại sẽ dùng cùng yêu cầu tạo.
+      </p>
+      @if (workspaceError(); as error) {
+        <p id="workspace-error" class="workspace-error" role="alert">{{ error }}</p>
+      }
+      @if (workspaceMessage(); as message) {
+        <p class="workspace-inline-message" role="status" aria-live="polite">{{ message }}</p>
+      }
+    </form>
+  </section>
+
+  @if (workspacePhase() === 'loading') {
+    <p class="workspace-status" role="status" aria-live="polite">Đang tải không gian…</p>
+  } @else if (workspacePhase() === 'error') {
+    <div class="workspace-error-panel" role="alert">
+      <p>{{ workspaceError() }}</p>
+      <button class="button button-outline" type="button" (click)="retry()">Tải lại</button>
+    </div>
+  } @else if (workspaces().length === 0) {
+    <section class="workspace-empty-state" aria-labelledby="workspace-empty-title">
+      <h2 id="workspace-empty-title">Bạn chưa tham gia không gian nào</h2>
+      <p>Tạo workspace mới hoặc gửi UUID tài khoản để chủ workspace thêm bạn.</p>
+    </section>
+  } @else {
+    <section class="workspace-detail-card" aria-labelledby="workspace-members-title">
+      <div class="workspace-picker-row">
+        <label for="workspace-picker">Không gian của bạn</label>
+        <select
+          id="workspace-picker"
+          [value]="selectedWorkspaceId()"
+          [disabled]="workspaceMutation() === 'saving' || memberMutation() === 'saving'"
+          (change)="selectWorkspace($event)"
+        >
+          @for (workspace of workspaces(); track workspace.id) {
+            <option [value]="workspace.id">
+              {{ workspace.name }} · {{ roleLabel(workspace.role) }}
+            </option>
+          }
+        </select>
+      </div>
+
+      @if (selectedWorkspace(); as workspace) {
+        <div class="workspace-members-heading">
+          <div>
+            <p class="eyebrow">QUYỀN CỦA BẠN: {{ roleLabel(workspace.role) }}</p>
+            <h2 id="workspace-members-title">Thành viên</h2>
+          </div>
+          <span class="workspace-count">{{ members().length }} thành viên</span>
+        </div>
+
+        @if (memberMessage(); as message) {
+          <p class="workspace-inline-message" role="status" aria-live="polite">{{ message }}</p>
+        }
+        @if (memberError(); as error) {
+          <p class="workspace-error" role="alert">{{ error }}</p>
+        }
+
+        @if (memberPhase() === 'loading') {
+          <p class="workspace-status" role="status" aria-live="polite">Đang tải thành viên…</p>
+        } @else if (memberPhase() === 'error') {
+          <div class="workspace-error-panel" role="alert">
+            <p>{{ memberError() }}</p>
+            <button class="button button-outline" type="button" (click)="loadMembers()">
+              Tải lại thành viên
+            </button>
+          </div>
+        } @else {
+          <div class="workspace-member-list" aria-label="Danh sách thành viên workspace">
+            @for (member of members(); track member.userId) {
+              <article class="workspace-member-card">
+                <div class="workspace-member-identity">
+                  <span class="workspace-member-avatar" aria-hidden="true">{{
+                    member.userId.slice(0, 1).toUpperCase()
+                  }}</span>
+                  <div>
+                    <code>{{ member.userId }}</code>
+                    <p>
+                      <span class="workspace-role-label">{{ roleLabel(member.role) }}</span>
+                      <span aria-hidden="true"> · </span>
+                      {{ memberStatusLabel(member.status) }}
+                    </p>
+                  </div>
+                </div>
+                @if (canManageMembers() && member.role !== 'owner' && member.status === 'active') {
+                  <div class="workspace-member-actions">
+                    <label [for]="'role-' + member.userId">Vai trò</label>
+                    <select
+                      [id]="'role-' + member.userId"
+                      [value]="roleDraft(member.userId)"
+                      [disabled]="memberMutation() === 'saving'"
+                      (change)="setRoleDraft(member.userId, $event)"
+                    >
+                      <option value="admin">Quản trị viên</option>
+                      <option value="editor">Biên tập viên</option>
+                      <option value="reader">Người đọc</option>
+                    </select>
+                    <button
+                      class="button button-outline"
+                      type="button"
+                      [disabled]="
+                        memberMutation() === 'saving' || roleDraft(member.userId) === member.role
+                      "
+                      (click)="saveRole(member)"
+                    >
+                      Lưu vai trò
+                    </button>
+                    <button
+                      class="workspace-danger-button"
+                      type="button"
+                      [disabled]="memberMutation() === 'saving'"
+                      (click)="requestRevoke(member)"
+                    >
+                      Thu hồi quyền
+                    </button>
+                  </div>
+                } @else if (canManageMembers() && member.status === 'revoked') {
+                  <span class="workspace-revoked-note">Đã thu hồi quyền truy cập</span>
+                }
+                @if (pendingRevokeUserId() === member.userId) {
+                  <div
+                    class="workspace-confirmation"
+                    role="group"
+                    [attr.aria-label]="'Xác nhận thu hồi ' + member.userId"
+                  >
+                    <p>
+                      Thành viên này mất quyền mở thư viện và nội dung trong workspace ngay sau khi
+                      xác nhận.
+                    </p>
+                    <button class="button button-outline" type="button" (click)="cancelRevoke()">
+                      Giữ quyền
+                    </button>
+                    <button
+                      class="button button-danger"
+                      type="button"
+                      [disabled]="memberMutation() === 'saving'"
+                      (click)="confirmRevoke(member)"
+                    >
+                      {{ memberMutation() === 'saving' ? 'Đang thu hồi…' : 'Xác nhận thu hồi' }}
+                    </button>
+                  </div>
+                }
+              </article>
+            } @empty {
+              <p class="workspace-status">Không có thành viên để hiển thị.</p>
+            }
+          </div>
+        }
+
+        @if (canManageMembers()) {
+          <section class="workspace-add-member" aria-labelledby="add-member-title">
+            <h3 id="add-member-title">Thêm hoặc khôi phục thành viên</h3>
+            <p>
+              Nhập UUID tài khoản do thành viên cung cấp. Quyền có hiệu lực ngay; người đó sẽ truy
+              cập được nội dung trong các thư viện workspace.
+            </p>
+            <form (submit)="$event.preventDefault(); saveMember()">
+              <label for="workspace-member-id">UUID tài khoản thành viên</label>
+              <input
+                id="workspace-member-id"
+                type="text"
+                inputmode="text"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx"
+                [value]="memberUserId()"
+                [disabled]="memberMutation() === 'saving'"
+                (input)="updateMemberUserId($event)"
+              />
+              <label for="workspace-new-role">Vai trò ban đầu</label>
+              <select
+                id="workspace-new-role"
+                [value]="memberRole()"
+                (change)="updateMemberRole($event)"
+              >
+                <option value="reader">Người đọc</option>
+                <option value="editor">Biên tập viên</option>
+                <option value="admin">Quản trị viên</option>
+              </select>
+              <button
+                class="button button-primary"
+                type="submit"
+                [disabled]="memberMutation() === 'saving'"
+              >
+                {{ memberMutation() === 'saving' ? 'Đang lưu…' : 'Cấp quyền thành viên' }}
+              </button>
+            </form>
+          </section>
+        }
+
+        @if (canTransferOwnership() && transferableMembers().length > 0) {
+          <section class="workspace-transfer" aria-labelledby="transfer-owner-title">
+            <h3 id="transfer-owner-title">Chuyển quyền sở hữu</h3>
+            <p>Chủ mới trở thành chủ sở hữu; vai trò của bạn chuyển thành quản trị viên.</p>
+            <label for="workspace-new-owner">Chủ sở hữu mới</label>
+            <select
+              id="workspace-new-owner"
+              [value]="transferTargetUserId()"
+              (change)="updateTransferTarget($event)"
+            >
+              <option value="">Chọn thành viên đang hoạt động</option>
+              @for (member of transferableMembers(); track member.userId) {
+                <option [value]="member.userId">
+                  {{ member.userId }} · {{ roleLabel(member.role) }}
+                </option>
+              }
+            </select>
+            @if (!transferConfirmationOpen()) {
+              <button
+                class="button button-outline"
+                type="button"
+                (click)="requestOwnershipTransfer()"
+              >
+                Tiếp tục chuyển quyền
+              </button>
+            } @else {
+              <div
+                class="workspace-confirmation"
+                role="group"
+                aria-label="Xác nhận chuyển quyền sở hữu"
+              >
+                <p>
+                  Quyền sở hữu sẽ chuyển ngay cho UUID đã chọn. Thao tác này không xóa dữ liệu
+                  workspace.
+                </p>
+                <button
+                  class="button button-outline"
+                  type="button"
+                  (click)="cancelOwnershipTransfer()"
+                >
+                  Hủy
+                </button>
+                <button
+                  class="button button-danger"
+                  type="button"
+                  [disabled]="memberMutation() === 'saving'"
+                  (click)="confirmOwnershipTransfer()"
+                >
+                  {{ memberMutation() === 'saving' ? 'Đang chuyển…' : 'Xác nhận chuyển quyền' }}
+                </button>
+              </div>
+            }
+          </section>
+        }
+      }
+    </section>
+  }
+
+  <p class="workspace-footnote">
+    Workspace phân quyền đọc và biên tập thư viện chung. Thành viên không nhận được quyền tự xuất
+    bản tác phẩm. Thư mời qua email và lịch sử kiểm toán riêng chưa có trong phiên bản này.
+  </p>
+</section>

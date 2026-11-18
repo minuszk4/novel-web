@@ -1508,6 +1508,7 @@ label:has(input:focus-visible) {
 }
 .app-main {
   flex: 1;
+  min-width: 0;
 }
 .mobile-nav {
   display: none;

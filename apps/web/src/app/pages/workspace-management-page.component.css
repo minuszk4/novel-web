@@ -1,0 +1,471 @@
+.workspace-page {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 24px;
+}
+
+.workspace-heading,
+.workspace-account-card,
+.workspace-create-card,
+.workspace-members-heading,
+.workspace-member-identity,
+.workspace-form-row,
+.workspace-picker-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.workspace-heading {
+  align-items: flex-end;
+}
+
+.workspace-heading h1,
+.workspace-create-card h2,
+.workspace-members-heading h2,
+.workspace-empty-state h2 {
+  margin: 0;
+  color: var(--ink);
+}
+
+.workspace-heading p:last-child,
+.workspace-create-card p,
+.workspace-account-card p,
+.workspace-empty-state p,
+.workspace-add-member p,
+.workspace-transfer p,
+.workspace-footnote {
+  color: var(--ink-muted);
+  line-height: 1.6;
+}
+
+.workspace-heading p:last-child {
+  max-width: 660px;
+  margin-bottom: 0;
+}
+
+.workspace-account-card,
+.workspace-create-card,
+.workspace-detail-card,
+.workspace-empty-state {
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: var(--surface);
+  box-shadow: 0 12px 34px rgb(45 38 31 / 5%);
+}
+
+.workspace-account-card,
+.workspace-create-card,
+.workspace-empty-state {
+  padding: 24px;
+}
+
+.workspace-account-card > div,
+.workspace-create-card > div {
+  min-width: 0;
+}
+
+.workspace-account-card h2,
+.workspace-create-card h2,
+.workspace-add-member h3,
+.workspace-transfer h3 {
+  margin: 0 0 8px;
+  color: var(--ink);
+  font-size: 1.12rem;
+}
+
+.workspace-account-card p,
+.workspace-create-card p {
+  margin: 0 0 10px;
+}
+
+.workspace-account-id,
+.workspace-member-identity code {
+  color: var(--ink);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.83rem;
+  overflow-wrap: anywhere;
+}
+
+.workspace-create-form {
+  display: grid;
+  gap: 9px;
+  min-width: min(100%, 520px);
+}
+
+.workspace-create-form label,
+.workspace-picker-row label,
+.workspace-member-actions label,
+.workspace-add-member label,
+.workspace-transfer label {
+  color: var(--ink);
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.workspace-form-row input,
+.workspace-picker-row select,
+.workspace-member-actions select,
+.workspace-add-member input,
+.workspace-add-member select,
+.workspace-transfer select {
+  min-height: 46px;
+  border: 1px solid var(--line-strong, #d8d0c5);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+}
+
+.workspace-form-row input,
+.workspace-add-member input {
+  width: 100%;
+  min-width: 0;
+  padding: 0 13px;
+}
+
+.workspace-picker-row select,
+.workspace-member-actions select,
+.workspace-add-member select,
+.workspace-transfer select {
+  padding: 0 12px;
+}
+
+.workspace-form-row .button,
+.workspace-picker-row select {
+  flex: 0 0 auto;
+}
+
+.workspace-hint,
+.workspace-muted,
+.workspace-revoked-note {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 0.86rem;
+  line-height: 1.5;
+}
+
+.workspace-error,
+.workspace-error-panel {
+  color: var(--danger, #8a3131);
+}
+
+.workspace-error {
+  margin: 8px 0 0;
+  font-weight: 650;
+}
+
+.workspace-error-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid rgb(138 49 49 / 25%);
+  border-radius: 14px;
+  background: rgb(138 49 49 / 4%);
+}
+
+.workspace-error-panel p {
+  margin: 0;
+}
+
+.workspace-inline-message,
+.workspace-status {
+  color: var(--ink-muted);
+  line-height: 1.5;
+}
+
+.workspace-detail-card {
+  padding: 24px;
+}
+
+.workspace-picker-row {
+  align-items: flex-start;
+  justify-content: flex-start;
+  max-width: 680px;
+}
+
+.workspace-picker-row select {
+  flex: 1;
+  min-width: 0;
+}
+
+.workspace-members-heading {
+  align-items: end;
+  margin: 28px 0 16px;
+}
+
+.workspace-count {
+  color: var(--ink-muted);
+  font-size: 0.9rem;
+}
+
+.workspace-member-list {
+  display: grid;
+  gap: 12px;
+}
+
+.workspace-member-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(230px, 310px);
+  align-items: center;
+  gap: 18px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface-raised, #fffdfa);
+}
+
+.workspace-member-identity {
+  justify-content: flex-start;
+  min-width: 0;
+}
+
+.workspace-member-identity > div {
+  min-width: 0;
+}
+
+.workspace-member-identity p {
+  margin: 6px 0 0;
+  color: var(--ink-muted);
+  font-size: 0.85rem;
+}
+
+.workspace-member-avatar {
+  display: grid;
+  flex: 0 0 42px;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--accent-soft, #f3e8db);
+  color: var(--accent-ink, #65452d);
+  font-weight: 750;
+}
+
+.workspace-role-label {
+  color: var(--ink);
+  font-weight: 650;
+}
+
+.workspace-member-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  align-items: center;
+  gap: 8px;
+}
+
+.workspace-member-actions label {
+  grid-column: 1 / -1;
+}
+
+.workspace-member-actions select {
+  width: 100%;
+}
+
+.workspace-member-actions .button,
+.workspace-danger-button {
+  min-height: 44px;
+  padding: 8px 10px;
+  font-size: 0.86rem;
+}
+
+.workspace-danger-button {
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--danger, #8a3131);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.workspace-danger-button:hover:not(:disabled) {
+  background: rgb(138 49 49 / 7%);
+}
+
+.workspace-danger-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.workspace-confirmation {
+  display: flex;
+  grid-column: 1 / -1;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 14px;
+  background: var(--surface-muted, #f7f3ed);
+}
+
+.workspace-confirmation p {
+  flex: 1 1 100%;
+  margin: 0;
+  color: var(--ink-muted);
+  line-height: 1.5;
+}
+
+.workspace-add-member,
+.workspace-transfer {
+  display: grid;
+  gap: 10px;
+  margin-top: 24px;
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface-muted, #f7f3ed);
+}
+
+.workspace-add-member p,
+.workspace-transfer p {
+  margin: 0;
+}
+
+.workspace-add-member form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 190px auto;
+  align-items: end;
+  gap: 10px;
+}
+
+.workspace-add-member form label:first-of-type {
+  grid-column: 1 / 2;
+}
+
+.workspace-add-member form input {
+  grid-column: 1 / 2;
+}
+
+.workspace-add-member form label:nth-of-type(2) {
+  grid-column: 2 / 3;
+}
+
+.workspace-add-member form select {
+  grid-column: 2 / 3;
+  width: 100%;
+}
+
+.workspace-add-member form button {
+  grid-column: 3 / 4;
+  grid-row: 2 / 3;
+  white-space: nowrap;
+}
+
+.workspace-transfer {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+}
+
+.workspace-transfer h3,
+.workspace-transfer p {
+  grid-column: 1 / -1;
+}
+
+.workspace-transfer select {
+  width: 100%;
+}
+
+.workspace-empty-state h2 {
+  font-size: 1.2rem;
+}
+
+.workspace-empty-state p {
+  margin-bottom: 0;
+}
+
+.workspace-footnote {
+  margin: 0;
+  font-size: 0.86rem;
+}
+
+.workspace-page :focus-visible {
+  outline: 3px solid var(--focus-ring, #405d94);
+  outline-offset: 3px;
+}
+
+@media (max-width: 720px) {
+  .workspace-heading,
+  .workspace-account-card,
+  .workspace-create-card {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .workspace-heading > .button,
+  .workspace-account-card > .button {
+    width: 100%;
+  }
+
+  .workspace-create-card,
+  .workspace-account-card,
+  .workspace-detail-card,
+  .workspace-empty-state {
+    padding: 18px;
+  }
+
+  .workspace-form-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .workspace-form-row .button {
+    width: 100%;
+  }
+
+  .workspace-picker-row,
+  .workspace-members-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .workspace-member-card {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 14px;
+    padding: 14px;
+  }
+
+  .workspace-member-actions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .workspace-member-actions label {
+    grid-column: auto;
+  }
+
+  .workspace-member-actions .button,
+  .workspace-danger-button {
+    width: 100%;
+  }
+
+  .workspace-add-member form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .workspace-add-member form label:first-of-type,
+  .workspace-add-member form input,
+  .workspace-add-member form label:nth-of-type(2),
+  .workspace-add-member form select,
+  .workspace-add-member form button {
+    grid-column: 1;
+    grid-row: auto;
+  }
+
+  .workspace-add-member form button,
+  .workspace-transfer > .button {
+    width: 100%;
+  }
+
+  .workspace-transfer {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .workspace-error-panel {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}

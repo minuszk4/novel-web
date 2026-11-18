@@ -1,0 +1,132 @@
+import { provideHttpClient } from '@angular/common/http';
+import { TestBed } from '@angular/core/testing';
+import { provideRouter } from '@angular/router';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { PolicyOnboardingService } from '../core/policy-onboarding.service';
+import {
+  WorkspaceApiService,
+  WorkspaceDetail,
+  WorkspaceMember,
+  WorkspaceSummary,
+} from '../core/workspace-api.service';
+import { WorkspaceManagementPageComponent } from './workspace-management-page.component';
+
+const workspaceId = '11111111-1111-4111-8111-111111111111';
+const ownerId = '22222222-2222-4222-8222-222222222222';
+const memberId = '33333333-3333-4333-8333-333333333333';
+const workspace: WorkspaceSummary = {
+  id: workspaceId,
+  name: 'Nhóm đọc',
+  role: 'owner',
+  scopeVersion: 3,
+  createdAt: '2026-11-18T01:00:00Z',
+  joinedAt: '2026-11-18T01:00:00Z',
+};
+const owner: WorkspaceMember = {
+  userId: ownerId,
+  role: 'owner',
+  status: 'active',
+  joinedAt: '2026-11-18T01:00:00Z',
+  revokedAt: null,
+};
+const reader: WorkspaceMember = {
+  userId: memberId,
+  role: 'reader',
+  status: 'active',
+  joinedAt: '2026-11-18T01:01:00Z',
+  revokedAt: null,
+};
+
+describe('WorkspaceManagementPageComponent', () => {
+  let api: {
+    listWorkspaces: ReturnType<typeof vi.fn>;
+    createWorkspace: ReturnType<typeof vi.fn>;
+    listMembers: ReturnType<typeof vi.fn>;
+    setMemberRole: ReturnType<typeof vi.fn>;
+    revokeMember: ReturnType<typeof vi.fn>;
+    transferOwnership: ReturnType<typeof vi.fn>;
+  };
+
+  beforeEach(() => {
+    api = {
+      listWorkspaces: vi.fn().mockResolvedValue([workspace]),
+      createWorkspace: vi.fn(),
+      listMembers: vi.fn().mockResolvedValue([owner, reader]),
+      setMemberRole: vi.fn().mockResolvedValue({ ...reader, role: 'editor' }),
+      revokeMember: vi.fn().mockResolvedValue({
+        ...reader,
+        status: 'revoked',
+        revokedAt: '2026-11-18T02:00:00Z',
+      }),
+      transferOwnership: vi.fn().mockResolvedValue({
+        id: workspaceId,
+        name: workspace.name,
+        scopeVersion: 4,
+        createdAt: workspace.createdAt,
+      } satisfies WorkspaceDetail),
+    };
+
+    TestBed.configureTestingModule({
+      providers: [provideHttpClient(), provideRouter([])],
+    });
+    TestBed.overrideProvider(WorkspaceApiService, { useValue: api });
+    const policy = TestBed.inject(PolicyOnboardingService);
+    policy.status.set('accepted');
+    policy.accountIdentity.set({ userId: ownerId, displayName: 'Owner', contactEmail: null });
+  });
+
+  it('loads the caller workspaces and roster without displaying email addresses', async () => {
+    const fixture = TestBed.createComponent(WorkspaceManagementPageComponent);
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    const element: HTMLElement = fixture.nativeElement;
+    expect(element.querySelector('h1')?.textContent).toContain('Không gian cộng tác');
+    expect(element.textContent).toContain('Nhóm đọc');
+    expect(element.textContent).toContain(ownerId);
+    expect(element.textContent).toContain(memberId);
+    expect(element.textContent).toContain('Chủ sở hữu');
+    expect(element.textContent).toContain('Người đọc');
+    expect(element.textContent).not.toContain('@');
+    expect(api.listWorkspaces).toHaveBeenCalledOnce();
+    expect(api.listMembers).toHaveBeenCalledWith(workspaceId);
+  });
+
+  it('lets an owner explicitly confirm a membership revocation', async () => {
+    const fixture = TestBed.createComponent(WorkspaceManagementPageComponent);
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    const cards = fixture.nativeElement.querySelectorAll('.workspace-member-card');
+    const memberCard = cards[1] as HTMLElement;
+    const revokeButton = Array.from(memberCard.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('Thu hồi quyền'),
+    );
+    expect(revokeButton).toBeDefined();
+    revokeButton?.click();
+    fixture.detectChanges();
+    expect(memberCard.textContent).toContain('Xác nhận thu hồi');
+    expect(api.revokeMember).not.toHaveBeenCalled();
+
+    const confirmButton = Array.from(memberCard.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('Xác nhận thu hồi'),
+    );
+    confirmButton?.click();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(api.revokeMember).toHaveBeenCalledWith(workspaceId, memberId);
+  });
+
+  it('does not show membership mutation controls to a reader', async () => {
+    api.listWorkspaces.mockResolvedValue([{ ...workspace, role: 'reader' }]);
+    const fixture = TestBed.createComponent(WorkspaceManagementPageComponent);
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    const element: HTMLElement = fixture.nativeElement;
+    expect(element.querySelector('.workspace-add-member')).toBeNull();
+    expect(element.querySelector('.workspace-transfer')).toBeNull();
+    expect(element.textContent).not.toContain('Thu hồi quyền');
+    expect(element.textContent).not.toContain('Lưu vai trò');
+  });
+});
