@@ -176,6 +176,49 @@ public class SessionService {
     }
   }
 
+  /**
+   * Checks whether this exact active session was created recently for the expected account. The raw
+   * bearer token is hashed before lookup and is never persisted or returned by this method.
+   */
+  public boolean wasCreatedWithin(String sessionToken, UUID expectedUserId, Duration maxAge) {
+    Objects.requireNonNull(expectedUserId, "expected user id is required");
+    Objects.requireNonNull(maxAge, "maximum session age is required");
+    if (maxAge.isZero() || maxAge.isNegative()) {
+      throw new IllegalArgumentException("Maximum session age must be positive");
+    }
+    byte[] tokenHash = parseAndHashSessionToken(sessionToken);
+    if (tokenHash == null) return false;
+
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                """
+                    SELECT EXISTS (
+                      SELECT 1
+                      FROM sessions s
+                      JOIN users u ON u.id = s.user_id
+                      WHERE s.id_hash = ?
+                        AND s.user_id = ?
+                        AND s.revoked_at IS NULL
+                        AND s.created_at > clock_timestamp() - (? * INTERVAL '1 millisecond')
+                        AND s.expires_at > clock_timestamp()
+                        AND s.last_seen_at > clock_timestamp() - (? * INTERVAL '1 millisecond')
+                        AND u.status = 'active'
+                    )
+                    """)) {
+      select.setBytes(1, tokenHash);
+      select.setObject(2, expectedUserId);
+      select.setLong(3, maxAge.toMillis());
+      select.setLong(4, idleTtl.toMillis());
+      try (ResultSet row = select.executeQuery()) {
+        if (!row.next()) throw new SQLException("Recent-session query returned no result");
+        return row.getBoolean(1);
+      }
+    } catch (SQLException exception) {
+      throw new IllegalStateException("Unable to verify recent account authentication", exception);
+    }
+  }
+
   public Optional<IssuedSession> rotate(String currentToken) {
     byte[] currentHash = parseAndHashSessionToken(currentToken);
     if (currentHash == null) {
