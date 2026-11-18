@@ -1,6 +1,17 @@
 spring:
   application:
     name: novel-web-api
+  mail:
+    host: ${SMTP_HOST:}
+    port: ${SMTP_PORT:587}
+    username: ${SMTP_USERNAME:}
+    password: ${SMTP_PASSWORD:}
+    properties:
+      "[mail.smtp.auth]": ${SMTP_AUTH:true}
+      "[mail.smtp.starttls.enable]": ${SMTP_STARTTLS:true}
+      "[mail.smtp.connectiontimeout]": 5000
+      "[mail.smtp.timeout]": 5000
+      "[mail.smtp.writetimeout]": 5000
   mvc:
     problemdetails:
       enabled: true
@@ -13,6 +24,9 @@ server:
     include-exception: false
 
 management:
+  health:
+    mail:
+      enabled: false
   endpoints:
     web:
       exposure:
@@ -90,6 +104,15 @@ novel:
     poll-delay: ${NOVEL_ACCOUNT_EXPORT_POLL_DELAY:30s}
     cleanup-delay: ${NOVEL_ACCOUNT_EXPORT_CLEANUP_DELAY:5m}
     batch-size: ${NOVEL_ACCOUNT_EXPORT_BATCH_SIZE:3}
+  workspaces:
+    invitations:
+      enabled: ${NOVEL_WORKSPACE_INVITATIONS_ENABLED:false}
+      worker-enabled: ${NOVEL_WORKSPACE_INVITATION_WORKER_ENABLED:false}
+      signing-key: ${NOVEL_WORKSPACE_INVITATION_SIGNING_KEY:}
+      app-base-url: ${NOVEL_APP_BASE_URL:http://localhost:4200}
+      sender-address: ${NOVEL_MAIL_FROM:}
+      ttl: ${NOVEL_WORKSPACE_INVITATION_TTL:7d}
+      poll-delay: ${NOVEL_WORKSPACE_INVITATION_POLL_DELAY:PT15S}
   web:
     cors:
       allowed-origins:

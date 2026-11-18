@@ -96,6 +96,7 @@ public class ApiSecurityConfiguration {
                         "/api/v1/workspaces/*",
                         "/api/v1/workspaces/*/members",
                         "/api/v1/workspaces/*/libraries",
+                        "/api/v1/workspaces/*/invitations",
                         "/api/v1/catalog/works",
                         "/api/v1/catalog/works/**")
                     .permitAll();
@@ -105,10 +106,21 @@ public class ApiSecurityConfiguration {
                         "/api/v1/me/workspaces/*",
                         "/api/v1/workspaces/*/members/*",
                         "/api/v1/workspaces/*/libraries/*",
+                        "/api/v1/workspaces/*/invitations/*",
                         "/api/v1/workspaces/*/owner")
                     .permitAll();
                 authorize
-                    .requestMatchers(HttpMethod.DELETE, "/api/v1/workspaces/*/members/*")
+                    .requestMatchers(
+                        HttpMethod.DELETE,
+                        "/api/v1/workspaces/*/members/*",
+                        "/api/v1/workspaces/*/invitations/*")
+                    .permitAll();
+                authorize
+                    .requestMatchers(
+                        HttpMethod.POST,
+                        "/api/v1/me/workspace-invitations/*/resolve",
+                        "/api/v1/me/workspace-invitations/*/accept",
+                        "/api/v1/me/workspace-invitations/*/reject")
                     .permitAll();
                 authorize
                     .requestMatchers(

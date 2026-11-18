@@ -41,6 +41,7 @@ import com.novelweb.library.WorkspaceService;
 import com.novelweb.library.imports.ImportParseService;
 import com.novelweb.library.imports.ImportStagingCleanupService;
 import com.novelweb.library.imports.ImportStagingRateLimiter;
+import com.novelweb.library.invitation.WorkspaceInvitationTokenService;
 import com.novelweb.library.publication.ChapterPublishedNotificationDeliveryService;
 import com.novelweb.library.publication.PublicationTakedownPurgeService;
 import com.novelweb.library.publication.PublicationTakedownPurgeTransport;
@@ -121,6 +122,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.ActiveProfiles;
@@ -179,6 +181,16 @@ import tools.jackson.databind.ObjectMapper;
       "novel.publication.release-enabled=true",
       "novel.publication.purge.worker-enabled=false",
       "novel.notifications.delivery.enabled=false",
+      "spring.mail.host=smtp.example.test",
+      "novel.workspaces.invitations.enabled=true",
+      "novel.workspaces.invitations.worker-enabled=true",
+      "novel.workspaces.invitations.signing-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "novel.workspaces.invitations.app-base-url=https://app.example.test",
+      "novel.workspaces.invitations.sender-address=no-reply@example.test",
+      "spring.mail.username=smtp-test-user",
+      "spring.mail.password=smtp-test-password",
+      "novel.workspaces.invitations.ttl=PT168H",
+      "novel.workspaces.invitations.poll-delay=PT1H",
       "novel.publication.purge.required-targets=CDN",
       "novel.publication.purge.targets.cdn.endpoint=https://purge.example.test/v1/work",
       "novel.publication.purge.targets.cdn.bearer-token=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
@@ -215,6 +227,8 @@ class PostgresSchemaIntegrationTests {
           "work_tags",
           "workspaces",
           "workspace_members",
+          "workspace_invitations",
+          "workspace_invitation_outbox",
           "library_reading_states",
           "reader_progress",
           "reader_preferences",
@@ -357,6 +371,10 @@ class PostgresSchemaIntegrationTests {
 
   @MockitoBean private JwtDecoder jwtDecoder;
 
+  @MockitoBean private JavaMailSender javaMailSender;
+
+  @Autowired private WorkspaceInvitationTokenService workspaceInvitationTokenService;
+
   @BeforeAll
   void insertPolicyDocumentFixtures() throws SQLException {
     insertPolicyTestDocuments();
@@ -469,7 +487,7 @@ class PostgresSchemaIntegrationTests {
             connection.prepareStatement("SELECT COUNT(*) FROM databasechangelog");
         ResultSet changesets = changesetCount.executeQuery()) {
       changesets.next();
-      assertEquals(180, changesets.getInt(1), "unexpected number of applied changesets");
+      assertEquals(181, changesets.getInt(1), "unexpected number of applied changesets");
     }
 
     Set<String> actualTables = new HashSet<>();
@@ -15514,6 +15532,269 @@ class PostgresSchemaIntegrationTests {
   }
 
   @Test
+  void workspaceEmailInvitationsRequireVerifiedRecipientAndAreOneUseAndRateLimited()
+      throws Exception {
+    UUID ownerId = createSessionTestUser("Workspace Invitation Owner");
+    UUID readerId = createSessionTestUser("Workspace Invitation Reader");
+    UUID recipientId = createSessionTestUser("Workspace Invitation Recipient");
+    UUID outsiderId = createSessionTestUser("Workspace Invitation Outsider");
+    UUID workspaceId = null;
+    try {
+      addCurrentPolicyAcceptances(ownerId);
+      addCurrentPolicyAcceptances(readerId);
+      addCurrentPolicyAcceptances(recipientId);
+      addCurrentPolicyAcceptances(outsiderId);
+      workspaceId = workspaceService.createWorkspace(ownerId, "Invitation Test Room").id();
+      workspaceService.addMember(ownerId, workspaceId, readerId, WorkspaceRepository.Role.READER);
+
+      SessionService.IssuedSession ownerSession = sessionService.create(ownerId).orElseThrow();
+      SessionService.IssuedSession readerSession = sessionService.create(readerId).orElseThrow();
+      SessionService.IssuedSession recipientSession =
+          sessionService.create(recipientId).orElseThrow();
+      SessionService.IssuedSession outsiderSession =
+          sessionService.create(outsiderId).orElseThrow();
+      var ownerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", ownerSession.cookieValue());
+      var readerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", readerSession.cookieValue());
+      var recipientCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", recipientSession.cookieValue());
+      var outsiderCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", outsiderSession.cookieValue());
+      String ownerCsrf = csrfTokenService.tokenFor(ownerSession.cookieValue());
+      String recipientCsrf = csrfTokenService.tokenFor(recipientSession.cookieValue());
+      String outsiderCsrf = csrfTokenService.tokenFor(outsiderSession.cookieValue());
+      String recipientEmail = "session-" + recipientId + "@example.test";
+      UUID acceptedInviteId = UUID.randomUUID();
+      String inviteRoute = "/api/v1/workspaces/{workspaceId}/invitations/{invitationId}";
+      String inviteBody =
+          objectMapper.writeValueAsString(
+              Map.of(
+                  "email", recipientEmail, "role", "reader", "confirmedPermissionToEmail", true));
+
+      MvcResult noCsrf =
+          mockMvc
+              .perform(
+                  put(inviteRoute, workspaceId, acceptedInviteId)
+                      .cookie(ownerCookie)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(inviteBody))
+              .andReturn();
+      assertEquals(403, noCsrf.getResponse().getStatus());
+
+      MvcResult readerCannotInvite =
+          mockMvc
+              .perform(
+                  put(inviteRoute, workspaceId, acceptedInviteId)
+                      .cookie(readerCookie)
+                      .header(
+                          SessionCsrfTokenService.TOKEN_HEADER_NAME,
+                          csrfTokenService.tokenFor(readerSession.cookieValue()))
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(inviteBody))
+              .andReturn();
+      assertEquals(404, readerCannotInvite.getResponse().getStatus());
+
+      MvcResult created =
+          mockMvc
+              .perform(
+                  put(inviteRoute, workspaceId, acceptedInviteId)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(inviteBody))
+              .andReturn();
+      assertEquals(202, created.getResponse().getStatus());
+      assertTrue(created.getResponse().getContentAsString().contains(acceptedInviteId.toString()));
+      assertFalse(created.getResponse().getContentAsString().contains(recipientEmail));
+      assertTrue(created.getResponse().getHeader(HttpHeaders.CACHE_CONTROL).contains("no-store"));
+
+      MvcResult exactRetry =
+          mockMvc
+              .perform(
+                  put(inviteRoute, workspaceId, acceptedInviteId)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(inviteBody))
+              .andReturn();
+      assertEquals(202, exactRetry.getResponse().getStatus());
+      assertEquals(
+          created.getResponse().getContentAsString(),
+          exactRetry.getResponse().getContentAsString());
+      MvcResult changedRetry =
+          mockMvc
+              .perform(
+                  put(inviteRoute, workspaceId, acceptedInviteId)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          objectMapper.writeValueAsString(
+                              Map.of(
+                                  "email", "other@example.test",
+                                  "role", "reader",
+                                  "confirmedPermissionToEmail", true))))
+              .andReturn();
+      assertEquals(409, changedRetry.getResponse().getStatus());
+
+      MvcResult unknownField =
+          mockMvc
+              .perform(
+                  put(inviteRoute, workspaceId, UUID.randomUUID())
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          "{\"email\":\"person@example.test\",\"role\":\"reader\","
+                              + "\"confirmedPermissionToEmail\":true,\"userId\":\""
+                              + recipientId
+                              + "\"}"))
+              .andReturn();
+      assertEquals(400, unknownField.getResponse().getStatus());
+
+      MvcResult readerCannotList =
+          mockMvc
+              .perform(
+                  get("/api/v1/workspaces/{workspaceId}/invitations", workspaceId)
+                      .cookie(readerCookie))
+              .andReturn();
+      assertEquals(404, readerCannotList.getResponse().getStatus());
+      MvcResult managerList =
+          mockMvc
+              .perform(
+                  get("/api/v1/workspaces/{workspaceId}/invitations", workspaceId)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(200, managerList.getResponse().getStatus());
+      assertTrue(
+          managerList.getResponse().getContentAsString().contains(acceptedInviteId.toString()));
+      assertFalse(managerList.getResponse().getContentAsString().contains(recipientEmail));
+
+      String token = workspaceInvitationTokenService.tokenFor(acceptedInviteId);
+      MvcResult resolve =
+          mockMvc
+              .perform(
+                  post("/api/v1/me/workspace-invitations/{invitationId}/resolve", acceptedInviteId)
+                      .cookie(recipientCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, recipientCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(objectMapper.writeValueAsString(Map.of("token", token))))
+              .andReturn();
+      assertEquals(200, resolve.getResponse().getStatus());
+      assertTrue(resolve.getResponse().getContentAsString().contains("Invitation Test Room"));
+      assertFalse(resolve.getResponse().getContentAsString().contains(recipientEmail));
+      MvcResult outsiderResolve =
+          mockMvc
+              .perform(
+                  post("/api/v1/me/workspace-invitations/{invitationId}/resolve", acceptedInviteId)
+                      .cookie(outsiderCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, outsiderCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(objectMapper.writeValueAsString(Map.of("token", token))))
+              .andReturn();
+      assertEquals(404, outsiderResolve.getResponse().getStatus());
+      MvcResult wrongToken =
+          mockMvc
+              .perform(
+                  post("/api/v1/me/workspace-invitations/{invitationId}/resolve", acceptedInviteId)
+                      .cookie(recipientCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, recipientCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(objectMapper.writeValueAsString(Map.of("token", "wrong"))))
+              .andReturn();
+      assertEquals(404, wrongToken.getResponse().getStatus());
+
+      MvcResult accept =
+          mockMvc
+              .perform(
+                  post("/api/v1/me/workspace-invitations/{invitationId}/accept", acceptedInviteId)
+                      .cookie(recipientCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, recipientCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(objectMapper.writeValueAsString(Map.of("token", token))))
+              .andReturn();
+      assertEquals(200, accept.getResponse().getStatus());
+      assertEquals(
+          WorkspaceRepository.Role.READER,
+          workspaceService.listMembers(recipientId, workspaceId).stream()
+              .filter(member -> member.userId().equals(recipientId))
+              .findFirst()
+              .orElseThrow()
+              .role());
+      assertEquals(
+          3, workspaceService.findWorkspace(ownerId, workspaceId).orElseThrow().scopeVersion());
+
+      UUID revokedInviteId = UUID.randomUUID();
+      MvcResult secondInvite =
+          mockMvc
+              .perform(
+                  put(inviteRoute, workspaceId, revokedInviteId)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(inviteBody))
+              .andReturn();
+      assertEquals(202, secondInvite.getResponse().getStatus());
+      MvcResult revoke =
+          mockMvc
+              .perform(
+                  delete(inviteRoute, workspaceId, revokedInviteId)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf))
+              .andReturn();
+      assertEquals(204, revoke.getResponse().getStatus());
+
+      UUID rejectedInviteId = UUID.randomUUID();
+      MvcResult thirdInvite =
+          mockMvc
+              .perform(
+                  put(inviteRoute, workspaceId, rejectedInviteId)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(inviteBody))
+              .andReturn();
+      assertEquals(202, thirdInvite.getResponse().getStatus());
+      MvcResult reject =
+          mockMvc
+              .perform(
+                  post("/api/v1/me/workspace-invitations/{invitationId}/reject", rejectedInviteId)
+                      .cookie(recipientCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, recipientCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          objectMapper.writeValueAsString(
+                              Map.of(
+                                  "token",
+                                  workspaceInvitationTokenService.tokenFor(rejectedInviteId)))))
+              .andReturn();
+      assertEquals(200, reject.getResponse().getStatus());
+
+      MvcResult emailRateLimit =
+          mockMvc
+              .perform(
+                  put(inviteRoute, workspaceId, UUID.randomUUID())
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(inviteBody))
+              .andReturn();
+      assertEquals(429, emailRateLimit.getResponse().getStatus());
+
+      assertEquals("cancelled", invitationOutboxStatus(acceptedInviteId));
+      assertEquals("cancelled", invitationOutboxStatus(revokedInviteId));
+      assertEquals("cancelled", invitationOutboxStatus(rejectedInviteId));
+    } finally {
+      if (workspaceId != null) deleteWorkspaceTestData(workspaceId);
+      deleteSessionTestUser(ownerId);
+      deleteSessionTestUser(readerId);
+      deleteSessionTestUser(recipientId);
+      deleteSessionTestUser(outsiderId);
+    }
+  }
+
+  @Test
   void workspaceRolesScopeLibraryAndContentReadsWritesAndSearch() throws Exception {
     UUID ownerId = createSessionTestUser("Workspace Library Owner");
     UUID adminId = createSessionTestUser("Workspace Library Admin");
@@ -16054,6 +16335,8 @@ class PostgresSchemaIntegrationTests {
             "auth_events",
             "session_revoke_confirmations",
             "workspace_members",
+            "workspace_invitations",
+            "workspace_invitation_outbox",
             "workspaces",
             "library_collection_works",
             "reader_bookmark_idempotency",
@@ -21031,6 +21314,19 @@ class PostgresSchemaIntegrationTests {
             connection.prepareStatement("DELETE FROM workspaces WHERE id = ?")) {
       deleteWorkspace.setObject(1, workspaceId);
       deleteWorkspace.executeUpdate();
+    }
+  }
+
+  private String invitationOutboxStatus(UUID invitationId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT status FROM workspace_invitation_outbox WHERE invitation_id = ?")) {
+      select.setObject(1, invitationId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getString("status");
+      }
     }
   }
 
