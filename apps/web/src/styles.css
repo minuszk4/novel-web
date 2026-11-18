@@ -6504,6 +6504,51 @@ a.followed-work-title:hover {
   }
 }
 @media (max-width: 200px) {
+  .mobile-nav {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+  }
+  .mobile-nav small {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    text-align: center;
+  }
+  .settings-layout,
+  .settings-content,
+  .settings-nav {
+    min-width: 0;
+  }
+  .settings-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .settings-content {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .settings-content > *,
+  .settings-card {
+    min-width: 0;
+  }
+  .settings-theme-picker {
+    width: 100%;
+    min-width: 0;
+  }
+  .settings-theme-picker > div {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .settings-theme-picker button {
+    min-width: 0;
+    width: 100%;
+  }
+  .settings-nav {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .settings-nav a {
+    min-width: 0;
+    padding-inline: 8px;
+    overflow-wrap: anywhere;
+  }
   .hero-section {
     grid-template-columns: minmax(0, 1fr);
   }

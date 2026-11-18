@@ -194,3 +194,9 @@ databaseChangeLog:
   - include:
       file: changes/073-in-app-notification-delivery.sql
       relativeToChangelogFile: true
+  - include:
+      file: changes/074-session-authentication-time.sql
+      relativeToChangelogFile: true
+  - include:
+      file: changes/075-account-data-exports.sql
+      relativeToChangelogFile: true

@@ -1,0 +1,90 @@
+.export-settings {
+  display: grid;
+  gap: 1rem;
+}
+
+.export-scope {
+  padding: 1rem;
+  border: 1px solid var(--line, #dedbd5);
+  border-radius: 0.75rem;
+  background: var(--surface-muted, #f8f7f4);
+}
+
+.export-scope h3 {
+  margin: 0 0 0.4rem;
+  font-size: 0.95rem;
+}
+
+.export-scope ul {
+  margin: 0 0 1rem;
+  padding-left: 1.25rem;
+  line-height: 1.55;
+}
+
+.export-scope ul:last-child {
+  margin-bottom: 0;
+}
+
+.export-confirmation {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  line-height: 1.5;
+}
+
+.export-confirmation input {
+  width: 1.1rem;
+  height: 1.1rem;
+  margin-top: 0.15rem;
+  accent-color: var(--accent, #6848c8);
+}
+
+.export-job {
+  display: grid;
+  gap: 0.35rem;
+  padding: 1rem;
+  border-left: 3px solid var(--accent, #6848c8);
+  border-radius: 0.4rem;
+  background: var(--surface-muted, #f8f7f4);
+}
+
+.export-job p,
+.export-message,
+.export-error,
+.export-notice,
+.export-footnote {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.export-message {
+  color: var(--success-text, #23623a);
+}
+
+.export-error {
+  color: var(--danger-text, #a12424);
+}
+
+.export-notice,
+.export-footnote {
+  color: var(--muted, #68645e);
+}
+
+.export-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+}
+
+.export-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+@media (max-width: 520px) {
+  .export-actions > button,
+  .export-job > a {
+    width: 100%;
+    justify-content: center;
+  }
+}

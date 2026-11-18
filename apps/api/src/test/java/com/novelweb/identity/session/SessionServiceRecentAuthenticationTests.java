@@ -14,6 +14,9 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.UUID;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.Test;
@@ -35,6 +38,9 @@ class SessionServiceRecentAuthenticationTests {
         .isThrownBy(
             () ->
                 service.wasCreatedWithin(SESSION_TOKEN, UUID.randomUUID(), Duration.ofSeconds(-1)));
+    assertThatIllegalArgumentException()
+        .isThrownBy(
+            () -> service.wasCreatedWithin(SESSION_TOKEN, UUID.randomUUID(), Duration.ofDays(91)));
     verifyNoInteractions(dataSource);
   }
 
@@ -94,6 +100,46 @@ class SessionServiceRecentAuthenticationTests {
             () -> service(dataSource).wasCreatedWithin(SESSION_TOKEN, UUID.randomUUID(), MAX_AGE))
         .isInstanceOf(IllegalStateException.class)
         .hasMessage("Unable to verify recent account authentication");
+  }
+
+  @Test
+  void rotationPreservesOriginalAuthenticationTime() throws Exception {
+    DataSource dataSource = mock(DataSource.class);
+    Connection connection = mock(Connection.class);
+    PreparedStatement select = mock(PreparedStatement.class);
+    PreparedStatement revoke = mock(PreparedStatement.class);
+    PreparedStatement insert = mock(PreparedStatement.class);
+    ResultSet rows = mock(ResultSet.class);
+    UUID actorId = UUID.randomUUID();
+    Instant authenticatedAt = Instant.parse("2026-11-18T00:00:00Z");
+    Instant expiresAt = authenticatedAt.plus(Duration.ofDays(30));
+    when(dataSource.getConnection()).thenReturn(connection);
+    when(connection.prepareStatement(anyString()))
+        .thenAnswer(
+            invocation -> {
+              String sql = invocation.getArgument(0);
+              if (sql.contains("SELECT s.user_id, s.expires_at, s.authenticated_at")) {
+                return select;
+              }
+              if (sql.startsWith("UPDATE sessions")) return revoke;
+              if (sql.startsWith("INSERT INTO sessions")) return insert;
+              throw new AssertionError("Unexpected SQL: " + sql);
+            });
+    when(select.executeQuery()).thenReturn(rows);
+    when(rows.next()).thenReturn(true);
+    when(rows.getObject("user_id", UUID.class)).thenReturn(actorId);
+    when(rows.getObject("expires_at", OffsetDateTime.class))
+        .thenReturn(OffsetDateTime.ofInstant(expiresAt, ZoneOffset.UTC));
+    when(rows.getObject("authenticated_at", OffsetDateTime.class))
+        .thenReturn(OffsetDateTime.ofInstant(authenticatedAt, ZoneOffset.UTC));
+    when(revoke.executeUpdate()).thenReturn(1);
+    when(insert.executeUpdate()).thenReturn(1);
+
+    var rotated = service(dataSource).rotate(SESSION_TOKEN);
+
+    assertThat(rotated).isPresent();
+    assertThat(rotated.orElseThrow().userId()).isEqualTo(actorId);
+    verify(insert).setObject(4, OffsetDateTime.ofInstant(authenticatedAt, ZoneOffset.UTC));
   }
 
   private static SessionService service(DataSource dataSource) {

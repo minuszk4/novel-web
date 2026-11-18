@@ -79,6 +79,17 @@ novel:
           enabled: ${NOVEL_MOMO_TEST_RECONCILIATION_ENABLED:false}
           poll-delay: ${NOVEL_MOMO_TEST_RECONCILIATION_POLL_DELAY:30s}
           batch-size: ${NOVEL_MOMO_TEST_RECONCILIATION_BATCH_SIZE:5}
+  account-data-export:
+    enabled: ${NOVEL_ACCOUNT_DATA_EXPORT_ENABLED:false}
+    worker-enabled: ${NOVEL_ACCOUNT_DATA_EXPORT_WORKER_ENABLED:false}
+    root: ${NOVEL_ACCOUNT_EXPORT_ROOT:${java.io.tmpdir}/novel-web-account-exports}
+    max-artifact-bytes: ${NOVEL_ACCOUNT_EXPORT_MAX_BYTES:268435456}
+    max-uncompressed-bytes: ${NOVEL_ACCOUNT_EXPORT_MAX_UNCOMPRESSED_BYTES:1073741824}
+    artifact-ttl: ${NOVEL_ACCOUNT_EXPORT_TTL:24h}
+    recent-authentication-window: ${NOVEL_ACCOUNT_EXPORT_RECENT_AUTH:10m}
+    poll-delay: ${NOVEL_ACCOUNT_EXPORT_POLL_DELAY:30s}
+    cleanup-delay: ${NOVEL_ACCOUNT_EXPORT_CLEANUP_DELAY:5m}
+    batch-size: ${NOVEL_ACCOUNT_EXPORT_BATCH_SIZE:3}
   web:
     cors:
       allowed-origins:

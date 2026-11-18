@@ -1,0 +1,95 @@
+<section class="settings-card export-settings" aria-labelledby="account-export-title">
+  <div class="settings-card-heading">
+    <p class="eyebrow">QUYỀN RIÊNG TƯ</p>
+    <h2 id="account-export-title">Tải dữ liệu tài khoản</h2>
+    <p>
+      Tạo một tệp ZIP chứa dữ liệu Novel Web lưu cho tài khoản này. Máy chủ chỉ nhận yêu cầu khi
+      phiên đăng nhập còn mới và bạn đã xác nhận các chính sách hiện hành.
+    </p>
+  </div>
+
+  @if (!policy.accountIdentity()) {
+    <p class="export-notice">Đăng nhập bằng tài khoản server để yêu cầu bản sao dữ liệu.</p>
+  } @else {
+    <div class="export-scope">
+      <h3>Tệp sẽ gồm</h3>
+      <ul>
+        <li>Thông tin tài khoản, lựa chọn cá nhân, tiến độ đọc và dấu trang.</li>
+        <li>Truyện, chương, bản sửa và nội dung đầy đủ mà tài khoản này sở hữu.</li>
+        <li>Giao dịch MoMo TEST, credit và chương đã mở khóa của tài khoản.</li>
+      </ul>
+      <h3>Tệp không gồm</h3>
+      <ul>
+        <li>Nội dung thuộc người khác hoặc dữ liệu riêng của workspace chia sẻ.</li>
+        <li>Tệp tải lên đang chờ nhập, ảnh/tệp nhị phân bên ngoài và bí mật đăng nhập.</li>
+        <li>Bản dịch do provider tạo nhưng người dùng chưa chỉnh sửa hoặc phát hành.</li>
+      </ul>
+    </div>
+
+    <label class="export-confirmation">
+      <input
+        type="checkbox"
+        [checked]="confirmed()"
+        (change)="confirmed.set($any($event.target).checked)"
+      />
+      <span>Tôi hiểu rằng tệp bao gồm toàn bộ nội dung truyện và chương tôi sở hữu.</span>
+    </label>
+
+    @if (job(); as currentJob) {
+      <div class="export-job" aria-label="Trạng thái bản export">
+        <p><strong>Trạng thái:</strong> {{ statusLabel(currentJob.status) }}</p>
+        @if (currentJob.artifactBytes !== null) {
+          <p><strong>Kích thước:</strong> {{ formatSize(currentJob.artifactBytes) }}</p>
+        }
+        @if (currentJob.expiresAt && currentJob.status === 'ready') {
+          <p><strong>Hạn tải:</strong> {{ currentJob.expiresAt }}</p>
+        }
+        @if (currentJob.status === 'ready' && currentJob.downloadUrl) {
+          <a
+            class="button button-primary"
+            [href]="currentJob.downloadUrl"
+            download="novel-web-account-data.zip"
+          >
+            Tải tệp ZIP
+          </a>
+        }
+        @if (currentJob.status === 'failed') {
+          <p class="export-notice">Mã lỗi: {{ currentJob.failureCode || 'Không xác định' }}</p>
+        }
+        @if (currentJob.status === 'expired') {
+          <p class="export-notice">Tệp đã được dọn khỏi máy chủ. Bạn có thể yêu cầu bản mới.</p>
+        }
+      </div>
+    }
+
+    <div class="export-actions">
+      <button
+        class="button button-primary"
+        type="button"
+        [disabled]="!confirmed() || busy() || isActive()"
+        (click)="request()"
+      >
+        @if (busy()) {
+          Đang xử lý…
+        } @else {
+          Yêu cầu bản export
+        }
+      </button>
+      @if (job()) {
+        <button class="button button-outline" type="button" [disabled]="busy()" (click)="refresh()">
+          Kiểm tra trạng thái
+        </button>
+      }
+    </div>
+    @if (message()) {
+      <p class="export-message" role="status">{{ message() }}</p>
+    }
+    @if (error()) {
+      <p class="export-error" role="alert">{{ error() }}</p>
+    }
+    <p class="export-footnote">
+      Bản tải xuống tự hết hạn sau 24 giờ. Nếu chưa đăng nhập lại gần đây, máy chủ sẽ yêu cầu bạn
+      đăng nhập lại. Tính năng có thể chưa được bật trên máy chủ.
+    </p>
+  }
+</section>

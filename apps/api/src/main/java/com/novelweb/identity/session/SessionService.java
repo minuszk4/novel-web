@@ -27,6 +27,7 @@ public class SessionService {
   private static final int SESSION_SECRET_BYTES = 32;
   private static final Pattern SESSION_TOKEN_PATTERN = Pattern.compile("[A-Za-z0-9_-]{43}");
   private static final Duration MAXIMUM_ABSOLUTE_TTL = Duration.ofDays(90);
+  private static final Duration MAXIMUM_RECENT_AUTHENTICATION_WINDOW = Duration.ofDays(90);
 
   private final DataSource dataSource;
   private final Duration absoluteTtl;
@@ -183,8 +184,11 @@ public class SessionService {
   public boolean wasCreatedWithin(String sessionToken, UUID expectedUserId, Duration maxAge) {
     Objects.requireNonNull(expectedUserId, "expected user id is required");
     Objects.requireNonNull(maxAge, "maximum session age is required");
-    if (maxAge.isZero() || maxAge.isNegative()) {
-      throw new IllegalArgumentException("Maximum session age must be positive");
+    if (maxAge.isZero()
+        || maxAge.isNegative()
+        || maxAge.compareTo(MAXIMUM_RECENT_AUTHENTICATION_WINDOW) > 0) {
+      throw new IllegalArgumentException(
+          "Recent authentication window must be positive and bounded");
     }
     byte[] tokenHash = parseAndHashSessionToken(sessionToken);
     if (tokenHash == null) return false;
@@ -200,7 +204,7 @@ public class SessionService {
                       WHERE s.id_hash = ?
                         AND s.user_id = ?
                         AND s.revoked_at IS NULL
-                        AND s.created_at > clock_timestamp() - (? * INTERVAL '1 millisecond')
+                        AND s.authenticated_at > clock_timestamp() - (? * INTERVAL '1 millisecond')
                         AND s.expires_at > clock_timestamp()
                         AND s.last_seen_at > clock_timestamp() - (? * INTERVAL '1 millisecond')
                         AND u.status = 'active'
@@ -232,10 +236,11 @@ public class SessionService {
       try {
         UUID userId;
         Instant absoluteExpiresAt;
+        Instant authenticatedAt;
         try (PreparedStatement select =
             connection.prepareStatement(
                 """
-                        SELECT s.user_id, s.expires_at
+                        SELECT s.user_id, s.expires_at, s.authenticated_at
                         FROM sessions s
                         JOIN users u ON u.id = s.user_id
                         WHERE s.id_hash = ?
@@ -254,6 +259,7 @@ public class SessionService {
             }
             userId = row.getObject("user_id", UUID.class);
             absoluteExpiresAt = row.getObject("expires_at", OffsetDateTime.class).toInstant();
+            authenticatedAt = row.getObject("authenticated_at", OffsetDateTime.class).toInstant();
           }
         }
 
@@ -272,13 +278,14 @@ public class SessionService {
         try (PreparedStatement insert =
             connection.prepareStatement(
                 """
-                        INSERT INTO sessions (id_hash, user_id, expires_at)
-                        VALUES (?, ?, ?)
+                        INSERT INTO sessions (id_hash, user_id, expires_at, authenticated_at)
+                        VALUES (?, ?, ?, ?)
                         """)) {
           insert.setBytes(1, replacementHash);
           insert.setObject(2, userId);
           insert.setObject(
               3, OffsetDateTime.ofInstant(absoluteExpiresAt, java.time.ZoneOffset.UTC));
+          insert.setObject(4, OffsetDateTime.ofInstant(authenticatedAt, java.time.ZoneOffset.UTC));
           if (insert.executeUpdate() != 1) {
             throw new SQLException("Session replacement could not be created");
           }

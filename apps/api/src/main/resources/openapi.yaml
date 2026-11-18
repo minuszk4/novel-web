@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 10.9.0
+  version: 10.10.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -17,6 +17,7 @@ info:
     Scoped glossary storage, actor-scoped catalog listing/creation, active and writer-only latest-revision reads, version-checked immutable draft creation, authenticated diff/lint/match preview, lint-gated revision publication with append-only audit, strict JSON/CSV/TSV import preview and resolved atomic draft apply, and active/writer-only latest snapshot export are implemented in the PostgreSQL profile. Translation job enqueue/status/retry/cancel are available only as an explicit fake-local development preview and never call an external NMT provider. Manual translation readiness/submission plus assigned-reviewer queue, frozen-snapshot detail and append-only accept/reject decisions are available only behind `NOVEL_TRANSLATION_REVIEW_ENABLED`; the flag defaults off. Writer and reviewer UI are implemented behind the default-off manual-review gate. Owner release requires a second default-off `NOVEL_TRANSLATION_PUBLICATION_ENABLED` flag, an accepted current human snapshot, active adaptation rights and explicit owner confirmation; rollback and translated Reader delivery remain separate work. `features.translationFakePreviewEnabled` is true only when both required profiles and the provider/API/worker opt-in flags are active.
     The authenticated PostgreSQL profile also exposes the current actor's available paid and non-expired bonus credit totals from the rebuildable balance projection; the response is no-store and does not expose another account's ledger. When the MoMo TEST gate is explicitly enabled with valid TEST configuration, the profile also exposes server-priced public-chapter unlock quotes and an idempotent paid-credit unlock that commits the debit with an immutable entitlement; private/draft chapters remain unavailable and no production purchase is enabled.
     An opt-in, metadata-only guest catalog endpoint is available in the PostgreSQL profile. It is disabled by default and returns only authored, active, explicitly public works owned by active users with at least one ready chapter; it does not return descriptions or chapter bodies. Admin-only publication-reviewer role assignment, bounded eligible-account search and status-filtered assignment history are implemented in the PostgreSQL profile; the current-user response exposes the caller's server-derived security capability for navigation only. Owners can submit private manuscripts and staged draft chapters on public works for immutable rights review. Active assigned reviewers receive an actor-bound queue and privacy-filtered scope snapshots; decisions are idempotent, ETag-bound and never publish content. Owner-confirmed release for a manuscript or staged chapter is behind `NOVEL_PUBLICATION_RELEASE_ENABLED`, which remains off by default. Chapter release atomically makes the reviewed revision ready, refreshes previously granted scope approvals and writes an identifier-only publication outbox event. The API does not bootstrap system administrators, let authors define policy or self-review. Following stores the current actor's public-work preference; outbox delivery consumers, email digest, scheduled release, owner unpublish, edge rate limits and guest reader access remain separate work.
+    Account export request, actor-scoped status and authenticated download routes are implemented in the PostgreSQL profile behind default-off API/worker gates. Exports require current Terms/Privacy acceptance and a session established by recent Google sign-in, use a repeatable-read snapshot and a bounded ZIP of JSONL data, and include full revisions/segments for account-owned works. Shared workspace data, provider-generated translation candidates, import staging bytes, external binary assets and session/provider secrets are listed as exclusions in the manifest. MoMo TEST orders/settlement/reconciliation, credit ledger and unlock entitlements for the actor are included; account deletion and legal retention workflows remain unimplemented.
 servers:
   - url: http://127.0.0.1:8080
 tags:
@@ -60,6 +61,9 @@ tags:
     x-implementation-status: partial
   - name: Commerce
     description: Actor-owned credit balance/history, MoMo TEST-only feature-gated pack checkout/order status/IPN settlement and paid-credit chapter unlock are implemented; payment-order history, missing-IPN reconciliation, purchase history UI and production payment remain unavailable.
+    x-implementation-status: partial
+  - name: Account privacy
+    description: High-risk account export request, actor-only job status and short-lived authenticated artifact download; disabled by default.
     x-implementation-status: partial
 paths:
   /api/v1/admin/security/role-assignments:
@@ -5729,6 +5733,155 @@ paths:
         '403':
           $ref: '#/components/responses/Problem'
         '404':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/me/data-exports:
+    post:
+      operationId: requestCurrentAccountDataExport
+      tags: [Account privacy]
+      x-implementation-status: implemented-postgres-profile-feature-gated
+      summary: Request an export of the authenticated account's personal data
+      description: >-
+        Requires the PostgreSQL profile, both account-export gates, an active session, current Terms and Privacy
+        acceptance, a session-bound CSRF token and recent account authentication. Idempotency keys are hashed before
+        storage. At most one queued/processing export is allowed per actor. The worker creates a repeatable-read ZIP
+        snapshot with a manifest and actor-scoped JSONL datasets. The manifest lists shared workspace data,
+        provider-generated translation candidates, source uploads, external binary assets and credentials that are
+        excluded. The actor's MoMo TEST orders, settlement/reconciliation events, credit ledger and unlock
+        entitlements are included and labeled TEST. This endpoint does not represent or export production payments.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            minLength: 16
+            maxLength: 128
+            pattern: '^[A-Za-z0-9._~-]{16,128}$'
+      responses:
+        '202':
+          description: Export queued or replayed; response is no-store.
+          headers:
+            Idempotency-Replayed:
+              schema:
+                type: boolean
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountDataExportCreateResponse'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/me/data-exports/{exportId}:
+    get:
+      operationId: getCurrentAccountDataExport
+      tags: [Account privacy]
+      x-implementation-status: implemented-postgres-profile-feature-gated
+      summary: Get the authenticated account's export status
+      description: >-
+        Actor-scoped, no-store state only. A job belonging to another account is masked as 404. Storage keys,
+        checksums, internal paths and exception details are never returned. When the artifact TTL has elapsed,
+        status is reported as expired even if asynchronous cleanup has not run yet.
+      security:
+        - appSession: []
+      parameters:
+        - name: exportId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Current actor-owned export state; response is no-store.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountDataExportJob'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/me/data-exports/latest:
+    get:
+      operationId: getLatestCurrentAccountDataExport
+      tags: [Account privacy]
+      x-implementation-status: implemented-postgres-profile-feature-gated
+      summary: Restore the latest export status for the authenticated account
+      description: >-
+        Actor-scoped, no-store status used by account settings to recover the latest request after a page reload.
+        Returns 404 when this account has not requested an export. No provider tokens, storage paths or checksums
+        are exposed.
+      security:
+        - appSession: []
+      responses:
+        '200':
+          description: Latest actor-owned export state; response is no-store.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountDataExportJob'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/me/data-exports/{exportId}/download:
+    get:
+      operationId: downloadCurrentAccountDataExport
+      tags: [Account privacy]
+      x-implementation-status: implemented-postgres-profile-feature-gated
+      summary: Download a ready account export
+      description: >-
+        Requires an active session belonging to the export owner. The server checks owner, ready state, expiry,
+        regular-file type and SHA-256 before streaming the fixed-name ZIP. Responses are no-store, use nosniff and
+        no-referrer headers, and never redirect to a bearer URL. Expired or foreign artifacts cannot be downloaded.
+      security:
+        - appSession: []
+      parameters:
+        - name: exportId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Verified account data archive.
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/zip:
+              schema:
+                type: string
+                format: binary
+        '401':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '410':
           $ref: '#/components/responses/Problem'
         '503':
           $ref: '#/components/responses/Problem'
@@ -12471,6 +12624,47 @@ components:
                 type: string
               message:
                 type: string
+    AccountDataExportCreateResponse:
+      type: object
+      additionalProperties: false
+      required: [export, replayed]
+      properties:
+        export:
+          $ref: '#/components/schemas/AccountDataExportJob'
+        replayed:
+          type: boolean
+    AccountDataExportJob:
+      type: object
+      additionalProperties: false
+      required: [id, status, requestedAt, startedAt, readyAt, expiresAt, artifactBytes, failureCode, downloadUrl]
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [queued, processing, ready, failed, expired]
+        requestedAt:
+          type: string
+          format: date-time
+        startedAt:
+          type: [string, 'null']
+          format: date-time
+        readyAt:
+          type: [string, 'null']
+          format: date-time
+        expiresAt:
+          type: [string, 'null']
+          format: date-time
+        artifactBytes:
+          type: [integer, 'null']
+          minimum: 1
+        failureCode:
+          type: [string, 'null']
+          enum: [GENERATION_FAILED, SIZE_LIMIT_EXCEEDED, STORAGE_UNAVAILABLE, null]
+        downloadUrl:
+          type: [string, 'null']
+          format: uri-reference
   responses:
     Problem:
       description: Safe problem response
