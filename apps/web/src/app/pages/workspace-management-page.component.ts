@@ -5,6 +5,7 @@ import {
   WorkspaceApiError,
   WorkspaceApiService,
   WorkspaceLibrary,
+  WorkspaceInvitationSummary,
   WorkspaceMember,
   WorkspaceMemberRole,
   WorkspaceRole,
@@ -25,8 +26,16 @@ interface PendingLibraryCreate {
   name: string;
 }
 
+interface PendingInvitationCreate {
+  workspaceId: string;
+  id: string;
+  email: string;
+  role: WorkspaceMemberRole;
+}
+
 const pendingCreateStorageKey = 'novel.workspace-create-attempt.v1';
 const pendingLibraryCreateStorageKey = 'novel.workspace-library-create-attempt.v1';
+const pendingInvitationCreateStorageKey = 'novel.workspace-invitation-create-attempt.v1';
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const memberRoles: readonly WorkspaceMemberRole[] = ['admin', 'editor', 'reader'];
 
@@ -45,6 +54,15 @@ export class WorkspaceManagementPageComponent {
   protected readonly selectedWorkspaceId = signal<string | null>(null);
   protected readonly members = signal<WorkspaceMember[]>([]);
   protected readonly libraries = signal<WorkspaceLibrary[]>([]);
+  protected readonly invitations = signal<WorkspaceInvitationSummary[]>([]);
+  protected readonly invitationPhase = signal<LoadPhase>('loading');
+  protected readonly invitationMutation = signal<MutationPhase>('idle');
+  protected readonly invitationEmail = signal('');
+  protected readonly invitationRole = signal<WorkspaceMemberRole>('reader');
+  protected readonly invitationConsent = signal(false);
+  protected readonly invitationError = signal<string | null>(null);
+  protected readonly invitationMessage = signal<string | null>(null);
+  protected readonly pendingRevokeInvitationId = signal<string | null>(null);
   protected readonly nextLibraryCursor = signal<string | null>(null);
   protected readonly libraryPhase = signal<LoadPhase>('loading');
   protected readonly libraryMutation = signal<MutationPhase>('idle');
@@ -87,6 +105,7 @@ export class WorkspaceManagementPageComponent {
 
   private pendingCreate = this.readPendingCreate();
   private pendingLibraryCreate = this.readPendingLibraryCreate();
+  private pendingInvitationCreate = this.readPendingInvitationCreate();
 
   constructor() {
     void this.loadWorkspaces();
@@ -155,13 +174,19 @@ export class WorkspaceManagementPageComponent {
         this.libraryName.set(this.pendingLibraryCreate.name);
       }
       if (nextSelected)
-        await Promise.all([this.loadMembers(nextSelected), this.loadLibraries(nextSelected)]);
+        await Promise.all([
+          this.loadMembers(nextSelected),
+          this.loadLibraries(nextSelected),
+          this.loadInvitations(nextSelected),
+        ]);
       else {
         this.members.set([]);
         this.memberPhase.set('ready');
         this.libraries.set([]);
         this.nextLibraryCursor.set(null);
         this.libraryPhase.set('ready');
+        this.invitations.set([]);
+        this.invitationPhase.set('ready');
       }
     } catch (error) {
       this.workspacePhase.set('error');
@@ -177,12 +202,13 @@ export class WorkspaceManagementPageComponent {
     this.nextLibraryCursor.set(null);
     this.libraryPhase.set('loading');
     this.pendingRevokeUserId.set(null);
+    this.pendingRevokeInvitationId.set(null);
     this.transferConfirmationOpen.set(false);
     this.memberError.set(null);
     this.memberMessage.set(null);
     this.libraryError.set(null);
     this.libraryMessage.set(null);
-    await Promise.all([this.loadMembers(id), this.loadLibraries(id)]);
+    await Promise.all([this.loadMembers(id), this.loadLibraries(id), this.loadInvitations(id)]);
   }
 
   protected updateLibraryName(event: Event): void {
@@ -252,6 +278,140 @@ export class WorkspaceManagementPageComponent {
   protected async retryLibraries(): Promise<void> {
     const workspaceId = this.selectedWorkspaceId();
     if (workspaceId) await this.loadLibraries(workspaceId);
+  }
+
+  protected updateInvitationEmail(event: Event): void {
+    const value = (event.target as HTMLInputElement).value;
+    this.invitationEmail.set(value);
+    this.invitationError.set(null);
+    if (
+      this.pendingInvitationCreate &&
+      value.trim().toLowerCase() !== this.pendingInvitationCreate.email
+    ) {
+      this.clearPendingInvitationCreate();
+    }
+  }
+
+  protected updateInvitationRole(event: Event): void {
+    const role = (event.target as HTMLSelectElement).value;
+    if (!isMemberRole(role)) return;
+    this.invitationRole.set(role);
+    this.invitationError.set(null);
+    if (this.pendingInvitationCreate && role !== this.pendingInvitationCreate.role) {
+      this.clearPendingInvitationCreate();
+    }
+  }
+
+  protected updateInvitationConsent(event: Event): void {
+    this.invitationConsent.set((event.target as HTMLInputElement).checked);
+  }
+
+  protected async inviteByEmail(): Promise<void> {
+    const workspaceId = this.selectedWorkspaceId();
+    const email = this.invitationEmail().trim().toLowerCase();
+    const role = this.invitationRole();
+    if (!workspaceId || !this.canManageMembers()) return;
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || [...email].length > 320) {
+      this.invitationError.set('Nhập địa chỉ email hợp lệ, tối đa 320 ký tự.');
+      return;
+    }
+    if (!this.invitationConsent()) {
+      this.invitationError.set('Hãy xác nhận bạn có quyền gửi lời mời đến địa chỉ này.');
+      return;
+    }
+    if (
+      !this.pendingInvitationCreate ||
+      this.pendingInvitationCreate.workspaceId !== workspaceId ||
+      this.pendingInvitationCreate.email !== email ||
+      this.pendingInvitationCreate.role !== role
+    ) {
+      this.pendingInvitationCreate = {
+        workspaceId,
+        id: crypto.randomUUID(),
+        email,
+        role,
+      };
+      this.writePendingInvitationCreate(this.pendingInvitationCreate);
+    }
+    this.invitationMutation.set('saving');
+    this.invitationError.set(null);
+    this.invitationMessage.set(null);
+    try {
+      const result = await this.api.createInvitation(
+        workspaceId,
+        this.pendingInvitationCreate.id,
+        email,
+        role,
+      );
+      this.clearPendingInvitationCreate();
+      this.invitationEmail.set('');
+      this.invitationConsent.set(false);
+      this.invitationMessage.set(
+        result.status === 'pending'
+          ? 'Đã xếp lời mời vào hàng gửi. Người nhận cần đăng nhập Google bằng email đã xác minh.'
+          : 'Yêu cầu trước đã được xử lý; hãy tải lại danh sách lời mời.',
+      );
+      await this.loadInvitations(workspaceId);
+    } catch (error) {
+      this.invitationError.set(
+        workspaceInvitationErrorMessage(
+          error,
+          'Chưa xác nhận được lời mời. Bạn có thể thử lại an toàn.',
+        ),
+      );
+    } finally {
+      this.invitationMutation.set('idle');
+    }
+  }
+
+  protected requestRevokeInvitation(invitation: WorkspaceInvitationSummary): void {
+    if (!this.canManageMembers() || invitation.status !== 'pending') return;
+    this.pendingRevokeInvitationId.set(invitation.id);
+    this.invitationError.set(null);
+  }
+
+  protected cancelRevokeInvitation(): void {
+    this.pendingRevokeInvitationId.set(null);
+  }
+
+  protected async confirmRevokeInvitation(invitation: WorkspaceInvitationSummary): Promise<void> {
+    const workspaceId = this.selectedWorkspaceId();
+    if (!workspaceId || !this.canManageMembers()) return;
+    this.invitationMutation.set('saving');
+    this.invitationError.set(null);
+    this.invitationMessage.set(null);
+    try {
+      await this.api.revokeInvitation(workspaceId, invitation.id);
+      this.pendingRevokeInvitationId.set(null);
+      this.invitationMessage.set(
+        'Đã thu hồi lời mời. Liên kết trong email không còn sử dụng được.',
+      );
+      await this.loadInvitations(workspaceId);
+    } catch (error) {
+      this.invitationError.set(
+        workspaceInvitationErrorMessage(
+          error,
+          'Không thu hồi được lời mời. Hãy tải lại rồi thử lại.',
+        ),
+      );
+    } finally {
+      this.invitationMutation.set('idle');
+    }
+  }
+
+  protected async retryInvitations(): Promise<void> {
+    const workspaceId = this.selectedWorkspaceId();
+    if (workspaceId) await this.loadInvitations(workspaceId);
+  }
+
+  protected workspaceRoleLabel(role: WorkspaceMemberRole): string {
+    return role === 'admin' ? 'Quản trị viên' : role === 'editor' ? 'Biên tập viên' : 'Người đọc';
+  }
+
+  protected formatInvitationExpiry(value: string): string {
+    return new Intl.DateTimeFormat('vi-VN', { dateStyle: 'medium', timeStyle: 'short' }).format(
+      new Date(value),
+    );
   }
 
   protected async loadMembers(workspaceId = this.selectedWorkspaceId()): Promise<void> {
@@ -464,6 +624,28 @@ export class WorkspaceManagementPageComponent {
     await this.loadWorkspaces();
   }
 
+  private async loadInvitations(workspaceId: string): Promise<void> {
+    if (!this.canManageMembers()) {
+      this.invitations.set([]);
+      this.invitationPhase.set('ready');
+      return;
+    }
+    this.invitationPhase.set('loading');
+    this.invitationError.set(null);
+    try {
+      const invitations = await this.api.listInvitations(workspaceId);
+      if (this.selectedWorkspaceId() !== workspaceId) return;
+      this.invitations.set(invitations);
+      this.invitationPhase.set('ready');
+    } catch (error) {
+      if (this.selectedWorkspaceId() !== workspaceId) return;
+      this.invitationPhase.set('error');
+      this.invitationError.set(
+        workspaceInvitationErrorMessage(error, 'Không tải được các lời mời đang chờ.'),
+      );
+    }
+  }
+
   private async refreshWorkspaceState(workspaceId: string): Promise<void> {
     this.selectedWorkspaceId.set(workspaceId);
     await this.loadWorkspaces();
@@ -578,6 +760,60 @@ export class WorkspaceManagementPageComponent {
       // The current page can still safely retry from its in-memory state.
     }
   }
+
+  private readPendingInvitationCreate(): PendingInvitationCreate | null {
+    if (typeof sessionStorage === 'undefined') return null;
+    try {
+      const value: unknown = JSON.parse(
+        sessionStorage.getItem(pendingInvitationCreateStorageKey) ?? 'null',
+      );
+      if (
+        typeof value === 'object' &&
+        value !== null &&
+        'workspaceId' in value &&
+        'id' in value &&
+        'email' in value &&
+        'role' in value &&
+        typeof value.workspaceId === 'string' &&
+        uuidPattern.test(value.workspaceId) &&
+        typeof value.id === 'string' &&
+        uuidPattern.test(value.id) &&
+        typeof value.email === 'string' &&
+        /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.email) &&
+        typeof value.role === 'string' &&
+        isMemberRole(value.role)
+      ) {
+        this.invitationEmail.set(value.email);
+        this.invitationRole.set(value.role);
+        return {
+          workspaceId: value.workspaceId,
+          id: value.id,
+          email: value.email,
+          role: value.role,
+        };
+      }
+    } catch {
+      // Invalid attempt state is ignored; no invitation token is stored here.
+    }
+    return null;
+  }
+
+  private writePendingInvitationCreate(attempt: PendingInvitationCreate): void {
+    try {
+      sessionStorage.setItem(pendingInvitationCreateStorageKey, JSON.stringify(attempt));
+    } catch {
+      // Keep the stable request ID in memory if session storage is unavailable.
+    }
+  }
+
+  private clearPendingInvitationCreate(): void {
+    this.pendingInvitationCreate = null;
+    try {
+      sessionStorage.removeItem(pendingInvitationCreateStorageKey);
+    } catch {
+      // The current page can still safely complete this attempt in memory.
+    }
+  }
 }
 
 function isMemberRole(value: string): value is WorkspaceMemberRole {
@@ -601,6 +837,23 @@ function workspaceErrorMessage(error: unknown, fallback: string): string {
   if (error.status === 403) return 'Tài khoản chưa có quyền thực hiện thao tác này.';
   if (error.status === 0 || error.status >= 500) {
     return 'Máy chủ chưa xác nhận thay đổi. Tải lại trạng thái; thao tác tạo có thể thử lại an toàn.';
+  }
+  return fallback;
+}
+
+function workspaceInvitationErrorMessage(error: unknown, fallback: string): string {
+  if (!(error instanceof WorkspaceApiError)) return fallback;
+  if (error.status === 401) return 'Phiên đăng nhập đã hết hạn. Hãy đăng nhập lại rồi thử lại.';
+  if (error.status === 403 && error.code === 'POLICY_ACCEPTANCE_REQUIRED') {
+    return 'Hãy xác nhận chính sách hiện hành trước khi gửi hoặc quản lý lời mời.';
+  }
+  if (error.status === 404)
+    return 'Workspace hoặc lời mời không còn khả dụng. Hãy tải lại danh sách.';
+  if (error.status === 409) return 'Lời mời đã thay đổi hoặc đã được xử lý. Hãy tải lại danh sách.';
+  if (error.status === 429) return 'Đã đạt giới hạn gửi lời mời trong 24 giờ. Hãy thử lại sau.';
+  if (error.status === 503) return 'Mời qua email đang tắt hoặc chưa cấu hình máy chủ gửi thư.';
+  if (error.status === 0 || error.status >= 500) {
+    return 'Máy chủ chưa xác nhận kết quả. Thử lại sẽ dùng cùng yêu cầu mời.';
   }
   return fallback;
 }

@@ -1,0 +1,93 @@
+<main class="invitation-page" aria-labelledby="invitation-page-title">
+  <a class="brand invitation-brand" routerLink="/">
+    <span class="brand-mark" aria-hidden="true">N</span>
+    <span class="brand-word">novel<span class="brand-period">.</span></span>
+  </a>
+  <section class="invitation-card" [attr.aria-busy]="state() === 'loading' || state() === 'saving'">
+    <p class="eyebrow">KHÔNG GIAN CỘNG TÁC</p>
+    <h1 id="invitation-page-title">
+      @switch (state()) {
+        @case ('ready') {
+          Bạn được mời tham gia
+        }
+        @case ('accepted') {
+          Đã tham gia workspace
+        }
+        @case ('rejected') {
+          Đã từ chối lời mời
+        }
+        @case ('saving') {
+          Đang xử lý lựa chọn
+        }
+        @default {
+          Lời mời workspace
+        }
+      }
+    </h1>
+
+    @if (invitation(); as invite) {
+      <div class="invitation-workspace-summary" aria-label="Thông tin lời mời">
+        <p class="invitation-label">Không gian</p>
+        <p class="invitation-workspace-name">{{ invite.workspaceName }}</p>
+        <p class="invitation-role">
+          Bạn sẽ tham gia với vai trò <strong>{{ roleLabel(invite.role) }}</strong
+          >.
+        </p>
+        <p class="invitation-expiry">Liên kết hết hạn {{ formatExpiry(invite.expiresAt) }}.</p>
+      </div>
+    }
+
+    <p
+      class="invitation-message"
+      [class.invitation-error]="state() === 'error'"
+      role="status"
+      aria-live="polite"
+    >
+      {{ message() }}
+    </p>
+
+    @if (state() === 'ready') {
+      <p class="invitation-privacy-note">
+        Chỉ tài khoản Google có email đã xác minh khớp với lời mời mới có thể tiếp tục. Chấp nhận sẽ
+        cấp quyền đọc hoặc chỉnh sửa theo vai trò được ghi ở trên.
+      </p>
+      <div class="invitation-actions">
+        <button class="button button-primary" type="button" (click)="decide('accept')">
+          Chấp nhận lời mời
+        </button>
+        <button class="button button-outline" type="button" (click)="decide('reject')">
+          Từ chối
+        </button>
+      </div>
+    } @else if (state() === 'error') {
+      @if (message().includes('đăng nhập Google')) {
+        <a
+          class="button button-primary button-full"
+          routerLink="/sign-in"
+          [queryParams]="{ returnTo: signInReturnTo }"
+        >
+          Đăng nhập bằng Google
+        </a>
+      } @else if (message().includes('xác nhận chính sách')) {
+        <a
+          class="button button-primary button-full"
+          routerLink="/app/setup"
+          [queryParams]="{ returnUrl: signInReturnTo }"
+        >
+          Xem chính sách và tiếp tục
+        </a>
+      } @else if (message().includes('thử lại sau')) {
+        <button class="button button-outline button-full" type="button" (click)="retry()">
+          Thử lại
+        </button>
+      }
+    } @else if (state() === 'accepted') {
+      <a class="button button-primary button-full" routerLink="/app/workspaces">
+        Mở không gian cộng tác
+      </a>
+    } @else if (state() === 'rejected') {
+      <a class="button button-outline button-full" routerLink="/app/home">Về trang chủ</a>
+    }
+  </section>
+  <p class="invitation-footer">Không chia sẻ link này. Link được bảo vệ và chỉ dùng một lần.</p>
+</main>

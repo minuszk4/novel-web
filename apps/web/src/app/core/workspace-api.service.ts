@@ -44,6 +44,29 @@ export interface WorkspaceLibraryPage {
   nextCursor: string | null;
 }
 
+export interface WorkspaceInvitationSummary {
+  id: string;
+  role: WorkspaceMemberRole;
+  status: 'pending';
+  createdAt: string;
+  expiresAt: string;
+}
+
+export interface WorkspaceInvitationQueued {
+  id: string;
+  status: 'pending' | 'accepted' | 'rejected' | 'revoked' | 'expired';
+  expiresAt: string;
+  message: string;
+}
+
+export interface RecipientWorkspaceInvitation {
+  id: string;
+  workspaceId: string;
+  workspaceName: string;
+  role: WorkspaceMemberRole;
+  expiresAt: string;
+}
+
 export class WorkspaceApiError extends Error {
   constructor(
     message: string,
@@ -62,6 +85,7 @@ const membersUrl = (workspaceId: string) => `${workspaceUrl(workspaceId)}/member
 const memberUrl = (workspaceId: string, userId: string) =>
   `${membersUrl(workspaceId)}/${encodeURIComponent(userId)}`;
 const librariesUrl = (workspaceId: string) => `${workspaceUrl(workspaceId)}/libraries`;
+const invitationsUrl = (workspaceId: string) => `${workspaceUrl(workspaceId)}/invitations`;
 const csrfUrl = '/api/v1/auth/csrf';
 const timeoutMs = 5_000;
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -272,6 +296,132 @@ export class WorkspaceApiService {
     }
   }
 
+  async listInvitations(workspaceId: string): Promise<WorkspaceInvitationSummary[]> {
+    if (!isUuid(workspaceId)) throw new WorkspaceApiError('INVALID_WORKSPACE_ID', 400, null);
+    try {
+      const response: unknown = await firstValueFrom(
+        this.http.get<unknown>(invitationsUrl(workspaceId)).pipe(timeout(timeoutMs)),
+      );
+      if (
+        !isObject(response) ||
+        !hasExactKeys(response, ['items']) ||
+        !Array.isArray(response['items']) ||
+        response['items'].length > 100
+      ) {
+        throw invalidResponse();
+      }
+      const items = response['items'].map(parseWorkspaceInvitationSummary);
+      if (new Set(items.map(({ id }) => id)).size !== items.length) throw invalidResponse();
+      return items;
+    } catch (error) {
+      throw toApiError(error);
+    }
+  }
+
+  async createInvitation(
+    workspaceId: string,
+    invitationId: string,
+    email: string,
+    role: WorkspaceMemberRole,
+  ): Promise<WorkspaceInvitationQueued> {
+    const normalizedEmail = email.trim().toLowerCase();
+    if (
+      !isUuid(workspaceId) ||
+      !isUuid(invitationId) ||
+      !isMemberRole(role) ||
+      normalizedEmail.length < 3 ||
+      normalizedEmail.length > 320 ||
+      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)
+    ) {
+      throw new WorkspaceApiError('INVALID_WORKSPACE_INVITATION', 400, null);
+    }
+    try {
+      const response: unknown = await firstValueFrom(
+        this.http
+          .put<unknown>(
+            `${invitationsUrl(workspaceId)}/${encodeURIComponent(invitationId)}`,
+            {
+              email: normalizedEmail,
+              role,
+              confirmedPermissionToEmail: true,
+            },
+            { headers: await this.csrfHeaders() },
+          )
+          .pipe(timeout(timeoutMs)),
+      );
+      const invitation = parseWorkspaceInvitationQueued(response);
+      if (invitation.id !== invitationId) throw invalidResponse();
+      return invitation;
+    } catch (error) {
+      throw toApiError(error);
+    }
+  }
+
+  async revokeInvitation(workspaceId: string, invitationId: string): Promise<void> {
+    if (!isUuid(workspaceId) || !isUuid(invitationId)) {
+      throw new WorkspaceApiError('INVALID_WORKSPACE_INVITATION_ID', 400, null);
+    }
+    try {
+      await firstValueFrom(
+        this.http
+          .delete<void>(`${invitationsUrl(workspaceId)}/${encodeURIComponent(invitationId)}`, {
+            headers: await this.csrfHeaders(),
+          })
+          .pipe(timeout(timeoutMs)),
+      );
+    } catch (error) {
+      throw toApiError(error);
+    }
+  }
+
+  async resolveInvitation(
+    invitationId: string,
+    token: string,
+  ): Promise<RecipientWorkspaceInvitation> {
+    validateInvitationCredentials(invitationId, token);
+    try {
+      const response = await this.postInvitationAction(invitationId, token, 'resolve');
+      return parseRecipientWorkspaceInvitation(response);
+    } catch (error) {
+      throw toApiError(error);
+    }
+  }
+
+  async decideInvitation(
+    invitationId: string,
+    token: string,
+    decision: 'accept' | 'reject',
+  ): Promise<'accepted' | 'rejected'> {
+    validateInvitationCredentials(invitationId, token);
+    try {
+      const response = parseWorkspaceInvitationDecision(
+        await this.postInvitationAction(invitationId, token, decision),
+      );
+      if (
+        response.id !== invitationId ||
+        response.status !== (decision === 'accept' ? 'accepted' : 'rejected')
+      ) {
+        throw invalidResponse();
+      }
+      return response.status;
+    } catch (error) {
+      throw toApiError(error);
+    }
+  }
+
+  private async postInvitationAction(
+    invitationId: string,
+    token: string,
+    action: 'resolve' | 'accept' | 'reject',
+  ): Promise<unknown> {
+    const url = `/api/v1/me/workspace-invitations/${encodeURIComponent(invitationId)}/${action}`;
+    return firstValueFrom(
+      this.http
+        .post<unknown>(url, { token }, { headers: await this.csrfHeaders() })
+        .pipe(timeout(timeoutMs)),
+    );
+  }
+
   private async csrfHeaders(): Promise<HttpHeaders> {
     const response: unknown = await firstValueFrom(
       this.http.get<unknown>(csrfUrl).pipe(timeout(timeoutMs)),
@@ -399,8 +549,93 @@ function parseWorkspaceLibrary(value: unknown): WorkspaceLibrary {
   };
 }
 
+function parseWorkspaceInvitationSummary(value: unknown): WorkspaceInvitationSummary {
+  if (
+    !isObject(value) ||
+    !hasExactKeys(value, ['id', 'role', 'status', 'createdAt', 'expiresAt']) ||
+    !isUuid(value['id']) ||
+    !isMemberRole(value['role']) ||
+    value['status'] !== 'pending' ||
+    !isTimestamp(value['createdAt']) ||
+    !isTimestamp(value['expiresAt'])
+  ) {
+    throw invalidResponse();
+  }
+  return {
+    id: value['id'],
+    role: value['role'],
+    status: 'pending',
+    createdAt: value['createdAt'],
+    expiresAt: value['expiresAt'],
+  };
+}
+
+function parseWorkspaceInvitationQueued(value: unknown): WorkspaceInvitationQueued {
+  const statuses = ['pending', 'accepted', 'rejected', 'revoked', 'expired'];
+  if (
+    !isObject(value) ||
+    !hasExactKeys(value, ['id', 'status', 'expiresAt', 'message']) ||
+    !isUuid(value['id']) ||
+    typeof value['status'] !== 'string' ||
+    !statuses.includes(value['status']) ||
+    !isTimestamp(value['expiresAt']) ||
+    typeof value['message'] !== 'string' ||
+    value['message'].length > 200
+  ) {
+    throw invalidResponse();
+  }
+  return {
+    id: value['id'],
+    status: value['status'] as WorkspaceInvitationQueued['status'],
+    expiresAt: value['expiresAt'],
+    message: value['message'],
+  };
+}
+
+function parseRecipientWorkspaceInvitation(value: unknown): RecipientWorkspaceInvitation {
+  if (
+    !isObject(value) ||
+    !hasExactKeys(value, ['id', 'workspaceId', 'workspaceName', 'role', 'expiresAt']) ||
+    !isUuid(value['id']) ||
+    !isUuid(value['workspaceId']) ||
+    !isWorkspaceName(value['workspaceName']) ||
+    !isMemberRole(value['role']) ||
+    !isTimestamp(value['expiresAt'])
+  ) {
+    throw invalidResponse();
+  }
+  return {
+    id: value['id'],
+    workspaceId: value['workspaceId'],
+    workspaceName: value['workspaceName'],
+    role: value['role'],
+    expiresAt: value['expiresAt'],
+  };
+}
+
+function parseWorkspaceInvitationDecision(value: unknown): {
+  id: string;
+  status: 'accepted' | 'rejected';
+} {
+  if (
+    !isObject(value) ||
+    !hasExactKeys(value, ['id', 'status']) ||
+    !isUuid(value['id']) ||
+    (value['status'] !== 'accepted' && value['status'] !== 'rejected')
+  ) {
+    throw invalidResponse();
+  }
+  return { id: value['id'], status: value['status'] };
+}
+
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function validateInvitationCredentials(invitationId: string, token: string): void {
+  if (!isUuid(invitationId) || !tokenPattern.test(token)) {
+    throw new WorkspaceApiError('INVALID_WORKSPACE_INVITATION_TOKEN', 400, null);
+  }
 }
 
 function hasExactKeys(value: Record<string, unknown>, expected: string[]): boolean {

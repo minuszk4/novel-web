@@ -20,6 +20,14 @@ export const routes: Routes = [
     title: 'Đăng nhập — Novel',
   },
   {
+    path: 'workspace-invitations/:invitationId',
+    loadComponent: () =>
+      import('./pages/workspace-invitation-page.component').then(
+        (page) => page.WorkspaceInvitationPageComponent,
+      ),
+    title: 'Lời mời workspace — Novel',
+  },
+  {
     path: 'works/demo-story',
     loadComponent: () =>
       import('./pages/work-detail-page.component').then((page) => page.WorkDetailPageComponent),

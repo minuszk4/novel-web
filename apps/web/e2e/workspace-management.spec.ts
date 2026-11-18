@@ -25,6 +25,26 @@ for (const viewport of viewports) {
     await expect(page.getByLabel('Không gian của bạn')).toContainText('Nhóm đọc thử');
     await expect(page.getByRole('heading', { name: 'Thành viên', exact: true })).toBeVisible();
     await expect(api.createdId).toMatch(/^[0-9a-f-]{36}$/i);
+    await page.getByLabel('Địa chỉ email').fill('editor@example.test');
+    await page.getByLabel('Vai trò được mời').selectOption('editor');
+    await page.getByLabel(/Tôi có quyền liên hệ/).check();
+    await page.getByRole('button', { name: 'Gửi lời mời' }).click();
+    await expect(page.getByText(/Đã xếp lời mời vào hàng gửi/)).toBeVisible();
+    await expect(page.locator('.workspace-invitation-list')).toContainText('Biên tập viên');
+    await expect(page.locator('.workspace-invitation-list')).not.toContainText(
+      'editor@example.test',
+    );
+    await expect(api.mutations).toContain('invitation:create:editor');
+    await expectNoAxeViolations(page);
+
+    await page.getByRole('button', { name: 'Thu hồi lời mời' }).click();
+    const invitationRevoke = page.getByRole('group', { name: 'Xác nhận thu hồi lời mời' });
+    await expect(invitationRevoke).toBeVisible();
+    await invitationRevoke.getByRole('button', { name: 'Xác nhận thu hồi' }).click();
+    await expect(page.locator('.workspace-invitation-list')).toContainText(
+      'Không có lời mời đang chờ xử lý',
+    );
+    await expect(api.mutations).toContain('invitation:revoke');
     await expectNoAxeViolations(page);
 
     await page.getByLabel('Tạo thư viện').fill('Truyện đang dịch');
@@ -145,6 +165,7 @@ async function installSignedInOwner(page: Page) {
   let createdId = '';
   let createdLibraryId = '';
   const sharedLibraries: Array<Record<string, unknown>> = [];
+  const invitations: Array<Record<string, unknown>> = [];
   const libraryQueries: string[] = [];
 
   await page.route('**/api/v1/**', async (route) => {
@@ -155,7 +176,7 @@ async function installSignedInOwner(page: Page) {
 
     if (path === '/api/v1/system/status' && method === 'GET') {
       return json(route, {
-        apiVersion: '10.12.0',
+        apiVersion: '10.13.0',
         environment: 'test',
         integrations: {
           googleOidcEnabled: false,
@@ -224,6 +245,50 @@ async function installSignedInOwner(page: Page) {
     }
     if (createdId && path === `/api/v1/workspaces/${createdId}/libraries` && method === 'GET') {
       return json(route, { items: sharedLibraries, nextCursor: null });
+    }
+    if (createdId && path === `/api/v1/workspaces/${createdId}/invitations` && method === 'GET') {
+      return json(route, { items: invitations });
+    }
+    if (
+      createdId &&
+      path.startsWith(`/api/v1/workspaces/${createdId}/invitations/`) &&
+      method === 'PUT'
+    ) {
+      expect(request.headers()['x-csrf-token']).toBe(csrfToken);
+      const requestedId = path.split('/').at(-1)!;
+      const body = request.postDataJSON() as {
+        email: string;
+        role: string;
+        confirmedPermissionToEmail: boolean;
+      };
+      expect(body.confirmedPermissionToEmail).toBe(true);
+      expect(body.email).toBe('editor@example.test');
+      expect(body.role).toBe('editor');
+      const created = {
+        id: requestedId,
+        status: 'pending',
+        expiresAt: '2026-11-25T10:00:00Z',
+        message: 'Queued.',
+      };
+      invitations.push({
+        id: requestedId,
+        role: body.role,
+        status: 'pending',
+        createdAt: timestamp,
+        expiresAt: created.expiresAt,
+      });
+      mutations.push('invitation:create:editor');
+      return json(route, created, 202);
+    }
+    if (
+      createdId &&
+      path.startsWith(`/api/v1/workspaces/${createdId}/invitations/`) &&
+      method === 'DELETE'
+    ) {
+      expect(request.headers()['x-csrf-token']).toBe(csrfToken);
+      invitations.splice(0, invitations.length);
+      mutations.push('invitation:revoke');
+      return route.fulfill({ status: 204 });
     }
     if (
       createdId &&

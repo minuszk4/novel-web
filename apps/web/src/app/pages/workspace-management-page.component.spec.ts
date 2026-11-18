@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PolicyOnboardingService } from '../core/policy-onboarding.service';
 import {
   WorkspaceApiService,
+  WorkspaceApiError,
   WorkspaceDetail,
   WorkspaceLibrary,
   WorkspaceMember,
@@ -51,6 +52,9 @@ describe('WorkspaceManagementPageComponent', () => {
     createWorkspace: ReturnType<typeof vi.fn>;
     listMembers: ReturnType<typeof vi.fn>;
     listLibraries: ReturnType<typeof vi.fn>;
+    listInvitations: ReturnType<typeof vi.fn>;
+    createInvitation: ReturnType<typeof vi.fn>;
+    revokeInvitation: ReturnType<typeof vi.fn>;
     createLibrary: ReturnType<typeof vi.fn>;
     setMemberRole: ReturnType<typeof vi.fn>;
     revokeMember: ReturnType<typeof vi.fn>;
@@ -63,6 +67,14 @@ describe('WorkspaceManagementPageComponent', () => {
       createWorkspace: vi.fn(),
       listMembers: vi.fn().mockResolvedValue([owner, reader]),
       listLibraries: vi.fn().mockResolvedValue({ items: [sharedLibrary], nextCursor: null }),
+      listInvitations: vi.fn().mockResolvedValue([]),
+      createInvitation: vi.fn().mockResolvedValue({
+        id: '55555555-5555-4555-8555-555555555555',
+        status: 'pending',
+        expiresAt: '2026-11-25T02:00:00Z',
+        message: 'Queued.',
+      }),
+      revokeInvitation: vi.fn().mockResolvedValue(undefined),
       createLibrary: vi.fn().mockResolvedValue(sharedLibrary),
       setMemberRole: vi.fn().mockResolvedValue({ ...reader, role: 'editor' }),
       revokeMember: vi.fn().mockResolvedValue({
@@ -181,5 +193,56 @@ describe('WorkspaceManagementPageComponent', () => {
       'Truyện mới',
     );
     expect(root.textContent).toContain('Đã tạo thư viện');
+  });
+
+  it('requires explicit invitation consent and retries uncertain email sends with the same ID', async () => {
+    api.createInvitation
+      .mockRejectedValueOnce(new WorkspaceApiError('WORKSPACE_REQUEST_FAILED', 0, null))
+      .mockResolvedValueOnce({
+        id: '55555555-5555-4555-8555-555555555555',
+        status: 'pending',
+        expiresAt: '2026-11-25T02:00:00Z',
+        message: 'Queued.',
+      });
+    const fixture = TestBed.createComponent(WorkspaceManagementPageComponent);
+    await fixture.whenStable();
+    fixture.detectChanges();
+    const root = fixture.nativeElement as HTMLElement;
+    const email = root.querySelector<HTMLInputElement>('#workspace-invitation-email')!;
+    const role = root.querySelector<HTMLSelectElement>('#workspace-invitation-role')!;
+    const consent = root.querySelector<HTMLInputElement>('#workspace-invitation-consent')!;
+    const form = root.querySelector<HTMLFormElement>('.workspace-invitation-form')!;
+
+    email.value = 'Reader@Example.Test';
+    email.dispatchEvent(new Event('input'));
+    role.value = 'editor';
+    role.dispatchEvent(new Event('change'));
+    fixture.detectChanges();
+    expect(
+      root.querySelector<HTMLButtonElement>('.workspace-invitation-form button')?.disabled,
+    ).toBe(true);
+    consent.checked = true;
+    consent.dispatchEvent(new Event('change'));
+    fixture.detectChanges();
+    form.dispatchEvent(new Event('submit'));
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(root.textContent).toContain('Máy chủ chưa xác nhận kết quả');
+    const firstId = api.createInvitation.mock.calls[0]?.[1];
+    expect(firstId).toMatch(/^[0-9a-f-]{36}$/i);
+
+    form.dispatchEvent(new Event('submit'));
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(api.createInvitation).toHaveBeenCalledTimes(2);
+    expect(api.createInvitation.mock.calls[1]?.[1]).toBe(firstId);
+    expect(api.createInvitation.mock.calls[0]).toEqual([
+      workspaceId,
+      firstId,
+      'reader@example.test',
+      'editor',
+    ]);
+    expect(root.textContent).toContain('Đã xếp lời mời vào hàng gửi');
+    expect(email.value).toBe('');
   });
 });

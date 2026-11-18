@@ -151,6 +151,14 @@ for (const viewport of [
       idempotencyKey: string | undefined;
       csrfToken: string | undefined;
     } | null = null;
+    let markActionRequestStarted!: () => void;
+    let allowActionResponse!: () => void;
+    const actionRequestStarted = new Promise<void>((resolve) => {
+      markActionRequestStarted = resolve;
+    });
+    const actionResponseAllowed = new Promise<void>((resolve) => {
+      allowActionResponse = resolve;
+    });
     await page.route(
       `**/api/v1/authoring/manuscripts/${workId}/publication-actions`,
       async (route) => {
@@ -161,7 +169,8 @@ for (const viewport of [
           idempotencyKey: request.headers()['idempotency-key'],
           csrfToken: request.headers()['x-csrf-token'],
         };
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        markActionRequestStarted();
+        await actionResponseAllowed;
         await route.fulfill({
           status: 201,
           contentType: 'application/json',
@@ -208,9 +217,11 @@ for (const viewport of [
 
     await publishButton.click();
     await page.getByRole('button', { name: 'Xác nhận xuất bản ngay' }).click();
+    await actionRequestStarted;
     await expect(
       page.locator('.publication-readiness-confirm .publication-readiness-status'),
     ).toContainText('Đang xác nhận xuất bản');
+    allowActionResponse();
     await expect(page.locator('.publication-readiness-success')).toContainText(
       'Máy chủ đã xác nhận tác phẩm được công khai',
     );

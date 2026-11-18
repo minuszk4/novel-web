@@ -42,6 +42,15 @@ const library: WorkspaceLibrary = {
   isDefault: false,
   createdAt: '2026-11-18T02:00:00Z',
 };
+const invitationId = '55555555-5555-4555-8555-555555555555';
+const invitation = {
+  id: invitationId,
+  role: 'reader' as const,
+  status: 'pending' as const,
+  createdAt: '2026-11-18T02:00:00Z',
+  expiresAt: '2026-11-25T02:00:00Z',
+};
+const invitationToken = 'A'.repeat(43);
 
 describe('WorkspaceApiService', () => {
   let api: WorkspaceApiService;
@@ -132,6 +141,114 @@ describe('WorkspaceApiService', () => {
     expect(request.request.body).toEqual({ name: library.name });
     request.flush(library);
     await expect(result).resolves.toEqual(library);
+  });
+
+  it('lists invitation summaries while rejecting recipient-address leakage', async () => {
+    const result = api.listInvitations(workspaceId);
+    http
+      .expectOne({ method: 'GET', url: `/api/v1/workspaces/${workspaceId}/invitations` })
+      .flush({ items: [invitation] });
+    await expect(result).resolves.toEqual([invitation]);
+
+    const invalid = api.listInvitations(workspaceId);
+    http
+      .expectOne({ method: 'GET', url: `/api/v1/workspaces/${workspaceId}/invitations` })
+      .flush({ items: [{ ...invitation, invitedEmail: 'private@example.test' }] });
+    await expect(invalid).rejects.toMatchObject({ status: 502, code: null });
+  });
+
+  it('creates an email invitation through CSRF with strict consent and stable request ID', async () => {
+    const result = api.createInvitation(
+      workspaceId,
+      invitationId,
+      '  Reader@Example.Test ',
+      'reader',
+    );
+    http.expectOne({ method: 'GET', url: '/api/v1/auth/csrf' }).flush({ token: csrf });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const request = http.expectOne({
+      method: 'PUT',
+      url: `/api/v1/workspaces/${workspaceId}/invitations/${invitationId}`,
+    });
+    expect(request.request.headers.get('X-CSRF-Token')).toBe(csrf);
+    expect(request.request.body).toEqual({
+      email: 'reader@example.test',
+      role: 'reader',
+      confirmedPermissionToEmail: true,
+    });
+    const queued = {
+      id: invitationId,
+      status: 'pending',
+      expiresAt: invitation.expiresAt,
+      message: 'Queued.',
+    };
+    request.flush(queued);
+    await expect(result).resolves.toEqual(queued);
+    await expect(
+      api.createInvitation(workspaceId, invitationId, 'bad', 'reader'),
+    ).rejects.toMatchObject({
+      status: 400,
+    });
+  });
+
+  it('resolves and accepts a verified-email invitation using CSRF and a body token', async () => {
+    const resolved = api.resolveInvitation(invitationId, invitationToken);
+    http.expectOne({ method: 'GET', url: '/api/v1/auth/csrf' }).flush({ token: csrf });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const resolveRequest = http.expectOne({
+      method: 'POST',
+      url: `/api/v1/me/workspace-invitations/${invitationId}/resolve`,
+    });
+    expect(resolveRequest.request.headers.get('X-CSRF-Token')).toBe(csrf);
+    expect(resolveRequest.request.body).toEqual({ token: invitationToken });
+    const recipient = {
+      id: invitationId,
+      workspaceId,
+      workspaceName: 'Nhóm đọc',
+      role: 'reader',
+      expiresAt: invitation.expiresAt,
+    };
+    resolveRequest.flush(recipient);
+    await expect(resolved).resolves.toEqual(recipient);
+
+    const accepted = api.decideInvitation(invitationId, invitationToken, 'accept');
+    http.expectOne({ method: 'GET', url: '/api/v1/auth/csrf' }).flush({ token: csrf });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const acceptRequest = http.expectOne({
+      method: 'POST',
+      url: `/api/v1/me/workspace-invitations/${invitationId}/accept`,
+    });
+    expect(acceptRequest.request.headers.get('X-CSRF-Token')).toBe(csrf);
+    expect(acceptRequest.request.body).toEqual({ token: invitationToken });
+    acceptRequest.flush({ id: invitationId, status: 'accepted' });
+    await expect(accepted).resolves.toBe('accepted');
+  });
+
+  it('revokes a pending invitation with session CSRF and validates recipient decisions', async () => {
+    const revoking = api.revokeInvitation(workspaceId, invitationId);
+    http.expectOne({ method: 'GET', url: '/api/v1/auth/csrf' }).flush({ token: csrf });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const revokeRequest = http.expectOne({
+      method: 'DELETE',
+      url: `/api/v1/workspaces/${workspaceId}/invitations/${invitationId}`,
+    });
+    expect(revokeRequest.request.headers.get('X-CSRF-Token')).toBe(csrf);
+    revokeRequest.flush(null, { status: 204, statusText: 'No Content' });
+    await expect(revoking).resolves.toBeUndefined();
+
+    await expect(api.resolveInvitation(invitationId, 'invalid')).rejects.toMatchObject({
+      status: 400,
+    });
+    const rejected = api.decideInvitation(invitationId, invitationToken, 'reject');
+    http.expectOne({ method: 'GET', url: '/api/v1/auth/csrf' }).flush({ token: csrf });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    http
+      .expectOne({
+        method: 'POST',
+        url: `/api/v1/me/workspace-invitations/${invitationId}/reject`,
+      })
+      .flush({ id: invitationId, status: 'rejected' });
+    await expect(rejected).resolves.toBe('rejected');
   });
 
   it('sets a role idempotently through PUT and validates the exact resulting member', async () => {

@@ -359,6 +359,140 @@
               </button>
             </form>
           </section>
+
+          <section class="workspace-invitations" aria-labelledby="workspace-invitations-title">
+            <div class="workspace-invitations-heading">
+              <div>
+                <p class="eyebrow">LỜI MỜI EMAIL</p>
+                <h3 id="workspace-invitations-title">Mời bằng email đã xác minh</h3>
+              </div>
+              @if (invitationPhase() === 'ready') {
+                <span class="workspace-count">{{ invitations().length }} đang chờ</span>
+              }
+            </div>
+            <p>
+              Người nhận phải đăng nhập bằng Google với email đã xác minh trùng địa chỉ mời. Link
+              hết hạn sau 7 ngày. Có thể gửi tối đa 10 lời mời mỗi người quản lý, 30 lời mời mỗi
+              workspace và 3 lời mời mỗi địa chỉ trong 24 giờ.
+            </p>
+            <form
+              class="workspace-invitation-form"
+              (submit)="$event.preventDefault(); inviteByEmail()"
+            >
+              <div class="workspace-invitation-field">
+                <label for="workspace-invitation-email">Địa chỉ email</label>
+                <input
+                  id="workspace-invitation-email"
+                  type="email"
+                  maxlength="320"
+                  autocomplete="email"
+                  inputmode="email"
+                  placeholder="ten@example.com"
+                  [value]="invitationEmail()"
+                  [disabled]="invitationMutation() === 'saving'"
+                  (input)="updateInvitationEmail($event)"
+                />
+              </div>
+              <div class="workspace-invitation-field">
+                <label for="workspace-invitation-role">Vai trò được mời</label>
+                <select
+                  id="workspace-invitation-role"
+                  [value]="invitationRole()"
+                  [disabled]="invitationMutation() === 'saving'"
+                  (change)="updateInvitationRole($event)"
+                >
+                  <option value="reader">Người đọc</option>
+                  <option value="editor">Biên tập viên</option>
+                  <option value="admin">Quản trị viên</option>
+                </select>
+              </div>
+              <label class="workspace-consent" for="workspace-invitation-consent">
+                <input
+                  id="workspace-invitation-consent"
+                  type="checkbox"
+                  [checked]="invitationConsent()"
+                  [disabled]="invitationMutation() === 'saving'"
+                  (change)="updateInvitationConsent($event)"
+                />
+                <span>Tôi có quyền liên hệ địa chỉ này và yêu cầu Novel gửi lời mời.</span>
+              </label>
+              <button
+                class="button button-primary"
+                type="submit"
+                [disabled]="invitationMutation() === 'saving' || !invitationConsent()"
+              >
+                {{ invitationMutation() === 'saving' ? 'Đang xếp hàng…' : 'Gửi lời mời' }}
+              </button>
+            </form>
+            <p class="workspace-hint">
+              Danh sách bên dưới không hiển thị địa chỉ email. Nếu kết nối gián đoạn, nhập lại cùng
+              địa chỉ và vai trò để thử lại đúng yêu cầu.
+            </p>
+            @if (invitationError(); as error) {
+              <p class="workspace-error" role="alert">{{ error }}</p>
+            }
+            @if (invitationMessage(); as message) {
+              <p class="workspace-inline-message" role="status" aria-live="polite">{{ message }}</p>
+            }
+
+            @if (invitationPhase() === 'loading') {
+              <p class="workspace-status" role="status" aria-live="polite">Đang tải lời mời…</p>
+            } @else if (invitationPhase() === 'error') {
+              <button class="button button-outline" type="button" (click)="retryInvitations()">
+                Tải lại lời mời
+              </button>
+            } @else {
+              <div class="workspace-invitation-list" aria-label="Lời mời đang chờ">
+                @for (invitation of invitations(); track invitation.id) {
+                  <article class="workspace-invitation-card">
+                    <div>
+                      <strong>{{ workspaceRoleLabel(invitation.role) }}</strong>
+                      <p>Mã lời mời kết thúc bằng {{ invitation.id.slice(-6) }}</p>
+                      <p>Hết hạn {{ formatInvitationExpiry(invitation.expiresAt) }}</p>
+                    </div>
+                    @if (pendingRevokeInvitationId() === invitation.id) {
+                      <div
+                        class="workspace-confirmation"
+                        role="group"
+                        aria-label="Xác nhận thu hồi lời mời"
+                      >
+                        <p>Thu hồi sẽ vô hiệu hóa link đã gửi trong email.</p>
+                        <button
+                          class="button button-outline"
+                          type="button"
+                          [disabled]="invitationMutation() === 'saving'"
+                          (click)="cancelRevokeInvitation()"
+                        >
+                          Giữ lời mời
+                        </button>
+                        <button
+                          class="button button-danger"
+                          type="button"
+                          [disabled]="invitationMutation() === 'saving'"
+                          (click)="confirmRevokeInvitation(invitation)"
+                        >
+                          {{
+                            invitationMutation() === 'saving' ? 'Đang thu hồi…' : 'Xác nhận thu hồi'
+                          }}
+                        </button>
+                      </div>
+                    } @else {
+                      <button
+                        class="workspace-danger-button"
+                        type="button"
+                        [disabled]="invitationMutation() === 'saving'"
+                        (click)="requestRevokeInvitation(invitation)"
+                      >
+                        Thu hồi lời mời
+                      </button>
+                    }
+                  </article>
+                } @empty {
+                  <p class="workspace-muted">Không có lời mời đang chờ xử lý.</p>
+                }
+              </div>
+            }
+          </section>
         }
 
         @if (canTransferOwnership() && transferableMembers().length > 0) {
