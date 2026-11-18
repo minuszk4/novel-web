@@ -1,5 +1,7 @@
 package com.novelweb.library.invitation;
 
+import com.novelweb.library.WorkspaceMembershipAuditRepository;
+import com.novelweb.library.WorkspaceRepository;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -8,6 +10,7 @@ import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
@@ -384,6 +387,8 @@ public class WorkspaceInvitationRepository {
       try (ResultSet row = member.executeQuery()) {
         if (row.next()) {
           if ("active".equals(row.getString("status"))) return;
+          WorkspaceRepository.Role previousRole =
+              WorkspaceRepository.Role.valueOf(row.getString("role").toUpperCase(Locale.ROOT));
           try (PreparedStatement reactivate =
               connection.prepareStatement(
                   """
@@ -398,6 +403,17 @@ public class WorkspaceInvitationRepository {
             if (reactivate.executeUpdate() != 1) throw new InvitationConflictException();
           }
           bumpScopeVersion(connection, workspaceId);
+          WorkspaceMembershipAuditRepository.append(
+              connection,
+              workspaceId,
+              userId,
+              userId,
+              WorkspaceMembershipAuditRepository.Action.INVITATION_ACCEPTED,
+              WorkspaceMembershipAuditRepository.Reason.INVITATION_ACCEPTED,
+              previousRole,
+              WorkspaceRepository.Role.valueOf(role.toUpperCase(Locale.ROOT)),
+              WorkspaceRepository.MemberStatus.REVOKED,
+              WorkspaceRepository.MemberStatus.ACTIVE);
           return;
         }
       }
@@ -411,6 +427,17 @@ public class WorkspaceInvitationRepository {
       insert.executeUpdate();
     }
     bumpScopeVersion(connection, workspaceId);
+    WorkspaceMembershipAuditRepository.append(
+        connection,
+        workspaceId,
+        userId,
+        userId,
+        WorkspaceMembershipAuditRepository.Action.INVITATION_ACCEPTED,
+        WorkspaceMembershipAuditRepository.Reason.INVITATION_ACCEPTED,
+        null,
+        WorkspaceRepository.Role.valueOf(role.toUpperCase(Locale.ROOT)),
+        null,
+        WorkspaceRepository.MemberStatus.ACTIVE);
   }
 
   private static void expireMatchingInvitation(

@@ -51,6 +51,17 @@ public class WorkspaceRepository {
               if (row.next()) {
                 WorkspaceRecord created = workspace(row);
                 insertMember(connection, workspaceId, actorUserId, Role.OWNER);
+                WorkspaceMembershipAuditRepository.append(
+                    connection,
+                    workspaceId,
+                    actorUserId,
+                    actorUserId,
+                    WorkspaceMembershipAuditRepository.Action.WORKSPACE_CREATED,
+                    WorkspaceMembershipAuditRepository.Reason.INITIAL_OWNER,
+                    null,
+                    Role.OWNER,
+                    null,
+                    MemberStatus.ACTIVE);
                 return created;
               }
             }
@@ -138,6 +149,17 @@ public class WorkspaceRepository {
                 row.next();
                 MemberRecord created = member(row);
                 bumpScopeVersion(connection, workspaceId);
+                WorkspaceMembershipAuditRepository.append(
+                    connection,
+                    workspaceId,
+                    actorUserId,
+                    memberUserId,
+                    WorkspaceMembershipAuditRepository.Action.MEMBER_GRANTED,
+                    WorkspaceMembershipAuditRepository.Reason.MANAGER_REQUEST,
+                    null,
+                    role,
+                    null,
+                    MemberStatus.ACTIVE);
                 return created;
               }
             }
@@ -159,6 +181,17 @@ public class WorkspaceRepository {
                 row.next();
                 MemberRecord changed = member(row);
                 bumpScopeVersion(connection, workspaceId);
+                WorkspaceMembershipAuditRepository.append(
+                    connection,
+                    workspaceId,
+                    actorUserId,
+                    memberUserId,
+                    WorkspaceMembershipAuditRepository.Action.MEMBER_ROLE_CHANGED,
+                    WorkspaceMembershipAuditRepository.Reason.MANAGER_REQUEST,
+                    existing.role(),
+                    role,
+                    MemberStatus.ACTIVE,
+                    MemberStatus.ACTIVE);
                 return changed;
               }
             }
@@ -179,6 +212,17 @@ public class WorkspaceRepository {
               row.next();
               MemberRecord reactivated = member(row);
               bumpScopeVersion(connection, workspaceId);
+              WorkspaceMembershipAuditRepository.append(
+                  connection,
+                  workspaceId,
+                  actorUserId,
+                  memberUserId,
+                  WorkspaceMembershipAuditRepository.Action.MEMBER_REACTIVATED,
+                  WorkspaceMembershipAuditRepository.Reason.MANAGER_REQUEST,
+                  existing.role(),
+                  role,
+                  MemberStatus.REVOKED,
+                  MemberStatus.ACTIVE);
               return reactivated;
             }
           }
@@ -212,25 +256,52 @@ public class WorkspaceRepository {
         connection -> {
           requireManager(connection, actorUserId, workspaceId);
           requireActiveUser(connection, memberUserId);
-          try (PreparedStatement upsert =
-              connection.prepareStatement(
-                  """
-                    INSERT INTO workspace_members (workspace_id, user_id, role, status, joined_at, revoked_at)
-                    VALUES (?, ?, ?, 'active', clock_timestamp(), NULL)
-                    ON CONFLICT (workspace_id, user_id) DO UPDATE
-                    SET role = EXCLUDED.role, status = 'active', joined_at = clock_timestamp(),
-                        revoked_at = NULL, updated_at = clock_timestamp()
-                    WHERE workspace_members.status = 'revoked'
+          MemberRecord existing = findMemberForUpdate(connection, workspaceId, memberUserId);
+          if (existing != null && existing.status() != MemberStatus.REVOKED) {
+            throw new WorkspaceMemberConflictException();
+          }
+          String sql =
+              existing == null
+                  ? """
+                    INSERT INTO workspace_members (workspace_id, user_id, role)
+                    VALUES (?, ?, ?)
                     RETURNING workspace_id, user_id, role, status, joined_at, revoked_at
-                    """)) {
-            upsert.setObject(1, workspaceId);
-            upsert.setObject(2, memberUserId);
-            upsert.setString(3, role.value());
-            try (ResultSet row = upsert.executeQuery()) {
+                    """
+                  : """
+                    UPDATE workspace_members
+                       SET role = ?, status = 'active', joined_at = clock_timestamp(),
+                           revoked_at = NULL, updated_at = clock_timestamp()
+                     WHERE workspace_id = ? AND user_id = ? AND status = 'revoked'
+                     RETURNING workspace_id, user_id, role, status, joined_at, revoked_at
+                    """;
+          try (PreparedStatement mutation = connection.prepareStatement(sql)) {
+            if (existing == null) {
+              mutation.setObject(1, workspaceId);
+              mutation.setObject(2, memberUserId);
+              mutation.setString(3, role.value());
+            } else {
+              mutation.setString(1, role.value());
+              mutation.setObject(2, workspaceId);
+              mutation.setObject(3, memberUserId);
+            }
+            try (ResultSet row = mutation.executeQuery()) {
               if (!row.next()) throw new WorkspaceMemberConflictException();
-              MemberRecord added = member(row);
+              MemberRecord changed = member(row);
               bumpScopeVersion(connection, workspaceId);
-              return added;
+              WorkspaceMembershipAuditRepository.append(
+                  connection,
+                  workspaceId,
+                  actorUserId,
+                  memberUserId,
+                  existing == null
+                      ? WorkspaceMembershipAuditRepository.Action.MEMBER_GRANTED
+                      : WorkspaceMembershipAuditRepository.Action.MEMBER_REACTIVATED,
+                  WorkspaceMembershipAuditRepository.Reason.MANAGER_REQUEST,
+                  existing == null ? null : existing.role(),
+                  role,
+                  existing == null ? null : MemberStatus.REVOKED,
+                  MemberStatus.ACTIVE);
+              return changed;
             }
           }
         });
@@ -244,6 +315,13 @@ public class WorkspaceRepository {
         "Unable to change a workspace member role",
         connection -> {
           requireManager(connection, actorUserId, workspaceId);
+          MemberRecord existing = findMemberForUpdate(connection, workspaceId, memberUserId);
+          if (existing == null
+              || existing.status() != MemberStatus.ACTIVE
+              || existing.role() == Role.OWNER) {
+            throw new WorkspaceMemberNotFoundException();
+          }
+          if (existing.role() == role) return existing;
           try (PreparedStatement update =
               connection.prepareStatement(
                   """
@@ -259,6 +337,17 @@ public class WorkspaceRepository {
               if (!row.next()) throw new WorkspaceMemberNotFoundException();
               MemberRecord changed = member(row);
               bumpScopeVersion(connection, workspaceId);
+              WorkspaceMembershipAuditRepository.append(
+                  connection,
+                  workspaceId,
+                  actorUserId,
+                  memberUserId,
+                  WorkspaceMembershipAuditRepository.Action.MEMBER_ROLE_CHANGED,
+                  WorkspaceMembershipAuditRepository.Reason.MANAGER_REQUEST,
+                  existing.role(),
+                  role,
+                  MemberStatus.ACTIVE,
+                  MemberStatus.ACTIVE);
               return changed;
             }
           }
@@ -273,7 +362,10 @@ public class WorkspaceRepository {
         "Unable to transfer workspace ownership",
         connection -> {
           requireOwner(connection, actorUserId, workspaceId);
-          requireActiveMember(connection, workspaceId, newOwnerUserId);
+          MemberRecord nextOwner = findMemberForUpdate(connection, workspaceId, newOwnerUserId);
+          if (nextOwner == null || nextOwner.status() != MemberStatus.ACTIVE) {
+            throw new WorkspaceMemberNotFoundException();
+          }
           try (PreparedStatement demote =
               connection.prepareStatement(
                   """
@@ -297,6 +389,17 @@ public class WorkspaceRepository {
             if (promote.executeUpdate() != 1) throw new WorkspaceMemberNotFoundException();
           }
           bumpScopeVersion(connection, workspaceId);
+          WorkspaceMembershipAuditRepository.append(
+              connection,
+              workspaceId,
+              actorUserId,
+              newOwnerUserId,
+              WorkspaceMembershipAuditRepository.Action.OWNERSHIP_TRANSFERRED,
+              WorkspaceMembershipAuditRepository.Reason.OWNER_HANDOVER,
+              nextOwner.role(),
+              Role.OWNER,
+              MemberStatus.ACTIVE,
+              MemberStatus.ACTIVE);
           return findWorkspace(connection, workspaceId)
               .orElseThrow(WorkspaceNotFoundException::new);
         });
@@ -326,6 +429,17 @@ public class WorkspaceRepository {
               }
               MemberRecord revoked = member(row);
               bumpScopeVersion(connection, workspaceId);
+              WorkspaceMembershipAuditRepository.append(
+                  connection,
+                  workspaceId,
+                  actorUserId,
+                  memberUserId,
+                  WorkspaceMembershipAuditRepository.Action.MEMBER_REVOKED,
+                  WorkspaceMembershipAuditRepository.Reason.MANAGER_REQUEST,
+                  revoked.role(),
+                  revoked.role(),
+                  MemberStatus.ACTIVE,
+                  MemberStatus.REVOKED);
               return revoked;
             }
           }

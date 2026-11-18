@@ -12,9 +12,12 @@ import org.springframework.stereotype.Service;
 public class WorkspaceService {
 
   private final WorkspaceRepository repository;
+  private final WorkspaceMembershipAuditRepository auditRepository;
 
-  public WorkspaceService(WorkspaceRepository repository) {
+  public WorkspaceService(
+      WorkspaceRepository repository, WorkspaceMembershipAuditRepository auditRepository) {
     this.repository = repository;
+    this.auditRepository = auditRepository;
   }
 
   public WorkspaceRepository.WorkspaceRecord createWorkspace(
@@ -86,6 +89,13 @@ public class WorkspaceService {
   public List<WorkspaceRepository.MemberRecord> listMembers(UUID actorUserId, UUID workspaceId) {
     return repository.listMembers(
         Objects.requireNonNull(actorUserId), Objects.requireNonNull(workspaceId));
+  }
+
+  public WorkspaceMembershipAuditRepository.Page listMembershipAudit(
+      UUID actorUserId, UUID workspaceId, Long beforeEventId, int limit) {
+    Objects.requireNonNull(actorUserId, "actor user id is required");
+    Objects.requireNonNull(workspaceId, "workspace id is required");
+    return auditRepository.list(actorUserId, workspaceId, beforeEventId, limit);
   }
 
   private static String requiredText(String value, String field, int maxLength) {

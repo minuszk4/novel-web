@@ -24,6 +24,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
@@ -119,6 +120,29 @@ public class WorkspaceController {
     return noStore(HttpStatus.OK)
         .header(HttpHeaders.ETAG, workspaceEtag(workspace))
         .body(new MemberListResponse(members));
+  }
+
+  @GetMapping("/workspaces/{workspaceId}/membership-audit")
+  public ResponseEntity<?> listMembershipAudit(
+      Authentication authentication,
+      @PathVariable String workspaceId,
+      @RequestParam(required = false) String cursor,
+      @RequestParam(defaultValue = "25") int limit,
+      HttpServletRequest request) {
+    Optional<UUID> actor = actorUserId(authentication);
+    if (actor.isEmpty()) return problem(HttpStatus.UNAUTHORIZED, "UNAUTHENTICATED", request);
+    ResponseEntity<?> gate = policyGate(actor.orElseThrow(), request);
+    if (gate != null) return gate;
+    UUID parsedWorkspaceId = parseUuid(workspaceId, "workspaceId");
+    Long beforeEventId = parseAuditCursor(cursor);
+    WorkspaceMembershipAuditRepository.Page page =
+        workspaceService.listMembershipAudit(
+            actor.orElseThrow(), parsedWorkspaceId, beforeEventId, limit);
+    return noStore(HttpStatus.OK)
+        .body(
+            new MembershipAuditResponse(
+                page.items().stream().map(WorkspaceController::summary).toList(),
+                page.nextCursor()));
   }
 
   /**
@@ -275,6 +299,23 @@ public class WorkspaceController {
         member.revokedAt());
   }
 
+  private static MembershipAuditSummary summary(WorkspaceMembershipAuditRepository.Event event) {
+    return new MembershipAuditSummary(
+        Long.toString(event.eventId()),
+        event.workspaceId(),
+        event.actorUserId(),
+        event.subjectUserId(),
+        event.action().name(),
+        event.reason().name(),
+        event.previousRole() == null ? null : event.previousRole().value(),
+        event.newRole() == null ? null : event.newRole().value(),
+        event.previousStatus() == null
+            ? null
+            : event.previousStatus().name().toLowerCase(Locale.ROOT),
+        event.newStatus() == null ? null : event.newStatus().name().toLowerCase(Locale.ROOT),
+        event.occurredAt());
+  }
+
   private static WorkspaceRepository.Role parseRole(String value) {
     try {
       WorkspaceRepository.Role role =
@@ -284,6 +325,18 @@ public class WorkspaceController {
       return role;
     } catch (IllegalArgumentException exception) {
       throw new IllegalArgumentException("role must be admin, editor, or reader");
+    }
+  }
+
+  private static Long parseAuditCursor(String value) {
+    if (value == null) return null;
+    if (!value.matches("[1-9][0-9]{0,18}")) {
+      throw new IllegalArgumentException("cursor must be a positive event id");
+    }
+    try {
+      return Long.valueOf(value);
+    } catch (NumberFormatException exception) {
+      throw new IllegalArgumentException("cursor must be a positive event id");
     }
   }
 
@@ -343,6 +396,21 @@ public class WorkspaceController {
 
   public record MemberSummary(
       UUID userId, String role, String status, Instant joinedAt, Instant revokedAt) {}
+
+  public record MembershipAuditResponse(List<MembershipAuditSummary> items, String nextCursor) {}
+
+  public record MembershipAuditSummary(
+      String eventId,
+      UUID workspaceId,
+      UUID actorUserId,
+      UUID subjectUserId,
+      String action,
+      String reason,
+      String previousRole,
+      String newRole,
+      String previousStatus,
+      String newStatus,
+      Instant occurredAt) {}
 
   public static final class CreateWorkspaceRequest {
     private String name;

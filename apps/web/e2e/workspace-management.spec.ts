@@ -104,8 +104,9 @@ for (const viewport of viewports) {
     await expect(page.locator('.workspace-detail-card > .workspace-members-heading')).toContainText(
       'QUYỀN CỦA BẠN: Quản trị viên',
     );
+    await expect(page.locator('.workspace-audit')).toBeVisible();
     await expect(page.locator('.workspace-footnote')).toContainText(
-      'lịch sử kiểm toán riêng chưa có',
+      'Nhật ký thành viên chỉ dành cho chủ sở hữu và quản trị viên',
     );
     await expect(api.mutations).toContain('transfer');
     await expectNoAxeViolations(page);
@@ -166,6 +167,7 @@ async function installSignedInOwner(page: Page) {
   let createdLibraryId = '';
   const sharedLibraries: Array<Record<string, unknown>> = [];
   const invitations: Array<Record<string, unknown>> = [];
+  const auditEvents: Array<Record<string, unknown>> = [];
   const libraryQueries: string[] = [];
 
   await page.route('**/api/v1/**', async (route) => {
@@ -176,7 +178,7 @@ async function installSignedInOwner(page: Page) {
 
     if (path === '/api/v1/system/status' && method === 'GET') {
       return json(route, {
-        apiVersion: '10.13.0',
+        apiVersion: '10.14.0',
         environment: 'test',
         integrations: {
           googleOidcEnabled: false,
@@ -335,6 +337,19 @@ async function installSignedInOwner(page: Page) {
       if (!workspace) {
         createdId = requestedId;
         workspace = { id: createdId, name: body.name, createdAt: timestamp };
+        auditEvents.push({
+          eventId: '1',
+          workspaceId: createdId,
+          actorUserId: ownerId,
+          subjectUserId: ownerId,
+          action: 'WORKSPACE_CREATED',
+          reason: 'INITIAL_OWNER',
+          previousRole: null,
+          newRole: 'owner',
+          previousStatus: null,
+          newStatus: 'active',
+          occurredAt: timestamp,
+        });
       } else if (createdId !== requestedId || workspace.name !== body.name) {
         return json(route, { code: 'WORKSPACE_MEMBER_CONFLICT' }, 409);
       }
@@ -342,6 +357,19 @@ async function installSignedInOwner(page: Page) {
     }
     if (createdId && path === `/api/v1/workspaces/${createdId}/members` && method === 'GET') {
       return json(route, { items: members });
+    }
+    if (
+      createdId &&
+      path === `/api/v1/workspaces/${createdId}/membership-audit` &&
+      method === 'GET'
+    ) {
+      const before = Number(url.searchParams.get('cursor') ?? Number.MAX_SAFE_INTEGER);
+      const limit = Number(url.searchParams.get('limit') ?? 25);
+      const page = auditEvents
+        .filter((event) => Number(event.eventId) < before)
+        .sort((left, right) => Number(right.eventId) - Number(left.eventId))
+        .slice(0, limit);
+      return json(route, { items: page, nextCursor: null });
     }
     if (createdId && path.startsWith(`/api/v1/workspaces/${createdId}/members/`)) {
       const targetId = path.split('/').at(-1)!;

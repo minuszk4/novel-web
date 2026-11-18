@@ -320,6 +320,122 @@
           </div>
         }
 
+        @if (canViewMembershipAudit()) {
+          <section class="workspace-audit" aria-labelledby="workspace-audit-title">
+            <div class="workspace-members-heading">
+              <div>
+                <p class="eyebrow">DÀNH CHO CHỦ SỞ HỮU VÀ QUẢN TRỊ VIÊN</p>
+                <h2 id="workspace-audit-title">Lịch sử thay đổi thành viên</h2>
+              </div>
+              @if (membershipAuditPhase() === 'ready') {
+                <span class="workspace-count">{{ membershipAudit().length }} sự kiện đã tải</span>
+              }
+            </div>
+            <p class="workspace-audit-help">
+              Ghi lại việc cấp, đổi, thu hồi và khôi phục quyền, chuyển chủ sở hữu, tạo workspace và
+              chấp nhận lời mời. Lịch sử được giữ trong thời gian tồn tại của workspace. Mục “trạng
+              thái tại thời điểm bắt đầu” chỉ ghi ảnh chụp ban đầu; thao tác trước đó không được
+              lưu.
+            </p>
+
+            @if (membershipAuditPhase() === 'loading') {
+              <p class="workspace-status" role="status" aria-live="polite">
+                Đang tải lịch sử thay đổi…
+              </p>
+            } @else if (membershipAuditPhase() === 'error' && membershipAudit().length === 0) {
+              <div class="workspace-error-panel" role="alert">
+                <p>{{ membershipAuditError() }}</p>
+                <button class="button button-outline" type="button" (click)="loadMembershipAudit()">
+                  Tải lại lịch sử
+                </button>
+              </div>
+            } @else if (membershipAudit().length === 0) {
+              <p class="workspace-status">Chưa có sự kiện thành viên nào để hiển thị.</p>
+            } @else {
+              <ol class="workspace-audit-list" aria-label="Sự kiện thay đổi thành viên mới nhất">
+                @for (event of membershipAudit(); track event.eventId) {
+                  <li class="workspace-audit-event">
+                    <div class="workspace-audit-event-heading">
+                      <h3>{{ membershipAuditActionLabel(event.action) }}</h3>
+                      <time [attr.datetime]="event.occurredAt">
+                        {{ formatMembershipAuditTime(event.occurredAt) }}
+                      </time>
+                    </div>
+                    <p class="workspace-audit-reason">
+                      {{ membershipAuditReasonLabel(event.reason) }}
+                    </p>
+                    <dl class="workspace-audit-details">
+                      <div>
+                        <dt>Người thực hiện</dt>
+                        <dd>
+                          @if (event.actorUserId) {
+                            <code>{{ event.actorUserId }}</code>
+                          } @else {
+                            <span>Không ghi nhận: ảnh chụp trước khi bật lịch sử</span>
+                          }
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>Tài khoản liên quan</dt>
+                        <dd>
+                          <code>{{ event.subjectUserId }}</code>
+                        </dd>
+                      </div>
+                      @if (
+                        event.previousRole ||
+                        event.newRole ||
+                        event.previousStatus ||
+                        event.newStatus
+                      ) {
+                        <div>
+                          <dt>Quyền truy cập</dt>
+                          <dd>
+                            {{ event.previousRole ? roleLabel(event.previousRole) : 'Chưa có' }}
+                            <span aria-hidden="true"> → </span>
+                            {{ event.newRole ? roleLabel(event.newRole) : 'Không đổi' }}
+                            <span aria-hidden="true"> · </span>
+                            {{
+                              event.previousStatus
+                                ? memberStatusLabel(event.previousStatus)
+                                : 'Chưa có'
+                            }}
+                            <span aria-hidden="true"> → </span>
+                            {{ event.newStatus ? memberStatusLabel(event.newStatus) : 'Không đổi' }}
+                          </dd>
+                        </div>
+                      }
+                    </dl>
+                  </li>
+                }
+              </ol>
+
+              @if (membershipAuditError(); as error) {
+                <div class="workspace-error-panel" role="alert">
+                  <p>{{ error }}</p>
+                  <button
+                    class="button button-outline"
+                    type="button"
+                    [disabled]="membershipAuditLoadingMore()"
+                    (click)="loadMoreMembershipAudit()"
+                  >
+                    Thử tải tiếp
+                  </button>
+                </div>
+              }
+              @if (membershipAuditNextCursor()) {
+                <button
+                  class="button button-outline workspace-audit-more"
+                  type="button"
+                  [disabled]="membershipAuditLoadingMore()"
+                  (click)="loadMoreMembershipAudit()"
+                >
+                  {{ membershipAuditLoadingMore() ? 'Đang tải…' : 'Tải sự kiện cũ hơn' }}
+                </button>
+              }
+            }
+          </section>
+        }
+
         @if (canManageMembers()) {
           <section class="workspace-add-member" aria-labelledby="add-member-title">
             <h3 id="add-member-title">Thêm hoặc khôi phục thành viên</h3>
@@ -555,6 +671,6 @@
 
   <p class="workspace-footnote">
     Workspace phân quyền đọc và biên tập thư viện chung. Thành viên không nhận được quyền tự xuất
-    bản tác phẩm. Thư mời qua email và lịch sử kiểm toán riêng chưa có trong phiên bản này.
+    bản tác phẩm. Nhật ký thành viên chỉ dành cho chủ sở hữu và quản trị viên workspace.
   </p>
 </section>

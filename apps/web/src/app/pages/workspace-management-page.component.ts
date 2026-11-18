@@ -6,6 +6,9 @@ import {
   WorkspaceApiService,
   WorkspaceLibrary,
   WorkspaceInvitationSummary,
+  WorkspaceMembershipAuditAction,
+  WorkspaceMembershipAuditEvent,
+  WorkspaceMembershipAuditReason,
   WorkspaceMember,
   WorkspaceMemberRole,
   WorkspaceRole,
@@ -53,6 +56,11 @@ export class WorkspaceManagementPageComponent {
   protected readonly workspaces = signal<WorkspaceSummary[]>([]);
   protected readonly selectedWorkspaceId = signal<string | null>(null);
   protected readonly members = signal<WorkspaceMember[]>([]);
+  protected readonly membershipAudit = signal<WorkspaceMembershipAuditEvent[]>([]);
+  protected readonly membershipAuditPhase = signal<LoadPhase>('loading');
+  protected readonly membershipAuditError = signal<string | null>(null);
+  protected readonly membershipAuditNextCursor = signal<string | null>(null);
+  protected readonly membershipAuditLoadingMore = signal(false);
   protected readonly libraries = signal<WorkspaceLibrary[]>([]);
   protected readonly invitations = signal<WorkspaceInvitationSummary[]>([]);
   protected readonly invitationPhase = signal<LoadPhase>('loading');
@@ -93,6 +101,7 @@ export class WorkspaceManagementPageComponent {
     return role === 'owner' || role === 'admin';
   });
   protected readonly canCreateLibraries = this.canManageMembers;
+  protected readonly canViewMembershipAudit = this.canManageMembers;
   protected readonly canTransferOwnership = computed(
     () => this.selectedWorkspace()?.role === 'owner',
   );
@@ -166,6 +175,8 @@ export class WorkspaceManagementPageComponent {
         (selected && items.some(({ id }) => id === selected) ? selected : items[0]?.id) ?? null;
       if (nextSelected !== selected) {
         this.members.set([]);
+        this.membershipAudit.set([]);
+        this.membershipAuditNextCursor.set(null);
         this.libraries.set([]);
         this.nextLibraryCursor.set(null);
       }
@@ -176,12 +187,16 @@ export class WorkspaceManagementPageComponent {
       if (nextSelected)
         await Promise.all([
           this.loadMembers(nextSelected),
+          this.loadMembershipAudit(nextSelected),
           this.loadLibraries(nextSelected),
           this.loadInvitations(nextSelected),
         ]);
       else {
         this.members.set([]);
         this.memberPhase.set('ready');
+        this.membershipAudit.set([]);
+        this.membershipAuditNextCursor.set(null);
+        this.membershipAuditPhase.set('ready');
         this.libraries.set([]);
         this.nextLibraryCursor.set(null);
         this.libraryPhase.set('ready');
@@ -198,6 +213,10 @@ export class WorkspaceManagementPageComponent {
     const id = (event.target as HTMLSelectElement).value;
     if (!this.workspaces().some((workspace) => workspace.id === id)) return;
     this.selectedWorkspaceId.set(id);
+    this.membershipAudit.set([]);
+    this.membershipAuditNextCursor.set(null);
+    this.membershipAuditPhase.set('loading');
+    this.membershipAuditError.set(null);
     this.libraries.set([]);
     this.nextLibraryCursor.set(null);
     this.libraryPhase.set('loading');
@@ -208,7 +227,12 @@ export class WorkspaceManagementPageComponent {
     this.memberMessage.set(null);
     this.libraryError.set(null);
     this.libraryMessage.set(null);
-    await Promise.all([this.loadMembers(id), this.loadLibraries(id), this.loadInvitations(id)]);
+    await Promise.all([
+      this.loadMembers(id),
+      this.loadMembershipAudit(id),
+      this.loadLibraries(id),
+      this.loadInvitations(id),
+    ]);
   }
 
   protected updateLibraryName(event: Event): void {
@@ -437,6 +461,94 @@ export class WorkspaceManagementPageComponent {
       this.memberPhase.set('error');
       this.memberError.set(workspaceErrorMessage(error, 'Không tải được danh sách thành viên.'));
     }
+  }
+
+  protected async loadMembershipAudit(workspaceId = this.selectedWorkspaceId()): Promise<void> {
+    if (!workspaceId || !this.canViewMembershipAudit()) {
+      this.membershipAudit.set([]);
+      this.membershipAuditNextCursor.set(null);
+      this.membershipAuditError.set(null);
+      this.membershipAuditPhase.set('ready');
+      this.membershipAuditLoadingMore.set(false);
+      return;
+    }
+    this.membershipAuditPhase.set('loading');
+    this.membershipAuditError.set(null);
+    this.membershipAuditNextCursor.set(null);
+    try {
+      const page = await this.api.listMembershipAudit(workspaceId, undefined, 25);
+      if (this.selectedWorkspaceId() !== workspaceId) return;
+      this.membershipAudit.set(page.items);
+      this.membershipAuditNextCursor.set(page.nextCursor);
+      this.membershipAuditPhase.set('ready');
+    } catch (error) {
+      if (this.selectedWorkspaceId() !== workspaceId) return;
+      this.membershipAuditPhase.set('error');
+      this.membershipAuditError.set(
+        workspaceErrorMessage(error, 'Không tải được lịch sử thay đổi thành viên.'),
+      );
+    }
+  }
+
+  protected async loadMoreMembershipAudit(): Promise<void> {
+    const workspaceId = this.selectedWorkspaceId();
+    const cursor = this.membershipAuditNextCursor();
+    if (
+      !workspaceId ||
+      !cursor ||
+      !this.canViewMembershipAudit() ||
+      this.membershipAuditLoadingMore()
+    ) {
+      return;
+    }
+    this.membershipAuditLoadingMore.set(true);
+    this.membershipAuditError.set(null);
+    try {
+      const page = await this.api.listMembershipAudit(workspaceId, cursor, 25);
+      if (this.selectedWorkspaceId() !== workspaceId) return;
+      const seen = new Set(this.membershipAudit().map(({ eventId }) => eventId));
+      this.membershipAudit.update((items) => [
+        ...items,
+        ...page.items.filter(({ eventId }) => !seen.has(eventId)),
+      ]);
+      this.membershipAuditNextCursor.set(page.nextCursor);
+    } catch (error) {
+      if (this.selectedWorkspaceId() !== workspaceId) return;
+      this.membershipAuditError.set(
+        workspaceErrorMessage(error, 'Không tải thêm được lịch sử thay đổi.'),
+      );
+    } finally {
+      this.membershipAuditLoadingMore.set(false);
+    }
+  }
+
+  protected membershipAuditActionLabel(action: WorkspaceMembershipAuditAction): string {
+    return {
+      WORKSPACE_CREATED: 'Đã tạo workspace',
+      MEMBER_GRANTED: 'Đã cấp quyền thành viên',
+      MEMBER_ROLE_CHANGED: 'Đã đổi vai trò thành viên',
+      MEMBER_REVOKED: 'Đã thu hồi quyền thành viên',
+      MEMBER_REACTIVATED: 'Đã khôi phục quyền thành viên',
+      OWNERSHIP_TRANSFERRED: 'Đã chuyển quyền sở hữu',
+      INVITATION_ACCEPTED: 'Thành viên đã chấp nhận lời mời',
+      MEMBERSHIP_BASELINE: 'Trạng thái tại thời điểm bắt đầu ghi lịch sử',
+    }[action];
+  }
+
+  protected membershipAuditReasonLabel(reason: WorkspaceMembershipAuditReason): string {
+    return {
+      INITIAL_OWNER: 'Khởi tạo workspace',
+      MANAGER_REQUEST: 'Thao tác của quản trị viên',
+      OWNER_HANDOVER: 'Bàn giao quyền sở hữu',
+      INVITATION_ACCEPTED: 'Chấp nhận lời mời',
+      PRE_AUDIT_BASELINE: 'Ảnh chụp trạng thái cũ; lịch sử trước đó không có',
+    }[reason];
+  }
+
+  protected formatMembershipAuditTime(value: string): string {
+    return new Intl.DateTimeFormat('vi-VN', { dateStyle: 'medium', timeStyle: 'short' }).format(
+      new Date(value),
+    );
   }
 
   protected updateMemberUserId(event: Event): void {

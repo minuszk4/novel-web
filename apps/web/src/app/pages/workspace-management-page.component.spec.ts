@@ -8,6 +8,7 @@ import {
   WorkspaceApiError,
   WorkspaceDetail,
   WorkspaceLibrary,
+  WorkspaceMembershipAuditEvent,
   WorkspaceMember,
   WorkspaceSummary,
 } from '../core/workspace-api.service';
@@ -45,12 +46,26 @@ const sharedLibrary: WorkspaceLibrary = {
   isDefault: false,
   createdAt: '2026-11-18T02:00:00Z',
 };
+const auditEvent: WorkspaceMembershipAuditEvent = {
+  eventId: '17',
+  workspaceId,
+  actorUserId: ownerId,
+  subjectUserId: memberId,
+  action: 'MEMBER_ROLE_CHANGED',
+  reason: 'MANAGER_REQUEST',
+  previousRole: 'reader',
+  newRole: 'editor',
+  previousStatus: 'active',
+  newStatus: 'active',
+  occurredAt: '2026-11-18T02:00:00Z',
+};
 
 describe('WorkspaceManagementPageComponent', () => {
   let api: {
     listWorkspaces: ReturnType<typeof vi.fn>;
     createWorkspace: ReturnType<typeof vi.fn>;
     listMembers: ReturnType<typeof vi.fn>;
+    listMembershipAudit: ReturnType<typeof vi.fn>;
     listLibraries: ReturnType<typeof vi.fn>;
     listInvitations: ReturnType<typeof vi.fn>;
     createInvitation: ReturnType<typeof vi.fn>;
@@ -66,6 +81,7 @@ describe('WorkspaceManagementPageComponent', () => {
       listWorkspaces: vi.fn().mockResolvedValue([workspace]),
       createWorkspace: vi.fn(),
       listMembers: vi.fn().mockResolvedValue([owner, reader]),
+      listMembershipAudit: vi.fn().mockResolvedValue({ items: [auditEvent], nextCursor: null }),
       listLibraries: vi.fn().mockResolvedValue({ items: [sharedLibrary], nextCursor: null }),
       listInvitations: vi.fn().mockResolvedValue([]),
       createInvitation: vi.fn().mockResolvedValue({
@@ -109,11 +125,46 @@ describe('WorkspaceManagementPageComponent', () => {
     expect(element.textContent).toContain('Nhóm đọc');
     expect(element.textContent).toContain(ownerId);
     expect(element.textContent).toContain(memberId);
+    expect(element.textContent).toContain('Lịch sử thay đổi thành viên');
+    expect(element.textContent).toContain('Đã đổi vai trò thành viên');
+    expect(api.listMembershipAudit).toHaveBeenCalledWith(workspaceId, undefined, 25);
     expect(element.textContent).toContain('Chủ sở hữu');
     expect(element.textContent).toContain('Người đọc');
     expect(element.textContent).not.toContain('@');
     expect(api.listWorkspaces).toHaveBeenCalledOnce();
     expect(api.listMembers).toHaveBeenCalledWith(workspaceId);
+  });
+
+  it('shows older history pages to managers and hides the audit request from readers', async () => {
+    const olderEvent: WorkspaceMembershipAuditEvent = {
+      ...auditEvent,
+      eventId: '8',
+      action: 'MEMBER_GRANTED',
+    };
+    api.listMembershipAudit
+      .mockResolvedValueOnce({ items: [auditEvent], nextCursor: '8' })
+      .mockResolvedValueOnce({ items: [olderEvent], nextCursor: null });
+    const fixture = TestBed.createComponent(WorkspaceManagementPageComponent);
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    const button = Array.from(
+      (fixture.nativeElement as HTMLElement).querySelectorAll('button'),
+    ).find((candidate) => candidate.textContent?.includes('Tải sự kiện cũ hơn'));
+    expect(button).toBeDefined();
+    button!.click();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(api.listMembershipAudit).toHaveBeenCalledWith(workspaceId, '8', 25);
+    expect((fixture.nativeElement as HTMLElement).textContent).toContain('Đã cấp quyền thành viên');
+    api.listWorkspaces.mockResolvedValueOnce([{ ...workspace, role: 'reader' }]);
+    const readerFixture = TestBed.createComponent(WorkspaceManagementPageComponent);
+    await readerFixture.whenStable();
+    readerFixture.detectChanges();
+    expect(
+      (readerFixture.nativeElement as HTMLElement).querySelector('#workspace-audit-title'),
+    ).toBeNull();
+    expect(api.listMembershipAudit).toHaveBeenCalledTimes(2);
   });
 
   it('lets an owner explicitly confirm a membership revocation', async () => {

@@ -95,6 +95,7 @@ public class ApiSecurityConfiguration {
                         "/api/v1/me/workspaces",
                         "/api/v1/workspaces/*",
                         "/api/v1/workspaces/*/members",
+                        "/api/v1/workspaces/*/membership-audit",
                         "/api/v1/workspaces/*/libraries",
                         "/api/v1/workspaces/*/invitations",
                         "/api/v1/catalog/works",

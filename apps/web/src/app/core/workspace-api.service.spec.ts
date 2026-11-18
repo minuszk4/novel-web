@@ -51,6 +51,19 @@ const invitation = {
   expiresAt: '2026-11-25T02:00:00Z',
 };
 const invitationToken = 'A'.repeat(43);
+const auditEvent = {
+  eventId: '17',
+  workspaceId,
+  actorUserId: memberId,
+  subjectUserId: memberId,
+  action: 'MEMBER_ROLE_CHANGED',
+  reason: 'MANAGER_REQUEST',
+  previousRole: 'reader',
+  newRole: 'editor',
+  previousStatus: 'active',
+  newStatus: 'active',
+  occurredAt: '2026-11-18T02:00:00Z',
+};
 
 describe('WorkspaceApiService', () => {
   let api: WorkspaceApiService;
@@ -104,6 +117,30 @@ describe('WorkspaceApiService', () => {
       .expectOne({ method: 'GET', url: `/api/v1/workspaces/${workspaceId}/members` })
       .flush({ items: [{ ...member, contactEmail: 'private@example.test' }] });
     await expect(invalid).rejects.toMatchObject({ status: 502, code: null });
+  });
+
+  it('lists strict workspace membership audit pages using an event-id cursor', async () => {
+    const result = api.listMembershipAudit(workspaceId, '17', 1);
+    http
+      .expectOne(
+        (request) =>
+          request.method === 'GET' &&
+          request.url === `/api/v1/workspaces/${workspaceId}/membership-audit` &&
+          request.params.get('limit') === '1' &&
+          request.params.get('cursor') === '17',
+      )
+      .flush({ items: [auditEvent], nextCursor: '9' });
+    await expect(result).resolves.toEqual({ items: [auditEvent], nextCursor: '9' });
+
+    const invalid = api.listMembershipAudit(workspaceId);
+    http
+      .expectOne((request) => request.url.endsWith(`/workspaces/${workspaceId}/membership-audit`))
+      .flush({ items: [{ ...auditEvent, email: 'private@example.test' }], nextCursor: null });
+    await expect(invalid).rejects.toMatchObject({ status: 502, code: null });
+    await expect(api.listMembershipAudit(workspaceId, '0')).rejects.toMatchObject({ status: 400 });
+    await expect(api.listMembershipAudit(workspaceId, undefined, 51)).rejects.toMatchObject({
+      status: 400,
+    });
   });
 
   it('lists workspace libraries with a validated cursor page and rejects unsafe DTO fields', async () => {

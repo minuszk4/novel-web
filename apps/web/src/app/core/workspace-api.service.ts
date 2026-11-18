@@ -52,6 +52,42 @@ export interface WorkspaceInvitationSummary {
   expiresAt: string;
 }
 
+export type WorkspaceMembershipAuditAction =
+  | 'WORKSPACE_CREATED'
+  | 'MEMBER_GRANTED'
+  | 'MEMBER_ROLE_CHANGED'
+  | 'MEMBER_REVOKED'
+  | 'MEMBER_REACTIVATED'
+  | 'OWNERSHIP_TRANSFERRED'
+  | 'INVITATION_ACCEPTED'
+  | 'MEMBERSHIP_BASELINE';
+
+export type WorkspaceMembershipAuditReason =
+  | 'INITIAL_OWNER'
+  | 'MANAGER_REQUEST'
+  | 'OWNER_HANDOVER'
+  | 'INVITATION_ACCEPTED'
+  | 'PRE_AUDIT_BASELINE';
+
+export interface WorkspaceMembershipAuditEvent {
+  eventId: string;
+  workspaceId: string;
+  actorUserId: string | null;
+  subjectUserId: string;
+  action: WorkspaceMembershipAuditAction;
+  reason: WorkspaceMembershipAuditReason;
+  previousRole: WorkspaceRole | null;
+  newRole: WorkspaceRole | null;
+  previousStatus: WorkspaceMemberStatus | null;
+  newStatus: WorkspaceMemberStatus | null;
+  occurredAt: string;
+}
+
+export interface WorkspaceMembershipAuditPage {
+  items: WorkspaceMembershipAuditEvent[];
+  nextCursor: string | null;
+}
+
 export interface WorkspaceInvitationQueued {
   id: string;
   status: 'pending' | 'accepted' | 'rejected' | 'revoked' | 'expired';
@@ -82,6 +118,7 @@ const workspacesUrl = '/api/v1/me/workspaces';
 const workspaceUrl = (workspaceId: string) =>
   `/api/v1/workspaces/${encodeURIComponent(workspaceId)}`;
 const membersUrl = (workspaceId: string) => `${workspaceUrl(workspaceId)}/members`;
+const membershipAuditUrl = (workspaceId: string) => `${workspaceUrl(workspaceId)}/membership-audit`;
 const memberUrl = (workspaceId: string, userId: string) =>
   `${membersUrl(workspaceId)}/${encodeURIComponent(userId)}`;
 const librariesUrl = (workspaceId: string) => `${workspaceUrl(workspaceId)}/libraries`;
@@ -156,6 +193,47 @@ export class WorkspaceApiService {
       const items = response['items'].map(parseWorkspaceMember);
       if (new Set(items.map(({ userId }) => userId)).size !== items.length) throw invalidResponse();
       return items;
+    } catch (error) {
+      throw toApiError(error);
+    }
+  }
+
+  async listMembershipAudit(
+    workspaceId: string,
+    cursor?: string,
+    limit = 25,
+  ): Promise<WorkspaceMembershipAuditPage> {
+    if (
+      !isUuid(workspaceId) ||
+      !Number.isInteger(limit) ||
+      limit < 1 ||
+      limit > 50 ||
+      (cursor !== undefined && !isAuditCursor(cursor))
+    ) {
+      throw new WorkspaceApiError('INVALID_WORKSPACE_AUDIT_QUERY', 400, null);
+    }
+    try {
+      let params = new HttpParams().set('limit', limit);
+      if (cursor) params = params.set('cursor', cursor);
+      const response: unknown = await firstValueFrom(
+        this.http
+          .get<unknown>(membershipAuditUrl(workspaceId), { params })
+          .pipe(timeout(timeoutMs)),
+      );
+      if (
+        !isObject(response) ||
+        !hasExactKeys(response, ['items', 'nextCursor']) ||
+        !Array.isArray(response['items']) ||
+        response['items'].length > limit ||
+        !(response['nextCursor'] === null || isAuditCursor(response['nextCursor']))
+      ) {
+        throw invalidResponse();
+      }
+      const items = response['items'].map(parseWorkspaceMembershipAuditEvent);
+      if (new Set(items.map(({ eventId }) => eventId)).size !== items.length) {
+        throw invalidResponse();
+      }
+      return { items, nextCursor: response['nextCursor'] as string | null };
     } catch (error) {
       throw toApiError(error);
     }
@@ -570,6 +648,58 @@ function parseWorkspaceInvitationSummary(value: unknown): WorkspaceInvitationSum
   };
 }
 
+function parseWorkspaceMembershipAuditEvent(value: unknown): WorkspaceMembershipAuditEvent {
+  const actions: readonly WorkspaceMembershipAuditAction[] = [
+    'WORKSPACE_CREATED',
+    'MEMBER_GRANTED',
+    'MEMBER_ROLE_CHANGED',
+    'MEMBER_REVOKED',
+    'MEMBER_REACTIVATED',
+    'OWNERSHIP_TRANSFERRED',
+    'INVITATION_ACCEPTED',
+    'MEMBERSHIP_BASELINE',
+  ];
+  const reasons: readonly WorkspaceMembershipAuditReason[] = [
+    'INITIAL_OWNER',
+    'MANAGER_REQUEST',
+    'OWNER_HANDOVER',
+    'INVITATION_ACCEPTED',
+    'PRE_AUDIT_BASELINE',
+  ];
+  if (
+    !isObject(value) ||
+    !hasExactKeys(value, [
+      'eventId',
+      'workspaceId',
+      'actorUserId',
+      'subjectUserId',
+      'action',
+      'reason',
+      'previousRole',
+      'newRole',
+      'previousStatus',
+      'newStatus',
+      'occurredAt',
+    ]) ||
+    !isAuditCursor(value['eventId']) ||
+    !isUuid(value['workspaceId']) ||
+    !(value['actorUserId'] === null || isUuid(value['actorUserId'])) ||
+    !isUuid(value['subjectUserId']) ||
+    typeof value['action'] !== 'string' ||
+    !actions.includes(value['action'] as WorkspaceMembershipAuditAction) ||
+    typeof value['reason'] !== 'string' ||
+    !reasons.includes(value['reason'] as WorkspaceMembershipAuditReason) ||
+    !(value['previousRole'] === null || isWorkspaceRole(value['previousRole'])) ||
+    !(value['newRole'] === null || isWorkspaceRole(value['newRole'])) ||
+    !(value['previousStatus'] === null || isWorkspaceMemberStatus(value['previousStatus'])) ||
+    !(value['newStatus'] === null || isWorkspaceMemberStatus(value['newStatus'])) ||
+    !isTimestamp(value['occurredAt'])
+  ) {
+    throw invalidResponse();
+  }
+  return value as unknown as WorkspaceMembershipAuditEvent;
+}
+
 function parseWorkspaceInvitationQueued(value: unknown): WorkspaceInvitationQueued {
   const statuses = ['pending', 'accepted', 'rejected', 'revoked', 'expired'];
   if (
@@ -652,6 +782,10 @@ function isTimestamp(value: unknown): value is string {
 
 function isBoundedCursor(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= 2048;
+}
+
+function isAuditCursor(value: unknown): value is string {
+  return typeof value === 'string' && /^[1-9][0-9]{0,18}$/.test(value);
 }
 
 function isPositiveInteger(value: unknown): value is number {

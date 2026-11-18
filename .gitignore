@@ -1,5 +1,5 @@
 # Local planning and research documents
-/.ai/
+.ai/
 
 # Build artifacts and installed packages
 **/node_modules/

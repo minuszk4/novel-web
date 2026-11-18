@@ -36,6 +36,7 @@ import com.novelweb.library.LibraryService;
 import com.novelweb.library.LibraryUserStateRepository;
 import com.novelweb.library.LibraryUserStateService;
 import com.novelweb.library.PublicCatalogRepository;
+import com.novelweb.library.WorkspaceMembershipAuditRepository;
 import com.novelweb.library.WorkspaceRepository;
 import com.novelweb.library.WorkspaceService;
 import com.novelweb.library.imports.ImportParseService;
@@ -227,6 +228,7 @@ class PostgresSchemaIntegrationTests {
           "work_tags",
           "workspaces",
           "workspace_members",
+          "workspace_membership_audit_events",
           "workspace_invitations",
           "workspace_invitation_outbox",
           "library_reading_states",
@@ -487,7 +489,7 @@ class PostgresSchemaIntegrationTests {
             connection.prepareStatement("SELECT COUNT(*) FROM databasechangelog");
         ResultSet changesets = changesetCount.executeQuery()) {
       changesets.next();
-      assertEquals(181, changesets.getInt(1), "unexpected number of applied changesets");
+      assertEquals(184, changesets.getInt(1), "unexpected number of applied changesets");
     }
 
     Set<String> actualTables = new HashSet<>();
@@ -7249,7 +7251,28 @@ class PostgresSchemaIntegrationTests {
         eraseMembership.setObject(1, editorId);
         eraseMembership.executeUpdate();
       }
-      deleteSessionTestUser(editorId);
+      SQLException retainedMembershipHistoryBlocksAccountErasure =
+          assertThrows(
+              SQLException.class,
+              () -> {
+                try (Connection connection = dataSource.getConnection();
+                    PreparedStatement deleteUser =
+                        connection.prepareStatement("DELETE FROM users WHERE id = ?")) {
+                  deleteUser.setObject(1, editorId);
+                  deleteUser.executeUpdate();
+                }
+              });
+      assertEquals("23503", retainedMembershipHistoryBlocksAccountErasure.getSQLState());
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement retainedAudit =
+              connection.prepareStatement(
+                  "SELECT COUNT(*) FROM workspace_membership_audit_events WHERE subject_user_id = ?")) {
+        retainedAudit.setObject(1, editorId);
+        try (ResultSet row = retainedAudit.executeQuery()) {
+          assertTrue(row.next());
+          assertTrue(row.getLong(1) > 0);
+        }
+      }
       try (Connection connection = dataSource.getConnection();
           PreparedStatement erasure =
               connection.prepareStatement(
@@ -7267,8 +7290,8 @@ class PostgresSchemaIntegrationTests {
           assertTrue(row.next());
           assertEquals(1, row.getLong("glossary_count"));
           assertEquals(3, row.getLong("revision_count"));
-          assertEquals(0, row.getLong("receipt_count"));
-          assertEquals(0, row.getLong("row_count"));
+          assertEquals(1, row.getLong("receipt_count"));
+          assertEquals(4, row.getLong("row_count"));
         }
       }
     } finally {
@@ -15091,6 +15114,87 @@ class PostgresSchemaIntegrationTests {
       assertThrows(
           WorkspaceRepository.WorkspaceAccessDeniedException.class,
           () -> workspaceService.transferOwnership(ownerId, createdWorkspaceId, readerId));
+
+      WorkspaceRepository.MemberRecord reactivated =
+          workspaceService.addMember(
+              adminId, workspaceId, editorId, WorkspaceRepository.Role.READER);
+      assertEquals(WorkspaceRepository.MemberStatus.ACTIVE, reactivated.status());
+      WorkspaceMembershipAuditRepository.Page newestAudit =
+          workspaceService.listMembershipAudit(adminId, workspaceId, null, 3);
+      assertEquals(3, newestAudit.items().size());
+      assertEquals(
+          WorkspaceMembershipAuditRepository.Action.MEMBER_REACTIVATED,
+          newestAudit.items().getFirst().action());
+      assertEquals(editorId, newestAudit.items().getFirst().subjectUserId());
+      assertEquals(
+          WorkspaceMembershipAuditRepository.Action.MEMBER_REVOKED,
+          newestAudit.items().get(1).action());
+      assertEquals(
+          WorkspaceMembershipAuditRepository.Action.OWNERSHIP_TRANSFERRED,
+          newestAudit.items().get(2).action());
+      assertTrue(newestAudit.nextCursor() != null);
+      WorkspaceMembershipAuditRepository.Page olderAudit =
+          workspaceService.listMembershipAudit(
+              adminId, workspaceId, Long.valueOf(newestAudit.nextCursor()), 5);
+      assertEquals(5, olderAudit.items().size());
+      assertEquals(
+          WorkspaceMembershipAuditRepository.Action.MEMBER_ROLE_CHANGED,
+          olderAudit.items().getFirst().action());
+      assertEquals(
+          WorkspaceMembershipAuditRepository.Action.WORKSPACE_CREATED,
+          olderAudit.items().getLast().action());
+      assertNull(olderAudit.nextCursor());
+      assertEquals(adminId, newestAudit.items().getFirst().actorUserId());
+      assertEquals(
+          WorkspaceMembershipAuditRepository.Reason.MANAGER_REQUEST,
+          newestAudit.items().getFirst().reason());
+      assertThrows(
+          WorkspaceRepository.WorkspaceAccessDeniedException.class,
+          () -> workspaceService.listMembershipAudit(readerId, createdWorkspaceId, null, 25));
+      assertThrows(
+          WorkspaceRepository.WorkspaceAccessDeniedException.class,
+          () -> workspaceService.listMembershipAudit(outsiderId, createdWorkspaceId, null, 25));
+      assertThrows(
+          IllegalArgumentException.class,
+          () -> workspaceService.listMembershipAudit(adminId, createdWorkspaceId, null, 51));
+
+      long latestEventId = newestAudit.items().getFirst().eventId();
+      SQLException updateAudit =
+          assertThrows(
+              SQLException.class,
+              () -> {
+                try (Connection connection = dataSource.getConnection();
+                    PreparedStatement update =
+                        connection.prepareStatement(
+                            "UPDATE workspace_membership_audit_events SET reason_code = reason_code WHERE event_id = ?")) {
+                  update.setLong(1, latestEventId);
+                  update.executeUpdate();
+                }
+              });
+      assertEquals("55000", updateAudit.getSQLState());
+      SQLException deleteAudit =
+          assertThrows(
+              SQLException.class,
+              () -> {
+                try (Connection connection = dataSource.getConnection();
+                    PreparedStatement delete =
+                        connection.prepareStatement(
+                            "DELETE FROM workspace_membership_audit_events WHERE event_id = ?")) {
+                  delete.setLong(1, latestEventId);
+                  delete.executeUpdate();
+                }
+              });
+      assertEquals("55000", deleteAudit.getSQLState());
+      SQLException truncateAudit =
+          assertThrows(
+              SQLException.class,
+              () -> {
+                try (Connection connection = dataSource.getConnection();
+                    java.sql.Statement truncate = connection.createStatement()) {
+                  truncate.execute("TRUNCATE workspace_membership_audit_events");
+                }
+              });
+      assertEquals("55000", truncateAudit.getSQLState());
     } finally {
       if (workspaceId != null) deleteWorkspaceTestData(workspaceId);
       deleteSessionTestUser(ownerId);
@@ -15136,6 +15240,7 @@ class PostgresSchemaIntegrationTests {
       String readerCsrf = csrfTokenService.tokenFor(readerSession.cookieValue());
       String createRoute = "/api/v1/me/workspaces/{workspaceId}";
       String createBody = "{\"name\":\" Shared Reading Room \"}";
+      String auditRoute = "/api/v1/workspaces/{workspaceId}/membership-audit";
 
       MvcResult noCsrf =
           mockMvc
@@ -15172,6 +15277,36 @@ class PostgresSchemaIntegrationTests {
       assertEquals(
           "Shared Reading Room",
           objectMapper.readTree(created.getResponse().getContentAsString()).path("name").asText());
+
+      MvcResult anonymousAudit = mockMvc.perform(get(auditRoute, workspaceId)).andReturn();
+      assertEquals(401, anonymousAudit.getResponse().getStatus());
+      MvcResult policyBlockedAudit =
+          mockMvc.perform(get(auditRoute, workspaceId).cookie(blockedCookie)).andReturn();
+      assertEquals(403, policyBlockedAudit.getResponse().getStatus());
+      MvcResult initialAudit =
+          mockMvc.perform(get(auditRoute, workspaceId).cookie(ownerCookie)).andReturn();
+      assertEquals(200, initialAudit.getResponse().getStatus());
+      assertTrue(
+          initialAudit.getResponse().getHeader(HttpHeaders.CACHE_CONTROL).contains("no-store"));
+      assertEquals("no-cache", initialAudit.getResponse().getHeader(HttpHeaders.PRAGMA));
+      assertEquals(
+          "WORKSPACE_CREATED",
+          objectMapper
+              .readTree(initialAudit.getResponse().getContentAsString())
+              .path("items")
+              .get(0)
+              .path("action")
+              .asText());
+      MvcResult invalidAuditCursor =
+          mockMvc
+              .perform(get(auditRoute, workspaceId).cookie(ownerCookie).param("cursor", "0"))
+              .andReturn();
+      assertEquals(400, invalidAuditCursor.getResponse().getStatus());
+      MvcResult oversizedAuditPage =
+          mockMvc
+              .perform(get(auditRoute, workspaceId).cookie(ownerCookie).param("limit", "51"))
+              .andReturn();
+      assertEquals(400, oversizedAuditPage.getResponse().getStatus());
 
       MvcResult exactReplay =
           mockMvc
@@ -15369,6 +15504,12 @@ class PostgresSchemaIntegrationTests {
               .andReturn();
       assertEquals(200, added.getResponse().getStatus());
       assertTrue(added.getResponse().getContentAsString().contains("active"));
+      MvcResult readerCannotReadAudit =
+          mockMvc.perform(get(auditRoute, workspaceId).cookie(readerCookie)).andReturn();
+      assertEquals(404, readerCannotReadAudit.getResponse().getStatus());
+      MvcResult outsiderCannotReadAudit =
+          mockMvc.perform(get(auditRoute, workspaceId).cookie(outsiderCookie)).andReturn();
+      assertEquals(404, outsiderCannotReadAudit.getResponse().getStatus());
 
       MvcResult exactMemberRetry =
           mockMvc
@@ -15478,6 +15619,20 @@ class PostgresSchemaIntegrationTests {
       assertEquals(200, transferred.getResponse().getStatus());
       assertEquals(
           "\"workspace-" + workspaceId + "-8\"", transferred.getResponse().getHeader("ETag"));
+      MvcResult currentOwnerAudit =
+          mockMvc.perform(get(auditRoute, workspaceId).cookie(adminCookie)).andReturn();
+      assertEquals(200, currentOwnerAudit.getResponse().getStatus());
+      assertEquals(
+          "OWNERSHIP_TRANSFERRED",
+          objectMapper
+              .readTree(currentOwnerAudit.getResponse().getContentAsString())
+              .path("items")
+              .get(0)
+              .path("action")
+              .asText());
+      MvcResult formerOwnerAdminAudit =
+          mockMvc.perform(get(auditRoute, workspaceId).cookie(ownerCookie)).andReturn();
+      assertEquals(200, formerOwnerAdminAudit.getResponse().getStatus());
 
       MvcResult formerOwnerAdminCreatesLibrary =
           mockMvc
@@ -15520,6 +15675,30 @@ class PostgresSchemaIntegrationTests {
                   get("/api/v1/workspaces/{workspaceId}/members", workspaceId).cookie(readerCookie))
               .andReturn();
       assertEquals(404, readerLosesAccess.getResponse().getStatus());
+      MvcResult revokedMemberCannotReadAudit =
+          mockMvc.perform(get(auditRoute, workspaceId).cookie(readerCookie)).andReturn();
+      assertEquals(404, revokedMemberCannotReadAudit.getResponse().getStatus());
+      MvcResult reactivated =
+          mockMvc
+              .perform(
+                  put(memberRoute, workspaceId, readerId)
+                      .cookie(adminCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, adminCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"role\":\"reader\"}"))
+              .andReturn();
+      assertEquals(200, reactivated.getResponse().getStatus());
+      MvcResult reactivationAudit =
+          mockMvc.perform(get(auditRoute, workspaceId).cookie(adminCookie)).andReturn();
+      assertEquals(200, reactivationAudit.getResponse().getStatus());
+      assertEquals(
+          "MEMBER_REACTIVATED",
+          objectMapper
+              .readTree(reactivationAudit.getResponse().getContentAsString())
+              .path("items")
+              .get(0)
+              .path("action")
+              .asText());
     } finally {
       deleteLibraryTestData(ownerId);
       deleteWorkspaceTestData(workspaceId);
@@ -15724,6 +15903,13 @@ class PostgresSchemaIntegrationTests {
               .role());
       assertEquals(
           3, workspaceService.findWorkspace(ownerId, workspaceId).orElseThrow().scopeVersion());
+      WorkspaceMembershipAuditRepository.Page invitationAudit =
+          workspaceService.listMembershipAudit(ownerId, workspaceId, null, 1);
+      assertEquals(
+          WorkspaceMembershipAuditRepository.Action.INVITATION_ACCEPTED,
+          invitationAudit.items().getFirst().action());
+      assertEquals(recipientId, invitationAudit.items().getFirst().actorUserId());
+      assertEquals(recipientId, invitationAudit.items().getFirst().subjectUserId());
 
       UUID revokedInviteId = UUID.randomUUID();
       MvcResult secondInvite =
@@ -16335,6 +16521,7 @@ class PostgresSchemaIntegrationTests {
             "auth_events",
             "session_revoke_confirmations",
             "workspace_members",
+            "workspace_membership_audit_events",
             "workspace_invitations",
             "workspace_invitation_outbox",
             "workspaces",
