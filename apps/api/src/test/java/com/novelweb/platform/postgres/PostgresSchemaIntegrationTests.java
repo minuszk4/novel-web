@@ -7142,6 +7142,11 @@ class PostgresSchemaIntegrationTests {
               .path("termId")
               .asText());
       assertEquals("UNAVAILABLE", preview.path("translationImpact").path("status").asText());
+      assertEquals(
+          "If applied, this import creates a draft only. "
+              + "Existing translation jobs keep their captured glossary revision. "
+              + "This preview does not estimate units to retranslate.",
+          preview.path("translationImpact").path("detail").asText());
 
       MvcResult emptyGlossaryPreview =
           mockMvc

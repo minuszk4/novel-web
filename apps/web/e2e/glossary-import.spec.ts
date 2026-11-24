@@ -275,7 +275,12 @@ test('glossary import previews without upload-on-selection and saves an atomic d
 
   await page.getByRole('button', { name: 'Xem trước nhập' }).click();
   await expect(page.getByRole('heading', { name: 'Kết quả xem trước' })).toBeFocused();
-  await expect(page.getByText('Chưa thể tính ảnh hưởng đến bản dịch')).toBeVisible();
+  await expect(
+    page.getByText(/Bản xem trước chưa tạo thay đổi\. Nếu áp dụng, tệp chỉ tạo bản nháp/),
+  ).toBeVisible();
+  await expect(
+    page.getByText(/các công việc dịch đã tạo vẫn giữ nguyên phiên bản glossary/),
+  ).toBeVisible();
   expect(traffic.previewRequests).toBe(1);
   expect(traffic.previewIfMatch).toBe('"v4"');
   await expect(page.getByText(currentTermId)).toHaveCount(0);

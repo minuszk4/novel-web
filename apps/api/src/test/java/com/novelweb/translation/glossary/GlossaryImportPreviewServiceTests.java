@@ -60,6 +60,11 @@ class GlossaryImportPreviewServiceTests {
     assertEquals(1, preview.counts().add());
     assertEquals("UNAVAILABLE", preview.translationImpact().status());
     assertEquals(null, preview.translationImpact().affectedTranslationUnitCount());
+    assertEquals(
+        "If applied, this import creates a draft only. "
+            + "Existing translation jobs keep their captured glossary revision. "
+            + "This preview does not estimate units to retranslate.",
+        preview.translationImpact().detail());
   }
 
   @Test

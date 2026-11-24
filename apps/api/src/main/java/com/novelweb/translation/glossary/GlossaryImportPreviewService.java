@@ -16,6 +16,10 @@ import org.springframework.stereotype.Service;
 public class GlossaryImportPreviewService {
 
   private static final int MAX_RETURNED_MATCHES_PER_ROW = 100;
+  private static final String TRANSLATION_IMPACT_DETAIL =
+      "If applied, this import creates a draft only. "
+          + "Existing translation jobs keep their captured glossary revision. "
+          + "This preview does not estimate units to retranslate.";
 
   private final GlossaryImportPreviewRepository repository;
   private final GlossaryImportParser parser;
@@ -77,7 +81,7 @@ public class GlossaryImportPreviewService {
         snapshot.terms(),
         candidates,
         new Counts(candidates.size(), addCount, updateCount, unchangedCount, conflictCount),
-        new TranslationImpact("UNAVAILABLE", null, "Translation units are not implemented yet."));
+        new TranslationImpact("UNAVAILABLE", null, TRANSLATION_IMPACT_DETAIL));
   }
 
   ImportCandidate classify(
