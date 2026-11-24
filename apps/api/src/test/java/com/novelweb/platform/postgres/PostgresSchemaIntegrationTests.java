@@ -4324,6 +4324,9 @@ class PostgresSchemaIntegrationTests {
               .readTree(publishedReplay.getResponse().getContentAsString())
               .path("state")
               .asText());
+      assertEquals(1, publicationReleaseEventCount(dueFixture.workId()));
+      assertEquals(2, publicationScheduleEventCount(dueScheduleId));
+      assertEquals("public", publicationWorkVisibility(dueFixture.workId()));
 
       deletePublicationRateLimitBucket(ownerId);
       SubmittedPublicationFixture cancelFixture =
