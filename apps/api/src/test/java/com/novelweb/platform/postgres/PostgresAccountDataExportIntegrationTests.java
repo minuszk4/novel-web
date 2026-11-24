@@ -16,6 +16,7 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.time.Duration;
+import java.util.List;
 import java.util.UUID;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
@@ -25,6 +26,7 @@ import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 @SpringBootTest
@@ -69,11 +71,17 @@ class PostgresAccountDataExportIntegrationTests {
         String revisions = read(zip, "owned_chapter_revisions.jsonl");
         String segments = read(zip, "owned_chapter_segments.jsonl");
         String profile = read(zip, "profile.jsonl");
+        String privacyPreferences = read(zip, "optional_privacy_preferences.jsonl");
         String manifest = read(zip, "manifest.json");
+        List<JsonNode> privacyRecords = privacyPreferences.lines().map(this::readJson).toList();
 
         assertTrue(revisions.contains(OWNER_SENTINEL));
         assertTrue(segments.contains(OWNER_SENTINEL));
         assertTrue(profile.contains("Synthetic export owner"));
+        assertEquals(1, privacyRecords.size());
+        assertTrue(privacyRecords.getFirst().path("analyticsEnabled").asBoolean());
+        assertFalse(privacyRecords.getFirst().path("contentProviderSharingEnabled").asBoolean());
+        assertTrue(manifest.contains("optional_privacy_preferences"));
         assertTrue(manifest.contains("schemaVersion"));
         assertFalse(revisions.contains(FOREIGN_SENTINEL));
         assertFalse(segments.contains(FOREIGN_SENTINEL));
@@ -107,6 +115,22 @@ class PostgresAccountDataExportIntegrationTests {
             "INSERT INTO users (id, display_name) VALUES (?, ?)",
             fixture.foreignId(),
             "Synthetic foreign owner");
+        execute(
+            connection,
+            """
+                INSERT INTO account_privacy_preferences
+                    (user_id, analytics_enabled, content_provider_sharing_enabled)
+                VALUES (?, TRUE, FALSE)
+                """,
+            fixture.ownerId());
+        execute(
+            connection,
+            """
+                INSERT INTO account_privacy_preferences
+                    (user_id, analytics_enabled, content_provider_sharing_enabled)
+                VALUES (?, FALSE, TRUE)
+                """,
+            fixture.foreignId());
         execute(
             connection,
             "INSERT INTO libraries (id, owner_user_id, name, is_default) VALUES (?, ?, ?, TRUE)",
@@ -213,6 +237,14 @@ class PostgresAccountDataExportIntegrationTests {
         }
       }
       return value;
+    }
+  }
+
+  private JsonNode readJson(String value) {
+    try {
+      return objectMapper.readTree(value);
+    } catch (Exception exception) {
+      throw new AssertionError("Export dataset row is not valid JSON", exception);
     }
   }
 

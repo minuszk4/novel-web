@@ -12,8 +12,12 @@ function routeWithPath(path: string): ActivatedRouteSnapshot {
   return { routeConfig: { path } } as ActivatedRouteSnapshot;
 }
 
-function runGuard(status: PolicyOnboardingStatus) {
-  const policies = { load: vi.fn(async () => undefined), status: signal(status) };
+function runGuard(status: PolicyOnboardingStatus, path = 'library', hasAccount = false) {
+  const policies = {
+    load: vi.fn(async () => undefined),
+    status: signal(status),
+    accountIdentity: signal(hasAccount ? { userId: 'account-1' } : null),
+  };
   const router = { createUrlTree: vi.fn(() => redirectTree) };
   TestBed.configureTestingModule({
     providers: [
@@ -23,7 +27,7 @@ function runGuard(status: PolicyOnboardingStatus) {
   });
 
   const result = TestBed.runInInjectionContext(() =>
-    policyConsentGuard(routeWithPath('library'), { url: returnUrl } as RouterStateSnapshot),
+    policyConsentGuard(routeWithPath(path), { url: returnUrl } as RouterStateSnapshot),
   );
   return { result, policies, router };
 }
@@ -46,6 +50,16 @@ describe('policyConsentGuard', () => {
 
       await expect(result).resolves.toBe(true);
       expect(policies.load).toHaveBeenCalledOnce();
+      expect(router.createUrlTree).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['pending', 'stale'] as const)(
+    'allows an authenticated account to open privacy-only Settings in the %s state',
+    async (status) => {
+      const { result, router } = runGuard(status, 'settings', true);
+
+      await expect(result).resolves.toBe(true);
       expect(router.createUrlTree).not.toHaveBeenCalled();
     },
   );

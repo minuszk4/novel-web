@@ -1,0 +1,61 @@
+<section id="privacy-settings" class="settings-card account-privacy-settings">
+  <div class="settings-card-heading">
+    <p class="eyebrow">DỮ LIỆU VÀ QUYỀN RIÊNG TƯ</p>
+    <h2>Lựa chọn tùy chọn</h2>
+    <p>
+      Hai lựa chọn riêng biệt, mặc định tắt và có thể đổi bất cứ lúc nào. Bạn không cần bật để sử
+      dụng Novel Web.
+    </p>
+  </div>
+
+  @if (loading() && !preferences()) {
+    <p role="status">Đang tải lựa chọn quyền riêng tư…</p>
+  } @else if (preferences(); as current) {
+    <label class="toggle-row">
+      <span>
+        <strong>Phân tích sử dụng</strong>
+        <small>
+          Cho phép ghi nhận sự kiện sử dụng tổng quát nếu analytics được triển khai sau này. Hiện
+          chưa thu thập dữ liệu analytics; tên truyện và chương không được gửi.
+        </small>
+      </span>
+      <input
+        type="checkbox"
+        [checked]="current.preferences.analyticsEnabled"
+        [disabled]="busy()"
+        (change)="setChoice('analyticsEnabled', $event)"
+      />
+      <span class="toggle-track" aria-hidden="true"></span>
+    </label>
+
+    <label class="toggle-row">
+      <span>
+        <strong>Chia sẻ nội dung với dịch vụ bên ngoài</strong>
+        <small>
+          Cho phép gửi nội dung khi bạn chủ động dùng một dịch vụ bên ngoài. Hiện chưa kết nối
+          provider dịch nội dung nào; lựa chọn này không bật dịch vụ đó.
+        </small>
+      </span>
+      <input
+        type="checkbox"
+        [checked]="current.preferences.contentProviderSharingEnabled"
+        [disabled]="busy()"
+        (change)="setChoice('contentProviderSharingEnabled', $event)"
+      />
+      <span class="toggle-track" aria-hidden="true"></span>
+    </label>
+
+    @if (busy()) {
+      <p role="status">Đang lưu lựa chọn…</p>
+    } @else if (message()) {
+      <p role="status">{{ message() }}</p>
+    } @else if (error()) {
+      <p role="alert">{{ error() }}</p>
+    }
+  } @else {
+    <p role="alert">{{ error() }}</p>
+    <button class="button button-outline button-small" type="button" (click)="retry()">
+      Tải lại lựa chọn
+    </button>
+  }
+</section>

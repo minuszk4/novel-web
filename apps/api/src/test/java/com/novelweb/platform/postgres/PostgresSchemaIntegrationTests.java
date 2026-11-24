@@ -217,6 +217,7 @@ class PostgresSchemaIntegrationTests {
           "auth_events",
           "session_revoke_confirmations",
           "account_data_exports",
+          "account_privacy_preferences",
           "libraries",
           "works",
           "volumes",
@@ -489,7 +490,7 @@ class PostgresSchemaIntegrationTests {
             connection.prepareStatement("SELECT COUNT(*) FROM databasechangelog");
         ResultSet changesets = changesetCount.executeQuery()) {
       changesets.next();
-      assertEquals(184, changesets.getInt(1), "unexpected number of applied changesets");
+      assertEquals(185, changesets.getInt(1), "unexpected number of applied changesets");
     }
 
     Set<String> actualTables = new HashSet<>();
@@ -509,6 +510,168 @@ class PostgresSchemaIntegrationTests {
       }
     }
     assertEquals(EXPECTED_APPLICATION_TABLES, actualTables);
+  }
+
+  @Test
+  void optionalPrivacyPreferencesAreActorScopedVersionedAndAvailableBeforePolicyAcceptance()
+      throws Exception {
+    UUID ownerId = createSessionTestUser("Synthetic privacy-preferences owner");
+    UUID otherId = createSessionTestUser("Synthetic privacy-preferences other");
+    try {
+      SessionService.IssuedSession ownerSession = sessionService.create(ownerId).orElseThrow();
+      SessionService.IssuedSession otherSession = sessionService.create(otherId).orElseThrow();
+      var ownerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", ownerSession.cookieValue());
+      var otherCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", otherSession.cookieValue());
+      String ownerCsrf = csrfTokenService.tokenFor(ownerSession.cookieValue());
+
+      MvcResult initial =
+          mockMvc.perform(get("/api/v1/me/privacy-preferences").cookie(ownerCookie)).andReturn();
+      assertEquals(200, initial.getResponse().getStatus());
+      assertEquals("\"privacy-preferences-v0\"", initial.getResponse().getHeader(HttpHeaders.ETAG));
+      assertTrue(initial.getResponse().getHeader(HttpHeaders.CACHE_CONTROL).contains("no-store"));
+      JsonNode initialBody = objectMapper.readTree(initial.getResponse().getContentAsString());
+      assertFalse(initialBody.path("analyticsEnabled").asBoolean());
+      assertFalse(initialBody.path("contentProviderSharingEnabled").asBoolean());
+      assertEquals(0, initialBody.path("version").asLong());
+      assertTrue(initialBody.path("updatedAt").isNull());
+
+      MvcResult defaultNoOp =
+          mockMvc
+              .perform(
+                  put("/api/v1/me/privacy-preferences")
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(HttpHeaders.IF_MATCH, "\"privacy-preferences-v0\"")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          "{\"analyticsEnabled\":false,\"contentProviderSharingEnabled\":false}"))
+              .andReturn();
+      assertEquals(200, defaultNoOp.getResponse().getStatus());
+      assertEquals(
+          "\"privacy-preferences-v0\"", defaultNoOp.getResponse().getHeader(HttpHeaders.ETAG));
+      JsonNode defaultNoOpBody =
+          objectMapper.readTree(defaultNoOp.getResponse().getContentAsString());
+      assertEquals(0, defaultNoOpBody.path("version").asLong());
+      assertTrue(defaultNoOpBody.path("updatedAt").isNull());
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement query =
+              connection.prepareStatement(
+                  "SELECT count(*) FROM account_privacy_preferences WHERE user_id = ?")) {
+        query.setObject(1, ownerId);
+        try (ResultSet rows = query.executeQuery()) {
+          assertTrue(rows.next());
+          assertEquals(0, rows.getInt(1));
+        }
+      }
+
+      MvcResult staleInitialVersion =
+          mockMvc
+              .perform(
+                  put("/api/v1/me/privacy-preferences")
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(HttpHeaders.IF_MATCH, "\"privacy-preferences-v9\"")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          "{\"analyticsEnabled\":true,\"contentProviderSharingEnabled\":false}"))
+              .andReturn();
+      assertEquals(412, staleInitialVersion.getResponse().getStatus());
+      assertEquals(
+          "\"privacy-preferences-v0\"",
+          staleInitialVersion.getResponse().getHeader(HttpHeaders.ETAG));
+
+      MvcResult saved =
+          mockMvc
+              .perform(
+                  put("/api/v1/me/privacy-preferences")
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(HttpHeaders.IF_MATCH, "\"privacy-preferences-v0\"")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          "{\"analyticsEnabled\":true,\"contentProviderSharingEnabled\":false}"))
+              .andReturn();
+      assertEquals(200, saved.getResponse().getStatus());
+      assertEquals("\"privacy-preferences-v1\"", saved.getResponse().getHeader(HttpHeaders.ETAG));
+      JsonNode savedBody = objectMapper.readTree(saved.getResponse().getContentAsString());
+      assertTrue(savedBody.path("analyticsEnabled").asBoolean());
+      assertFalse(savedBody.path("contentProviderSharingEnabled").asBoolean());
+      String updatedAt = savedBody.path("updatedAt").asText();
+
+      MvcResult stale =
+          mockMvc
+              .perform(
+                  put("/api/v1/me/privacy-preferences")
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(HttpHeaders.IF_MATCH, "\"privacy-preferences-v0\"")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          "{\"analyticsEnabled\":false,\"contentProviderSharingEnabled\":true}"))
+              .andReturn();
+      assertEquals(412, stale.getResponse().getStatus());
+      assertEquals("\"privacy-preferences-v1\"", stale.getResponse().getHeader(HttpHeaders.ETAG));
+
+      MvcResult exactRetry =
+          mockMvc
+              .perform(
+                  put("/api/v1/me/privacy-preferences")
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(HttpHeaders.IF_MATCH, "\"privacy-preferences-v1\"")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          "{\"analyticsEnabled\":true,\"contentProviderSharingEnabled\":false}"))
+              .andReturn();
+      assertEquals(200, exactRetry.getResponse().getStatus());
+      JsonNode exactRetryBody =
+          objectMapper.readTree(exactRetry.getResponse().getContentAsString());
+      assertEquals(1, exactRetryBody.path("version").asLong());
+      assertEquals(updatedAt, exactRetryBody.path("updatedAt").asText());
+
+      MvcResult changedProviderChoice =
+          mockMvc
+              .perform(
+                  put("/api/v1/me/privacy-preferences")
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(HttpHeaders.IF_MATCH, "\"privacy-preferences-v1\"")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          "{\"analyticsEnabled\":true,\"contentProviderSharingEnabled\":true}"))
+              .andReturn();
+      assertEquals(200, changedProviderChoice.getResponse().getStatus());
+      assertEquals(
+          "\"privacy-preferences-v2\"",
+          changedProviderChoice.getResponse().getHeader(HttpHeaders.ETAG));
+
+      MvcResult otherActor =
+          mockMvc.perform(get("/api/v1/me/privacy-preferences").cookie(otherCookie)).andReturn();
+      assertEquals(200, otherActor.getResponse().getStatus());
+      assertEquals(
+          "\"privacy-preferences-v0\"", otherActor.getResponse().getHeader(HttpHeaders.ETAG));
+      JsonNode otherBody = objectMapper.readTree(otherActor.getResponse().getContentAsString());
+      assertFalse(otherBody.path("analyticsEnabled").asBoolean());
+      assertFalse(otherBody.path("contentProviderSharingEnabled").asBoolean());
+
+      MvcResult missingCsrf =
+          mockMvc
+              .perform(
+                  put("/api/v1/me/privacy-preferences")
+                      .cookie(otherCookie)
+                      .header(HttpHeaders.IF_MATCH, "\"privacy-preferences-v0\"")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          "{\"analyticsEnabled\":true,\"contentProviderSharingEnabled\":false}"))
+              .andReturn();
+      assertEquals(403, missingCsrf.getResponse().getStatus());
+      assertTrue(missingCsrf.getResponse().getContentAsString().contains("CSRF"));
+    } finally {
+      deleteSessionTestUser(ownerId);
+      deleteSessionTestUser(otherId);
+    }
   }
 
   @Test
@@ -16520,6 +16683,7 @@ class PostgresSchemaIntegrationTests {
             "publication_rights_policy_documents",
             "auth_events",
             "session_revoke_confirmations",
+            "account_privacy_preferences",
             "workspace_members",
             "workspace_membership_audit_events",
             "workspace_invitations",

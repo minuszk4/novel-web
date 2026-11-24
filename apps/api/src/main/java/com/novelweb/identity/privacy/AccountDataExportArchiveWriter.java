@@ -534,6 +534,17 @@ public class AccountDataExportArchiveWriter {
                   'failureCode', e.failure_code
                 )::text AS record_json
                 FROM account_data_exports e WHERE e.user_id = ? ORDER BY e.requested_at, e.id
+                """),
+        dataset(
+            "optional_privacy_preferences",
+            """
+                SELECT jsonb_build_object(
+                  'analyticsEnabled', analytics_enabled,
+                  'contentProviderSharingEnabled', content_provider_sharing_enabled,
+                  'version', version,
+                  'updatedAt', updated_at
+                )::text AS record_json
+                FROM account_privacy_preferences WHERE user_id = ?
                 """));
   }
 

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 10.14.0
+  version: 10.15.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -6529,6 +6529,89 @@ paths:
         '403':
           $ref: '#/components/responses/Problem'
         '404':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/v1/me/privacy-preferences:
+    get:
+      operationId: getCurrentAccountPrivacyPreferences
+      tags: [Account privacy]
+      x-implementation-status: implemented-postgres-profile
+      summary: Get the authenticated account's optional privacy preferences
+      description: >-
+        Returns separate analytics and content-provider-sharing choices. Both default to false and may be read while
+        required Terms/Privacy acceptance is pending so an account can inspect or withdraw optional choices. The
+        content-provider choice does not itself authorize a provider call; any future external processing must also
+        require an enabled provider feature and recheck this server-side preference. The response is no-store.
+      security:
+        - appSession: []
+      responses:
+        '200':
+          description: Actor-owned preferences; response is no-store.
+          headers:
+            ETag:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountPrivacyPreferences'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+    put:
+      operationId: updateCurrentAccountPrivacyPreferences
+      tags: [Account privacy]
+      x-implementation-status: implemented-postgres-profile
+      summary: Update the authenticated account's optional privacy preferences
+      description: >-
+        Requires the authenticated account session, session-bound CSRF and the current strong ETag in If-Match.
+        Only the two boolean fields are accepted. A stale ETag returns 412 with current actor-owned preferences and
+        ETag. Exact no-op updates preserve the version and timestamp. Changes remain reversible. Changing optional
+        choices is allowed while required Terms/Privacy acceptance is pending so users can withdraw consent.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - name: If-Match
+          in: header
+          required: true
+          schema:
+            type: string
+            pattern: '^"privacy-preferences-v(0|[1-9][0-9]{0,18})"$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccountPrivacyPreferencesUpdate'
+      responses:
+        '200':
+          description: Preferences saved; response is no-store.
+          headers:
+            ETag:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountPrivacyPreferences'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '412':
+          description: Stale If-Match; current preferences and ETag are returned.
+          headers:
+            ETag:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountPrivacyPreferences'
+        '428':
           $ref: '#/components/responses/Problem'
         '503':
           $ref: '#/components/responses/Problem'
@@ -13751,6 +13834,35 @@ components:
                 type: string
               message:
                 type: string
+    AccountPrivacyPreferences:
+      type: object
+      additionalProperties: false
+      required: [analyticsEnabled, contentProviderSharingEnabled, version, updatedAt]
+      properties:
+        analyticsEnabled:
+          type: boolean
+          description: Optional analytics setting; false when no preference has been stored.
+        contentProviderSharingEnabled:
+          type: boolean
+          description: >-
+            Optional sharing preference for a future external content provider. It does not bypass provider feature
+            gates or the server-side consent check.
+        version:
+          type: integer
+          format: int64
+          minimum: 0
+        updatedAt:
+          type: [string, 'null']
+          format: date-time
+    AccountPrivacyPreferencesUpdate:
+      type: object
+      additionalProperties: false
+      required: [analyticsEnabled, contentProviderSharingEnabled]
+      properties:
+        analyticsEnabled:
+          type: boolean
+        contentProviderSharingEnabled:
+          type: boolean
     AccountDataExportCreateResponse:
       type: object
       additionalProperties: false
