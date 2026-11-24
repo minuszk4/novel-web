@@ -181,6 +181,167 @@ public class PublicationReleaseService {
     }
   }
 
+  public Optional<UUID> findReleaseEventIdForRequest(UUID requestId) {
+    Objects.requireNonNull(requestId, "request id is required");
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT id FROM publication_release_events WHERE request_id = ?")) {
+      select.setObject(1, requestId);
+      try (ResultSet row = select.executeQuery()) {
+        return row.next() ? Optional.of(row.getObject("id", UUID.class)) : Optional.empty();
+      }
+    } catch (SQLException exception) {
+      throw new IllegalStateException("Unable to read publication release receipt", exception);
+    }
+  }
+
+  /** Queues an owner-confirmed release; publication itself remains private until the due worker. */
+  public ScheduleResult schedule(
+      UUID actorId, UUID workId, String ifMatch, Instant scheduledAt, String idempotencyKey) {
+    Objects.requireNonNull(actorId, "actor id is required");
+    Objects.requireNonNull(workId, "work id is required");
+    Objects.requireNonNull(ifMatch, "If-Match is required");
+    Objects.requireNonNull(scheduledAt, "scheduled instant is required");
+    Objects.requireNonNull(idempotencyKey, "idempotency key is required");
+
+    PolicyService.RequiredAcceptance initialAcceptance = policyService.requiredAcceptance(actorId);
+    if (initialAcceptance != PolicyService.RequiredAcceptance.COMPLETE) {
+      return initialAcceptance == PolicyService.RequiredAcceptance.NOT_CONFIGURED
+          ? ScheduleResult.policyNotConfigured()
+          : ScheduleResult.policyRequired();
+    }
+
+    byte[] keyDigest = scheduleKeyDigest(actorId, workId, idempotencyKey);
+    byte[] requestDigest = scheduleRequestDigest(actorId, workId, ifMatch, scheduledAt);
+
+    try (Connection connection = dataSource.getConnection()) {
+      connection.setAutoCommit(false);
+      try {
+        Optional<ScheduleReceipt> previous =
+            findScheduleReceipt(connection, actorId, workId, keyDigest);
+        if (previous.isPresent()) {
+          ScheduleReceipt receipt = previous.orElseThrow();
+          if (!MessageDigest.isEqual(receipt.requestSha256(), requestDigest)) {
+            connection.commit();
+            return ScheduleResult.keyReused();
+          }
+          connection.commit();
+          return ScheduleResult.replayed(receipt);
+        }
+
+        if (!scheduledAt.isAfter(Instant.now())) {
+          connection.commit();
+          return ScheduleResult.timeInvalid();
+        }
+
+        Optional<LockedWork> lockedWork = lockEligibleWork(connection, actorId, workId);
+        if (lockedWork.isEmpty()) {
+          boolean alreadyPublic = isOwnedPublicWork(connection, actorId, workId);
+          connection.commit();
+          return alreadyPublic ? ScheduleResult.alreadyReleased() : ScheduleResult.workNotFound();
+        }
+        LockedWork work = lockedWork.orElseThrow();
+
+        Optional<UUID> latestRequestId = latestApprovedRequestId(connection, workId);
+        if (latestRequestId.isEmpty()) {
+          connection.commit();
+          return ScheduleResult.approvalRequired();
+        }
+        UUID requestId = latestRequestId.orElseThrow();
+        String currentRequestState = currentRequestState(connection, requestId);
+        if (!"APPROVED_UNPUBLISHED".equals(currentRequestState)) {
+          connection.commit();
+          return ScheduleResult.approvalRequired();
+        }
+        if (findActiveScheduleForRequest(connection, requestId).isPresent()) {
+          connection.commit();
+          return ScheduleResult.alreadyScheduled();
+        }
+        if (findReleaseForRequest(connection, requestId).isPresent()) {
+          connection.commit();
+          return ScheduleResult.alreadyReleased();
+        }
+
+        try (PreparedStatement lock =
+            connection.prepareStatement(
+                "LOCK TABLE publication_rights_policy_documents IN SHARE MODE")) {
+          lock.execute();
+        }
+
+        PolicyService.RequiredAcceptance acceptanceState =
+            policyService.requiredAcceptance(actorId);
+        if (acceptanceState == PolicyService.RequiredAcceptance.REQUIRED) {
+          connection.commit();
+          return ScheduleResult.policyRequired();
+        }
+        if (acceptanceState == PolicyService.RequiredAcceptance.NOT_CONFIGURED) {
+          connection.commit();
+          return ScheduleResult.policyNotConfigured();
+        }
+
+        Optional<CurrentPolicy> currentPolicy = readCurrentPolicy(connection);
+        if (currentPolicy.isEmpty()) {
+          connection.commit();
+          return ScheduleResult.rightsPolicyNotConfigured();
+        }
+        CurrentPolicy policy = currentPolicy.orElseThrow();
+        Optional<Instant> acceptedAt =
+            findAcceptance(connection, actorId, workId, policy.version(), policy.sha256());
+        if (acceptedAt.isEmpty()) {
+          connection.commit();
+          return ScheduleResult.rightsPolicyNotAccepted();
+        }
+
+        ReadinessSnapshot readiness = readReadinessSnapshot(connection, workId);
+        String currentEtag = readiness.etag(workId, policy, acceptedAt.orElse(null));
+        if (!currentEtag.equals(ifMatch)) {
+          connection.commit();
+          return ScheduleResult.stale(currentEtag);
+        }
+
+        Optional<ApprovedRequest> approvedRequest = readApprovedRequest(connection, requestId);
+        if (approvedRequest.isEmpty()) {
+          connection.commit();
+          return ScheduleResult.approvalRequired();
+        }
+        ApprovedRequest request = approvedRequest.orElseThrow();
+        if (!policy.version().equals(request.policyVersion())
+            || !MessageDigest.isEqual(policy.sha256(), request.policySha256())) {
+          connection.commit();
+          return ScheduleResult.rightsPolicyStale();
+        }
+        List<String> approvedScopes = currentApprovedScopes(connection, request);
+        if (!approvedScopes.contains("PUBLIC_METADATA")
+            || !approvedScopes.contains("CHAPTER_TEXT")) {
+          connection.commit();
+          return ScheduleResult.approvalRequired();
+        }
+
+        ScheduleReceipt receipt =
+            insertSchedule(
+                connection, actorId, work, request, ifMatch, scheduledAt, keyDigest, requestDigest);
+        connection.commit();
+        return ScheduleResult.created(receipt);
+      } catch (SQLException | RuntimeException exception) {
+        rollback(connection, exception);
+        if (exception instanceof SQLException sqlException
+            && ("23514".equals(sqlException.getSQLState())
+                || "23505".equals(sqlException.getSQLState()))) {
+          LOGGER.warn(
+              "Publication schedule rejected by current-state database guard; workId={}, state={}",
+              workId,
+              sqlException.getSQLState());
+          return ScheduleResult.approvalChanged();
+        }
+        throw exception;
+      }
+    } catch (SQLException exception) {
+      LOGGER.error("Publication schedule transaction failed; workId={}", workId, exception);
+      throw new IllegalStateException("Unable to schedule the approved manuscript", exception);
+    }
+  }
+
   /** Atomically releases an approved draft chapter on an existing public work. */
   public ChapterReleaseResult releaseChapter(
       UUID actorId, UUID workId, UUID chapterId, String ifMatch, String idempotencyKey) {
@@ -406,6 +567,18 @@ public class PublicationReleaseService {
       select.setObject(1, workId);
       try (ResultSet row = select.executeQuery()) {
         return row.next() ? Optional.of(row.getObject("id", UUID.class)) : Optional.empty();
+      }
+    }
+  }
+
+  private static String currentRequestState(Connection connection, UUID requestId)
+      throws SQLException {
+    try (PreparedStatement select =
+        connection.prepareStatement(
+            "SELECT current_state FROM publication_request_current_state WHERE request_id = ?")) {
+      select.setObject(1, requestId);
+      try (ResultSet row = select.executeQuery()) {
+        return row.next() ? row.getString("current_state") : null;
       }
     }
   }
@@ -814,6 +987,113 @@ public class PublicationReleaseService {
     }
   }
 
+  private static Optional<ScheduleReceipt> findScheduleReceipt(
+      Connection connection, UUID actorId, UUID workId, byte[] keyDigest) throws SQLException {
+    try (PreparedStatement select =
+        connection.prepareStatement(
+            """
+                SELECT id, work_id, request_id, scheduled_at, state, request_sha256
+                  FROM publication_release_schedules
+                 WHERE owner_user_id = ? AND work_id = ? AND idempotency_key_sha256 = ?
+                """)) {
+      select.setObject(1, actorId);
+      select.setObject(2, workId);
+      select.setBytes(3, keyDigest);
+      try (ResultSet row = select.executeQuery()) {
+        return row.next() ? Optional.of(readScheduleReceipt(row)) : Optional.empty();
+      }
+    }
+  }
+
+  private static Optional<ScheduleReceipt> findActiveScheduleForRequest(
+      Connection connection, UUID requestId) throws SQLException {
+    try (PreparedStatement select =
+        connection.prepareStatement(
+            """
+                SELECT id, work_id, request_id, scheduled_at, state, request_sha256
+                  FROM publication_release_schedules
+                 WHERE request_id = ? AND state IN ('SCHEDULED', 'PROCESSING')
+                 FOR UPDATE
+                """)) {
+      select.setObject(1, requestId);
+      try (ResultSet row = select.executeQuery()) {
+        return row.next() ? Optional.of(readScheduleReceipt(row)) : Optional.empty();
+      }
+    }
+  }
+
+  private static ScheduleReceipt insertSchedule(
+      Connection connection,
+      UUID actorId,
+      LockedWork work,
+      ApprovedRequest request,
+      String readinessEtag,
+      Instant scheduledAt,
+      byte[] keyDigest,
+      byte[] requestDigest)
+      throws SQLException {
+    ScheduleReceipt receipt;
+    try (PreparedStatement insert =
+        connection.prepareStatement(
+            """
+                INSERT INTO publication_release_schedules (
+                    id, work_id, request_id, owner_user_id, scheduled_at, readiness_etag,
+                    idempotency_key_sha256, request_sha256)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                RETURNING id, work_id, request_id, scheduled_at, state, request_sha256
+                """)) {
+      insert.setObject(1, UUID.randomUUID());
+      insert.setObject(2, work.id());
+      insert.setObject(3, request.id());
+      insert.setObject(4, actorId);
+      insert.setObject(5, OffsetDateTime.ofInstant(scheduledAt, java.time.ZoneOffset.UTC));
+      insert.setString(6, readinessEtag);
+      insert.setBytes(7, keyDigest);
+      insert.setBytes(8, requestDigest);
+      try (ResultSet row = insert.executeQuery()) {
+        if (!row.next()) throw new SQLException("Publication schedule returned no receipt");
+        receipt = readScheduleReceipt(row);
+      }
+    }
+    insertScheduleEvent(connection, receipt.id(), receipt.workId(), actorId, "SCHEDULED", null);
+    return receipt;
+  }
+
+  private static ScheduleReceipt readScheduleReceipt(ResultSet row) throws SQLException {
+    return new ScheduleReceipt(
+        row.getObject("id", UUID.class),
+        row.getObject("work_id", UUID.class),
+        row.getObject("request_id", UUID.class),
+        row.getObject("scheduled_at", OffsetDateTime.class).toInstant(),
+        row.getString("state"),
+        row.getBytes("request_sha256"));
+  }
+
+  private static void insertScheduleEvent(
+      Connection connection,
+      UUID scheduleId,
+      UUID workId,
+      UUID actorId,
+      String action,
+      String failureCode)
+      throws SQLException {
+    try (PreparedStatement insert =
+        connection.prepareStatement(
+            """
+                INSERT INTO publication_release_schedule_events (
+                    id, schedule_id, work_id, actor_user_id, action_code, safe_failure_code)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """)) {
+      insert.setObject(1, UUID.randomUUID());
+      insert.setObject(2, scheduleId);
+      insert.setObject(3, workId);
+      insert.setObject(4, actorId);
+      insert.setString(5, action);
+      insert.setString(6, failureCode);
+      insert.executeUpdate();
+    }
+  }
+
   private static ReleaseReceipt insertReleaseEvent(
       Connection connection,
       UUID actorId,
@@ -882,6 +1162,25 @@ public class PublicationReleaseService {
             key));
   }
 
+  private static byte[] scheduleKeyDigest(UUID actorId, UUID workId, String key) {
+    return sha256(
+        String.join(
+            "\n", "publication-schedule-key-v1", actorId.toString(), workId.toString(), key));
+  }
+
+  private static byte[] scheduleRequestDigest(
+      UUID actorId, UUID workId, String ifMatch, Instant scheduledAt) {
+    return sha256(
+        String.join(
+            "\n",
+            "publication-schedule-request-v1",
+            actorId.toString(),
+            workId.toString(),
+            "SCHEDULE_AT",
+            ifMatch,
+            scheduledAt.toString()));
+  }
+
   private static byte[] chapterRequestDigest(
       UUID actorId, UUID workId, UUID chapterId, String ifMatch) {
     return sha256(
@@ -911,6 +1210,23 @@ public class PublicationReleaseService {
   }
 
   private record LockedWork(UUID id, long contentVersion) {}
+
+  public record ScheduleReceipt(
+      UUID id,
+      UUID workId,
+      UUID requestId,
+      Instant scheduledAt,
+      String state,
+      byte[] requestSha256) {
+    public ScheduleReceipt {
+      requestSha256 = requestSha256.clone();
+    }
+
+    @Override
+    public byte[] requestSha256() {
+      return requestSha256.clone();
+    }
+  }
 
   private record ChapterTarget(long contentVersion) {}
 
@@ -1152,6 +1468,87 @@ public class PublicationReleaseService {
     static ReleaseResult stale(String currentEtag) {
       return new ReleaseResult(Outcome.STALE, null, currentEtag);
     }
+  }
+
+  public record ScheduleResult(
+      ScheduleOutcome outcome, ScheduleReceipt receipt, String currentEtag) {
+    static ScheduleResult created(ScheduleReceipt receipt) {
+      return new ScheduleResult(ScheduleOutcome.CREATED, receipt, null);
+    }
+
+    static ScheduleResult replayed(ScheduleReceipt receipt) {
+      return new ScheduleResult(ScheduleOutcome.REPLAYED, receipt, null);
+    }
+
+    static ScheduleResult keyReused() {
+      return new ScheduleResult(ScheduleOutcome.KEY_REUSED, null, null);
+    }
+
+    static ScheduleResult timeInvalid() {
+      return new ScheduleResult(ScheduleOutcome.TIME_INVALID, null, null);
+    }
+
+    static ScheduleResult alreadyScheduled() {
+      return new ScheduleResult(ScheduleOutcome.ALREADY_SCHEDULED, null, null);
+    }
+
+    static ScheduleResult alreadyReleased() {
+      return new ScheduleResult(ScheduleOutcome.ALREADY_RELEASED, null, null);
+    }
+
+    static ScheduleResult workNotFound() {
+      return new ScheduleResult(ScheduleOutcome.WORK_NOT_FOUND, null, null);
+    }
+
+    static ScheduleResult approvalRequired() {
+      return new ScheduleResult(ScheduleOutcome.APPROVAL_REQUIRED, null, null);
+    }
+
+    static ScheduleResult policyRequired() {
+      return new ScheduleResult(ScheduleOutcome.POLICY_REQUIRED, null, null);
+    }
+
+    static ScheduleResult policyNotConfigured() {
+      return new ScheduleResult(ScheduleOutcome.POLICY_NOT_CONFIGURED, null, null);
+    }
+
+    static ScheduleResult rightsPolicyNotConfigured() {
+      return new ScheduleResult(ScheduleOutcome.RIGHTS_POLICY_NOT_CONFIGURED, null, null);
+    }
+
+    static ScheduleResult rightsPolicyNotAccepted() {
+      return new ScheduleResult(ScheduleOutcome.RIGHTS_POLICY_NOT_ACCEPTED, null, null);
+    }
+
+    static ScheduleResult rightsPolicyStale() {
+      return new ScheduleResult(ScheduleOutcome.RIGHTS_POLICY_STALE, null, null);
+    }
+
+    static ScheduleResult approvalChanged() {
+      return new ScheduleResult(ScheduleOutcome.APPROVAL_CHANGED, null, null);
+    }
+
+    static ScheduleResult stale(String currentEtag) {
+      return new ScheduleResult(ScheduleOutcome.STALE, null, currentEtag);
+    }
+  }
+
+  public enum ScheduleOutcome {
+    CREATED,
+    REPLAYED,
+    KEY_REUSED,
+    TIME_INVALID,
+    ALREADY_SCHEDULED,
+    ALREADY_RELEASED,
+    WORK_NOT_FOUND,
+    APPROVAL_REQUIRED,
+    POLICY_REQUIRED,
+    POLICY_NOT_CONFIGURED,
+    RIGHTS_POLICY_NOT_CONFIGURED,
+    RIGHTS_POLICY_NOT_ACCEPTED,
+    RIGHTS_POLICY_STALE,
+    APPROVAL_CHANGED,
+    STALE
   }
 
   public enum Outcome {

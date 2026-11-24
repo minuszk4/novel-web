@@ -439,6 +439,74 @@ describe('AuthoringApiService', () => {
     await expect(replay).resolves.toEqual(publicationReceipt);
   });
 
+  it('loads, schedules and cancels an owner-only manuscript release schedule', async () => {
+    const scheduledAt = '2030-11-17T04:00:00.000Z';
+    const scheduleReceipt = {
+      scheduleId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      workId,
+      requestId: publicationReceipt.requestId,
+      state: 'SCHEDULED',
+      scheduledAt,
+    } as const;
+    const scheduleStatus = {
+      ...scheduleReceipt,
+      failureCode: null,
+      attemptCount: 0,
+      createdAt,
+      updatedAt: createdAt,
+    } as const;
+
+    const active = api.getActivePublicationSchedule(workId);
+    http
+      .expectOne(`/api/v1/authoring/manuscripts/${workId}/publication-schedules`)
+      .flush(scheduleStatus, {
+        status: 200,
+        statusText: 'OK',
+        headers: new HttpHeaders({ 'Cache-Control': 'no-store', Pragma: 'no-cache' }),
+      });
+    await expect(active).resolves.toEqual(scheduleStatus);
+
+    const noActive = api.getActivePublicationSchedule(workId);
+    http.expectOne(`/api/v1/authoring/manuscripts/${workId}/publication-schedules`).flush(null, {
+      status: 204,
+      statusText: 'No Content',
+      headers: new HttpHeaders({ 'Cache-Control': 'no-store', Pragma: 'no-cache' }),
+    });
+    await expect(noActive).resolves.toBeNull();
+
+    const key = 'publication-schedule-create-key-01';
+    const scheduled = api.scheduleManuscriptRelease(workId, publicationEtag, scheduledAt, key);
+    await flushCsrf(http);
+    const scheduleRequest = http.expectOne(
+      `/api/v1/authoring/manuscripts/${workId}/publication-schedules`,
+    );
+    expect(scheduleRequest.request.method).toBe('POST');
+    expect(scheduleRequest.request.headers.get('X-CSRF-Token')).toBe(csrfToken);
+    expect(scheduleRequest.request.headers.get('If-Match')).toBe(publicationEtag);
+    expect(scheduleRequest.request.headers.get('Idempotency-Key')).toBe(key);
+    expect(scheduleRequest.request.body).toEqual({ scheduledAt });
+    scheduleRequest.flush(scheduleReceipt, {
+      status: 201,
+      statusText: 'Created',
+      headers: new HttpHeaders({ 'Cache-Control': 'no-store', Pragma: 'no-cache' }),
+    });
+    await expect(scheduled).resolves.toEqual(scheduleReceipt);
+
+    const cancelled = api.cancelPublicationSchedule(workId, scheduleReceipt.scheduleId);
+    await flushCsrf(http);
+    const cancelRequest = http.expectOne(
+      `/api/v1/authoring/manuscripts/${workId}/publication-schedules/${scheduleReceipt.scheduleId}`,
+    );
+    expect(cancelRequest.request.method).toBe('DELETE');
+    expect(cancelRequest.request.headers.get('X-CSRF-Token')).toBe(csrfToken);
+    cancelRequest.flush(null, {
+      status: 204,
+      statusText: 'No Content',
+      headers: new HttpHeaders({ 'Cache-Control': 'no-store', Pragma: 'no-cache' }),
+    });
+    await expect(cancelled).resolves.toBeUndefined();
+  });
+
   it('loads, submits and releases one staged chapter with strict owner validators', async () => {
     const readiness = api.getChapterPublicationReadiness(workId, chapterId);
     const readinessRequest = http.expectOne(

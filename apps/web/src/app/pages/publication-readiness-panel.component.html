@@ -295,6 +295,141 @@
           này.
         </p>
       }
+
+      @if (canScheduleRelease) {
+        <button
+          class="button button-outline publication-readiness-schedule-trigger"
+          type="button"
+          (click)="openScheduleForm()"
+        >
+          Lên lịch phát hành
+        </button>
+      }
+
+      @if (activeSchedule(); as schedule) {
+        <section
+          class="publication-readiness-schedule"
+          aria-labelledby="publication-schedule-title"
+        >
+          <h3 id="publication-schedule-title">Lịch phát hành đã lưu</h3>
+          <p>
+            Dự kiến:
+            <time [attr.datetime]="schedule.scheduledAt">{{
+              scheduledDate(schedule.scheduledAt)
+            }}</time
+            >. Bản thảo vẫn riêng tư cho đến khi máy chủ hoàn tất bước kiểm tra tại thời điểm đó.
+          </p>
+          @if (schedule.state === 'PROCESSING') {
+            <p role="status">Máy chủ đang kiểm tra điều kiện phát hành.</p>
+          }
+          @if (schedule.state === 'SCHEDULED' && !scheduleCancelConfirmOpen()) {
+            <button
+              class="button button-outline"
+              type="button"
+              (click)="openScheduleCancellation()"
+            >
+              Hủy lịch phát hành
+            </button>
+          }
+          @if (scheduleCancelConfirmOpen()) {
+            <p>Bản thảo sẽ tiếp tục ở chế độ riêng tư nếu bạn hủy lịch.</p>
+            <div class="publication-readiness-actions">
+              <button
+                class="button button-outline"
+                type="button"
+                [disabled]="isBusy"
+                (click)="scheduleCancelConfirmOpen.set(false)"
+              >
+                Giữ lịch
+              </button>
+              <button
+                class="button button-primary"
+                type="button"
+                [disabled]="isBusy"
+                (click)="cancelScheduledRelease()"
+              >
+                {{ scheduleState() === 'cancelling' ? 'Đang hủy lịch…' : 'Xác nhận hủy lịch' }}
+              </button>
+            </div>
+          }
+          @if (scheduleState() === 'uncertain') {
+            <div class="publication-readiness-error" role="alert">
+              <p>{{ scheduleErrorMessage() }}</p>
+              <button
+                class="button button-primary"
+                type="button"
+                (click)="retryUncertainCancellation()"
+              >
+                Thử lại cùng thao tác hủy
+              </button>
+            </div>
+          }
+          @if (scheduleError() && scheduleState() !== 'uncertain') {
+            <p class="publication-readiness-error-copy" role="alert">
+              {{ scheduleErrorMessage() }}
+            </p>
+          }
+        </section>
+      }
+
+      @if (scheduleFormOpen()) {
+        <section
+          class="publication-readiness-confirm"
+          aria-labelledby="publication-schedule-form-title"
+        >
+          <h3 #scheduleHeading id="publication-schedule-form-title" tabindex="-1">
+            Chọn thời điểm phát hành
+          </h3>
+          <p>
+            Thời gian được hiểu theo múi giờ trên thiết bị của bạn. Bản thảo vẫn riêng tư đến giờ
+            hẹn; quyền, phê duyệt và nội dung sẽ được kiểm tra lại trước khi công khai.
+          </p>
+          <label for="publication-scheduled-at">Ngày và giờ</label>
+          <input
+            id="publication-scheduled-at"
+            type="datetime-local"
+            [value]="scheduledAtInput()"
+            [disabled]="scheduleState() === 'uncertain' || isBusy"
+            (input)="scheduledAtInput.set($any($event.target).value)"
+          />
+          @if (scheduleError()) {
+            <p class="publication-readiness-error-copy" role="alert">
+              {{ scheduleErrorMessage() }}
+            </p>
+          }
+          <div class="publication-readiness-actions">
+            <button
+              class="button button-outline"
+              type="button"
+              [disabled]="isBusy || scheduleState() === 'uncertain'"
+              (click)="cancelScheduleForm()"
+            >
+              Đóng
+            </button>
+            <button
+              class="button button-primary"
+              type="button"
+              [disabled]="isBusy"
+              (click)="
+                scheduleState() === 'uncertain' ? retryUncertainSchedule() : submitSchedule()
+              "
+            >
+              @if (scheduleState() === 'submitting') {
+                Đang lưu lịch…
+              } @else if (scheduleState() === 'uncertain') {
+                Thử lại cùng thao tác
+              } @else {
+                Xác nhận lên lịch
+              }
+            </button>
+          </div>
+          @if (scheduleState() === 'submitting') {
+            <p class="publication-readiness-status" role="status" aria-live="polite">
+              Đang lưu lịch phát hành…
+            </p>
+          }
+        </section>
+      }
     }
 
     @if (current.canSubmit && current.currentRequestState !== 'PENDING_REVIEW') {

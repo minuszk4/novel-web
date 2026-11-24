@@ -18,6 +18,7 @@ import {
   AuthoringApiService,
   PublicationReadiness,
   PublicationReleaseReceipt,
+  PublicationScheduleStatus,
   PublicationRequestReceipt,
   PublicationRequestHistoryAction,
   PublicationRequestHistoryEvent,
@@ -31,6 +32,8 @@ import { PublicationRequestFormComponent } from './publication-request-form.comp
 
 type PanelState = 'idle' | 'loading' | 'ready' | 'error' | 'publishing' | 'uncertain' | 'published';
 type WithdrawalState = 'idle' | 'confirming' | 'submitting' | 'uncertain';
+type ScheduleState =
+  'idle' | 'confirming' | 'submitting' | 'uncertain' | 'scheduled' | 'cancelling';
 type RequestHistoryState = 'idle' | 'loading' | 'ready' | 'error';
 
 interface ReleaseAttempt {
@@ -42,6 +45,13 @@ interface ReleaseAttempt {
 interface WithdrawalAttempt {
   workId: string;
   readinessEtag: string;
+  idempotencyKey: string;
+}
+
+interface ScheduleAttempt {
+  workId: string;
+  readinessEtag: string;
+  scheduledAt: string;
   idempotencyKey: string;
 }
 
@@ -67,6 +77,12 @@ export class PublicationReadinessPanelComponent implements OnChanges {
   protected readonly announcement = signal('');
   protected readonly confirmationOpen = signal(false);
   protected readonly receipt = signal<PublicationReleaseReceipt | null>(null);
+  protected readonly activeSchedule = signal<PublicationScheduleStatus | null>(null);
+  protected readonly scheduleState = signal<ScheduleState>('idle');
+  protected readonly scheduleFormOpen = signal(false);
+  protected readonly scheduleCancelConfirmOpen = signal(false);
+  protected readonly scheduledAtInput = signal('');
+  protected readonly scheduleError = signal<AuthoringApiError | null>(null);
   protected readonly requestFlowActive = signal(false);
   protected readonly withdrawalState = signal<WithdrawalState>('idle');
   protected readonly withdrawalError = signal<AuthoringApiError | null>(null);
@@ -83,6 +99,7 @@ export class PublicationReadinessPanelComponent implements OnChanges {
   private failedHistoryCursor: string | null = null;
   private pendingRelease: ReleaseAttempt | null = null;
   private pendingWithdrawal: WithdrawalAttempt | null = null;
+  private pendingSchedule: ScheduleAttempt | null = null;
 
   @ViewChild('confirmationHeading')
   private confirmationHeading?: ElementRef<HTMLHeadingElement>;
@@ -98,6 +115,9 @@ export class PublicationReadinessPanelComponent implements OnChanges {
 
   @ViewChild('currentRequestState')
   private currentRequestStateElement?: ElementRef<HTMLElement>;
+
+  @ViewChild('scheduleHeading')
+  private scheduleHeading?: ElementRef<HTMLHeadingElement>;
 
   ngOnChanges(changes: SimpleChanges): void {
     if (changes['workId']) this.reset();
@@ -116,7 +136,9 @@ export class PublicationReadinessPanelComponent implements OnChanges {
     return (
       this.state() === 'loading' ||
       this.state() === 'publishing' ||
-      this.withdrawalState() === 'submitting'
+      this.withdrawalState() === 'submitting' ||
+      this.scheduleState() === 'submitting' ||
+      this.scheduleState() === 'cancelling'
     );
   }
 
@@ -131,6 +153,18 @@ export class PublicationReadinessPanelComponent implements OnChanges {
   }
 
   protected get canPublishNow(): boolean {
+    return this.canReleaseApproved && this.activeSchedule() === null;
+  }
+
+  protected get canScheduleRelease(): boolean {
+    return (
+      this.canReleaseApproved &&
+      this.activeSchedule() === null &&
+      this.systemStatus.status()?.features.publicationSchedulerApiEnabled === true
+    );
+  }
+
+  private get canReleaseApproved(): boolean {
     const readiness = this.readiness();
     return (
       this.state() === 'ready' &&
@@ -189,8 +223,14 @@ export class PublicationReadinessPanelComponent implements OnChanges {
 
     try {
       const readiness = await this.api.getPublicationReadiness(this.workId);
+      const activeSchedule =
+        this.systemStatus.status()?.features.publicationSchedulerApiEnabled === true
+          ? await this.api.getActivePublicationSchedule(this.workId)
+          : null;
       if (token !== this.requestToken) return;
       this.readiness.set(readiness);
+      this.activeSchedule.set(activeSchedule);
+      this.scheduleState.set(activeSchedule ? 'scheduled' : 'idle');
       this.state.set('ready');
       this.announcement.set(
         afterLoadAnnouncement ||
@@ -251,6 +291,7 @@ export class PublicationReadinessPanelComponent implements OnChanges {
       if (token !== this.requestToken) return;
       this.receipt.set(receipt);
       this.pendingRelease = null;
+      this.pendingSchedule = null;
       this.confirmationOpen.set(false);
       this.state.set('published');
       this.announcement.set(
@@ -282,6 +323,129 @@ export class PublicationReadinessPanelComponent implements OnChanges {
       this.confirmationOpen.set(false);
       this.state.set('ready');
     }
+  }
+
+  protected openScheduleForm(): void {
+    if (!this.canScheduleRelease) return;
+    this.scheduleError.set(null);
+    this.scheduleFormOpen.set(true);
+    this.scheduleState.set('confirming');
+    this.scheduledAtInput.set(defaultScheduledAtInput());
+    afterNextRender(() => this.scheduleHeading?.nativeElement.focus({ preventScroll: true }), {
+      injector: this.injector,
+    });
+  }
+
+  protected cancelScheduleForm(): void {
+    if (this.scheduleState() === 'submitting' || this.scheduleState() === 'uncertain') return;
+    this.scheduleFormOpen.set(false);
+    this.scheduleState.set('idle');
+    this.scheduleError.set(null);
+    this.pendingSchedule = null;
+  }
+
+  protected async submitSchedule(): Promise<void> {
+    const readiness = this.readiness();
+    if (!readiness || !this.canScheduleRelease || this.scheduleState() === 'submitting') return;
+    const localDate = new Date(this.scheduledAtInput());
+    if (
+      !this.scheduledAtInput() ||
+      !Number.isFinite(localDate.getTime()) ||
+      localDate <= new Date()
+    ) {
+      this.scheduleError.set(new AuthoringApiError(400, 'PUBLICATION_SCHEDULE_TIME_INVALID'));
+      return;
+    }
+    const scheduledAt = localDate.toISOString();
+    let attempt = this.pendingSchedule;
+    if (
+      !attempt ||
+      attempt.workId !== this.workId ||
+      attempt.readinessEtag !== readiness.snapshotEtag ||
+      attempt.scheduledAt !== scheduledAt
+    ) {
+      attempt = {
+        workId: this.workId,
+        readinessEtag: readiness.snapshotEtag,
+        scheduledAt,
+        idempotencyKey: newAuthoringIdempotencyKey(),
+      };
+      this.pendingSchedule = attempt;
+    }
+    this.scheduleState.set('submitting');
+    this.scheduleError.set(null);
+    this.announcement.set('Đang lưu lịch phát hành…');
+    try {
+      await this.api.scheduleManuscriptRelease(
+        attempt.workId,
+        attempt.readinessEtag,
+        attempt.scheduledAt,
+        attempt.idempotencyKey,
+      );
+      const active = await this.api.getActivePublicationSchedule(attempt.workId);
+      this.activeSchedule.set(active);
+      this.pendingSchedule = null;
+      this.scheduleFormOpen.set(false);
+      this.scheduleState.set(active ? 'scheduled' : 'idle');
+      this.announcement.set(
+        active
+          ? `Đã lên lịch phát hành lúc ${this.scheduledDate(active.scheduledAt)}. Bản thảo vẫn riêng tư cho đến giờ hẹn.`
+          : 'Đã gửi lịch phát hành. Hãy tải lại trạng thái để xác nhận lịch.',
+      );
+    } catch (error) {
+      const mapped = toAuthoringError(error);
+      this.scheduleError.set(mapped);
+      if (mapped.status === 0 || mapped.status >= 500) {
+        this.scheduleState.set('uncertain');
+        this.announcement.set('Chưa xác định được kết quả lên lịch phát hành.');
+      } else {
+        this.scheduleState.set('confirming');
+      }
+    }
+  }
+
+  protected async retryUncertainSchedule(): Promise<void> {
+    if (this.scheduleState() !== 'uncertain' || !this.pendingSchedule) return;
+    this.scheduledAtInput.set(toLocalDateTimeInput(new Date(this.pendingSchedule.scheduledAt)));
+    this.scheduleState.set('confirming');
+    await this.submitSchedule();
+  }
+
+  protected openScheduleCancellation(): void {
+    if (this.activeSchedule()?.state !== 'SCHEDULED') return;
+    this.scheduleCancelConfirmOpen.set(true);
+  }
+
+  protected async cancelScheduledRelease(): Promise<void> {
+    const schedule = this.activeSchedule();
+    if (!schedule || schedule.state !== 'SCHEDULED') return;
+    this.scheduleState.set('cancelling');
+    this.scheduleError.set(null);
+    try {
+      await this.api.cancelPublicationSchedule(this.workId, schedule.scheduleId);
+      this.activeSchedule.set(null);
+      this.scheduleCancelConfirmOpen.set(false);
+      this.scheduleState.set('idle');
+      this.announcement.set('Đã hủy lịch phát hành. Bản thảo vẫn riêng tư.');
+    } catch (error) {
+      const mapped = toAuthoringError(error);
+      this.scheduleError.set(mapped);
+      this.scheduleState.set(
+        mapped.status === 0 || mapped.status >= 500 ? 'uncertain' : 'scheduled',
+      );
+    }
+  }
+
+  protected async retryUncertainCancellation(): Promise<void> {
+    if (this.scheduleState() !== 'uncertain' || !this.activeSchedule()) return;
+    await this.cancelScheduledRelease();
+  }
+
+  protected scheduledDate(value: string): string {
+    return new Intl.DateTimeFormat('vi-VN', {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    }).format(new Date(value));
   }
 
   protected async retryUncertainRelease(): Promise<void> {
@@ -606,6 +770,26 @@ export class PublicationReadinessPanelComponent implements OnChanges {
     }).format(new Date(value));
   }
 
+  protected scheduleErrorMessage(): string {
+    const error = this.scheduleError();
+    if (!error) return '';
+    if (this.scheduleState() === 'uncertain') {
+      return 'Chưa xác định được kết quả. Thử lại sẽ gửi đúng thao tác với cùng mã an toàn.';
+    }
+    if (error.code === 'PUBLICATION_SCHEDULE_TIME_INVALID') {
+      return 'Chọn một thời điểm trong tương lai theo múi giờ trên thiết bị.';
+    }
+    if (error.status === 401) return 'Phiên đăng nhập đã hết hạn. Hãy đăng nhập lại.';
+    if (error.status === 403)
+      return 'Phiên bảo mật hoặc quyền xác nhận đã thay đổi. Tải lại trạng thái.';
+    if (error.status === 404) return 'Không tìm thấy bản thảo riêng tư này.';
+    if (error.status === 409 || error.status === 412) {
+      return 'Quyền duyệt hoặc nội dung đã thay đổi. Tải lại checklist trước khi tiếp tục.';
+    }
+    if (error.status === 503) return 'Lịch phát hành chưa lưu được. Bản thảo vẫn riêng tư.';
+    return 'Chưa thực hiện được lịch phát hành. Kiểm tra trạng thái rồi thử lại.';
+  }
+
   private reset(): void {
     this.requestToken += 1;
     this.state.set('idle');
@@ -614,8 +798,15 @@ export class PublicationReadinessPanelComponent implements OnChanges {
     this.announcement.set('');
     this.confirmationOpen.set(false);
     this.receipt.set(null);
+    this.activeSchedule.set(null);
+    this.scheduleState.set('idle');
+    this.scheduleFormOpen.set(false);
+    this.scheduleCancelConfirmOpen.set(false);
+    this.scheduledAtInput.set('');
+    this.scheduleError.set(null);
     this.requestFlowActive.set(false);
     this.pendingRelease = null;
+    this.pendingSchedule = null;
     this.withdrawalState.set('idle');
     this.withdrawalError.set(null);
     this.pendingWithdrawal = null;
@@ -630,6 +821,17 @@ export class PublicationReadinessPanelComponent implements OnChanges {
     this.requestHistoryAnnouncement.set('');
     this.failedHistoryCursor = null;
   }
+}
+
+function defaultScheduledAtInput(): string {
+  const value = new Date(Date.now() + 60 * 60 * 1000);
+  value.setMinutes(value.getMinutes() - value.getTimezoneOffset());
+  return value.toISOString().slice(0, 16);
+}
+
+function toLocalDateTimeInput(value: Date): string {
+  const local = new Date(value.getTime() - value.getTimezoneOffset() * 60_000);
+  return local.toISOString().slice(0, 16);
 }
 
 function toAuthoringError(error: unknown): AuthoringApiError {

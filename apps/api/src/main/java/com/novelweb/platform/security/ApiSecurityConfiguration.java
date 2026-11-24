@@ -262,6 +262,8 @@ public class ApiSecurityConfiguration {
                         "/api/v1/authoring/manuscripts/*/publication/readiness",
                         "/api/v1/authoring/manuscripts/*/publication/readiness/chapters/*",
                         "/api/v1/authoring/manuscripts/*/publication/requests/history",
+                        "/api/v1/authoring/manuscripts/*/publication-schedules",
+                        "/api/v1/authoring/manuscripts/*/publication-schedules/*",
                         "/api/v1/authoring/manuscripts/*/chapters",
                         "/api/v1/authoring/manuscripts/*/chapters/*/draft")
                     .permitAll();
@@ -275,6 +277,7 @@ public class ApiSecurityConfiguration {
                         "/api/v1/authoring/manuscripts/*/publication/requests/withdrawal",
                         "/api/v1/authoring/manuscripts/*/chapters/*/publication-release",
                         "/api/v1/authoring/manuscripts/*/publication-actions",
+                        "/api/v1/authoring/manuscripts/*/publication-schedules",
                         "/api/v1/authoring/manuscripts/*/chapters",
                         "/api/v1/authoring/manuscripts/*/chapters/*/revisions")
                     .permitAll();
@@ -295,7 +298,9 @@ public class ApiSecurityConfiguration {
                     .permitAll();
                 authorize
                     .requestMatchers(
-                        HttpMethod.DELETE, "/api/v1/authoring/manuscripts/*/chapters/*")
+                        HttpMethod.DELETE,
+                        "/api/v1/authoring/manuscripts/*/chapters/*",
+                        "/api/v1/authoring/manuscripts/*/publication-schedules/*")
                     .permitAll();
                 authorize
                     .requestMatchers(HttpMethod.PUT, "/api/v1/authoring/manuscripts/*")

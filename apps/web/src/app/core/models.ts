@@ -42,6 +42,7 @@ export interface ApiSystemStatus {
     commerceSandboxEnabled: boolean;
     publicCatalogEnabled?: boolean;
     publicationReleaseEnabled?: boolean;
+    publicationSchedulerApiEnabled?: boolean;
     translationFakePreviewEnabled: boolean;
     translationManualSubmissionEnabled?: boolean;
     translationPublicationEnabled?: boolean;

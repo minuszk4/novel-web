@@ -22,6 +22,7 @@ public class SystemStatusController {
   private final boolean commerceSandboxEnabled;
   private final boolean publicCatalogEnabled;
   private final boolean publicationReleaseEnabled;
+  private final boolean publicationSchedulerApiEnabled;
   private final boolean translationFakePreviewEnabled;
   private final boolean translationManualSubmissionEnabled;
   private final boolean translationPublicationEnabled;
@@ -58,6 +59,10 @@ public class SystemStatusController {
         postgresProfile
             && springEnvironment.getProperty(
                 "novel.publication.release-enabled", Boolean.class, false);
+    this.publicationSchedulerApiEnabled =
+        this.publicationReleaseEnabled
+            && springEnvironment.getProperty(
+                "novel.publication.scheduler.api-enabled", Boolean.class, false);
     this.translationFakePreviewEnabled =
         springEnvironment.acceptsProfiles(Profiles.of("postgres & translation-fake"))
             && fakeTranslationEnabled
@@ -82,6 +87,7 @@ public class SystemStatusController {
             commerceSandboxEnabled,
             publicCatalogEnabled,
             publicationReleaseEnabled,
+            publicationSchedulerApiEnabled,
             translationFakePreviewEnabled,
             translationManualSubmissionEnabled,
             translationPublicationEnabled));

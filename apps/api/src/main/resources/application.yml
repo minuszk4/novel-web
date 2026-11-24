@@ -52,6 +52,10 @@ novel:
       cleanup-delay: ${NOVEL_PUBLIC_CATALOG_RATE_LIMIT_CLEANUP_DELAY:1h}
   publication:
     release-enabled: ${NOVEL_PUBLICATION_RELEASE_ENABLED:false}
+    scheduler:
+      api-enabled: ${NOVEL_PUBLICATION_SCHEDULER_API_ENABLED:false}
+      worker-enabled: ${NOVEL_PUBLICATION_SCHEDULER_WORKER_ENABLED:false}
+      poll-delay: ${NOVEL_PUBLICATION_SCHEDULER_POLL_DELAY:15s}
     purge:
       worker-enabled: ${NOVEL_PUBLICATION_PURGE_WORKER_ENABLED:false}
       required-targets: ${NOVEL_PUBLICATION_PURGE_REQUIRED_TARGETS:}

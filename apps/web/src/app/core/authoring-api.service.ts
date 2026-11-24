@@ -110,6 +110,30 @@ export interface PublicationReleaseReceipt {
   publicationContentVersion: number;
 }
 
+export type PublicationScheduleState =
+  'SCHEDULED' | 'PROCESSING' | 'PUBLISHED' | 'CANCELLED' | 'BLOCKED';
+
+export interface PublicationScheduleReceipt {
+  scheduleId: string;
+  workId: string;
+  requestId: string;
+  state: PublicationScheduleState;
+  scheduledAt: string;
+}
+
+export interface PublicationScheduleStatus extends PublicationScheduleReceipt {
+  failureCode:
+    | 'PUBLICATION_SNAPSHOT_STALE'
+    | 'PUBLICATION_APPROVAL_CHANGED'
+    | 'PUBLICATION_APPROVAL_REQUIRED'
+    | 'PUBLICATION_POLICY_CHANGED'
+    | 'PUBLICATION_STATE_CHANGED'
+    | null;
+  attemptCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ChapterPublicationReleaseReceipt {
   eventId: string;
   workId: string;
@@ -592,6 +616,98 @@ export class AuthoringApiService {
         throw invalidPublicationReleaseResponse();
       }
       return parsePublicationReleaseReceipt(response.body, workId);
+    } catch (error) {
+      throw toAuthoringApiError(error);
+    }
+  }
+
+  async getActivePublicationSchedule(workId: string): Promise<PublicationScheduleStatus | null> {
+    if (!isUuid(workId)) throw new AuthoringApiError(400, 'INVALID_PUBLICATION_SCHEDULE');
+    try {
+      const response = await firstValueFrom(
+        this.http
+          .get<unknown>(`${manuscriptsUrl}/${workId}/publication-schedules`, {
+            observe: 'response',
+          })
+          .pipe(timeout(requestTimeoutMs)),
+      );
+      if (
+        response.headers.get('Cache-Control') !== 'no-store' ||
+        response.headers.get('Pragma') !== 'no-cache'
+      ) {
+        throw invalidPublicationScheduleResponse();
+      }
+      if (response.status === 204 && response.body === null) return null;
+      if (response.status !== 200) throw invalidPublicationScheduleResponse();
+      return parsePublicationScheduleStatus(response.body, workId);
+    } catch (error) {
+      throw toAuthoringApiError(error);
+    }
+  }
+
+  async scheduleManuscriptRelease(
+    workId: string,
+    readinessEtag: string,
+    scheduledAt: string,
+    idempotencyKey: string,
+  ): Promise<PublicationScheduleReceipt> {
+    if (
+      !isUuid(workId) ||
+      !isPublicationReadinessEtag(readinessEtag) ||
+      !isInstant(scheduledAt) ||
+      Date.parse(scheduledAt) <= Date.now() ||
+      !idempotencyKeyPattern.test(idempotencyKey)
+    ) {
+      throw new AuthoringApiError(400, 'INVALID_PUBLICATION_SCHEDULE');
+    }
+    try {
+      const headers = (await this.csrfHeaders())
+        .set('Content-Type', 'application/json')
+        .set('If-Match', readinessEtag)
+        .set('Idempotency-Key', idempotencyKey);
+      const response = await firstValueFrom(
+        this.http
+          .post<unknown>(
+            `${manuscriptsUrl}/${workId}/publication-schedules`,
+            { scheduledAt },
+            { headers, observe: 'response' },
+          )
+          .pipe(timeout(requestTimeoutMs)),
+      );
+      if (
+        (response.status !== 201 && response.status !== 200) ||
+        response.headers.get('Cache-Control') !== 'no-store' ||
+        response.headers.get('Pragma') !== 'no-cache'
+      ) {
+        throw invalidPublicationScheduleResponse();
+      }
+      return parsePublicationScheduleReceipt(response.body, workId);
+    } catch (error) {
+      throw toAuthoringApiError(error);
+    }
+  }
+
+  async cancelPublicationSchedule(workId: string, scheduleId: string): Promise<void> {
+    if (!isUuid(workId) || !isUuid(scheduleId)) {
+      throw new AuthoringApiError(400, 'INVALID_PUBLICATION_SCHEDULE');
+    }
+    try {
+      const response = await firstValueFrom(
+        this.http
+          .delete<unknown>(`${manuscriptsUrl}/${workId}/publication-schedules/${scheduleId}`, {
+            headers: await this.csrfHeaders(),
+            observe: 'response',
+          })
+          .pipe(timeout(requestTimeoutMs)),
+      );
+      if (
+        response.status !== 204 ||
+        response.body !== null ||
+        response.headers.get('Cache-Control') !== 'no-store' ||
+        response.headers.get('Pragma') !== 'no-cache'
+      ) {
+        throw invalidPublicationScheduleResponse();
+      }
     } catch (error) {
       throw toAuthoringApiError(error);
     }
@@ -1299,6 +1415,80 @@ function parsePublicationReleaseReceipt(
   return value as unknown as PublicationReleaseReceipt;
 }
 
+function parsePublicationScheduleReceipt(
+  value: unknown,
+  expectedWorkId: string,
+): PublicationScheduleReceipt {
+  if (
+    !isRecord(value) ||
+    hasUnexpectedFields(value, ['scheduleId', 'workId', 'requestId', 'state', 'scheduledAt']) ||
+    !isUuid(value['scheduleId']) ||
+    value['workId'] !== expectedWorkId ||
+    !isUuid(value['requestId']) ||
+    !isPublicationScheduleState(value['state']) ||
+    !isInstant(value['scheduledAt'])
+  ) {
+    throw invalidPublicationScheduleResponse();
+  }
+  return value as unknown as PublicationScheduleReceipt;
+}
+
+function parsePublicationScheduleStatus(
+  value: unknown,
+  expectedWorkId: string,
+): PublicationScheduleStatus {
+  if (
+    !isRecord(value) ||
+    hasUnexpectedFields(value, [
+      'scheduleId',
+      'workId',
+      'requestId',
+      'scheduledAt',
+      'state',
+      'failureCode',
+      'attemptCount',
+      'createdAt',
+      'updatedAt',
+    ]) ||
+    !isUuid(value['scheduleId']) ||
+    value['workId'] !== expectedWorkId ||
+    !isUuid(value['requestId']) ||
+    !isInstant(value['scheduledAt']) ||
+    !isPublicationScheduleState(value['state']) ||
+    !isPublicationScheduleFailure(value['failureCode']) ||
+    !Number.isSafeInteger(value['attemptCount']) ||
+    (value['attemptCount'] as number) < 0 ||
+    !isInstant(value['createdAt']) ||
+    !isInstant(value['updatedAt'])
+  ) {
+    throw invalidPublicationScheduleResponse();
+  }
+  return value as unknown as PublicationScheduleStatus;
+}
+
+function isPublicationScheduleState(value: unknown): value is PublicationScheduleState {
+  return (
+    value === 'SCHEDULED' ||
+    value === 'PROCESSING' ||
+    value === 'PUBLISHED' ||
+    value === 'CANCELLED' ||
+    value === 'BLOCKED'
+  );
+}
+
+function isPublicationScheduleFailure(
+  value: unknown,
+): value is PublicationScheduleStatus['failureCode'] {
+  return (
+    value === null ||
+    value === 'PUBLICATION_SNAPSHOT_STALE' ||
+    value === 'PUBLICATION_APPROVAL_CHANGED' ||
+    value === 'PUBLICATION_APPROVAL_REQUIRED' ||
+    value === 'PUBLICATION_POLICY_CHANGED' ||
+    value === 'PUBLICATION_STATE_CHANGED'
+  );
+}
+
 function parseChapterPublicationReleaseReceipt(
   value: unknown,
   expectedWorkId: string,
@@ -1943,6 +2133,10 @@ function invalidPublicationReadinessResponse(): AuthoringApiError {
 
 function invalidPublicationReleaseResponse(): AuthoringApiError {
   return new AuthoringApiError(502, 'INVALID_PUBLICATION_RELEASE_RESPONSE');
+}
+
+function invalidPublicationScheduleResponse(): AuthoringApiError {
+  return new AuthoringApiError(502, 'INVALID_PUBLICATION_SCHEDULE_RESPONSE');
 }
 
 function invalidChapterPublicationReleaseResponse(): AuthoringApiError {

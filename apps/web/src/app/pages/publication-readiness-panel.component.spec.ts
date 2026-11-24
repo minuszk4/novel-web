@@ -7,6 +7,7 @@ import {
   AuthoringApiService,
   PublicationReadiness,
   PublicationReleaseReceipt,
+  PublicationScheduleStatus,
   PublicationRequestHistoryPage,
   PublicationRequestWithdrawalReceipt,
 } from '../core/authoring-api.service';
@@ -19,7 +20,10 @@ const readinessEtag = `"publication-snapshot-${'a'.repeat(64)}"`;
 const scopeEtag = `"publication-scope-${'b'.repeat(64)}"`;
 const timestamp = '2026-11-16T12:30:00Z';
 
-function serverStatus(publicationReleaseEnabled: boolean): ApiSystemStatus {
+function serverStatus(
+  publicationReleaseEnabled: boolean,
+  publicationSchedulerApiEnabled = false,
+): ApiSystemStatus {
   return {
     apiVersion: 'v1',
     environment: 'test',
@@ -34,6 +38,7 @@ function serverStatus(publicationReleaseEnabled: boolean): ApiSystemStatus {
       commerceSandboxEnabled: false,
       publicCatalogEnabled: false,
       publicationReleaseEnabled,
+      publicationSchedulerApiEnabled,
       translationFakePreviewEnabled: false,
     },
   };
@@ -70,6 +75,20 @@ function receipt(): PublicationReleaseReceipt {
     state: 'PUBLISHED',
     publishedAt: timestamp,
     publicationContentVersion: 7,
+  };
+}
+
+function scheduledStatus(): PublicationScheduleStatus {
+  return {
+    scheduleId: '66666666-6666-4666-8666-666666666666',
+    workId,
+    requestId: '77777777-7777-4777-8777-777777777777',
+    scheduledAt: '2030-11-17T04:00:00Z',
+    state: 'SCHEDULED',
+    failureCode: null,
+    attemptCount: 0,
+    createdAt: timestamp,
+    updatedAt: timestamp,
   };
 }
 
@@ -132,6 +151,9 @@ describe('PublicationReadinessPanelComponent', () => {
     getPublicationRequestHistory: ReturnType<typeof vi.fn>;
     publishManuscriptNow: ReturnType<typeof vi.fn>;
     withdrawPublicationRequest: ReturnType<typeof vi.fn>;
+    getActivePublicationSchedule: ReturnType<typeof vi.fn>;
+    scheduleManuscriptRelease: ReturnType<typeof vi.fn>;
+    cancelPublicationSchedule: ReturnType<typeof vi.fn>;
   };
   let status: WritableSignal<ApiSystemStatus | null>;
 
@@ -141,6 +163,15 @@ describe('PublicationReadinessPanelComponent', () => {
       getPublicationRequestHistory: vi.fn(),
       publishManuscriptNow: vi.fn().mockResolvedValue(receipt()),
       withdrawPublicationRequest: vi.fn().mockResolvedValue(withdrawalReceipt()),
+      getActivePublicationSchedule: vi.fn().mockResolvedValue(null),
+      scheduleManuscriptRelease: vi.fn().mockResolvedValue({
+        scheduleId: scheduledStatus().scheduleId,
+        workId,
+        requestId: scheduledStatus().requestId,
+        state: 'SCHEDULED',
+        scheduledAt: scheduledStatus().scheduledAt,
+      }),
+      cancelPublicationSchedule: vi.fn().mockResolvedValue(undefined),
     };
     status = signal(serverStatus(false));
     TestBed.configureTestingModule({
@@ -249,6 +280,45 @@ describe('PublicationReadinessPanelComponent', () => {
       'Máy chủ đã xác nhận tác phẩm được công khai',
     );
     expect(button('Xuất bản ngay')).toBeNull();
+  });
+
+  it('schedules an approved manuscript, keeps it private and lets the owner cancel', async () => {
+    status.set(serverStatus(true, true));
+    api.getActivePublicationSchedule
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(scheduledStatus());
+
+    await clickButton('Kiểm tra điều kiện xuất bản');
+    await clickButton('Lên lịch phát hành');
+    const input = fixture.nativeElement.querySelector(
+      '#publication-scheduled-at',
+    ) as HTMLInputElement;
+    const localFuture = new Date(Date.now() + 2 * 60 * 60 * 1000);
+    localFuture.setMinutes(localFuture.getMinutes() - localFuture.getTimezoneOffset());
+    const localValue = localFuture.toISOString().slice(0, 16);
+    input.value = localValue;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    fixture.detectChanges();
+
+    await clickButton('Xác nhận lên lịch');
+    expect(api.scheduleManuscriptRelease).toHaveBeenCalledWith(
+      workId,
+      readinessEtag,
+      new Date(localValue).toISOString(),
+      expect.any(String),
+    );
+    expect(fixture.nativeElement.textContent).toContain('Lịch phát hành đã lưu');
+    expect(fixture.nativeElement.textContent).toContain('Bản thảo vẫn riêng tư');
+    expect(button('Xuất bản ngay')).toBeNull();
+
+    await clickButton('Hủy lịch phát hành');
+    await clickButton('Xác nhận hủy lịch');
+    expect(api.cancelPublicationSchedule).toHaveBeenCalledWith(
+      workId,
+      scheduledStatus().scheduleId,
+    );
+    expect(fixture.nativeElement.textContent).not.toContain('Lịch phát hành đã lưu');
+    expect(fixture.nativeElement.textContent).toContain('Đã hủy lịch phát hành');
   });
 
   it('requires an explicit withdrawal confirmation and retries the exact uncertain request', async () => {

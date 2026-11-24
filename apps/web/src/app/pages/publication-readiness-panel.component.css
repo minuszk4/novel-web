@@ -246,6 +246,42 @@
   background: #fffdf7;
 }
 
+.publication-readiness-schedule {
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid #b9d7d0;
+  border-radius: 9px;
+  background: #f5fbf9;
+}
+
+.publication-readiness-schedule h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.publication-readiness-schedule p {
+  line-height: 1.55;
+}
+
+#publication-scheduled-at {
+  display: block;
+  width: 100%;
+  max-width: 28rem;
+  min-height: 44px;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid #747d78;
+  border-radius: 6px;
+  background: #fff;
+  color: inherit;
+  font: inherit;
+}
+
+#publication-scheduled-at:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
 .publication-readiness-actions {
   display: flex;
   flex-wrap: wrap;

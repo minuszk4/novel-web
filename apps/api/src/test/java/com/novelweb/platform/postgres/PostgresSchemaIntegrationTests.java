@@ -44,6 +44,7 @@ import com.novelweb.library.imports.ImportStagingCleanupService;
 import com.novelweb.library.imports.ImportStagingRateLimiter;
 import com.novelweb.library.invitation.WorkspaceInvitationTokenService;
 import com.novelweb.library.publication.ChapterPublishedNotificationDeliveryService;
+import com.novelweb.library.publication.PublicationScheduleService;
 import com.novelweb.library.publication.PublicationTakedownPurgeService;
 import com.novelweb.library.publication.PublicationTakedownPurgeTransport;
 import com.novelweb.payment.credit.ChapterUnlockService;
@@ -180,6 +181,8 @@ import tools.jackson.databind.ObjectMapper;
       "novel.imports.staging.rate-limit-retention=24h",
       "novel.publication.requests.rate-limit-capacity=1",
       "novel.publication.release-enabled=true",
+      "novel.publication.scheduler.api-enabled=true",
+      "novel.publication.scheduler.worker-enabled=false",
       "novel.publication.purge.worker-enabled=false",
       "novel.notifications.delivery.enabled=false",
       "spring.mail.host=smtp.example.test",
@@ -301,6 +304,8 @@ class PostgresSchemaIntegrationTests {
           "public_catalog_rate_limits",
           "publication_work_takedown_events",
           "publication_release_events",
+          "publication_release_schedules",
+          "publication_release_schedule_events",
           "publication_takedown_purge_requests",
           "publication_takedown_purge_attempts",
           "work_subscriptions",
@@ -309,6 +314,8 @@ class PostgresSchemaIntegrationTests {
   @Autowired private DataSource dataSource;
 
   @Autowired private PublicationTakedownPurgeService publicationTakedownPurgeService;
+
+  @Autowired private PublicationScheduleService publicationScheduleService;
 
   @Autowired private ChapterPublishedNotificationDeliveryService notificationDeliveryService;
 
@@ -490,7 +497,7 @@ class PostgresSchemaIntegrationTests {
             connection.prepareStatement("SELECT COUNT(*) FROM databasechangelog");
         ResultSet changesets = changesetCount.executeQuery()) {
       changesets.next();
-      assertEquals(185, changesets.getInt(1), "unexpected number of applied changesets");
+      assertEquals(186, changesets.getInt(1), "unexpected number of applied changesets");
     }
 
     Set<String> actualTables = new HashSet<>();
@@ -840,22 +847,16 @@ class PostgresSchemaIntegrationTests {
               });
       assertEquals("55000", deletedAcceptance.getSQLState());
 
-      SQLException truncatedAcceptances =
+      SQLException truncatedAcceptanceReceipts =
           assertThrows(
               SQLException.class,
               () -> {
                 try (Connection connection = dataSource.getConnection();
                     java.sql.Statement truncate = connection.createStatement()) {
-                  truncate.execute(
-                      "TRUNCATE notifications, chapter_published_outbox_events, chapter_publication_release_events,"
-                          + " publication_review_events, publication_request_scope_claims,"
-                          + " publication_request_scope_snapshots, publication_requests,"
-                          + " publication_release_events,"
-                          + " publication_rights_policy_acceptance_idempotency,"
-                          + " publication_rights_policy_acceptances");
+                  truncate.execute("TRUNCATE publication_rights_policy_acceptance_idempotency");
                 }
               });
-      assertEquals("55000", truncatedAcceptances.getSQLState());
+      assertEquals("55000", truncatedAcceptanceReceipts.getSQLState());
 
       SQLException deletedAuthoredWorkLink =
           assertThrows(
@@ -4147,6 +4148,389 @@ class PostgresSchemaIntegrationTests {
     }
   }
 
+  @Test
+  void scheduledPublicationRevalidatesAtDueTimeAndSupportsOwnerCancellation() throws Exception {
+    UUID ownerId = createSessionTestUser("Publication schedule owner");
+    UUID reviewerId = createSessionTestUser("Publication schedule reviewer");
+    UUID policyApproverId = createSessionTestUser("Publication schedule policy approver");
+    List<UUID> userIds = List.of(ownerId, reviewerId, policyApproverId);
+    List<SubmittedPublicationFixture> fixtures = new ArrayList<>();
+    String policyVersion = "publication-schedule-" + UUID.randomUUID().toString().replace("-", "");
+    String policyText = "Synthetic publication schedule policy; not legal text.";
+    byte[] policyDigest = sha256(policyText);
+    try {
+      for (UUID userId : userIds) addCurrentPolicyAcceptances(userId);
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement insert =
+              connection.prepareStatement(
+                  """
+                      INSERT INTO publication_rights_policy_documents
+                          (version, effective_at, display_text, policy_sha256)
+                      VALUES (?, clock_timestamp() - INTERVAL '1 second', ?, ?)
+                      """)) {
+        insert.setString(1, policyVersion);
+        insert.setString(2, policyText);
+        insert.setBytes(3, policyDigest);
+        assertEquals(1, insert.executeUpdate());
+      }
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement approve =
+              connection.prepareStatement(
+                  """
+                      UPDATE publication_rights_policy_documents
+                         SET status = 'APPROVED', approved_at = clock_timestamp(), approved_by = ?
+                       WHERE version = ? AND status = 'DRAFT'
+                      """)) {
+        approve.setObject(1, policyApproverId);
+        approve.setString(2, policyVersion);
+        assertEquals(1, approve.executeUpdate());
+      }
+
+      insertPublicationReviewerAssignment(reviewerId, ownerId);
+      SessionService.IssuedSession ownerSession = sessionService.create(ownerId).orElseThrow();
+      SessionService.IssuedSession reviewerSession =
+          sessionService.create(reviewerId).orElseThrow();
+      jakarta.servlet.http.Cookie ownerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", ownerSession.cookieValue());
+      jakarta.servlet.http.Cookie reviewerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", reviewerSession.cookieValue());
+      String reviewerCsrf = csrfTokenService.tokenFor(reviewerSession.cookieValue());
+      String ownerCsrf = csrfTokenService.tokenFor(ownerSession.cookieValue());
+      String approvalBody = "{\"actionCode\":\"APPROVED\",\"reasonCode\":\"RIGHTS_REVIEWED\"}";
+
+      SubmittedPublicationFixture dueFixture =
+          submitPublicationRequestForReviewQueue(
+              fixtures,
+              ownerId,
+              ownerSession,
+              policyVersion,
+              policyDigest,
+              "Scheduled release due-time fixture",
+              "ORIGINAL_WORK");
+      approvePublicationFixture(
+          dueFixture, reviewerCookie, reviewerCsrf, approvalBody, "schedule-due-approve-01");
+
+      String dueReadinessPath =
+          "/api/v1/authoring/manuscripts/" + dueFixture.workId() + "/publication/readiness";
+      MvcResult dueReadiness =
+          mockMvc.perform(get(dueReadinessPath).cookie(ownerCookie)).andReturn();
+      assertEquals(200, dueReadiness.getResponse().getStatus());
+      Instant dueAt = Instant.now().plusSeconds(5).truncatedTo(ChronoUnit.MILLIS);
+      String dueBody =
+          objectMapper.writeValueAsString(
+              Map.of("scheduledAt", OffsetDateTime.ofInstant(dueAt, ZoneOffset.UTC).toString()));
+      String dueSchedulePath =
+          "/api/v1/authoring/manuscripts/" + dueFixture.workId() + "/publication-schedules";
+      MvcResult dueSchedule =
+          mockMvc
+              .perform(
+                  post(dueSchedulePath)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(
+                          HttpHeaders.IF_MATCH,
+                          dueReadiness.getResponse().getHeader(HttpHeaders.ETAG))
+                      .header("Idempotency-Key", "publication-schedule-due-create-01")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(dueBody))
+              .andReturn();
+      assertEquals(201, dueSchedule.getResponse().getStatus());
+      assertTrue(
+          dueSchedule.getResponse().getHeader(HttpHeaders.CACHE_CONTROL).contains("no-store"));
+      JsonNode dueReceipt = objectMapper.readTree(dueSchedule.getResponse().getContentAsString());
+      UUID dueScheduleId = UUID.fromString(dueReceipt.path("scheduleId").asText());
+      assertEquals("SCHEDULED", dueReceipt.path("state").asText());
+      assertEquals("private", publicationWorkVisibility(dueFixture.workId()));
+      assertEquals(0, publicationReleaseEventCount(dueFixture.workId()));
+      assertEquals(1, publicationScheduleEventCount(dueScheduleId));
+      MvcResult activeScheduleRead =
+          mockMvc.perform(get(dueSchedulePath).cookie(ownerCookie)).andReturn();
+      assertEquals(200, activeScheduleRead.getResponse().getStatus());
+      assertTrue(
+          activeScheduleRead
+              .getResponse()
+              .getHeader(HttpHeaders.CACHE_CONTROL)
+              .contains("no-store"));
+      assertEquals(
+          dueScheduleId.toString(),
+          objectMapper
+              .readTree(activeScheduleRead.getResponse().getContentAsString())
+              .path("scheduleId")
+              .asText());
+
+      MvcResult dueReplay =
+          mockMvc
+              .perform(
+                  post(dueSchedulePath)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(
+                          HttpHeaders.IF_MATCH,
+                          dueReadiness.getResponse().getHeader(HttpHeaders.ETAG))
+                      .header("Idempotency-Key", "publication-schedule-due-create-01")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(dueBody))
+              .andReturn();
+      assertEquals(200, dueReplay.getResponse().getStatus());
+      assertEquals(
+          dueScheduleId.toString(),
+          objectMapper
+              .readTree(dueReplay.getResponse().getContentAsString())
+              .path("scheduleId")
+              .asText());
+
+      MvcResult privateScheduleRead =
+          mockMvc
+              .perform(get(dueSchedulePath + "/{scheduleId}", dueScheduleId).cookie(reviewerCookie))
+              .andReturn();
+      assertEquals(404, privateScheduleRead.getResponse().getStatus());
+
+      long remainingMillis = dueAt.toEpochMilli() - System.currentTimeMillis() + 100;
+      if (remainingMillis > 0) Thread.sleep(remainingMillis);
+      assertEquals(1, publicationScheduleService.processDueBatch());
+      assertEquals("public", publicationWorkVisibility(dueFixture.workId()));
+      assertEquals(1, publicationReleaseEventCount(dueFixture.workId()));
+      var dueState =
+          publicationScheduleService.get(ownerId, dueFixture.workId(), dueScheduleId).orElseThrow();
+      assertEquals("PUBLISHED", dueState.state());
+      assertNull(dueState.failureCode());
+      assertEquals(2, publicationScheduleEventCount(dueScheduleId));
+      assertEquals(0, publicationScheduleService.processDueBatch());
+      assertEquals(
+          204,
+          mockMvc
+              .perform(get(dueSchedulePath).cookie(ownerCookie))
+              .andReturn()
+              .getResponse()
+              .getStatus());
+
+      MvcResult publishedReplay =
+          mockMvc
+              .perform(
+                  post(dueSchedulePath)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(
+                          HttpHeaders.IF_MATCH,
+                          dueReadiness.getResponse().getHeader(HttpHeaders.ETAG))
+                      .header("Idempotency-Key", "publication-schedule-due-create-01")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(dueBody))
+              .andReturn();
+      assertEquals(200, publishedReplay.getResponse().getStatus());
+      assertEquals(
+          "PUBLISHED",
+          objectMapper
+              .readTree(publishedReplay.getResponse().getContentAsString())
+              .path("state")
+              .asText());
+
+      deletePublicationRateLimitBucket(ownerId);
+      SubmittedPublicationFixture cancelFixture =
+          submitPublicationRequestForReviewQueue(
+              fixtures,
+              ownerId,
+              ownerSession,
+              policyVersion,
+              policyDigest,
+              "Scheduled release cancellation fixture",
+              "ORIGINAL_WORK");
+      approvePublicationFixture(
+          cancelFixture, reviewerCookie, reviewerCsrf, approvalBody, "schedule-cancel-approve-01");
+      String cancelReadinessPath =
+          "/api/v1/authoring/manuscripts/" + cancelFixture.workId() + "/publication/readiness";
+      MvcResult cancelReadiness =
+          mockMvc.perform(get(cancelReadinessPath).cookie(ownerCookie)).andReturn();
+      Instant cancelAt = Instant.now().plus(1, ChronoUnit.DAYS);
+      String cancelBody =
+          objectMapper.writeValueAsString(
+              Map.of("scheduledAt", OffsetDateTime.ofInstant(cancelAt, ZoneOffset.UTC).toString()));
+      String cancelSchedulePath =
+          "/api/v1/authoring/manuscripts/" + cancelFixture.workId() + "/publication-schedules";
+      MvcResult cancelSchedule =
+          mockMvc
+              .perform(
+                  post(cancelSchedulePath)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(
+                          HttpHeaders.IF_MATCH,
+                          cancelReadiness.getResponse().getHeader(HttpHeaders.ETAG))
+                      .header("Idempotency-Key", "publication-schedule-cancel-create-01")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(cancelBody))
+              .andReturn();
+      assertEquals(201, cancelSchedule.getResponse().getStatus());
+      UUID cancelScheduleId =
+          UUID.fromString(
+              objectMapper
+                  .readTree(cancelSchedule.getResponse().getContentAsString())
+                  .path("scheduleId")
+                  .asText());
+      String cancelPath = cancelSchedulePath + "/" + cancelScheduleId;
+      MvcResult missingCancelCsrf =
+          mockMvc.perform(delete(cancelPath).cookie(ownerCookie)).andReturn();
+      assertEquals(403, missingCancelCsrf.getResponse().getStatus());
+      MvcResult outsiderCancel =
+          mockMvc
+              .perform(
+                  delete(cancelPath)
+                      .cookie(reviewerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, reviewerCsrf))
+              .andReturn();
+      assertEquals(404, outsiderCancel.getResponse().getStatus());
+      MvcResult cancelled =
+          mockMvc
+              .perform(
+                  delete(cancelPath)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf))
+              .andReturn();
+      assertEquals(204, cancelled.getResponse().getStatus());
+      MvcResult cancelledAgain =
+          mockMvc
+              .perform(
+                  delete(cancelPath)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf))
+              .andReturn();
+      assertEquals(204, cancelledAgain.getResponse().getStatus());
+      var cancelledState =
+          publicationScheduleService
+              .get(ownerId, cancelFixture.workId(), cancelScheduleId)
+              .orElseThrow();
+      assertEquals("CANCELLED", cancelledState.state());
+      assertNull(cancelledState.failureCode());
+      assertEquals("private", publicationWorkVisibility(cancelFixture.workId()));
+      assertEquals(0, publicationReleaseEventCount(cancelFixture.workId()));
+      assertEquals(2, publicationScheduleEventCount(cancelScheduleId));
+
+      deletePublicationRateLimitBucket(ownerId);
+      SubmittedPublicationFixture staleFixture =
+          submitPublicationRequestForReviewQueue(
+              fixtures,
+              ownerId,
+              ownerSession,
+              policyVersion,
+              policyDigest,
+              "Scheduled release stale-snapshot fixture",
+              "ORIGINAL_WORK");
+      approvePublicationFixture(
+          staleFixture, reviewerCookie, reviewerCsrf, approvalBody, "schedule-stale-approve-01");
+      String staleReadinessPath =
+          "/api/v1/authoring/manuscripts/" + staleFixture.workId() + "/publication/readiness";
+      MvcResult staleReadiness =
+          mockMvc.perform(get(staleReadinessPath).cookie(ownerCookie)).andReturn();
+      assertEquals(200, staleReadiness.getResponse().getStatus());
+      Instant staleDueAt = Instant.now().plusSeconds(5).truncatedTo(ChronoUnit.MILLIS);
+      String staleScheduleBody =
+          objectMapper.writeValueAsString(
+              Map.of(
+                  "scheduledAt", OffsetDateTime.ofInstant(staleDueAt, ZoneOffset.UTC).toString()));
+      String staleSchedulePath =
+          "/api/v1/authoring/manuscripts/" + staleFixture.workId() + "/publication-schedules";
+      MvcResult staleSchedule =
+          mockMvc
+              .perform(
+                  post(staleSchedulePath)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(
+                          HttpHeaders.IF_MATCH,
+                          staleReadiness.getResponse().getHeader(HttpHeaders.ETAG))
+                      .header("Idempotency-Key", "publication-schedule-stale-create-01")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(staleScheduleBody))
+              .andReturn();
+      assertEquals(201, staleSchedule.getResponse().getStatus());
+      UUID staleScheduleId =
+          UUID.fromString(
+              objectMapper
+                  .readTree(staleSchedule.getResponse().getContentAsString())
+                  .path("scheduleId")
+                  .asText());
+      updatePublicationWorkTitle(staleFixture.workId(), "Changed after release scheduling");
+      long staleRemainingMillis = staleDueAt.toEpochMilli() - System.currentTimeMillis() + 100;
+      if (staleRemainingMillis > 0) Thread.sleep(staleRemainingMillis);
+      assertEquals(1, publicationScheduleService.processDueBatch());
+      var staleState =
+          publicationScheduleService
+              .get(ownerId, staleFixture.workId(), staleScheduleId)
+              .orElseThrow();
+      assertEquals("BLOCKED", staleState.state());
+      assertEquals("PUBLICATION_SNAPSHOT_STALE", staleState.failureCode());
+      assertEquals("private", publicationWorkVisibility(staleFixture.workId()));
+      assertEquals(0, publicationReleaseEventCount(staleFixture.workId()));
+      assertEquals(2, publicationScheduleEventCount(staleScheduleId));
+      assertEquals(
+          204,
+          mockMvc
+              .perform(get(staleSchedulePath).cookie(ownerCookie))
+              .andReturn()
+              .getResponse()
+              .getStatus());
+    } finally {
+      for (SubmittedPublicationFixture fixture : fixtures) {
+        deletePublicationRequestFixtures(fixture.workId());
+        deletePublicationRightsPolicyAcceptanceFixture(fixture.workId());
+        deletePublicationRateLimitBucket(fixture.ownerId());
+        deleteLibraryUserData(fixture.ownerId(), fixture.workId());
+      }
+      try (Connection connection = dataSource.getConnection();
+          PreparedStatement delete =
+              connection.prepareStatement(
+                  "DELETE FROM security_role_assignments WHERE user_id = ?")) {
+        delete.setObject(1, reviewerId);
+        delete.executeUpdate();
+      }
+      deletePublicationRightsPolicyFixture(policyVersion);
+      for (UUID userId : userIds) deleteSessionTestUser(userId);
+    }
+  }
+
+  private void approvePublicationFixture(
+      SubmittedPublicationFixture fixture,
+      jakarta.servlet.http.Cookie reviewerCookie,
+      String reviewerCsrf,
+      String approvalBody,
+      String idempotencyKey)
+      throws Exception {
+    String path = "/api/v1/review/publications/" + fixture.requestId();
+    MvcResult detail = mockMvc.perform(get(path).cookie(reviewerCookie)).andReturn();
+    assertEquals(200, detail.getResponse().getStatus());
+    MvcResult decision =
+        mockMvc
+            .perform(
+                post(path + "/decisions")
+                    .cookie(reviewerCookie)
+                    .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, reviewerCsrf)
+                    .header(HttpHeaders.IF_MATCH, detail.getResponse().getHeader(HttpHeaders.ETAG))
+                    .header("Idempotency-Key", idempotencyKey)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(approvalBody))
+            .andReturn();
+    assertEquals(201, decision.getResponse().getStatus());
+    assertEquals(
+        "APPROVED_UNPUBLISHED",
+        objectMapper
+            .readTree(decision.getResponse().getContentAsString())
+            .path("toState")
+            .asText());
+  }
+
+  private int publicationScheduleEventCount(UUID scheduleId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT COUNT(*) FROM publication_release_schedule_events WHERE schedule_id = ?")) {
+      select.setObject(1, scheduleId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getInt(1);
+      }
+    }
+  }
+
   private SubmittedPublicationFixture submitPublicationRequestForReviewQueue(
       List<SubmittedPublicationFixture> fixtures,
       UUID ownerId,
@@ -4939,6 +5323,9 @@ class PostgresSchemaIntegrationTests {
               "ALTER TABLE publication_release_events"
                   + " DISABLE TRIGGER trg_publication_release_immutable");
           disable.execute(
+              "ALTER TABLE publication_release_schedule_events"
+                  + " DISABLE TRIGGER trg_publication_release_schedule_event_immutable");
+          disable.execute(
               "ALTER TABLE chapter_publication_release_events"
                   + " DISABLE TRIGGER trg_chapter_publication_release_immutable");
           disable.execute(
@@ -4956,6 +5343,12 @@ class PostgresSchemaIntegrationTests {
         }
         try (PreparedStatement deleteNotifications =
                 connection.prepareStatement("DELETE FROM notifications WHERE work_id = ?");
+            PreparedStatement deleteScheduleEvents =
+                connection.prepareStatement(
+                    "DELETE FROM publication_release_schedule_events WHERE work_id = ?");
+            PreparedStatement deleteSchedules =
+                connection.prepareStatement(
+                    "DELETE FROM publication_release_schedules WHERE work_id = ?");
             PreparedStatement deleteReleaseEvents =
                 connection.prepareStatement(
                     "DELETE FROM publication_release_events WHERE work_id = ?");
@@ -4981,6 +5374,10 @@ class PostgresSchemaIntegrationTests {
                 connection.prepareStatement("DELETE FROM publication_requests WHERE work_id = ?")) {
           deleteNotifications.setObject(1, workId);
           deleteNotifications.executeUpdate();
+          deleteScheduleEvents.setObject(1, workId);
+          deleteScheduleEvents.executeUpdate();
+          deleteSchedules.setObject(1, workId);
+          deleteSchedules.executeUpdate();
           deleteReleaseEvents.setObject(1, workId);
           deleteReleaseEvents.executeUpdate();
           deleteChapterOutboxEvents.setObject(1, workId);
@@ -5000,6 +5397,9 @@ class PostgresSchemaIntegrationTests {
           enable.execute(
               "ALTER TABLE publication_release_events"
                   + " ENABLE TRIGGER trg_publication_release_immutable");
+          enable.execute(
+              "ALTER TABLE publication_release_schedule_events"
+                  + " ENABLE TRIGGER trg_publication_release_schedule_event_immutable");
           enable.execute(
               "ALTER TABLE chapter_publication_release_events"
                   + " ENABLE TRIGGER trg_chapter_publication_release_immutable");

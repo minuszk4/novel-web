@@ -54,6 +54,7 @@ for (const viewport of [
             commerceSandboxEnabled: false,
             publicCatalogEnabled: false,
             publicationReleaseEnabled: true,
+            publicationSchedulerApiEnabled: true,
             translationFakePreviewEnabled: false,
           },
         }),
@@ -145,6 +146,73 @@ for (const viewport of [
       },
     );
 
+    let activeSchedule = false;
+    let scheduledRequest: {
+      body: unknown;
+      ifMatch: string | undefined;
+      csrfToken: string | undefined;
+    } | null = null;
+    const schedulePath = `/api/v1/authoring/manuscripts/${workId}/publication-schedules`;
+    const scheduleStatus = {
+      scheduleId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      workId,
+      requestId: '33333333-3333-4333-8333-333333333333',
+      scheduledAt: '2030-11-17T04:00:00Z',
+      state: 'SCHEDULED',
+      failureCode: null,
+      attemptCount: 0,
+      createdAt: '2026-11-17T04:00:00Z',
+      updatedAt: '2026-11-17T04:00:00Z',
+    };
+    await page.route(`**${schedulePath}`, async (route) => {
+      const request = route.request();
+      if (request.method() === 'GET') {
+        if (!activeSchedule) {
+          await route.fulfill({
+            status: 204,
+            headers: { 'Cache-Control': 'no-store', Pragma: 'no-cache' },
+          });
+          return;
+        }
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          headers: { 'Cache-Control': 'no-store', Pragma: 'no-cache' },
+          body: JSON.stringify(scheduleStatus),
+        });
+        return;
+      }
+      scheduledRequest = {
+        body: request.postDataJSON(),
+        ifMatch: request.headers()['if-match'],
+        csrfToken: request.headers()['x-csrf-token'],
+      };
+      activeSchedule = true;
+      await route.fulfill({
+        status: 201,
+        contentType: 'application/json',
+        headers: { 'Cache-Control': 'no-store', Pragma: 'no-cache' },
+        body: JSON.stringify({
+          scheduleId: scheduleStatus.scheduleId,
+          workId,
+          requestId: scheduleStatus.requestId,
+          state: 'SCHEDULED',
+          scheduledAt: scheduleStatus.scheduledAt,
+        }),
+      });
+    });
+    await page.route(`**${schedulePath}/*`, async (route) => {
+      if (route.request().method() === 'DELETE') {
+        activeSchedule = false;
+        await route.fulfill({
+          status: 204,
+          headers: { 'Cache-Control': 'no-store', Pragma: 'no-cache' },
+        });
+        return;
+      }
+      await route.fallback();
+    });
+
     let action: {
       body: unknown;
       ifMatch: string | undefined;
@@ -203,6 +271,27 @@ for (const viewport of [
     await expect(page.getByText('Đã duyệt · Chưa công khai')).toBeVisible();
     expect(readinessReads).toBe(1);
     await expectNoAxeViolations(page);
+
+    await page.getByRole('button', { name: 'Lên lịch phát hành' }).click();
+    await expect(page.getByRole('heading', { name: 'Chọn thời điểm phát hành' })).toBeFocused();
+    await page.getByLabel('Ngày và giờ').fill('2030-11-17T04:00');
+    await expectNoAxeViolations(page);
+    await page.getByRole('button', { name: 'Xác nhận lên lịch' }).click();
+    await expect(page.getByRole('heading', { name: 'Lịch phát hành đã lưu' })).toBeVisible();
+    expect(scheduledRequest).toMatchObject({
+      body: { scheduledAt: new Date('2030-11-17T04:00').toISOString() },
+      ifMatch: readinessEtag,
+      csrfToken,
+    });
+    expect(scheduledRequest?.body).toHaveProperty('scheduledAt');
+    expect(await page.locator('.publication-readiness-publish').count()).toBe(0);
+    await expect(page.locator('.publication-readiness-schedule')).toContainText(
+      'Bản thảo vẫn riêng tư cho đến',
+    );
+    await expectNoAxeViolations(page);
+    await page.getByRole('button', { name: 'Hủy lịch phát hành' }).click();
+    await page.getByRole('button', { name: 'Xác nhận hủy lịch' }).click();
+    await expect(page.getByRole('heading', { name: 'Lịch phát hành đã lưu' })).toHaveCount(0);
 
     const publishButton = page.getByRole('button', { name: 'Xuất bản ngay', exact: true });
     await publishButton.click();

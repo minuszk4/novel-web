@@ -157,6 +157,19 @@ class SystemStatusControllerTests {
   }
 
   @Test
+  void publicationSchedulerApiRequiresReleaseAndItsOwnPostgresOptIn() {
+    ApiSystemStatus enabled = controllerWithRelease(true, true, "postgres").status();
+    ApiSystemStatus schedulerOptInMissing = controllerWithRelease(true, false, "postgres").status();
+    ApiSystemStatus releaseOptInMissing = controllerWithRelease(false, true, "postgres").status();
+    ApiSystemStatus profileMissing = controllerWithRelease(true, true).status();
+
+    assertTrue(enabled.features().publicationSchedulerApiEnabled());
+    assertFalse(schedulerOptInMissing.features().publicationSchedulerApiEnabled());
+    assertFalse(releaseOptInMissing.features().publicationSchedulerApiEnabled());
+    assertFalse(profileMissing.features().publicationSchedulerApiEnabled());
+  }
+
+  @Test
   void manualTranslationSubmissionRequiresEveryFakePipelineGateAndItsOwnOptIn() {
     ApiSystemStatus enabled =
         controllerWithManualSubmission(true, true, true, true, "postgres", "translation-fake")
@@ -262,10 +275,19 @@ class SystemStatusControllerTests {
 
   private static SystemStatusController controllerWithRelease(
       boolean publicationReleaseRequested, String... activeProfiles) {
+    return controllerWithRelease(publicationReleaseRequested, false, activeProfiles);
+  }
+
+  private static SystemStatusController controllerWithRelease(
+      boolean publicationReleaseRequested,
+      boolean schedulerApiRequested,
+      String... activeProfiles) {
     MockEnvironment environment = new MockEnvironment();
     environment.setActiveProfiles(activeProfiles);
     environment.setProperty(
         "novel.publication.release-enabled", Boolean.toString(publicationReleaseRequested));
+    environment.setProperty(
+        "novel.publication.scheduler.api-enabled", Boolean.toString(schedulerApiRequested));
     StaticListableBeanFactory beanFactory = new StaticListableBeanFactory();
     ObjectProvider<MomoTestGatewaySettings> momoSettings =
         beanFactory.getBeanProvider(MomoTestGatewaySettings.class);
