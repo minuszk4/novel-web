@@ -746,6 +746,173 @@ class PostgresSchemaIntegrationTests {
               .andReturn();
       assertEquals(200, editAccepted.getResponse().getStatus());
 
+      MvcResult ownerGrantListBeforeEscalationAttempts =
+          mockMvc
+              .perform(
+                  get("/api/v1/authoring/manuscripts/{id}/contributors", work.id())
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(200, ownerGrantListBeforeEscalationAttempts.getResponse().getStatus());
+      JsonNode grantBeforeEscalationAttempts =
+          objectMapper
+              .readTree(ownerGrantListBeforeEscalationAttempts.getResponse().getContentAsString())
+              .path("collaborators")
+              .get(0);
+      String currentGrantId = grantBeforeEscalationAttempts.path("id").asText();
+      String currentGrantEtag = grantBeforeEscalationAttempts.path("etag").asText();
+      String currentGrantPath =
+          "/api/v1/authoring/manuscripts/" + work.id() + "/contributors/" + currentGrantId;
+
+      UUID ownerPendingInvitationId = UUID.randomUUID();
+      String ownerPendingInvitationPath =
+          "/api/v1/authoring/manuscripts/" + work.id() + "/invitations/" + ownerPendingInvitationId;
+      MvcResult ownerQueuedPendingInvitation =
+          mockMvc
+              .perform(
+                  put(ownerPendingInvitationPath)
+                      .cookie(ownerCookie)
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          objectMapper.writeValueAsString(
+                              Map.of(
+                                  "email",
+                                  contactEmail(outsiderId),
+                                  "permissions",
+                                  List.of("VIEW"),
+                                  "confirmedPermissionToEmail",
+                                  true))))
+              .andReturn();
+      assertEquals(202, ownerQueuedPendingInvitation.getResponse().getStatus());
+
+      MvcResult collaboratorCannotRevokePendingInvitation =
+          mockMvc
+              .perform(
+                  delete(ownerPendingInvitationPath)
+                      .cookie(recipientCookie)
+                      .header("X-CSRF-Token", recipientCsrf))
+              .andReturn();
+      assertEquals(404, collaboratorCannotRevokePendingInvitation.getResponse().getStatus());
+      MvcResult ownerStillSeesPendingInvitation =
+          mockMvc
+              .perform(
+                  get("/api/v1/authoring/manuscripts/{id}/invitations", work.id())
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(200, ownerStillSeesPendingInvitation.getResponse().getStatus());
+      assertTrue(
+          ownerStillSeesPendingInvitation
+              .getResponse()
+              .getContentAsString()
+              .contains(ownerPendingInvitationId.toString()));
+      assertFalse(
+          ownerStillSeesPendingInvitation
+              .getResponse()
+              .getContentAsString()
+              .contains(contactEmail(outsiderId)));
+
+      MvcResult collaboratorGrantList =
+          mockMvc
+              .perform(
+                  get("/api/v1/authoring/manuscripts/{id}/contributors", work.id())
+                      .cookie(recipientCookie))
+              .andReturn();
+      assertEquals(404, collaboratorGrantList.getResponse().getStatus());
+      assertFalse(
+          collaboratorGrantList.getResponse().getContentAsString().contains(recipientEmail));
+
+      UUID collaboratorInvitationId = UUID.randomUUID();
+      MvcResult collaboratorCannotInvite =
+          mockMvc
+              .perform(
+                  put(
+                          "/api/v1/authoring/manuscripts/{workId}/invitations/{invitationId}",
+                          work.id(),
+                          collaboratorInvitationId)
+                      .cookie(recipientCookie)
+                      .header("X-CSRF-Token", recipientCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          objectMapper.writeValueAsString(
+                              Map.of(
+                                  "email",
+                                  contactEmail(outsiderId),
+                                  "permissions",
+                                  List.of("VIEW"),
+                                  "confirmedPermissionToEmail",
+                                  true))))
+              .andReturn();
+      assertEquals(404, collaboratorCannotInvite.getResponse().getStatus());
+      assertFalse(
+          collaboratorCannotInvite
+              .getResponse()
+              .getContentAsString()
+              .contains(contactEmail(outsiderId)));
+
+      MvcResult collaboratorCannotRevokeGrant =
+          mockMvc
+              .perform(
+                  delete(currentGrantPath)
+                      .cookie(recipientCookie)
+                      .header("X-CSRF-Token", recipientCsrf)
+                      .header(HttpHeaders.IF_MATCH, currentGrantEtag))
+              .andReturn();
+      assertEquals(404, collaboratorCannotRevokeGrant.getResponse().getStatus());
+
+      MvcResult collaboratorCannotChangePermissions =
+          mockMvc
+              .perform(
+                  put(currentGrantPath)
+                      .cookie(recipientCookie)
+                      .header("X-CSRF-Token", recipientCsrf)
+                      .header(HttpHeaders.IF_MATCH, currentGrantEtag)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          objectMapper.writeValueAsString(
+                              Map.of(
+                                  "invitationId",
+                                  UUID.randomUUID(),
+                                  "permissions",
+                                  List.of("VIEW"),
+                                  "confirmedPermissionToEmail",
+                                  true))))
+              .andReturn();
+      assertEquals(404, collaboratorCannotChangePermissions.getResponse().getStatus());
+
+      MvcResult ownerGrantListAfterEscalationAttempts =
+          mockMvc
+              .perform(
+                  get("/api/v1/authoring/manuscripts/{id}/contributors", work.id())
+                      .cookie(ownerCookie))
+              .andReturn();
+      JsonNode grantAfterEscalationAttempts =
+          objectMapper
+              .readTree(ownerGrantListAfterEscalationAttempts.getResponse().getContentAsString())
+              .path("collaborators")
+              .get(0);
+      assertEquals(200, ownerGrantListAfterEscalationAttempts.getResponse().getStatus());
+      assertEquals(currentGrantId, grantAfterEscalationAttempts.path("id").asText());
+      assertEquals(2, grantAfterEscalationAttempts.path("version").asInt());
+      assertTrue(grantAfterEscalationAttempts.path("permissions").toString().contains("VIEW"));
+      assertTrue(grantAfterEscalationAttempts.path("permissions").toString().contains("EDIT"));
+
+      MvcResult ownerRevokesPendingInvitation =
+          mockMvc
+              .perform(
+                  delete(ownerPendingInvitationPath)
+                      .cookie(ownerCookie)
+                      .header("X-CSRF-Token", ownerCsrf))
+              .andReturn();
+      assertEquals(204, ownerRevokesPendingInvitation.getResponse().getStatus());
+      MvcResult ownerExactInvitationRevokeRetry =
+          mockMvc
+              .perform(
+                  delete(ownerPendingInvitationPath)
+                      .cookie(ownerCookie)
+                      .header("X-CSRF-Token", ownerCsrf))
+              .andReturn();
+      assertEquals(204, ownerExactInvitationRevokeRetry.getResponse().getStatus());
+
       MvcResult createdChapter =
           mockMvc
               .perform(
@@ -857,8 +1024,8 @@ class PostgresSchemaIntegrationTests {
               .andReturn();
       assertEquals(404, revokedDeepLink.getResponse().getStatus());
 
-      assertEquals(2, rowCount("authoring_manuscript_invitations", "work_id", work.id()));
-      assertEquals(4, rowCount("authoring_manuscript_invitation_events", "work_id", work.id()));
+      assertEquals(3, rowCount("authoring_manuscript_invitations", "work_id", work.id()));
+      assertEquals(6, rowCount("authoring_manuscript_invitation_events", "work_id", work.id()));
       assertEquals(3, rowCount("authoring_manuscript_contributor_events", "work_id", work.id()));
     } finally {
       deleteManuscriptCollaborationTestData(work.id());
