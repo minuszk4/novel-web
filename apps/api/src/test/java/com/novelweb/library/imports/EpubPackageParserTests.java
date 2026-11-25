@@ -6,12 +6,15 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
+import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.zip.CRC32;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -332,6 +335,38 @@ class EpubPackageParserTests {
               .map(path -> path.getFileName().toString())
               .filter(name -> name.endsWith(".epub"))
               .toList());
+    }
+  }
+
+  @Test
+  void neverFetchesLoopbackForAnExternalEntityInAnEpubChapter() throws Exception {
+    CountDownLatch receivedRequest = new CountDownLatch(1);
+    var server = com.sun.net.httpserver.HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+    server.createContext(
+        "/probe",
+        exchange -> {
+          receivedRequest.countDown();
+          exchange.sendResponseHeaders(204, -1);
+          exchange.close();
+        });
+    server.start();
+
+    try {
+      String remote = "http://127.0.0.1:" + server.getAddress().getPort() + "/probe";
+      String chapter =
+          "<!DOCTYPE html [<!ENTITY xxe SYSTEM \""
+              + remote
+              + "\">]><html><body><p>&xxe;</p></body></html>";
+      Path epub = writeEpub("external-http-entity.epub", validEntries(null, chapter, null));
+
+      assertThrows(
+          EpubPackageParser.EpubParseException.class,
+          () -> parser.parse(epub, "external-http-entity.epub", "application/epub+zip"));
+      assertFalse(
+          receivedRequest.await(250, TimeUnit.MILLISECONDS),
+          "an EPUB external entity triggered an outbound HTTP request");
+    } finally {
+      server.stop(0);
     }
   }
 
