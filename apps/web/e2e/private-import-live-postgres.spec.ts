@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises';
 import { expect, test } from './support';
 import type { Response } from '@playwright/test';
 
@@ -10,6 +11,11 @@ const hostileMarkup = [
 ];
 const sourceText = [
   'Synthetic private source created by the live import journey.',
+  ...Array.from(
+    { length: 40 },
+    (_, index) =>
+      `Progress paragraph ${index + 1}: this synthetic text makes the private Reader scrollable so the live journey can persist a meaningful reading position.`,
+  ),
   ...hostileMarkup,
 ].join('\n');
 const workTitle = 'Live Private Import Novel';
@@ -253,6 +259,57 @@ test('private import commit refreshes Library, Work Detail and PostgreSQL Reader
   expect(readerContent.segments.map((segment) => segment.sourceText)).toEqual(
     expect.arrayContaining(hostileMarkup),
   );
+
+  const progressPath = `/api/v1/works/${committedWork.id}/progress`;
+  const readerContentPanel = page.locator('.account-reader-content');
+  await expect
+    .poll(() =>
+      readerContentPanel.evaluate((element) => element.scrollHeight - element.clientHeight),
+    )
+    .toBeGreaterThan(0);
+  const progressWritePromise = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'PUT' && new URL(response.url()).pathname === progressPath,
+  );
+  await readerContentPanel.evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+    element.dispatchEvent(new Event('scroll'));
+  });
+  const progressWrite = await progressWritePromise;
+  expect(progressWrite.status()).toBe(200);
+  const savedProgressResponse = await page.request.get(`${baseUrl}${progressPath}`);
+  expect(savedProgressResponse.status()).toBe(200);
+  const savedProgress = (await savedProgressResponse.json()) as {
+    workId: string;
+    chapterId: string;
+    scrollRatio: number;
+    version: number;
+  };
+  expect(savedProgress).toMatchObject({ workId: committedWork.id, chapterId });
+  expect(savedProgress.scrollRatio).toBeGreaterThan(0.8);
+  expect(savedProgress.version).toBeGreaterThan(0);
+
+  const bookmarkPath = `/api/v1/works/${committedWork.id}/bookmarks`;
+  await page.getByRole('button', { name: 'Mở dấu trang' }).click();
+  const bookmarkPanel = page.getByRole('dialog', { name: 'Vị trí đã lưu' });
+  const bookmarkCreatePromise = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' && new URL(response.url()).pathname === bookmarkPath,
+  );
+  await bookmarkPanel.getByRole('button', { name: 'Lưu vị trí đang đọc' }).click();
+  const bookmarkCreate = await bookmarkCreatePromise;
+  expect(bookmarkCreate.status()).toBe(201);
+  const createdBookmark = (await bookmarkCreate.json()) as {
+    id: string;
+    workId: string;
+    chapterId: string;
+  };
+  expect(createdBookmark).toMatchObject({ workId: committedWork.id, chapterId });
+  await expect(
+    bookmarkPanel.getByRole('button', { name: 'Chương 1 · Nội dung', exact: true }),
+  ).toBeVisible();
+  await bookmarkPanel.getByRole('button', { name: /Đóng dấu trang/ }).click();
+
   await page.screenshot({
     path: screenshotPath!.replace(
       'private-import-commit-live.png',
@@ -309,12 +366,64 @@ test('private import commit refreshes Library, Work Detail and PostgreSQL Reader
       visibility: 'private',
     }),
   );
-  for (const path of [
-    `/api/v1/works/${committedWork.id}/reader-manifest`,
-    `/api/v1/works/${committedWork.id}/progress`,
-  ]) {
+  for (const path of [`/api/v1/works/${committedWork.id}/reader-manifest`, progressPath]) {
     const response = responseFor('GET', path);
     expect(response, `expected an unmocked API response for GET ${path}`).toBeDefined();
     expect(response!.status()).toBe(200);
+  }
+  expect(responseFor('PUT', progressPath)?.status()).toBe(200);
+  expect(responseFor('POST', bookmarkPath)?.status()).toBe(201);
+
+  const exportScreenshotPath = process.env['ACCOUNT_EXPORT_LIVE_TEST_SCREENSHOT'];
+  if (exportScreenshotPath) {
+    await page.goto(`${baseUrl}/app/settings`);
+    const exportSection = page.getByRole('region', { name: 'Tải dữ liệu tài khoản' });
+    await expect(exportSection).toBeVisible();
+    await expect(exportSection).toContainText('nội dung đầy đủ mà tài khoản này sở hữu');
+    const exportAcknowledgement = exportSection.getByRole('checkbox', {
+      name: 'Tôi hiểu rằng tệp bao gồm toàn bộ nội dung truyện và chương tôi sở hữu.',
+    });
+    await expect(exportAcknowledgement).not.toBeChecked();
+    await exportAcknowledgement.check();
+
+    const exportCreatePromise = page.waitForResponse(
+      (response) =>
+        response.request().method() === 'POST' &&
+        new URL(response.url()).pathname === '/api/v1/me/data-exports',
+    );
+    await exportSection.getByRole('button', { name: 'Yêu cầu bản export' }).click();
+    const exportCreate = await exportCreatePromise;
+    expect(exportCreate.status()).toBe(202);
+    await expect
+      .poll(
+        async () => {
+          const latest = await page.request.get(`${baseUrl}/api/v1/me/data-exports/latest`);
+          return latest.status() === 200
+            ? ((await latest.json()) as { status: string }).status
+            : 'unavailable';
+        },
+        { timeout: 30_000 },
+      )
+      .toBe('ready');
+    await exportSection.getByRole('button', { name: 'Kiểm tra trạng thái' }).click();
+    await expect(exportSection).toContainText('Đã sẵn sàng tải xuống');
+
+    const exportDownloadLink = exportSection.getByRole('link', { name: 'Tải tệp ZIP' });
+    const [exportDownload] = await Promise.all([
+      page.waitForEvent('download'),
+      exportDownloadLink.click(),
+    ]);
+    const exportPath = await exportDownload.path();
+    expect(exportPath).toBeTruthy();
+    const archive = await readFile(exportPath!);
+    expect(archive.byteLength).toBeGreaterThan(100);
+    expect(archive.subarray(0, 2).toString('ascii')).toBe('PK');
+    await page.screenshot({
+      path: exportScreenshotPath.replace(
+        'account-data-export-live.png',
+        'private-import-account-export-live.png',
+      ),
+      fullPage: true,
+    });
   }
 });
