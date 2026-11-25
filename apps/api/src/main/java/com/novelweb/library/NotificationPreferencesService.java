@@ -4,6 +4,7 @@ import java.time.LocalTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
+import java.time.format.ResolverStyle;
 import java.util.Objects;
 import java.util.UUID;
 import org.springframework.context.annotation.Profile;
@@ -14,7 +15,8 @@ import org.springframework.stereotype.Service;
 @Profile("postgres")
 public final class NotificationPreferencesService {
 
-  private static final DateTimeFormatter LOCAL_TIME = DateTimeFormatter.ofPattern("HH:mm");
+  private static final DateTimeFormatter LOCAL_TIME =
+      DateTimeFormatter.ofPattern("HH:mm").withResolverStyle(ResolverStyle.STRICT);
   private final NotificationPreferencesRepository repository;
 
   public NotificationPreferencesService(NotificationPreferencesRepository repository) {

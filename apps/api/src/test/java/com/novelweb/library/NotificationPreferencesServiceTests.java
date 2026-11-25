@@ -40,6 +40,54 @@ class NotificationPreferencesServiceTests {
   }
 
   @Test
+  void acceptsDailyScheduleAtMidnightInAnIanaTimeZone() {
+    NotificationPreferencesRepository repository = mock(NotificationPreferencesRepository.class);
+    NotificationPreferencesService service = new NotificationPreferencesService(repository);
+    Schedule schedule = new Schedule("DAILY", "Asia/Ho_Chi_Minh", LocalTime.MIDNIGHT);
+    when(repository.save(ACTOR_ID, 0, schedule))
+        .thenReturn(new State(true, false, "DAILY", "Asia/Ho_Chi_Minh", LocalTime.MIDNIGHT, 1));
+
+    var view =
+        service.update(ACTOR_ID, 0, new Update(false, "DAILY", "Asia/Ho_Chi_Minh", "00:00", null));
+
+    assertThat(view.emailDigestEnabled()).isFalse();
+    assertThat(view.frequency()).isEqualTo("DAILY");
+    assertThat(view.timeZone()).isEqualTo("Asia/Ho_Chi_Minh");
+    assertThat(view.sendLocalTime()).isEqualTo("00:00");
+    verify(repository).save(ACTOR_ID, 0, schedule);
+  }
+
+  @Test
+  void rejectsUnsupportedFrequencyMalformedTimeAndConsentOnDisabledSchedule() {
+    NotificationPreferencesRepository repository = mock(NotificationPreferencesRepository.class);
+    NotificationPreferencesService service = new NotificationPreferencesService(repository);
+
+    assertThatThrownBy(
+            () ->
+                service.update(
+                    ACTOR_ID, 0, new Update(false, "MONTHLY", "Asia/Ho_Chi_Minh", "08:30", null)))
+        .isInstanceOf(InvalidPreferencesException.class);
+    assertThatThrownBy(
+            () ->
+                service.update(
+                    ACTOR_ID, 0, new Update(false, "DAILY", "Asia/Ho_Chi_Minh", "24:00", null)))
+        .isInstanceOf(InvalidPreferencesException.class);
+    assertThatThrownBy(
+            () ->
+                service.update(
+                    ACTOR_ID, 0, new Update(false, "DAILY", "Asia/Ho_Chi_Minh", "8:30", null)))
+        .isInstanceOf(InvalidPreferencesException.class);
+    assertThatThrownBy(
+            () ->
+                service.update(
+                    ACTOR_ID,
+                    0,
+                    new Update(false, "WEEKLY", "Asia/Ho_Chi_Minh", "08:30", "digest-v1")))
+        .isInstanceOf(InvalidPreferencesException.class);
+    verifyNoInteractions(repository);
+  }
+
+  @Test
   void rejectsInvalidTimeZoneAndPartialScheduleWithoutPersistence() {
     NotificationPreferencesRepository repository = mock(NotificationPreferencesRepository.class);
     NotificationPreferencesService service = new NotificationPreferencesService(repository);

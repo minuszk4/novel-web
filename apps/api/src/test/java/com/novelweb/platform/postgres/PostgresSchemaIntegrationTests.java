@@ -3268,6 +3268,18 @@ class PostgresSchemaIntegrationTests {
               .andReturn();
       assertEquals(400, invalidTimeZone.getResponse().getStatus());
 
+      MvcResult invalidLocalTime =
+          mockMvc
+              .perform(
+                  put(path)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(HttpHeaders.IF_MATCH, saved.getResponse().getHeader(HttpHeaders.ETAG))
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(disabledSchedule.replace("08:30", "24:00")))
+              .andReturn();
+      assertEquals(400, invalidLocalTime.getResponse().getStatus());
+
       MvcResult exactReplay =
           mockMvc
               .perform(
