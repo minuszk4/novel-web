@@ -61,9 +61,9 @@ class GlossaryImportPreviewServiceTests {
     assertEquals("UNAVAILABLE", preview.translationImpact().status());
     assertEquals(null, preview.translationImpact().affectedTranslationUnitCount());
     assertEquals(
-        "If applied, this import creates a draft only. "
-            + "Existing translation jobs keep their captured glossary revision. "
-            + "This preview does not estimate units to retranslate.",
+        "If applied, this import creates a draft only and starts no retranslation. "
+            + "The current fake/local worker does not use glossary terms, so affected units cannot be estimated; "
+            + "this does not mean the impact is zero.",
         preview.translationImpact().detail());
   }
 

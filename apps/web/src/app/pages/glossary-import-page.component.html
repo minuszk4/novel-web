@@ -221,9 +221,9 @@
             </p>
           }
           <p class="glossary-import-impact">
-            Bản xem trước chưa tạo thay đổi. Nếu áp dụng, tệp chỉ tạo bản nháp; bản đang áp dụng và
-            các công việc dịch đã tạo vẫn giữ nguyên phiên bản glossary. Chưa ước tính số đơn vị cần
-            dịch lại.
+            Bản xem trước chưa tạo thay đổi. Nếu áp dụng, tệp chỉ tạo bản nháp và không tự khởi chạy
+            lại việc dịch. Luồng fake/local hiện chưa dùng thuật ngữ glossary nên chưa thể tính số
+            đơn vị bị ảnh hưởng; điều này không có nghĩa tác động bằng 0.
           </p>
 
           @for (candidate of result.importedTerms; track candidate.rowNumber) {

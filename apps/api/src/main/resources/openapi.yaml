@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 11.0.1
+  version: 11.0.2
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -14059,6 +14059,9 @@ components:
           minimum: 0
         detail:
           type: string
+          description: >-
+            Explains why the affected unit count is unavailable. The current fake/local worker does not consume
+            glossary terms; a null count must not be interpreted as zero impact.
     GlossaryImportIssue:
       type: object
       additionalProperties: false

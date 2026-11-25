@@ -17,9 +17,9 @@ public class GlossaryImportPreviewService {
 
   private static final int MAX_RETURNED_MATCHES_PER_ROW = 100;
   private static final String TRANSLATION_IMPACT_DETAIL =
-      "If applied, this import creates a draft only. "
-          + "Existing translation jobs keep their captured glossary revision. "
-          + "This preview does not estimate units to retranslate.";
+      "If applied, this import creates a draft only and starts no retranslation. "
+          + "The current fake/local worker does not use glossary terms, so affected units cannot be estimated; "
+          + "this does not mean the impact is zero.";
 
   private final GlossaryImportPreviewRepository repository;
   private final GlossaryImportParser parser;

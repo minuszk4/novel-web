@@ -206,6 +206,9 @@ describe('GlossaryImportPageComponent', () => {
       fixture.detectChanges();
       expect(fixture.nativeElement.textContent).toContain('Kết quả xem trước');
     });
+    expect(fixture.nativeElement.textContent).toContain(
+      'Luồng fake/local hiện chưa dùng thuật ngữ glossary nên chưa thể tính số đơn vị bị ảnh hưởng; điều này không có nghĩa tác động bằng 0.',
+    );
     expect(api.getGlossarySnapshot).toHaveBeenCalledWith(glossaryId);
     expect(api.previewImport).toHaveBeenCalledWith(glossaryId, '"v4"', file);
     expect(fixture.nativeElement.textContent).not.toContain(currentTermId);
