@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 14.0.0
+  version: 14.1.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Firebase-backed Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -37,6 +37,9 @@ tags:
     x-implementation-status: partial
   - name: Follow
     description: Actor-owned public-work follow state and opt-in, privacy-filtered in-app chapter notifications from the transactional outbox; external email/push delivery is unavailable.
+    x-implementation-status: partial
+  - name: Notifications
+    description: Actor-owned in-app inbox and versioned email digest schedule preferences. Email delivery is unavailable until provider and consent operations are approved.
     x-implementation-status: partial
   - name: Admin security
     description: Admin-only publication reviewer role assignment/search/history routes; first-admin bootstrap uses a separate operator command. Reviewer role changes never publish content; owner publication uses separate gated release operations.
@@ -8875,6 +8878,79 @@ paths:
           $ref: '#/components/responses/Problem'
         '503':
           $ref: '#/components/responses/Problem'
+  /api/v1/me/notification-preferences:
+    get:
+      operationId: getMyNotificationPreferences
+      tags: [Notifications]
+      x-implementation-status: implemented-postgres-profile
+      summary: Read the current actor's notification preferences
+      description: >-
+        Returns the actor-owned email digest preference and optional schedule. No email address or provider data is
+        returned. Email digest is disabled and unavailable until a verified-email provider, reviewed consent version,
+        and unsubscribe operations are configured. The initial response uses an absent-state ETag when no row exists.
+      security:
+        - appSession: []
+      responses:
+        '200':
+          description: Actor-owned notification preferences; never cache the response.
+          headers:
+            ETag:
+              schema: {type: string, pattern: '^"notification-preferences-(absent|[1-9][0-9]*)"$'}
+            Cache-Control:
+              schema: {type: string, const: no-store}
+            Pragma:
+              schema: {type: string, const: no-cache}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/NotificationPreferences'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+    put:
+      operationId: updateMyNotificationPreferences
+      tags: [Notifications]
+      x-implementation-status: implemented-postgres-profile
+      summary: Save the current actor's disabled email digest schedule
+      description: >-
+        Requires a strong If-Match ETag and session CSRF. Only DAILY/WEEKLY, an IANA time-zone ID and an HH:mm
+        local time are accepted together. A disabled preference may save its schedule without recording consent.
+        Enabling email digest is rejected with 503 CHANNEL_UNAVAILABLE without changing stored state until provider,
+        verified-email, reviewed consent and unsubscribe operations are implemented and configured. Exact retry of
+        an already-current schedule returns its current version/ETag.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - name: If-Match
+          in: header
+          required: true
+          schema:
+            type: string
+            pattern: '^"notification-preferences-(absent|[1-9][0-9]*)"$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/NotificationPreferencesUpdate'}
+      responses:
+        '200':
+          description: Preferences were saved or an exact retry returned the current receipt.
+          headers:
+            ETag:
+              schema: {type: string, pattern: '^"notification-preferences-(absent|[1-9][0-9]*)"$'}
+            Cache-Control:
+              schema: {type: string, const: no-store}
+            Pragma:
+              schema: {type: string, const: no-cache}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/NotificationPreferences'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '412': {$ref: '#/components/responses/Problem'}
+        '428': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
   /api/v1/me/notifications:
     get:
       operationId: listMyNotifications
@@ -9229,6 +9305,48 @@ components:
         type: string
         pattern: '^"annotation-[1-9][0-9]*"$'
   schemas:
+    NotificationPreferences:
+      type: object
+      additionalProperties: false
+      required: [emailDigestAvailable, emailDigestEnabled, frequency, timeZone, sendLocalTime, version]
+      properties:
+        emailDigestAvailable: {type: boolean}
+        emailDigestEnabled: {type: boolean}
+        frequency:
+          anyOf:
+            - {type: string, enum: [DAILY, WEEKLY]}
+            - {type: 'null'}
+        timeZone:
+          anyOf:
+            - {type: string, minLength: 1, maxLength: 64}
+            - {type: 'null'}
+        sendLocalTime:
+          anyOf:
+            - {type: string, pattern: '^(?:[01][0-9]|2[0-3]):[0-5][0-9]$'}
+            - {type: 'null'}
+        version: {type: integer, minimum: 0}
+    NotificationPreferencesUpdate:
+      type: object
+      additionalProperties: false
+      required: [emailDigestEnabled]
+      properties:
+        emailDigestEnabled: {type: boolean}
+        frequency:
+          anyOf:
+            - {type: string, enum: [DAILY, WEEKLY]}
+            - {type: 'null'}
+        timeZone:
+          anyOf:
+            - {type: string, minLength: 1, maxLength: 64}
+            - {type: 'null'}
+        sendLocalTime:
+          anyOf:
+            - {type: string, pattern: '^(?:[01][0-9]|2[0-3]):[0-5][0-9]$'}
+            - {type: 'null'}
+        consentVersion:
+          anyOf:
+            - {type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'}
+            - {type: 'null'}
     ManuscriptPermission:
       type: string
       enum: [VIEW, EDIT]

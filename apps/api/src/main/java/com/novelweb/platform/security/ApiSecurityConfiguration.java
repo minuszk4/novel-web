@@ -76,6 +76,12 @@ public class ApiSecurityConfiguration {
                 authorize
                     .requestMatchers(HttpMethod.PUT, "/api/v1/me/privacy-preferences")
                     .permitAll();
+                authorize
+                    .requestMatchers(HttpMethod.GET, "/api/v1/me/notification-preferences")
+                    .permitAll();
+                authorize
+                    .requestMatchers(HttpMethod.PUT, "/api/v1/me/notification-preferences")
+                    .permitAll();
                 authorize.requestMatchers(HttpMethod.POST, "/api/v1/me/data-exports").permitAll();
                 authorize
                     .requestMatchers(

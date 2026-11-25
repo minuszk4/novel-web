@@ -340,7 +340,8 @@ class PostgresSchemaIntegrationTests {
           "publication_takedown_purge_requests",
           "publication_takedown_purge_attempts",
           "work_subscriptions",
-          "work_subscription_rate_limits");
+          "work_subscription_rate_limits",
+          "notification_preferences");
 
   @Autowired private DataSource dataSource;
 
@@ -538,7 +539,7 @@ class PostgresSchemaIntegrationTests {
             connection.prepareStatement("SELECT COUNT(*) FROM databasechangelog");
         ResultSet changesets = changesetCount.executeQuery()) {
       changesets.next();
-      assertEquals(193, changesets.getInt(1), "unexpected number of applied changesets");
+      assertEquals(194, changesets.getInt(1), "unexpected number of applied changesets");
     }
 
     Set<String> actualTables = new HashSet<>();
@@ -3179,6 +3180,164 @@ class PostgresSchemaIntegrationTests {
   }
 
   @Test
+  void notificationDigestPreferencesAreVersionedActorScopedAndFailClosed() throws Exception {
+    UUID ownerId = createSessionTestUser("Notification preference owner");
+    UUID otherId = createSessionTestUser("Other notification preference owner");
+    try {
+      addCurrentPolicyAcceptances(ownerId);
+      addCurrentPolicyAcceptances(otherId);
+      SessionService.IssuedSession ownerSession = sessionService.create(ownerId).orElseThrow();
+      SessionService.IssuedSession otherSession = sessionService.create(otherId).orElseThrow();
+      jakarta.servlet.http.Cookie ownerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", ownerSession.cookieValue());
+      jakarta.servlet.http.Cookie otherCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", otherSession.cookieValue());
+      String ownerCsrf = csrfTokenService.tokenFor(ownerSession.cookieValue());
+      String path = "/api/v1/me/notification-preferences";
+
+      MvcResult anonymous = mockMvc.perform(get(path)).andReturn();
+      assertEquals(401, anonymous.getResponse().getStatus());
+      MvcResult initial = mockMvc.perform(get(path).cookie(ownerCookie)).andReturn();
+      assertEquals(200, initial.getResponse().getStatus());
+      assertEquals("no-store", initial.getResponse().getHeader(HttpHeaders.CACHE_CONTROL));
+      assertEquals("no-cache", initial.getResponse().getHeader(HttpHeaders.PRAGMA));
+      assertEquals(
+          "\"notification-preferences-absent\"", initial.getResponse().getHeader(HttpHeaders.ETAG));
+      JsonNode initialBody = objectMapper.readTree(initial.getResponse().getContentAsString());
+      assertFalse(initialBody.path("emailDigestAvailable").asBoolean());
+      assertFalse(initialBody.path("emailDigestEnabled").asBoolean());
+      assertEquals(0, initialBody.path("version").asInt());
+      assertTrue(initialBody.path("frequency").isNull());
+      assertFalse(initial.getResponse().getContentAsString().contains("@"));
+
+      String disabledSchedule =
+          "{\"emailDigestEnabled\":false,\"frequency\":\"WEEKLY\","
+              + "\"timeZone\":\"Asia/Ho_Chi_Minh\",\"sendLocalTime\":\"08:30\","
+              + "\"consentVersion\":null}";
+      MvcResult csrfRequired =
+          mockMvc
+              .perform(
+                  put(path)
+                      .cookie(ownerCookie)
+                      .header(
+                          HttpHeaders.IF_MATCH, initial.getResponse().getHeader(HttpHeaders.ETAG))
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(disabledSchedule))
+              .andReturn();
+      assertEquals(403, csrfRequired.getResponse().getStatus());
+      MvcResult missingVersion =
+          mockMvc
+              .perform(
+                  put(path)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(disabledSchedule))
+              .andReturn();
+      assertEquals(428, missingVersion.getResponse().getStatus());
+
+      MvcResult saved =
+          mockMvc
+              .perform(
+                  put(path)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(
+                          HttpHeaders.IF_MATCH, initial.getResponse().getHeader(HttpHeaders.ETAG))
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(disabledSchedule))
+              .andReturn();
+      assertEquals(200, saved.getResponse().getStatus(), saved.getResponse().getContentAsString());
+      assertEquals(
+          "\"notification-preferences-1\"", saved.getResponse().getHeader(HttpHeaders.ETAG));
+      JsonNode savedBody = objectMapper.readTree(saved.getResponse().getContentAsString());
+      assertFalse(savedBody.path("emailDigestEnabled").asBoolean());
+      assertEquals("WEEKLY", savedBody.path("frequency").asText());
+      assertEquals("Asia/Ho_Chi_Minh", savedBody.path("timeZone").asText());
+      assertEquals("08:30", savedBody.path("sendLocalTime").asText());
+
+      MvcResult invalidTimeZone =
+          mockMvc
+              .perform(
+                  put(path)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(HttpHeaders.IF_MATCH, saved.getResponse().getHeader(HttpHeaders.ETAG))
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(disabledSchedule.replace("Asia/Ho_Chi_Minh", "Mars/Olympus")))
+              .andReturn();
+      assertEquals(400, invalidTimeZone.getResponse().getStatus());
+
+      MvcResult exactReplay =
+          mockMvc
+              .perform(
+                  put(path)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(
+                          HttpHeaders.IF_MATCH, initial.getResponse().getHeader(HttpHeaders.ETAG))
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(disabledSchedule))
+              .andReturn();
+      assertEquals(200, exactReplay.getResponse().getStatus());
+      assertEquals(
+          saved.getResponse().getHeader(HttpHeaders.ETAG),
+          exactReplay.getResponse().getHeader(HttpHeaders.ETAG));
+
+      MvcResult stale =
+          mockMvc
+              .perform(
+                  put(path)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(
+                          HttpHeaders.IF_MATCH, initial.getResponse().getHeader(HttpHeaders.ETAG))
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(disabledSchedule.replace("WEEKLY", "DAILY")))
+              .andReturn();
+      assertEquals(412, stale.getResponse().getStatus());
+
+      String enableDigest =
+          "{\"emailDigestEnabled\":true,\"frequency\":\"WEEKLY\","
+              + "\"timeZone\":\"Asia/Ho_Chi_Minh\",\"sendLocalTime\":\"08:30\","
+              + "\"consentVersion\":\"digest-consent-v1\"}";
+      MvcResult unavailable =
+          mockMvc
+              .perform(
+                  put(path)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .header(HttpHeaders.IF_MATCH, saved.getResponse().getHeader(HttpHeaders.ETAG))
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(enableDigest))
+              .andReturn();
+      assertEquals(503, unavailable.getResponse().getStatus());
+      assertTrue(unavailable.getResponse().getContentAsString().contains("CHANNEL_UNAVAILABLE"));
+
+      MvcResult ownerAfterRejectedEnable =
+          mockMvc.perform(get(path).cookie(ownerCookie)).andReturn();
+      assertEquals(
+          "\"notification-preferences-1\"",
+          ownerAfterRejectedEnable.getResponse().getHeader(HttpHeaders.ETAG));
+      assertFalse(
+          objectMapper
+              .readTree(ownerAfterRejectedEnable.getResponse().getContentAsString())
+              .path("emailDigestEnabled")
+              .asBoolean());
+      MvcResult otherActor = mockMvc.perform(get(path).cookie(otherCookie)).andReturn();
+      assertEquals(200, otherActor.getResponse().getStatus());
+      assertEquals(
+          "\"notification-preferences-absent\"",
+          otherActor.getResponse().getHeader(HttpHeaders.ETAG));
+      assertEquals(1, notificationPreferenceRowCount(ownerId));
+      assertEquals(0, notificationPreferenceRowCount(otherId));
+    } finally {
+      deleteSessionTestUser(ownerId);
+      deleteSessionTestUser(otherId);
+    }
+  }
+
+  @Test
   void publicationReviewerDecisionsAreAtomicIdempotentAndNeverPublish() throws Exception {
     UUID unresolvedOwnerId = createSessionTestUser("Publication decision unresolved owner");
     UUID approvableOwnerId = createSessionTestUser("Publication decision approvable owner");
@@ -5671,6 +5830,19 @@ class PostgresSchemaIntegrationTests {
                 "SELECT COUNT(*) FROM notifications WHERE work_id = ? AND actor_user_id = ?")) {
       select.setObject(1, workId);
       select.setObject(2, actorId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getInt(1);
+      }
+    }
+  }
+
+  private int notificationPreferenceRowCount(UUID actorUserId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT COUNT(*) FROM notification_preferences WHERE actor_user_id = ?")) {
+      select.setObject(1, actorUserId);
       try (ResultSet row = select.executeQuery()) {
         assertTrue(row.next());
         return row.getInt(1);

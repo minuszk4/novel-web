@@ -230,3 +230,6 @@ databaseChangeLog:
   - include:
       file: changes/085-reader-paired-mode-preference.sql
       relativeToChangelogFile: true
+  - include:
+      file: changes/086-notification-email-digest-preferences.sql
+      relativeToChangelogFile: true
