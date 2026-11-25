@@ -17,8 +17,6 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import javax.sql.DataSource;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Service;
 
@@ -27,7 +25,6 @@ import org.springframework.stereotype.Service;
 @Profile("postgres")
 public class PublicationReleaseService {
 
-  private static final Logger LOGGER = LoggerFactory.getLogger(PublicationReleaseService.class);
   private static final String KEY_DOMAIN = "publication-release-key-v1";
   private static final String REQUEST_DOMAIN = "publication-release-request-v1";
 
@@ -167,16 +164,14 @@ public class PublicationReleaseService {
         rollback(connection, exception);
         if (exception instanceof SQLException sqlException
             && "23514".equals(sqlException.getSQLState())) {
-          LOGGER.warn(
-              "Publication release rejected by current-state database guard; workId={}, reason={}",
-              workId,
-              sqlException.getMessage());
+          PublicationFailureLog.guardRejected(
+              PublicationFailureLog.Operation.RELEASE, sqlException);
           return ReleaseResult.approvalChanged();
         }
         throw exception;
       }
     } catch (SQLException exception) {
-      LOGGER.error("Publication release transaction failed; workId={}", workId, exception);
+      PublicationFailureLog.transactionFailed(PublicationFailureLog.Operation.RELEASE, exception);
       throw new IllegalStateException("Unable to publish the approved manuscript", exception);
     }
   }
@@ -328,16 +323,14 @@ public class PublicationReleaseService {
         if (exception instanceof SQLException sqlException
             && ("23514".equals(sqlException.getSQLState())
                 || "23505".equals(sqlException.getSQLState()))) {
-          LOGGER.warn(
-              "Publication schedule rejected by current-state database guard; workId={}, state={}",
-              workId,
-              sqlException.getSQLState());
+          PublicationFailureLog.guardRejected(
+              PublicationFailureLog.Operation.SCHEDULE, sqlException);
           return ScheduleResult.approvalChanged();
         }
         throw exception;
       }
     } catch (SQLException exception) {
-      LOGGER.error("Publication schedule transaction failed; workId={}", workId, exception);
+      PublicationFailureLog.transactionFailed(PublicationFailureLog.Operation.SCHEDULE, exception);
       throw new IllegalStateException("Unable to schedule the approved manuscript", exception);
     }
   }
@@ -452,21 +445,15 @@ public class PublicationReleaseService {
         rollback(connection, exception);
         if (exception instanceof SQLException sqlException
             && "23514".equals(sqlException.getSQLState())) {
-          LOGGER.warn(
-              "Chapter release rejected by current-state database guard; workId={}, chapterId={}, reason={}",
-              workId,
-              chapterId,
-              sqlException.getMessage());
+          PublicationFailureLog.guardRejected(
+              PublicationFailureLog.Operation.CHAPTER_RELEASE, sqlException);
           return ChapterReleaseResult.approvalChanged();
         }
         throw exception;
       }
     } catch (SQLException exception) {
-      LOGGER.error(
-          "Chapter release transaction failed; workId={}, chapterId={}",
-          workId,
-          chapterId,
-          exception);
+      PublicationFailureLog.transactionFailed(
+          PublicationFailureLog.Operation.CHAPTER_RELEASE, exception);
       throw new IllegalStateException("Unable to publish the approved draft chapter", exception);
     }
   }
@@ -943,12 +930,7 @@ public class PublicationReleaseService {
                   rows.getString("requested_snapshot"), rows.getString("current_snapshot"));
           boolean hasCurrentApproval = rows.getBoolean("has_current_approval");
           if (!snapshotMatches || !hasCurrentApproval) {
-            LOGGER.warn(
-                "Publication release scope is stale; workId={}, scope={}, snapshotMatches={}, currentApproval={}",
-                request.workId(),
-                scope,
-                snapshotMatches,
-                hasCurrentApproval);
+            PublicationFailureLog.staleApprovalScope(snapshotMatches, hasCurrentApproval);
             return List.of();
           }
           scopes.add(scope);

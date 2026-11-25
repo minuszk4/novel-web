@@ -18,8 +18,6 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import javax.sql.DataSource;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Service;
 
@@ -28,7 +26,6 @@ import org.springframework.stereotype.Service;
 @Profile("postgres")
 public class PublicationRequestService {
 
-  private static final Logger LOGGER = LoggerFactory.getLogger(PublicationRequestService.class);
   private static final String KEY_DOMAIN = "publication-request-idempotency-v1";
   private static final String REQUEST_DOMAIN = "publication-request-body-v1";
   private static final String WITHDRAWAL_KEY_DOMAIN = "publication-request-withdrawal-key-v1";
@@ -238,11 +235,8 @@ public class PublicationRequestService {
         throw exception;
       }
     } catch (SQLException exception) {
-      LOGGER.error(
-          "Publication request transaction failed; workId={}, sqlState={}",
-          workId,
-          exception.getSQLState(),
-          exception);
+      PublicationFailureLog.transactionFailed(
+          PublicationFailureLog.Operation.REQUEST_SUBMISSION, exception);
       throw new IllegalStateException("Unable to submit publication request", exception);
     }
   }
