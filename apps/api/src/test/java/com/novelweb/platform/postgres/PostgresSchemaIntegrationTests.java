@@ -17181,6 +17181,7 @@ class PostgresSchemaIntegrationTests {
       var outsiderCookie =
           new jakarta.servlet.http.Cookie("__Host-novel_session", outsiderSession.cookieValue());
       String ownerCsrf = csrfTokenService.tokenFor(ownerSession.cookieValue());
+      String readerCsrf = csrfTokenService.tokenFor(readerSession.cookieValue());
       String recipientCsrf = csrfTokenService.tokenFor(recipientSession.cookieValue());
       String outsiderCsrf = csrfTokenService.tokenFor(outsiderSession.cookieValue());
       String recipientEmail = "session-" + recipientId + "@example.test";
@@ -17206,9 +17207,7 @@ class PostgresSchemaIntegrationTests {
               .perform(
                   put(inviteRoute, workspaceId, acceptedInviteId)
                       .cookie(readerCookie)
-                      .header(
-                          SessionCsrfTokenService.TOKEN_HEADER_NAME,
-                          csrfTokenService.tokenFor(readerSession.cookieValue()))
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, readerCsrf)
                       .contentType(MediaType.APPLICATION_JSON)
                       .content(inviteBody))
               .andReturn();
@@ -17227,6 +17226,25 @@ class PostgresSchemaIntegrationTests {
       assertTrue(created.getResponse().getContentAsString().contains(acceptedInviteId.toString()));
       assertFalse(created.getResponse().getContentAsString().contains(recipientEmail));
       assertTrue(created.getResponse().getHeader(HttpHeaders.CACHE_CONTROL).contains("no-store"));
+
+      MvcResult readerCannotRevokeOwnerInvitation =
+          mockMvc
+              .perform(
+                  delete(inviteRoute, workspaceId, acceptedInviteId)
+                      .cookie(readerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, readerCsrf))
+              .andReturn();
+      assertEquals(404, readerCannotRevokeOwnerInvitation.getResponse().getStatus());
+      assertTrue(
+          readerCannotRevokeOwnerInvitation
+              .getResponse()
+              .getContentAsString()
+              .contains("WORKSPACE_INVITATION_NOT_FOUND"));
+      assertTrue(
+          readerCannotRevokeOwnerInvitation
+              .getResponse()
+              .getHeader(HttpHeaders.CACHE_CONTROL)
+              .contains("no-store"));
 
       MvcResult exactRetry =
           mockMvc
