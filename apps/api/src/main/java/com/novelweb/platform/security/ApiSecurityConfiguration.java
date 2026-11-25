@@ -205,10 +205,10 @@ public class ApiSecurityConfiguration {
                         "/api/v1/me/reading-sessions/*:close")
                     .permitAll();
                 authorize
-                    .requestMatchers(HttpMethod.GET, "/api/v1/auth/google/bootstrap")
+                    .requestMatchers(HttpMethod.GET, "/api/v1/auth/firebase/bootstrap")
                     .permitAll();
                 authorize
-                    .requestMatchers(HttpMethod.POST, "/api/v1/auth/google/credential")
+                    .requestMatchers(HttpMethod.POST, "/api/v1/auth/firebase/session")
                     .permitAll();
                 authorize.requestMatchers(HttpMethod.GET, "/api/v1/auth/csrf").permitAll();
                 authorize.requestMatchers(HttpMethod.GET, "/api/v1/auth/me").permitAll();

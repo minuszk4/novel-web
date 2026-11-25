@@ -16,7 +16,8 @@ import org.springframework.web.client.RestTemplate;
 @Profile("postgres")
 class GoogleJwksConfiguration {
 
-  static final String GOOGLE_JWKS_URI = "https://www.googleapis.com/oauth2/v3/certs";
+  static final String FIREBASE_SECURE_TOKEN_JWKS_URI =
+      "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com";
   private static final Duration KEY_FETCH_TIMEOUT = Duration.ofSeconds(3);
   private static final Duration ACCEPTABLE_CLOCK_SKEW = Duration.ofSeconds(60);
 
@@ -25,7 +26,7 @@ class GoogleJwksConfiguration {
     SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
     requestFactory.setConnectTimeout(KEY_FETCH_TIMEOUT);
     requestFactory.setReadTimeout(KEY_FETCH_TIMEOUT);
-    return createDecoder(GOOGLE_JWKS_URI, new RestTemplate(requestFactory));
+    return createDecoder(FIREBASE_SECURE_TOKEN_JWKS_URI, new RestTemplate(requestFactory));
   }
 
   static JwtDecoder createDecoder(String jwkSetUri, RestOperations restOperations) {

@@ -1,10 +1,10 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 12.0.0
+  version: 13.0.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
-    Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
+    Firebase-backed Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
     implemented only in the configured PostgreSQL profile. The import-rights statement read and acceptance routes
     are also implemented in that profile; private job creation and local staging upload are now implemented too.
     Import staging applies actor-scoped active-job/declared-byte quotas and persistent create/upload token buckets;
@@ -27,7 +27,7 @@ tags:
   - name: System
     description: Implemented read-only status and health operations.
   - name: Auth
-    description: Google GIS, session and required policy routes are available only in the PostgreSQL profile; other Auth operations remain planned.
+    description: Firebase Google sign-in, session and required policy routes are available only in the PostgreSQL profile; other Auth operations remain planned.
     x-implementation-status: partial
   - name: Library
     description: Library/work listing, personal reading-state/collection, import-rights, local upload-staging, bounded EPUB/TXT/HTML/Markdown parsing, private parse review and atomic import commit are available in the PostgreSQL profile.
@@ -1343,16 +1343,17 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Health'
-  /api/v1/auth/google/bootstrap:
+  /api/v1/auth/firebase/bootstrap:
     get:
-      operationId: getGoogleSignInBootstrap
+      operationId: getFirebaseGoogleSignInBootstrap
       tags: [Auth]
       x-implementation-status: implemented-postgres-profile
-      summary: Create a short-lived Google sign-in attempt
+      summary: Create a short-lived Firebase Google sign-in attempt
       description: >-
-        Rate-limited. Stores a one-use nonce attempt and returns only the public GIS client ID,
-        fixed credential callback URI, locale and nonce. `returnTo` must be a safe relative path;
-        the server stores it with the attempt and never accepts an arbitrary callback host.
+        Rate-limited. Stores a one-use attempt and returns the public Firebase Web App configuration,
+        an opaque one-use state, locale and expiry. The Firebase configuration is public client data;
+        no service-account credential or private key is returned. `returnTo` must be a safe relative
+        path and is stored server-side with the attempt.
       security: []
       parameters:
         - name: returnTo
@@ -1381,24 +1382,23 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/GoogleSignInBootstrap'
+                $ref: '#/components/schemas/FirebaseGoogleSignInBootstrap'
         '429':
           $ref: '#/components/responses/Problem'
         '503':
           $ref: '#/components/responses/Problem'
-  /api/v1/auth/google/credential:
+  /api/v1/auth/firebase/session:
     post:
-      operationId: submitGoogleCredential
+      operationId: createFirebaseGoogleSession
       tags: [Auth]
       x-implementation-status: implemented-postgres-profile
-      summary: Validate GIS credential and establish an application session
+      summary: Verify Firebase Google identity and establish an application session
       description: >-
-        Fixed GIS redirect callback. This is the only unauthenticated mutation exempt from the
-        application CSRF header: it requires the GIS double-submit `g_csrf_token` cookie and matching
-        form field, a live one-use nonce attempt, valid Google claims/signature and an exact Origin in
-        the configured CORS allowlist. It accepts only UTF-8 form-urlencoded bodies up to 24 KiB.
-        Google posts the credential directly to the API; Angular must not receive or store it. Success
-        creates or rotates an opaque app session and redirects only to the path stored at bootstrap.
+        This is the only unauthenticated mutation exempt from the app-session CSRF header. It requires
+        an exact configured Origin, a JSON body no larger than 24 KiB, a live one-use state and a
+        valid Firebase ID token for the configured project with Google as the Firebase sign-in provider.
+        Success creates or rotates an opaque first-party session cookie and returns only the safe path
+        stored at bootstrap. Angular discards the Firebase token after this request.
       security: []
       parameters:
         - name: Origin
@@ -1408,23 +1408,15 @@ paths:
           schema:
             type: string
             format: uri
-        - name: g_csrf_token
-          in: cookie
-          required: true
-          description: GIS double-submit token; must match the form field byte-for-byte.
-          schema:
-            type: string
-            minLength: 1
-            maxLength: 512
       requestBody:
         required: true
         content:
-          application/x-www-form-urlencoded:
+          application/json:
             schema:
-              $ref: '#/components/schemas/GoogleCredentialForm'
+              $ref: '#/components/schemas/FirebaseGoogleSessionRequest'
       responses:
-        '303':
-          description: Credential accepted; browser is redirected to the server-stored safe return path.
+        '200':
+          description: Firebase token accepted and application session established.
           headers:
             Cache-Control:
               schema:
@@ -1438,12 +1430,6 @@ paths:
               schema:
                 type: string
                 const: no-referrer
-            Location:
-              required: true
-              description: Same-origin relative application path only.
-              schema:
-                type: string
-                pattern: '^/(?!/)(?!.*\\)'
             Set-Cookie:
               required: true
               description: >-
@@ -1451,6 +1437,10 @@ paths:
                 The cookie value is never returned in JSON or logged.
               schema:
                 type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FirebaseGoogleSessionResponse'
         '400':
           $ref: '#/components/responses/Problem'
         '401':
@@ -10570,9 +10560,8 @@ components:
             googleOidcEnabled:
               type: boolean
               description: >-
-                True when a plausible Google web client ID, secure credential callback URI, and
-                32-byte rate-limit HMAC key are configured. This reports local configuration
-                readiness; it does not verify reachability or credentials with Google.
+                True when Firebase Web App configuration and a 32-byte sign-in rate-limit HMAC key
+                are configured. This reports local readiness; it does not test provider reachability.
             momoTestEnabled:
               type: boolean
               description: Legacy MoMo adapter readiness; the application uses VNPAY for new top-ups.
@@ -10622,43 +10611,62 @@ components:
                 True only when fake preview, manual review and NOVEL_TRANSLATION_PUBLICATION_ENABLED are active
                 together. Source hash, owner authority, accepted snapshot, current rights and policy are still
                 rechecked at release time. Rollback and translated Reader delivery remain separate.
-    GoogleSignInBootstrap:
+    FirebaseGoogleSignInBootstrap:
       type: object
       additionalProperties: false
-      required: [clientId, loginUri, nonce, locale, attemptExpiresAt]
+      required: [firebaseConfig, state, locale, attemptExpiresAt]
       properties:
-        clientId:
+        firebaseConfig:
+          type: object
+          additionalProperties: false
+          required: [apiKey, authDomain, projectId, appId]
+          properties:
+            apiKey:
+              type: string
+              description: Public Firebase Web App API key; contains no service-account private key.
+            authDomain:
+              type: string
+            projectId:
+              type: string
+            appId:
+              type: string
+        state:
           type: string
-          description: Public Google Identity Services web client ID for this environment.
-        loginUri:
-          type: string
-          format: uri
-          description: Fixed backend callback URI; never supplied by the browser.
-        nonce:
-          type: string
-          minLength: 16
-          description: One-use nonce bound to the server-side sign-in attempt.
+          minLength: 43
+          maxLength: 43
+          pattern: '^[A-Za-z0-9_-]{43}$'
+          description: One-use random state bound to a server-stored safe return path.
         locale:
           type: string
           example: vi
         attemptExpiresAt:
           type: string
           format: date-time
-    GoogleCredentialForm:
+    FirebaseGoogleSessionRequest:
       type: object
-      additionalProperties: true
-      required: [credential, g_csrf_token]
+      additionalProperties: false
+      required: [idToken, state]
       properties:
-        credential:
+        idToken:
           type: string
           minLength: 1
           maxLength: 16384
-          description: Google ID-token credential posted directly by GIS; discard after validation.
-        g_csrf_token:
+          description: Firebase ID token obtained from the Google provider; discard after validation.
+        state:
           type: string
-          minLength: 1
-          maxLength: 512
-          description: Must exactly match the g_csrf_token cookie.
+          minLength: 43
+          maxLength: 43
+          pattern: '^[A-Za-z0-9_-]{43}$'
+          description: The one-use state returned by the matching bootstrap request.
+    FirebaseGoogleSessionResponse:
+      type: object
+      additionalProperties: false
+      required: [returnTo]
+      properties:
+        returnTo:
+          type: string
+          pattern: '^/(?!/)(?!.*\\)'
+          description: Safe relative return path stored at bootstrap.
     CsrfToken:
       type: object
       additionalProperties: false

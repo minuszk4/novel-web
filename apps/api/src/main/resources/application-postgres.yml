@@ -21,8 +21,10 @@ novel:
       rate-limit-hmac-key: ${GOOGLE_AUTH_RATE_LIMIT_HMAC_KEY:}
       rate-limit-refill-interval: ${GOOGLE_AUTH_RATE_LIMIT_REFILL_INTERVAL:6s}
       trusted-proxies: ${GOOGLE_AUTH_TRUSTED_PROXIES:}
-      web-client-id: ${GOOGLE_AUTH_WEB_CLIENT_ID:}
-      credential-callback-uri: ${GOOGLE_AUTH_CREDENTIAL_CALLBACK_URI:}
+      firebase-api-key: ${FIREBASE_AUTH_API_KEY:}
+      firebase-auth-domain: ${FIREBASE_AUTH_DOMAIN:}
+      firebase-project-id: ${FIREBASE_AUTH_PROJECT_ID:}
+      firebase-app-id: ${FIREBASE_AUTH_APP_ID:}
   identity:
     session:
       absolute-ttl: ${NOVEL_SESSION_ABSOLUTE_TTL:30d}

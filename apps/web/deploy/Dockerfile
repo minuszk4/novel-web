@@ -13,7 +13,7 @@ RUN npm run build -- --configuration production
 
 FROM nginxinc/nginx-unprivileged:alpine
 
-ENV NGINX_ENVSUBST_FILTER=^(API_UPSTREAM|GOOGLE_CALLBACK_ORIGIN)$
+ENV NGINX_ENVSUBST_FILTER=^(API_UPSTREAM|FIREBASE_AUTH_DOMAIN)$
 
 RUN rm -f /etc/nginx/conf.d/default.conf
 

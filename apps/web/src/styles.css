@@ -984,15 +984,44 @@ label:has(input:focus-visible) {
 .google-sign-in-area {
   min-width: 0;
 }
-.google-button-host {
+.google-sign-in-button {
   width: 100%;
-  min-height: 44px;
-  display: flex;
+  min-height: 48px;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: 11px;
+  border: 1px solid #d8d8d3;
+  border-radius: 10px;
+  color: #272923;
+  background: #fff;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition:
+    border-color 140ms ease,
+    background 140ms ease,
+    box-shadow 140ms ease;
 }
-.google-button-host iframe {
-  max-width: 100%;
+.google-sign-in-button:hover:not(:disabled) {
+  border-color: #aaa9a2;
+  background: #fbfbf9;
+}
+.google-sign-in-button:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 3px;
+}
+.google-sign-in-button:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+.google-mark {
+  font-family: Arial, sans-serif;
+  font-size: 18px;
+  font-weight: 800;
+  line-height: 1;
+  color: #4285f4;
 }
 .provider-loading {
   min-height: 34px;

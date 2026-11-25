@@ -21,8 +21,10 @@ import org.springframework.test.context.ActiveProfiles;
     webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
     properties = {
       "management.server.port=0",
-      "novel.auth.google.web-client-id=",
-      "novel.auth.google.credential-callback-uri=",
+      "novel.auth.google.firebase-api-key=",
+      "novel.auth.google.firebase-auth-domain=",
+      "novel.auth.google.firebase-project-id=",
+      "novel.auth.google.firebase-app-id=",
       "novel.auth.google.rate-limit-hmac-key=",
       "novel.payment.momo.test.enabled=false"
     })

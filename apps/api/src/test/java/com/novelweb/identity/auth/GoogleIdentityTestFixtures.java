@@ -6,7 +6,12 @@ public final class GoogleIdentityTestFixtures {
 
   public static GoogleIdTokenVerifier.VerifiedGoogleIdentity verifiedIdentity(
       String subject, String email, String displayName) {
-    return new GoogleIdTokenVerifier.VerifiedGoogleIdentity(
-        "https://accounts.google.com", subject, email, displayName, "synthetic-nonce");
+    return verifiedIdentity(
+        "https://securetoken.google.com/novel-test-project", subject, email, displayName);
+  }
+
+  public static GoogleIdTokenVerifier.VerifiedGoogleIdentity verifiedIdentity(
+      String issuer, String subject, String email, String displayName) {
+    return new GoogleIdTokenVerifier.VerifiedGoogleIdentity(issuer, subject, email, displayName);
   }
 }

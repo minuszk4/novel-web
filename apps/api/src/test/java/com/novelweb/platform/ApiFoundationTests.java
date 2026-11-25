@@ -21,8 +21,10 @@ import org.springframework.test.web.servlet.MockMvc;
 
 @SpringBootTest(
     properties = {
-      "novel.auth.google.web-client-id=",
-      "novel.auth.google.credential-callback-uri=",
+      "novel.auth.google.firebase-api-key=",
+      "novel.auth.google.firebase-auth-domain=",
+      "novel.auth.google.firebase-project-id=",
+      "novel.auth.google.firebase-app-id=",
       "novel.auth.google.rate-limit-hmac-key=",
       "novel.payment.vnpay.test.enabled=false"
     })
@@ -103,8 +105,8 @@ class ApiFoundationTests {
   }
 
   @Test
-  void googleBootstrapRouteFailsClosedWhenConfigurationIsUnavailable() throws Exception {
-    var result = mockMvc.perform(get("/api/v1/auth/google/bootstrap")).andReturn();
+  void firebaseGoogleBootstrapRouteFailsClosedWhenConfigurationIsUnavailable() throws Exception {
+    var result = mockMvc.perform(get("/api/v1/auth/firebase/bootstrap")).andReturn();
     if (environment.acceptsProfiles(org.springframework.core.env.Profiles.of("postgres"))) {
       assertEquals(503, result.getResponse().getStatus());
       assertEquals("application/problem+json", result.getResponse().getContentType());

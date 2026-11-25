@@ -17,13 +17,13 @@ public class GoogleCredentialVerificationService {
     this.authAttemptService = authAttemptService;
   }
 
-  public VerifiedGoogleSignIn verify(String credential, String csrfCookie, String csrfFormValue) {
-    GoogleCsrfTokenValidator.requireMatchingTokens(csrfCookie, csrfFormValue);
-    GoogleIdTokenVerifier.VerifiedGoogleIdentity identity = idTokenVerifier.verify(credential);
+  public VerifiedGoogleSignIn verify(String idToken, String state) {
+    if (!GoogleAuthAttemptService.isGeneratedNonce(state)) {
+      throw new InvalidGoogleCredentialException();
+    }
+    GoogleIdTokenVerifier.VerifiedGoogleIdentity identity = idTokenVerifier.verify(idToken);
     GoogleAuthAttemptService.ConsumedAttempt attempt =
-        authAttemptService
-            .consumeOnce(identity.nonce())
-            .orElseThrow(InvalidGoogleCredentialException::new);
+        authAttemptService.consumeOnce(state).orElseThrow(InvalidGoogleCredentialException::new);
     return new VerifiedGoogleSignIn(identity, attempt.returnTo(), attempt.correlationId());
   }
 

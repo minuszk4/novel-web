@@ -27,8 +27,8 @@ import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 
 class GoogleIdTokenVerifierTests {
 
-  private static final String CLIENT_ID = "novel-web-test.apps.googleusercontent.com";
-  private static final String NONCE = "test-nonce-32-characters-long-0001";
+  private static final String PROJECT_ID = "novel-web-test";
+  private static final String ISSUER = "https://securetoken.google.com/" + PROJECT_ID;
   private static KeyPair signingKey;
   private static KeyPair otherSigningKey;
 
@@ -48,65 +48,38 @@ class GoogleIdTokenVerifierTests {
     now = Instant.now().truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
     JwtDecoder decoder =
         NimbusJwtDecoder.withPublicKey((RSAPublicKey) signingKey.getPublic()).build();
-    verifier = new GoogleIdTokenVerifier(decoder, CLIENT_ID, Clock.fixed(now, ZoneOffset.UTC));
+    verifier = new GoogleIdTokenVerifier(decoder, PROJECT_ID, Clock.fixed(now, ZoneOffset.UTC));
   }
 
   @Test
-  void acceptsGoogleSignedClaimsAndReturnsOnlyNeededIdentityFields() throws Exception {
+  void acceptsGoogleProviderFirebaseTokenAndReturnsOnlyNeededIdentityFields() throws Exception {
     GoogleIdTokenVerifier.VerifiedGoogleIdentity identity =
         verifier.verify(signedToken(validClaims(), signingKey));
 
-    assertEquals("https://accounts.google.com", identity.issuer());
-    assertEquals("google-subject-123", identity.subject());
+    assertEquals(ISSUER, identity.issuer());
+    assertEquals("firebase-uid-123", identity.subject());
     assertEquals("reader@example.com", identity.email());
     assertEquals("Novel Reader", identity.displayName());
-    assertEquals(NONCE, identity.nonce());
   }
 
   @Test
-  void acceptsEitherDocumentedGoogleIssuer() throws Exception {
-    Map<String, Object> claims = validClaims();
-    claims.put("iss", "accounts.google.com");
-
-    GoogleIdTokenVerifier.VerifiedGoogleIdentity identity =
-        verifier.verify(signedToken(claims, signingKey));
-    assertEquals("https://accounts.google.com", identity.issuer());
-    assertEquals("google-subject-123", identity.subject());
-  }
-
-  @Test
-  void rejectsSignatureNotMadeByGoogleTrustedKey() throws Exception {
+  void rejectsSignatureNotMadeByFirebaseTrustedKey() throws Exception {
     assertInvalid(signedToken(validClaims(), otherSigningKey));
   }
 
   @Test
-  void rejectsUntrustedIssuerOrAudience() throws Exception {
+  void requiresFirebaseIssuerAndExactProjectAudience() throws Exception {
     Map<String, Object> wrongIssuer = validClaims();
-    wrongIssuer.put("iss", "https://attacker.example");
+    wrongIssuer.put("iss", "https://securetoken.google.com/another-project");
     assertInvalid(signedToken(wrongIssuer, signingKey));
 
     Map<String, Object> wrongAudience = validClaims();
-    wrongAudience.put("aud", List.of("another-client.apps.googleusercontent.com"));
+    wrongAudience.put("aud", List.of("another-project"));
     assertInvalid(signedToken(wrongAudience, signingKey));
-  }
 
-  @Test
-  void requiresAuthorizedPartyWhenTokenHasMultipleAudiencesAndRejectsMismatch() throws Exception {
-    Map<String, Object> noAuthorizedParty = validClaims();
-    noAuthorizedParty.put("aud", List.of(CLIENT_ID, "another-client.apps.googleusercontent.com"));
-    assertInvalid(signedToken(noAuthorizedParty, signingKey));
-
-    Map<String, Object> wrongAuthorizedParty = validClaims();
-    wrongAuthorizedParty.put(
-        "aud", List.of(CLIENT_ID, "another-client.apps.googleusercontent.com"));
-    wrongAuthorizedParty.put("azp", "another-client.apps.googleusercontent.com");
-    assertInvalid(signedToken(wrongAuthorizedParty, signingKey));
-
-    Map<String, Object> authorizedParty = validClaims();
-    authorizedParty.put("aud", List.of(CLIENT_ID, "another-client.apps.googleusercontent.com"));
-    authorizedParty.put("azp", CLIENT_ID);
-    assertEquals(
-        "google-subject-123", verifier.verify(signedToken(authorizedParty, signingKey)).subject());
+    Map<String, Object> multipleAudiences = validClaims();
+    multipleAudiences.put("aud", List.of(PROJECT_ID, "another-project"));
+    assertInvalid(signedToken(multipleAudiences, signingKey));
   }
 
   @Test
@@ -122,10 +95,18 @@ class GoogleIdTokenVerifierTests {
     Map<String, Object> noSubject = validClaims();
     noSubject.remove("sub");
     assertInvalid(signedToken(noSubject, signingKey));
+
+    Map<String, Object> noAuthTime = validClaims();
+    noAuthTime.remove("auth_time");
+    assertInvalid(signedToken(noAuthTime, signingKey));
+
+    Map<String, Object> futureAuthTime = validClaims();
+    futureAuthTime.put("auth_time", now.plusSeconds(1).getEpochSecond());
+    assertInvalid(signedToken(futureAuthTime, signingKey));
   }
 
   @Test
-  void requiresVerifiedEmailAndNonce() throws Exception {
+  void requiresVerifiedEmailAndGoogleProvider() throws Exception {
     Map<String, Object> unverifiedEmail = validClaims();
     unverifiedEmail.put("email_verified", false);
     assertInvalid(signedToken(unverifiedEmail, signingKey));
@@ -134,13 +115,17 @@ class GoogleIdTokenVerifierTests {
     stringEmailVerification.put("email_verified", "true");
     assertInvalid(signedToken(stringEmailVerification, signingKey));
 
-    Map<String, Object> noNonce = validClaims();
-    noNonce.remove("nonce");
-    assertInvalid(signedToken(noNonce, signingKey));
+    Map<String, Object> otherProvider = validClaims();
+    otherProvider.put("firebase", Map.of("sign_in_provider", "password"));
+    assertInvalid(signedToken(otherProvider, signingKey));
+
+    Map<String, Object> missingProvider = validClaims();
+    missingProvider.remove("firebase");
+    assertInvalid(signedToken(missingProvider, signingKey));
   }
 
   @Test
-  void failsClosedWhenClientIdIsMissingOrCredentialIsTooLarge() throws Exception {
+  void failsClosedWhenProjectIdIsMissingOrCredentialIsTooLarge() throws Exception {
     GoogleIdTokenVerifier unconfigured =
         new GoogleIdTokenVerifier(
             NimbusJwtDecoder.withPublicKey((RSAPublicKey) signingKey.getPublic()).build(),
@@ -159,13 +144,14 @@ class GoogleIdTokenVerifierTests {
 
   private Map<String, Object> validClaims() {
     Map<String, Object> claims = new HashMap<>();
-    claims.put("iss", "https://accounts.google.com");
-    claims.put("aud", new ArrayList<>(List.of(CLIENT_ID)));
-    claims.put("sub", "google-subject-123");
+    claims.put("iss", ISSUER);
+    claims.put("aud", new ArrayList<>(List.of(PROJECT_ID)));
+    claims.put("sub", "firebase-uid-123");
     claims.put("email", "reader@example.com");
     claims.put("email_verified", true);
     claims.put("name", "Novel Reader");
-    claims.put("nonce", NONCE);
+    claims.put("auth_time", now.minusSeconds(5).getEpochSecond());
+    claims.put("firebase", Map.of("sign_in_provider", "google.com"));
     claims.put("iat", Date.from(now));
     claims.put("exp", Date.from(now.plusSeconds(300)));
     return claims;

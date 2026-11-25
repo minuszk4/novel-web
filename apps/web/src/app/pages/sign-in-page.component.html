@@ -12,7 +12,15 @@
       Tài khoản giúp đồng bộ thư viện và tiến độ đọc giữa các thiết bị.
     </p>
     <div class="google-sign-in-area" [attr.aria-busy]="googleState() === 'loading'">
-      <div #googleButtonHost class="google-button-host"></div>
+      <button
+        class="google-sign-in-button"
+        type="button"
+        [disabled]="googleState() !== 'ready'"
+        (click)="startGoogleSignIn()"
+      >
+        <span class="google-mark" aria-hidden="true">G</span>
+        <span>Tiếp tục với Google</span>
+      </button>
       @if (googleState() === 'loading') {
         <p class="provider-loading" role="status">{{ googleMessage() }}</p>
       } @else if (googleState() === 'ready') {

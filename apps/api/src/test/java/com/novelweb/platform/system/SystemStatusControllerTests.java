@@ -21,8 +21,10 @@ class SystemStatusControllerTests {
   void reportsGoogleConfigurationReadinessWithoutEnablingOtherIntegrations() {
     GoogleSignInConfiguration googleConfiguration =
         new GoogleSignInConfiguration(
-            "1234567890-example.apps.googleusercontent.com",
-            "https://api.example.test/api/v1/auth/google/credential",
+            "firebase-test-key-public-web-api-key-not-a-credential",
+            "novel-web.firebaseapp.com",
+            "novel-web",
+            "1:921742618964:web:9790fb7f701242a6d258c1",
             Base64.getUrlEncoder().withoutPadding().encodeToString(new byte[32]));
     ApiSystemStatus status =
         controller(googleConfiguration, false, false, false, false, false, false, new String[0])
@@ -36,7 +38,8 @@ class SystemStatusControllerTests {
 
   @Test
   void reportsCommerceOnlyWhenPostgresValidMomoSettingsAndTheShopOptInAreAllPresent() {
-    GoogleSignInConfiguration googleConfiguration = new GoogleSignInConfiguration("", "", "");
+    GoogleSignInConfiguration googleConfiguration =
+        new GoogleSignInConfiguration("", "", "", "", "");
     ApiSystemStatus enabled =
         controller(googleConfiguration, true, true, false, false, false, true, "postgres").status();
     ApiSystemStatus shopOptInMissing =
@@ -60,7 +63,8 @@ class SystemStatusControllerTests {
 
   @Test
   void keepsGoogleDisabledWhenConfigurationIsIncomplete() {
-    GoogleSignInConfiguration googleConfiguration = new GoogleSignInConfiguration("", "", "");
+    GoogleSignInConfiguration googleConfiguration =
+        new GoogleSignInConfiguration("", "", "", "", "");
     ApiSystemStatus status =
         controller(googleConfiguration, true, false, false, false, false, false, new String[0])
             .status();
@@ -73,7 +77,8 @@ class SystemStatusControllerTests {
 
   @Test
   void fakeTranslationPreviewRequiresBothOptInsAndBothSpringProfiles() {
-    GoogleSignInConfiguration googleConfiguration = new GoogleSignInConfiguration("", "", "");
+    GoogleSignInConfiguration googleConfiguration =
+        new GoogleSignInConfiguration("", "", "", "", "");
     ApiSystemStatus enabled =
         controller(
                 googleConfiguration,
@@ -232,7 +237,7 @@ class SystemStatusControllerTests {
         beanFactory.getBeanProvider(PublicCatalogRateLimiter.class);
     return new SystemStatusController(
         "test",
-        new GoogleSignInConfiguration("", "", ""),
+        new GoogleSignInConfiguration("", "", "", "", ""),
         false,
         false,
         translationEnabled,
@@ -260,7 +265,7 @@ class SystemStatusControllerTests {
         beanFactory.getBeanProvider(PublicCatalogRateLimiter.class);
     return new SystemStatusController(
         "test",
-        new GoogleSignInConfiguration("", "", ""),
+        new GoogleSignInConfiguration("", "", "", "", ""),
         false,
         false,
         translationEnabled,
@@ -295,7 +300,7 @@ class SystemStatusControllerTests {
         beanFactory.getBeanProvider(PublicCatalogRateLimiter.class);
     return new SystemStatusController(
         "test",
-        new GoogleSignInConfiguration("", "", ""),
+        new GoogleSignInConfiguration("", "", "", "", ""),
         false,
         false,
         false,
@@ -363,7 +368,7 @@ class SystemStatusControllerTests {
         beanFactory.getBeanProvider(PublicCatalogRateLimiter.class);
     return new SystemStatusController(
         "test",
-        new GoogleSignInConfiguration("", "", ""),
+        new GoogleSignInConfiguration("", "", "", "", ""),
         false,
         false,
         false,

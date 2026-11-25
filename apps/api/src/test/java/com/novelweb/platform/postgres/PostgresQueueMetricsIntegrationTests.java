@@ -31,8 +31,10 @@ import org.springframework.test.context.ActiveProfiles;
     properties = {
       "management.server.port=0",
       "novel.auth.google.rate-limit-hmac-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-      "novel.auth.google.web-client-id=queue-metrics-test.apps.googleusercontent.com",
-      "novel.auth.google.credential-callback-uri=https://api.example.test/api/v1/auth/google/credential",
+      "novel.auth.google.firebase-api-key=firebase-test-key-integration-api-key-not-a-credential",
+      "novel.auth.google.firebase-auth-domain=novel-web-integration-test.firebaseapp.com",
+      "novel.auth.google.firebase-project-id=novel-web-integration-test",
+      "novel.auth.google.firebase-app-id=1:123456789012:web:abcdef1234567890",
       "novel.security.csrf.hmac-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
       "novel.library.cursor.hmac-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
       "novel.payment.momo.test.enabled=false",

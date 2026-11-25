@@ -41,7 +41,7 @@ public class GoogleAuthAttemptService {
         || attemptTtl.compareTo(MAXIMUM_ATTEMPT_TTL) > 0
         || attemptTtl.toMillis() == 0) {
       throw new IllegalArgumentException(
-          "Google auth attempt TTL must be positive and at most 15 minutes");
+          "Firebase auth attempt TTL must be positive and at most 15 minutes");
     }
     this.attemptTtl = attemptTtl;
   }
@@ -76,7 +76,7 @@ public class GoogleAuthAttemptService {
         expiresAt = databaseExpiry.toInstant();
       }
     } catch (SQLException exception) {
-      throw new IllegalStateException("Unable to create a Google sign-in attempt", exception);
+      throw new IllegalStateException("Unable to create a Firebase sign-in attempt", exception);
     }
 
     return new CreatedAttempt(nonce, safeReturnTo, expiresAt, correlationId);
@@ -119,11 +119,11 @@ public class GoogleAuthAttemptService {
         throw exception;
       }
     } catch (SQLException exception) {
-      throw new IllegalStateException("Unable to consume a Google sign-in attempt", exception);
+      throw new IllegalStateException("Unable to consume a Firebase sign-in attempt", exception);
     }
   }
 
-  private static boolean isGeneratedNonce(String nonce) {
+  static boolean isGeneratedNonce(String nonce) {
     if (nonce == null || !NONCE_PATTERN.matcher(nonce).matches()) {
       return false;
     }

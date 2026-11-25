@@ -17,7 +17,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
-@RequestMapping("/api/v1/auth/google")
+@RequestMapping("/api/v1/auth/firebase")
 @Profile("postgres")
 public class GoogleSignInBootstrapController {
 
@@ -47,7 +47,7 @@ public class GoogleSignInBootstrapController {
       return problem(
           HttpStatus.SERVICE_UNAVAILABLE,
           "AUTH_PROVIDER_UNAVAILABLE",
-          "Google sign-in is not configured for this environment.",
+          "Firebase Google sign-in is not configured for this environment.",
           correlationId);
     }
 
@@ -97,8 +97,11 @@ public class GoogleSignInBootstrapController {
     String safeLocale = "en".equalsIgnoreCase(locale) ? "en" : "vi";
     GoogleSignInBootstrap response =
         new GoogleSignInBootstrap(
-            googleSignInConfiguration.webClientId(),
-            googleSignInConfiguration.credentialCallbackUri().toASCIIString(),
+            new FirebaseWebConfiguration(
+                googleSignInConfiguration.apiKey(),
+                googleSignInConfiguration.authDomain(),
+                googleSignInConfiguration.projectId(),
+                googleSignInConfiguration.appId()),
             attempt.nonce(),
             safeLocale,
             attempt.expiresAt());
@@ -134,5 +137,11 @@ public class GoogleSignInBootstrapController {
   }
 
   public record GoogleSignInBootstrap(
-      String clientId, String loginUri, String nonce, String locale, Instant attemptExpiresAt) {}
+      FirebaseWebConfiguration firebaseConfig,
+      String state,
+      String locale,
+      Instant attemptExpiresAt) {}
+
+  public record FirebaseWebConfiguration(
+      String apiKey, String authDomain, String projectId, String appId) {}
 }

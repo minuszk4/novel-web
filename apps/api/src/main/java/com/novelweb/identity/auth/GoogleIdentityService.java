@@ -15,7 +15,7 @@ import org.springframework.stereotype.Service;
 public class GoogleIdentityService {
 
   private static final String GOOGLE_PROVIDER = "google";
-  private static final String CANONICAL_GOOGLE_ISSUER = "https://accounts.google.com";
+  private static final String FIREBASE_ISSUER_PREFIX = "https://securetoken.google.com/";
   private static final int MAX_DISPLAY_NAME_LENGTH = 200;
 
   private final DataSource dataSource;
@@ -29,7 +29,9 @@ public class GoogleIdentityService {
     Objects.requireNonNull(verifiedIdentity, "verified Google identity is required");
     if (verifiedIdentity.subject() == null
         || verifiedIdentity.subject().isBlank()
-        || !CANONICAL_GOOGLE_ISSUER.equals(verifiedIdentity.issuer())
+        || verifiedIdentity.issuer() == null
+        || !verifiedIdentity.issuer().startsWith(FIREBASE_ISSUER_PREFIX)
+        || verifiedIdentity.issuer().length() == FIREBASE_ISSUER_PREFIX.length()
         || verifiedIdentity.email() == null
         || verifiedIdentity.email().isBlank()
         || verifiedIdentity.email().indexOf('@') <= 0

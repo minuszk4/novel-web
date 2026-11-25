@@ -24,23 +24,24 @@ public class GoogleIdTokenVerifier {
   private static final int MAX_NAME_LENGTH = 200;
 
   private final JwtDecoder jwtDecoder;
-  private final String webClientId;
+  private final String firebaseProjectId;
   private final Clock clock;
 
   @Autowired
   public GoogleIdTokenVerifier(
-      JwtDecoder jwtDecoder, @Value("${novel.auth.google.web-client-id:}") String webClientId) {
-    this(jwtDecoder, webClientId, Clock.systemUTC());
+      JwtDecoder jwtDecoder,
+      @Value("${novel.auth.google.firebase-project-id:}") String firebaseProjectId) {
+    this(jwtDecoder, firebaseProjectId, Clock.systemUTC());
   }
 
-  GoogleIdTokenVerifier(JwtDecoder jwtDecoder, String webClientId, Clock clock) {
+  GoogleIdTokenVerifier(JwtDecoder jwtDecoder, String firebaseProjectId, Clock clock) {
     this.jwtDecoder = jwtDecoder;
-    this.webClientId = webClientId == null ? "" : webClientId.trim();
+    this.firebaseProjectId = firebaseProjectId == null ? "" : firebaseProjectId.trim();
     this.clock = clock;
   }
 
   public VerifiedGoogleIdentity verify(String credential) {
-    if (webClientId.isBlank()
+    if (firebaseProjectId.isBlank()
         || credential == null
         || credential.isBlank()
         || credential.length() > MAX_CREDENTIAL_LENGTH) {
@@ -56,7 +57,7 @@ public class GoogleIdTokenVerifier {
 
     Map<String, Object> claims = jwt.getClaims();
     String canonicalIssuer = canonicalIssuer(claims.get("iss"));
-    validateAudience(jwt.getAudience(), claims.get("azp"));
+    validateAudience(jwt.getAudience());
 
     Instant now = clock.instant();
     Instant issuedAt = jwt.getIssuedAt();
@@ -73,30 +74,47 @@ public class GoogleIdTokenVerifier {
     String email = boundedString(claims.get("email"), MAX_EMAIL_LENGTH);
     String displayName = optionalBoundedString(claims.get("name"), MAX_NAME_LENGTH);
     Object emailVerified = claims.get("email_verified");
-    String nonce = boundedString(claims.get("nonce"), 256);
-    if (subject == null || email == null || nonce == null || !Boolean.TRUE.equals(emailVerified)) {
+    Instant authTime = epochSeconds(claims.get("auth_time"));
+    Object firebaseClaim = claims.get("firebase");
+    String signInProvider =
+        firebaseClaim instanceof Map<?, ?> firebase
+            ? optionalBoundedString(firebase.get("sign_in_provider"), 64)
+            : null;
+    if (subject == null
+        || email == null
+        || authTime == null
+        || !authTime.isBefore(now)
+        || !"google.com".equals(signInProvider)
+        || !Boolean.TRUE.equals(emailVerified)) {
       throw new InvalidGoogleCredentialException();
     }
 
-    return new VerifiedGoogleIdentity(canonicalIssuer, subject, email, displayName, nonce);
+    return new VerifiedGoogleIdentity(canonicalIssuer, subject, email, displayName);
   }
 
-  private void validateAudience(List<String> audiences, Object authorizedParty) {
-    if (audiences == null || !audiences.contains(webClientId)) {
-      throw new InvalidGoogleCredentialException();
-    }
-
-    String azp = optionalBoundedString(authorizedParty, MAX_SUBJECT_LENGTH);
-    if ((audiences.size() > 1 && azp == null) || (azp != null && !webClientId.equals(azp))) {
+  private void validateAudience(List<String> audiences) {
+    if (audiences == null || audiences.size() != 1 || !audiences.contains(firebaseProjectId)) {
       throw new InvalidGoogleCredentialException();
     }
   }
 
-  private static String canonicalIssuer(Object issuer) {
-    if ("accounts.google.com".equals(issuer) || "https://accounts.google.com".equals(issuer)) {
-      return "https://accounts.google.com";
+  private String canonicalIssuer(Object issuer) {
+    String expected = "https://securetoken.google.com/" + firebaseProjectId;
+    if (expected.equals(issuer)) {
+      return expected;
     }
     throw new InvalidGoogleCredentialException();
+  }
+
+  private static Instant epochSeconds(Object value) {
+    if (!(value instanceof Number number)) {
+      return null;
+    }
+    try {
+      return Instant.ofEpochSecond(number.longValue());
+    } catch (ArithmeticException | java.time.DateTimeException exception) {
+      return null;
+    }
   }
 
   private static String boundedString(Object claim, int maxLength) {
@@ -120,15 +138,12 @@ public class GoogleIdTokenVerifier {
     private final String subject;
     private final String email;
     private final String displayName;
-    private final String nonce;
 
-    VerifiedGoogleIdentity(
-        String issuer, String subject, String email, String displayName, String nonce) {
+    VerifiedGoogleIdentity(String issuer, String subject, String email, String displayName) {
       this.issuer = issuer;
       this.subject = subject;
       this.email = email;
       this.displayName = displayName;
-      this.nonce = nonce;
     }
 
     public String issuer() {
@@ -145,10 +160,6 @@ public class GoogleIdTokenVerifier {
 
     public String displayName() {
       return displayName;
-    }
-
-    public String nonce() {
-      return nonce;
     }
   }
 }

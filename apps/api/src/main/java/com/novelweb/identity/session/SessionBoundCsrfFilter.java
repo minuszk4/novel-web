@@ -17,7 +17,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
 @Profile("postgres")
 public class SessionBoundCsrfFilter extends OncePerRequestFilter {
 
-  private static final String GOOGLE_CREDENTIAL_CALLBACK = "/api/v1/auth/google/credential";
+  private static final String FIREBASE_SESSION = "/api/v1/auth/firebase/session";
   private static final String MOMO_TEST_IPN_CALLBACK = MomoTestIpnController.PATH;
   private static final String LOGOUT = "/api/v1/auth/logout";
   private static final Set<String> SAFE_METHODS = Set.of("GET", "HEAD", "OPTIONS", "TRACE");
@@ -36,7 +36,7 @@ public class SessionBoundCsrfFilter extends OncePerRequestFilter {
       HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
       throws ServletException, IOException {
     if (SAFE_METHODS.contains(request.getMethod())
-        || GOOGLE_CREDENTIAL_CALLBACK.equals(request.getRequestURI())
+        || FIREBASE_SESSION.equals(request.getRequestURI())
         || MOMO_TEST_IPN_CALLBACK.equals(request.getRequestURI())) {
       filterChain.doFilter(request, response);
       return;

@@ -7,16 +7,10 @@ import com.novelweb.platform.web.CorrelationIdFilter;
 import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
 import java.io.IOException;
-import java.net.URLDecoder;
-import java.nio.ByteBuffer;
-import java.nio.charset.CharacterCodingException;
-import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Collections;
-import java.util.HashMap;
-import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.beans.factory.annotation.Value;
@@ -31,30 +25,33 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.ObjectMapper;
 
 @RestController
-@RequestMapping("/api/v1/auth/google")
+@RequestMapping("/api/v1/auth/firebase")
 @Profile("postgres")
-public class GoogleCredentialCallbackController {
+public class FirebaseSessionController {
 
-  private static final int MAX_FORM_BODY_BYTES = 24 * 1024;
-  private static final int MAX_FORM_FIELDS = 16;
-  private static final String CREDENTIAL_FIELD = "credential";
-  private static final String CSRF_FIELD = "g_csrf_token";
+  private static final int MAX_JSON_BODY_BYTES = 24 * 1024;
+  private static final int MAX_ID_TOKEN_LENGTH = 16_384;
   private static final String SESSION_COOKIE = SessionCookieFactory.COOKIE_NAME;
 
+  private final ObjectMapper objectMapper;
   private final GoogleCredentialVerificationService verificationService;
   private final GoogleIdentityService identityService;
   private final SessionService sessionService;
   private final CorsProperties corsProperties;
   private final Duration absoluteSessionTtl;
 
-  public GoogleCredentialCallbackController(
+  public FirebaseSessionController(
+      ObjectMapper objectMapper,
       GoogleCredentialVerificationService verificationService,
       GoogleIdentityService identityService,
       SessionService sessionService,
       CorsProperties corsProperties,
       @Value("${novel.identity.session.absolute-ttl:30d}") Duration absoluteSessionTtl) {
+    this.objectMapper = objectMapper;
     this.verificationService = verificationService;
     this.identityService = identityService;
     this.sessionService = sessionService;
@@ -62,24 +59,24 @@ public class GoogleCredentialCallbackController {
     this.absoluteSessionTtl = absoluteSessionTtl;
   }
 
-  @PostMapping("/credential")
-  public ResponseEntity<?> credential(HttpServletRequest request) {
-    UUID correlationId = correlationId(request);
-    if (!hasExpectedOrigin(request)) {
+  @PostMapping("/session")
+  public ResponseEntity<?> createSession(HttpServletRequest servletRequest) {
+    UUID correlationId = correlationId(servletRequest);
+    if (!hasExpectedOrigin(servletRequest)) {
       return problem(
           HttpStatus.FORBIDDEN,
           "INVALID_ORIGIN",
           "The sign-in request could not be verified.",
           correlationId);
     }
-    if (!isFormUrlEncoded(request.getContentType())) {
+    if (!isJson(servletRequest.getContentType())) {
       return problem(
           HttpStatus.UNSUPPORTED_MEDIA_TYPE,
           "UNSUPPORTED_MEDIA_TYPE",
           "The sign-in request could not be processed.",
           correlationId);
     }
-    if (request.getContentLengthLong() > MAX_FORM_BODY_BYTES) {
+    if (servletRequest.getContentLengthLong() > MAX_JSON_BODY_BYTES) {
       return problem(
           HttpStatus.CONTENT_TOO_LARGE,
           "REQUEST_TOO_LARGE",
@@ -87,28 +84,30 @@ public class GoogleCredentialCallbackController {
           correlationId);
     }
 
-    final byte[] body;
+    final FirebaseSessionRequest boundedRequest;
     try {
-      body = request.getInputStream().readNBytes(MAX_FORM_BODY_BYTES + 1);
-    } catch (IOException exception) {
+      byte[] body = servletRequest.getInputStream().readNBytes(MAX_JSON_BODY_BYTES + 1);
+      if (body.length == 0 || body.length > MAX_JSON_BODY_BYTES) {
+        return problem(
+            body.length > MAX_JSON_BODY_BYTES
+                ? HttpStatus.CONTENT_TOO_LARGE
+                : HttpStatus.BAD_REQUEST,
+            body.length > MAX_JSON_BODY_BYTES ? "REQUEST_TOO_LARGE" : "INVALID_REQUEST",
+            "The sign-in request could not be processed.",
+            correlationId);
+      }
+      boundedRequest = objectMapper.readValue(body, FirebaseSessionRequest.class);
+    } catch (IOException | JacksonException exception) {
       return problem(
           HttpStatus.BAD_REQUEST,
           "INVALID_REQUEST",
           "The sign-in request could not be processed.",
           correlationId);
     }
-    if (body.length > MAX_FORM_BODY_BYTES) {
-      return problem(
-          HttpStatus.CONTENT_TOO_LARGE,
-          "REQUEST_TOO_LARGE",
-          "The sign-in request could not be processed.",
-          correlationId);
-    }
-
-    final Map<String, String> form;
-    try {
-      form = parseForm(body);
-    } catch (InvalidFormException exception) {
+    if (boundedRequest == null
+        || boundedRequest.idToken() == null
+        || boundedRequest.idToken().isBlank()
+        || boundedRequest.idToken().length() > MAX_ID_TOKEN_LENGTH) {
       return problem(
           HttpStatus.BAD_REQUEST,
           "INVALID_REQUEST",
@@ -118,21 +117,19 @@ public class GoogleCredentialCallbackController {
 
     try {
       GoogleCredentialVerificationService.VerifiedGoogleSignIn verified =
-          verificationService.verify(
-              form.get(CREDENTIAL_FIELD), csrfCookie(request), form.get(CSRF_FIELD));
+          verificationService.verify(boundedRequest.idToken(), boundedRequest.state());
       GoogleIdentityService.IdentityAccount account =
           identityService.findOrCreate(verified.identity());
-      SessionService.IssuedSession session = issueSession(request, account.userId());
+      SessionService.IssuedSession session = issueSession(servletRequest, account.userId());
       ResponseCookie cookie =
           SessionCookieFactory.issue(session.cookieValue(), cookieLifetime(session.expiresAt()));
 
-      return ResponseEntity.status(HttpStatus.SEE_OTHER)
-          .location(java.net.URI.create(SafeReturnPath.sanitize(verified.returnTo())))
+      return ResponseEntity.ok()
           .header(HttpHeaders.SET_COOKIE, cookie.toString())
           .cacheControl(CacheControl.noStore())
           .header(HttpHeaders.PRAGMA, "no-cache")
           .header("Referrer-Policy", "no-referrer")
-          .build();
+          .body(new FirebaseSessionResponse(SafeReturnPath.sanitize(verified.returnTo())));
     } catch (InvalidGoogleCredentialException
         | GoogleAccountLinkRequiredException
         | UnavailableGoogleIdentityException exception) {
@@ -183,81 +180,27 @@ public class GoogleCredentialCallbackController {
         && corsProperties.allowedOrigins().contains(origins.getFirst());
   }
 
-  private static boolean isFormUrlEncoded(String contentType) {
+  private static boolean isJson(String contentType) {
     if (contentType == null) {
       return false;
     }
     try {
       MediaType parsed = MediaType.parseMediaType(contentType);
-      return parsed.isCompatibleWith(MediaType.APPLICATION_FORM_URLENCODED)
+      return parsed.isCompatibleWith(MediaType.APPLICATION_JSON)
           && (parsed.getCharset() == null || StandardCharsets.UTF_8.equals(parsed.getCharset()));
     } catch (IllegalArgumentException exception) {
       return false;
     }
   }
 
-  private static Map<String, String> parseForm(byte[] body) {
-    final String encoded;
-    try {
-      encoded =
-          StandardCharsets.UTF_8
-              .newDecoder()
-              .onMalformedInput(CodingErrorAction.REPORT)
-              .onUnmappableCharacter(CodingErrorAction.REPORT)
-              .decode(ByteBuffer.wrap(body))
-              .toString();
-    } catch (CharacterCodingException exception) {
-      throw new InvalidFormException();
-    }
-
-    Map<String, String> values = new HashMap<>();
-    if (encoded.isEmpty()) {
-      return values;
-    }
-    String[] fields = encoded.split("&", -1);
-    if (fields.length > MAX_FORM_FIELDS) {
-      throw new InvalidFormException();
-    }
-    for (String field : fields) {
-      int separator = field.indexOf('=');
-      String key;
-      String value;
-      try {
-        key =
-            URLDecoder.decode(
-                separator < 0 ? field : field.substring(0, separator), StandardCharsets.UTF_8);
-        value =
-            separator < 0
-                ? ""
-                : URLDecoder.decode(field.substring(separator + 1), StandardCharsets.UTF_8);
-      } catch (IllegalArgumentException exception) {
-        throw new InvalidFormException();
-      }
-      if (CREDENTIAL_FIELD.equals(key) || CSRF_FIELD.equals(key)) {
-        if (values.putIfAbsent(key, value) != null) {
-          throw new InvalidFormException();
-        }
-      }
-    }
-    return values;
-  }
-
-  private static String csrfCookie(HttpServletRequest request) {
-    return cookieValue(request, CSRF_FIELD);
-  }
-
   private static String sessionCookie(HttpServletRequest request) {
-    return cookieValue(request, SESSION_COOKIE);
-  }
-
-  private static String cookieValue(HttpServletRequest request, String name) {
     Cookie[] cookies = request.getCookies();
     if (cookies == null) {
       return null;
     }
     String value = null;
     for (Cookie cookie : cookies) {
-      if (name.equals(cookie.getName())) {
+      if (SESSION_COOKIE.equals(cookie.getName())) {
         if (value != null) {
           return null;
         }
@@ -286,11 +229,13 @@ public class GoogleCredentialCallbackController {
       try {
         return UUID.fromString(id);
       } catch (IllegalArgumentException ignored) {
-        // Use a generated identifier in controller-only tests or alternate filter configurations.
+        // Use a generated identifier if a different filter supplied invalid context.
       }
     }
     return UUID.randomUUID();
   }
 
-  private static final class InvalidFormException extends RuntimeException {}
+  public record FirebaseSessionRequest(String idToken, String state) {}
+
+  public record FirebaseSessionResponse(String returnTo) {}
 }

@@ -7,23 +7,27 @@ const viewports = [
   { name: 'desktop 1280px', width: 1280, height: 900 },
 ] as const;
 
-const nonce = 'A'.repeat(43);
+const state = 'A'.repeat(43);
 
 function bootstrapResponse(
-  responseNonce = nonce,
+  responseState = state,
   attemptExpiresAt = new Date(Date.now() + 5 * 60_000).toISOString(),
 ) {
   return {
-    clientId: 'novel-test-client.apps.googleusercontent.com',
-    loginUri: 'http://localhost:8080/api/v1/auth/google/credential',
-    nonce: responseNonce,
+    firebaseConfig: {
+      apiKey: 'firebase-test-key-web-auth-not-a-credential',
+      authDomain: 'novel-test.firebaseapp.com',
+      projectId: 'novel-test',
+      appId: '1:123456789012:web:abcdef1234567890',
+    },
+    state: responseState,
     locale: 'vi',
     attemptExpiresAt,
   };
 }
 
 async function routeBootstrap(page: Page, status: number): Promise<void> {
-  await page.route('**/api/v1/auth/google/bootstrap**', (route) =>
+  await page.route('**/api/v1/auth/firebase/bootstrap**', (route) =>
     route.fulfill({
       status,
       contentType: 'application/json',
@@ -35,29 +39,8 @@ async function routeBootstrap(page: Page, status: number): Promise<void> {
   );
 }
 
-async function routeGoogleIdentitySdk(page: Page): Promise<void> {
-  await page.route('https://accounts.google.com/gsi/client', (route) =>
-    route.fulfill({
-      contentType: 'application/javascript',
-      body: `
-        window.google = { accounts: { id: {
-          initialize(configuration) { window.__novelGoogleConfiguration = configuration; },
-          renderButton(parent, configuration) {
-            window.__novelGoogleButtonConfiguration = configuration;
-            const button = document.createElement('button');
-            button.type = 'button';
-            button.setAttribute('aria-label', 'Sign in with Google');
-            button.textContent = 'Sign in with Google';
-            parent.append(button);
-          }
-        } } };
-      `,
-    }),
-  );
-}
-
 for (const viewport of viewports) {
-  test(`sign-in keeps demo available when Google is unavailable at ${viewport.name}`, async ({
+  test(`sign-in keeps demo available when Firebase is unavailable at ${viewport.name}`, async ({
     page,
   }, testInfo) => {
     await routeBootstrap(page, 503);
@@ -73,8 +56,8 @@ for (const viewport of viewports) {
 
     const providerStatus = page.getByRole('status');
     await expect(providerStatus).toContainText('Google chưa sẵn sàng');
-    await expect(providerStatus).toContainText('chưa được cấu hình');
-    await expect(page.getByRole('button', { name: 'Sign in with Google' })).toHaveCount(0);
+    await expect(providerStatus).toContainText('Firebase');
+    await expect(page.getByRole('button', { name: 'Tiếp tục với Google' })).toBeDisabled();
     const retryBox = await page.getByRole('button', { name: 'Thử lại' }).boundingBox();
     expect(retryBox?.width).toBeGreaterThanOrEqual(44);
     expect(retryBox?.height).toBeGreaterThanOrEqual(44);
@@ -98,53 +81,33 @@ for (const viewport of viewports) {
     }
   });
 
-  test(`sign-in renders the official Google redirect button at ${viewport.name}`, async ({
-    page,
-  }) => {
+  test(`sign-in prepares Firebase Google popup at ${viewport.name}`, async ({ page }) => {
     await routeBootstrap(page, 200);
-    await routeGoogleIdentitySdk(page);
+    await page.route('https://novel-test.firebaseapp.com/**', (route) =>
+      route.fulfill({ contentType: 'text/html', body: '<!doctype html><title>Firebase Auth</title>' }),
+    );
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
     await page.goto('/sign-in?returnTo=%2Fapp%2Flibrary%3Ffilter%3Dreading');
 
-    await expect(page.getByRole('button', { name: 'Sign in with Google' })).toBeVisible();
+    const signInButton = page.getByRole('button', { name: 'Tiếp tục với Google' });
+    await expect(signInButton).toBeEnabled();
     await expect(page.getByRole('status')).toContainText('bạn sẽ quay lại Novel');
     await expectNoAxeViolations(page);
 
-    const browserConfiguration = await page.evaluate(() => {
-      const testWindow = window as unknown as {
-        __novelGoogleConfiguration?: Record<string, unknown>;
-        __novelGoogleButtonConfiguration?: Record<string, unknown>;
-      };
-      return {
-        identity: testWindow.__novelGoogleConfiguration,
-        button: testWindow.__novelGoogleButtonConfiguration,
-        storageKeys: Object.keys(localStorage),
-      };
-    });
-
-    expect(browserConfiguration.identity).toMatchObject({
-      client_id: 'novel-test-client.apps.googleusercontent.com',
-      ux_mode: 'redirect',
-      login_uri: 'http://localhost:8080/api/v1/auth/google/credential',
-      nonce,
-      auto_select: false,
-    });
-    expect(browserConfiguration.button).toMatchObject({
-      type: 'standard',
-      text: 'signin_with',
-      locale: 'vi',
-    });
-    expect(browserConfiguration.button?.['width']).toBeGreaterThanOrEqual(120);
-    expect(browserConfiguration.button?.['width']).toBeLessThanOrEqual(400);
-    expect(
-      browserConfiguration.storageKeys.filter((key) => /token|credential|nonce/i.test(key)),
-    ).toEqual([]);
+    const browserState = await page.evaluate(() => ({
+      storageKeys: Object.keys(localStorage),
+      gisScripts: document.querySelectorAll('script[src*="accounts.google.com/gsi"]').length,
+    }));
+    expect(browserState.storageKeys.filter((key) => /token|credential|nonce/i.test(key))).toEqual(
+      [],
+    );
+    expect(browserState.gisScripts).toBe(0);
   });
 }
 
 test('sign-in waits after bootstrap rate limiting and lets the user retry', async ({ page }) => {
   let attempts = 0;
-  await page.route('**/api/v1/auth/google/bootstrap**', (route) => {
+  await page.route('**/api/v1/auth/firebase/bootstrap**', (route) => {
     attempts += 1;
     return route.fulfill({
       status: attempts === 1 ? 429 : 200,
@@ -155,12 +118,11 @@ test('sign-in waits after bootstrap rate limiting and lets the user retry', asyn
           : JSON.stringify(bootstrapResponse()),
     });
   });
-  await routeGoogleIdentitySdk(page);
   await page.goto('/sign-in');
 
   await expect(page.getByRole('status')).toContainText('Hãy chờ trước khi thử lại');
   await page.getByRole('button', { name: 'Thử lại' }).click();
-  await expect(page.getByRole('button', { name: 'Sign in with Google' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Tiếp tục với Google' })).toBeEnabled();
   expect(attempts).toBe(2);
   await expectNoAxeViolations(page);
 });
@@ -169,8 +131,7 @@ test('sign-in rejects an expired bootstrap and requests a fresh attempt on retry
   page,
 }) => {
   let bootstrapAttempts = 0;
-  let sdkLoads = 0;
-  await page.route('**/api/v1/auth/google/bootstrap**', (route) => {
+  await page.route('**/api/v1/auth/firebase/bootstrap**', (route) => {
     bootstrapAttempts += 1;
     const response =
       bootstrapAttempts === 1
@@ -182,60 +143,12 @@ test('sign-in rejects an expired bootstrap and requests a fresh attempt on retry
       body: JSON.stringify(response),
     });
   });
-  await page.route('https://accounts.google.com/gsi/client', (route) => {
-    sdkLoads += 1;
-    return route.fulfill({
-      contentType: 'application/javascript',
-      body: `window.google = { accounts: { id: {
-        initialize(configuration) { window.__novelGoogleConfiguration = configuration; },
-        renderButton(parent) { parent.innerHTML = '<button aria-label="Sign in with Google">Sign in with Google</button>'; }
-      } } };`,
-    });
-  });
   await page.goto('/sign-in');
 
-  await expect(page.getByRole('status')).toContainText('Chưa tải được dịch vụ đăng nhập Google');
-  await expect(page.getByRole('button', { name: 'Sign in with Google' })).toHaveCount(0);
-  expect(sdkLoads).toBe(0);
+  await expect(page.getByRole('status')).toContainText('Chưa chuẩn bị được Firebase Authentication');
   await page.getByRole('button', { name: 'Thử lại' }).click();
-  await expect(page.getByRole('button', { name: 'Sign in with Google' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Tiếp tục với Google' })).toBeEnabled();
   expect(bootstrapAttempts).toBe(2);
-  expect(sdkLoads).toBe(1);
-  await expectNoAxeViolations(page);
-});
-
-test('sign-in recovers when the GIS script fails to load', async ({ page }) => {
-  let bootstrapAttempts = 0;
-  let sdkLoads = 0;
-  await page.route('**/api/v1/auth/google/bootstrap**', (route) => {
-    bootstrapAttempts += 1;
-    return route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify(
-        bootstrapResponse(String.fromCharCode(64 + bootstrapAttempts).repeat(43)),
-      ),
-    });
-  });
-  await page.route('https://accounts.google.com/gsi/client', (route) => {
-    sdkLoads += 1;
-    if (sdkLoads === 1) return route.abort('failed');
-    return route.fulfill({
-      contentType: 'application/javascript',
-      body: `window.google = { accounts: { id: {
-        initialize(configuration) { window.__novelGoogleConfiguration = configuration; },
-        renderButton(parent) { parent.innerHTML = '<button aria-label="Sign in with Google">Sign in with Google</button>'; }
-      } } };`,
-    });
-  });
-  await page.goto('/sign-in');
-
-  await expect(page.getByRole('status')).toContainText('Chưa tải được dịch vụ đăng nhập Google');
-  await page.getByRole('button', { name: 'Thử lại' }).click();
-  await expect(page.getByRole('button', { name: 'Sign in with Google' })).toBeVisible();
-  expect(bootstrapAttempts).toBe(2);
-  expect(sdkLoads).toBe(2);
-  await expectNoAxeViolations(page);
 });
 
 test('sign-in replaces an untrusted return path with the server default', async ({ page }) => {
@@ -246,7 +159,7 @@ test('sign-in replaces an untrusted return path with the server default', async 
     '/%2F%2Fattacker.example',
     '/app/%5C%5Coutside',
   ];
-  await page.route('**/api/v1/auth/google/bootstrap**', (route) => {
+  await page.route('**/api/v1/auth/firebase/bootstrap**', (route) => {
     const requestUrl = new URL(route.request().url());
     expect(requestUrl.searchParams.get('returnTo')).toBe('/app/home');
     attempts += 1;
@@ -258,7 +171,7 @@ test('sign-in replaces an untrusted return path with the server default', async 
   });
   for (const returnTo of untrustedPaths) {
     await page.goto(`/sign-in?returnTo=${encodeURIComponent(returnTo)}`);
-    await expect(page.getByRole('status')).toContainText('Google chưa sẵn sàng');
+    await expect(page.getByRole('status')).toContainText('Firebase');
   }
   expect(attempts).toBe(untrustedPaths.length);
 });

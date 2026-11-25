@@ -21,8 +21,11 @@ const environment = {
   POSTGRES_PORT: String(postgresPort),
   WEB_PORT: String(webPort),
   STACK_GOOGLE_CALLBACK_ORIGIN: webOrigin,
-  STACK_GOOGLE_AUTH_CREDENTIAL_CALLBACK_URI: `${webOrigin}/api/v1/auth/google/credential`,
   STACK_CORS_ALLOWED_ORIGINS: webOrigin,
+  FIREBASE_AUTH_API_KEY: 'firebase-test-key-full-stack-not-a-credential',
+  FIREBASE_AUTH_DOMAIN: 'novel-full-stack-test.firebaseapp.com',
+  FIREBASE_AUTH_PROJECT_ID: 'novel-full-stack-test',
+  FIREBASE_AUTH_APP_ID: '1:123456789012:web:abcdef1234567890',
   FULL_STACK_URL: webOrigin,
 };
 const composeArgs = [

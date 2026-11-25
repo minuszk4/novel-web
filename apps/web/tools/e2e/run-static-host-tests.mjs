@@ -12,7 +12,7 @@ const webPort = 18080;
 const testEnvironment = {
   ...process.env,
   API_UPSTREAM: `http://host.docker.internal:${mockApiPort}`,
-  GOOGLE_CALLBACK_ORIGIN: 'https://api.example.test',
+  FIREBASE_AUTH_DOMAIN: 'novel-static-test.firebaseapp.com',
   STATIC_HOST_MOCK_API_PORT: String(mockApiPort),
   STATIC_HOST_URL: `http://127.0.0.1:${webPort}`,
   WEB_PORT: String(webPort),

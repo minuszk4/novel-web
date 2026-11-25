@@ -9,7 +9,7 @@ services:
       - "127.0.0.1:${WEB_PORT:-8088}:8080"
     environment:
       API_UPSTREAM: ${API_UPSTREAM:-http://host.docker.internal:8080}
-      GOOGLE_CALLBACK_ORIGIN: ${GOOGLE_CALLBACK_ORIGIN:-}
+      FIREBASE_AUTH_DOMAIN: ${FIREBASE_AUTH_DOMAIN:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     read_only: true

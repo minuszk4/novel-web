@@ -14,7 +14,7 @@ import org.junit.jupiter.api.Test;
 
 class GoogleCredentialVerificationServiceTests {
 
-  private static final String CSRF_TOKEN = "gis-csrf-test-token";
+  private static final String ONE_TIME_STATE = "A".repeat(43);
 
   private GoogleIdTokenVerifier idTokenVerifier;
   private GoogleAuthAttemptService authAttemptService;
@@ -28,33 +28,26 @@ class GoogleCredentialVerificationServiceTests {
   }
 
   @Test
-  void validatesCsrfBeforeCredentialAndConsumesOnlyTheVerifiedNonce() {
+  void verifiesFirebaseTokenAndConsumesOnlyTheSubmittedOneTimeState() {
     GoogleIdTokenVerifier.VerifiedGoogleIdentity identity =
         new GoogleIdTokenVerifier.VerifiedGoogleIdentity(
-            "https://accounts.google.com", "subject-1", "reader@example.com", "Reader", "nonce-1");
+            "https://securetoken.google.com/novel-test-project",
+            "subject-1",
+            "reader@example.com",
+            "Reader");
     UUID correlationId = UUID.randomUUID();
     when(idTokenVerifier.verify("signed-token")).thenReturn(identity);
-    when(authAttemptService.consumeOnce("nonce-1"))
+    when(authAttemptService.consumeOnce(ONE_TIME_STATE))
         .thenReturn(
             Optional.of(new GoogleAuthAttemptService.ConsumedAttempt("/library", correlationId)));
 
     GoogleCredentialVerificationService.VerifiedGoogleSignIn verified =
-        service.verify("signed-token", CSRF_TOKEN, CSRF_TOKEN);
+        service.verify("signed-token", ONE_TIME_STATE);
 
     assertEquals(identity, verified.identity());
     assertEquals("/library", verified.returnTo());
     assertEquals(correlationId, verified.correlationId());
-    verify(authAttemptService).consumeOnce("nonce-1");
-  }
-
-  @Test
-  void rejectsCsrfMismatchBeforeDecodingTokenOrConsumingAttempt() {
-    assertThrows(
-        InvalidGoogleCredentialException.class,
-        () -> service.verify("signed-token", "cookie-csrf", "body-csrf"));
-
-    verify(idTokenVerifier, never()).verify("signed-token");
-    verify(authAttemptService, never()).consumeOnce("nonce-1");
+    verify(authAttemptService).consumeOnce(ONE_TIME_STATE);
   }
 
   @Test
@@ -62,12 +55,15 @@ class GoogleCredentialVerificationServiceTests {
     when(idTokenVerifier.verify("signed-token"))
         .thenReturn(
             new GoogleIdTokenVerifier.VerifiedGoogleIdentity(
-                "https://accounts.google.com", "subject-1", "reader@example.com", null, "nonce-1"));
-    when(authAttemptService.consumeOnce("nonce-1")).thenReturn(Optional.empty());
+                "https://securetoken.google.com/novel-test-project",
+                "subject-1",
+                "reader@example.com",
+                null));
+    when(authAttemptService.consumeOnce(ONE_TIME_STATE)).thenReturn(Optional.empty());
 
     assertThrows(
         InvalidGoogleCredentialException.class,
-        () -> service.verify("signed-token", CSRF_TOKEN, CSRF_TOKEN));
+        () -> service.verify("signed-token", ONE_TIME_STATE));
   }
 
   @Test
@@ -76,8 +72,8 @@ class GoogleCredentialVerificationServiceTests {
 
     assertThrows(
         InvalidGoogleCredentialException.class,
-        () -> service.verify("signed-token", CSRF_TOKEN, CSRF_TOKEN));
+        () -> service.verify("signed-token", ONE_TIME_STATE));
 
-    verify(authAttemptService, never()).consumeOnce("nonce-1");
+    verify(authAttemptService, never()).consumeOnce(ONE_TIME_STATE);
   }
 }

@@ -155,8 +155,10 @@ import tools.jackson.databind.ObjectMapper;
       "novel.auth.google.rate-limit-refill-interval=24h",
       "novel.auth.google.rate-limit-hmac-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
       "novel.auth.google.trusted-proxies=10.0.0.0/8",
-      "novel.auth.google.web-client-id=novel-web-integration-test.apps.googleusercontent.com",
-      "novel.auth.google.credential-callback-uri=https://api.example.test/api/v1/auth/google/credential",
+      "novel.auth.google.firebase-api-key=firebase-test-key-integration-api-key-not-a-credential",
+      "novel.auth.google.firebase-auth-domain=novel-web-integration-test.firebaseapp.com",
+      "novel.auth.google.firebase-project-id=novel-web-integration-test",
+      "novel.auth.google.firebase-app-id=1:123456789012:web:abcdef1234567890",
       "novel.security.csrf.hmac-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
       "novel.features.cultivation-enabled=true",
       "novel.features.commerce-sandbox-enabled=true",
@@ -222,6 +224,8 @@ class PostgresSchemaIntegrationTests {
 
   private static final String BOOTSTRAP_RATE_LIMIT_HMAC_KEY =
       "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+  private static final String FIREBASE_TEST_ISSUER =
+      "https://securetoken.google.com/novel-web-integration-test";
 
   private static final Set<String> EXPECTED_APPLICATION_TABLES =
       Set.of(
@@ -18123,7 +18127,7 @@ class PostgresSchemaIntegrationTests {
       MvcResult result =
           mockMvc
               .perform(
-                  get("/api/v1/auth/google/bootstrap")
+                  get("/api/v1/auth/firebase/bootstrap")
                       .param("returnTo", "/library/recent?sort=updated")
                       .param("locale", "en")
                       .with(
@@ -18142,14 +18146,21 @@ class PostgresSchemaIntegrationTests {
 
       JsonNode body = objectMapper.readTree(result.getResponse().getContentAsString());
       assertEquals(
-          "novel-web-integration-test.apps.googleusercontent.com", body.path("clientId").asText());
+          "firebase-test-key-integration-api-key-not-a-credential",
+          body.path("firebaseConfig").path("apiKey").asText());
       assertEquals(
-          "https://api.example.test/api/v1/auth/google/credential", body.path("loginUri").asText());
-      assertTrue(body.path("nonce").asText().matches("[A-Za-z0-9_-]{43}"));
+          "novel-web-integration-test.firebaseapp.com",
+          body.path("firebaseConfig").path("authDomain").asText());
+      assertEquals(
+          "novel-web-integration-test", body.path("firebaseConfig").path("projectId").asText());
+      assertEquals(
+          "1:123456789012:web:abcdef1234567890",
+          body.path("firebaseConfig").path("appId").asText());
+      assertTrue(body.path("state").asText().matches("[A-Za-z0-9_-]{43}"));
       assertEquals("en", body.path("locale").asText());
       assertTrue(Instant.parse(body.path("attemptExpiresAt").asText()).isAfter(Instant.now()));
       assertEquals(
-          "/library/recent?sort=updated", storedBootstrapReturnPath(body.path("nonce").asText()));
+          "/library/recent?sort=updated", storedBootstrapReturnPath(body.path("state").asText()));
       assertEquals(1, googleAuthAttemptCount(correlationId));
     } finally {
       deleteBootstrapFixtures(clientAddress, correlationIds);
@@ -18157,15 +18168,14 @@ class PostgresSchemaIntegrationTests {
   }
 
   @Test
-  void googleCredentialCallbackRejectsMissingCsrfCookieBeforeDecodingCredential() throws Exception {
+  void firebaseSessionRejectsMissingOneTimeStateBeforeDecodingToken() throws Exception {
     MvcResult result =
         mockMvc
             .perform(
-                post("/api/v1/auth/google/credential")
+                post("/api/v1/auth/firebase/session")
                     .header("Origin", "https://app.example.test")
-                    .contentType(MediaType.APPLICATION_FORM_URLENCODED)
-                    .content(
-                        "credential=synthetic-invalid-token&g_csrf_token=synthetic-csrf-token"))
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("{\"idToken\":\"synthetic-invalid-token\"}"))
             .andReturn();
 
     assertEquals(401, result.getResponse().getStatus());
@@ -18176,14 +18186,16 @@ class PostgresSchemaIntegrationTests {
   }
 
   @Test
-  void googleCredentialCallbackRejectsMissingOriginAndUnsupportedMediaType() throws Exception {
+  void firebaseSessionRejectsMissingOriginAndUnsupportedMediaType() throws Exception {
     MvcResult missingOrigin =
         mockMvc
             .perform(
-                post("/api/v1/auth/google/credential")
-                    .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                post("/api/v1/auth/firebase/session")
+                    .contentType(MediaType.APPLICATION_JSON)
                     .content(
-                        "credential=synthetic-invalid-token&g_csrf_token=synthetic-csrf-token"))
+                        "{\"idToken\":\"synthetic-invalid-token\",\"state\":\""
+                            + "A".repeat(43)
+                            + "\"}"))
             .andReturn();
     assertEquals(403, missingOrigin.getResponse().getStatus());
     assertTrue(missingOrigin.getResponse().getContentAsString().contains("INVALID_ORIGIN"));
@@ -18191,9 +18203,9 @@ class PostgresSchemaIntegrationTests {
     MvcResult wrongContentType =
         mockMvc
             .perform(
-                post("/api/v1/auth/google/credential")
+                post("/api/v1/auth/firebase/session")
                     .header("Origin", "https://app.example.test")
-                    .contentType(MediaType.APPLICATION_JSON)
+                    .contentType(MediaType.APPLICATION_FORM_URLENCODED)
                     .content("{}"))
             .andReturn();
     assertEquals(415, wrongContentType.getResponse().getStatus());
@@ -18203,57 +18215,57 @@ class PostgresSchemaIntegrationTests {
   }
 
   @Test
-  void googleCredentialCallbackRejectsOversizedAndDuplicateCredentialForms() throws Exception {
+  void firebaseSessionRejectsOversizedAndMalformedJsonBodies() throws Exception {
     String oversized = "x".repeat(24 * 1024 + 1);
     MvcResult tooLarge =
         mockMvc
             .perform(
-                post("/api/v1/auth/google/credential")
+                post("/api/v1/auth/firebase/session")
                     .header("Origin", "https://app.example.test")
-                    .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                    .contentType(MediaType.APPLICATION_JSON)
                     .content(oversized))
             .andReturn();
     assertEquals(413, tooLarge.getResponse().getStatus());
 
-    MvcResult duplicate =
+    MvcResult malformed =
         mockMvc
             .perform(
-                post("/api/v1/auth/google/credential")
+                post("/api/v1/auth/firebase/session")
                     .header("Origin", "https://app.example.test")
-                    .contentType(MediaType.APPLICATION_FORM_URLENCODED)
-                    .content("credential=first&credential=second&g_csrf_token=csrf-token")
-                    .cookie(new jakarta.servlet.http.Cookie("g_csrf_token", "csrf-token")))
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("{not-json}"))
             .andReturn();
-    assertEquals(400, duplicate.getResponse().getStatus());
+    assertEquals(400, malformed.getResponse().getStatus());
     verify(jwtDecoder, never()).decode(anyString());
   }
 
   @Test
-  void googleCredentialCallbackCreatesIdentitySessionAndRedirectsToStoredPath() throws Exception {
+  void firebaseSessionCreatesIdentityAndReturnsStoredPath() throws Exception {
     String subject = "callback-" + UUID.randomUUID();
     String email = subject + "@example.test";
     GoogleAuthAttemptService.CreatedAttempt attempt =
         googleAuthAttemptService.create("/library/recent?sort=updated", UUID.randomUUID());
-    when(jwtDecoder.decode("synthetic-google-id-token"))
-        .thenReturn(googleJwt(attempt.nonce(), subject, email));
+    when(jwtDecoder.decode("synthetic-google-id-token")).thenReturn(googleJwt(subject, email));
 
     try {
       MvcResult result =
           mockMvc
               .perform(
-                  post("/api/v1/auth/google/credential")
+                  post("/api/v1/auth/firebase/session")
                       .header("Origin", "https://app.example.test")
-                      .contentType(MediaType.APPLICATION_FORM_URLENCODED)
-                      .content("credential=synthetic-google-id-token&g_csrf_token=csrf-token")
-                      .cookie(new jakarta.servlet.http.Cookie("g_csrf_token", "csrf-token")))
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          "{\"idToken\":\"synthetic-google-id-token\",\"state\":\""
+                              + attempt.nonce()
+                              + "\"}"))
               .andReturn();
 
-      assertEquals(303, result.getResponse().getStatus());
-      assertEquals("/library/recent?sort=updated", result.getResponse().getHeader("Location"));
+      assertEquals(200, result.getResponse().getStatus());
+      JsonNode responseBody = objectMapper.readTree(result.getResponse().getContentAsString());
+      assertEquals("/library/recent?sort=updated", responseBody.path("returnTo").asText());
       assertTrue(result.getResponse().getHeader("Cache-Control").contains("no-store"));
       assertEquals("no-cache", result.getResponse().getHeader("Pragma"));
       assertEquals("no-referrer", result.getResponse().getHeader("Referrer-Policy"));
-      assertEquals("", result.getResponse().getContentAsString());
 
       String setCookie = result.getResponse().getHeader("Set-Cookie");
       assertTrue(setCookie.startsWith("__Host-novel_session="));
@@ -18276,7 +18288,7 @@ class PostgresSchemaIntegrationTests {
   }
 
   @Test
-  void googleCredentialCallbackRotatesAnExistingSessionForTheSameAccount() throws Exception {
+  void firebaseSessionRotatesAnExistingSessionForTheSameAccount() throws Exception {
     String subject = "rotate-callback-" + UUID.randomUUID();
     String email = subject + "@example.test";
     GoogleIdentityService.IdentityAccount account =
@@ -18284,24 +18296,25 @@ class PostgresSchemaIntegrationTests {
     SessionService.IssuedSession previous = sessionService.create(account.userId()).orElseThrow();
     GoogleAuthAttemptService.CreatedAttempt attempt =
         googleAuthAttemptService.create("/app/home", UUID.randomUUID());
-    when(jwtDecoder.decode("synthetic-google-id-token"))
-        .thenReturn(googleJwt(attempt.nonce(), subject, email));
+    when(jwtDecoder.decode("synthetic-google-id-token")).thenReturn(googleJwt(subject, email));
 
     try {
       MvcResult result =
           mockMvc
               .perform(
-                  post("/api/v1/auth/google/credential")
+                  post("/api/v1/auth/firebase/session")
                       .header("Origin", "https://app.example.test")
-                      .contentType(MediaType.APPLICATION_FORM_URLENCODED)
-                      .content("credential=synthetic-google-id-token&g_csrf_token=csrf-token")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          "{\"idToken\":\"synthetic-google-id-token\",\"state\":\""
+                              + attempt.nonce()
+                              + "\"}")
                       .cookie(
-                          new jakarta.servlet.http.Cookie("g_csrf_token", "csrf-token"),
                           new jakarta.servlet.http.Cookie(
                               "__Host-novel_session", previous.cookieValue())))
               .andReturn();
 
-      assertEquals(303, result.getResponse().getStatus());
+      assertEquals(200, result.getResponse().getStatus());
       String setCookie = result.getResponse().getHeader("Set-Cookie");
       String rotatedToken =
           setCookie.substring("__Host-novel_session=".length(), setCookie.indexOf(';'));
@@ -18318,7 +18331,7 @@ class PostgresSchemaIntegrationTests {
   }
 
   @Test
-  void googleCredentialCallbackRevokesThePreviousAccountSessionOnAccountSwitch() throws Exception {
+  void firebaseSessionRevokesThePreviousAccountSessionOnAccountSwitch() throws Exception {
     String previousSubject = "previous-callback-" + UUID.randomUUID();
     String previousEmail = previousSubject + "@example.test";
     GoogleIdentityService.IdentityAccount previousAccount =
@@ -18332,23 +18345,25 @@ class PostgresSchemaIntegrationTests {
     GoogleAuthAttemptService.CreatedAttempt attempt =
         googleAuthAttemptService.create("/app/home", UUID.randomUUID());
     when(jwtDecoder.decode("synthetic-google-id-token"))
-        .thenReturn(googleJwt(attempt.nonce(), nextSubject, nextEmail));
+        .thenReturn(googleJwt(nextSubject, nextEmail));
 
     try {
       MvcResult result =
           mockMvc
               .perform(
-                  post("/api/v1/auth/google/credential")
+                  post("/api/v1/auth/firebase/session")
                       .header("Origin", "https://app.example.test")
-                      .contentType(MediaType.APPLICATION_FORM_URLENCODED)
-                      .content("credential=synthetic-google-id-token&g_csrf_token=csrf-token")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          "{\"idToken\":\"synthetic-google-id-token\",\"state\":\""
+                              + attempt.nonce()
+                              + "\"}")
                       .cookie(
-                          new jakarta.servlet.http.Cookie("g_csrf_token", "csrf-token"),
                           new jakarta.servlet.http.Cookie(
                               "__Host-novel_session", previous.cookieValue())))
               .andReturn();
 
-      assertEquals(303, result.getResponse().getStatus());
+      assertEquals(200, result.getResponse().getStatus());
       String setCookie = result.getResponse().getHeader("Set-Cookie");
       String nextToken =
           setCookie.substring("__Host-novel_session=".length(), setCookie.indexOf(';'));
@@ -18921,7 +18936,7 @@ class PostgresSchemaIntegrationTests {
         MvcResult result =
             mockMvc
                 .perform(
-                    get("/api/v1/auth/google/bootstrap")
+                    get("/api/v1/auth/firebase/bootstrap")
                         .with(
                             request -> {
                               request.setRemoteAddr(clientAddress);
@@ -18960,7 +18975,7 @@ class PostgresSchemaIntegrationTests {
         MvcResult result =
             mockMvc
                 .perform(
-                    get("/api/v1/auth/google/bootstrap")
+                    get("/api/v1/auth/firebase/bootstrap")
                         .header("X-Forwarded-For", clientAddress)
                         .with(
                             request -> {
@@ -18987,7 +19002,7 @@ class PostgresSchemaIntegrationTests {
         MvcResult result =
             mockMvc
                 .perform(
-                    get("/api/v1/auth/google/bootstrap")
+                    get("/api/v1/auth/firebase/bootstrap")
                         .header("X-Forwarded-For", "198.51.100." + (index + 1))
                         .with(
                             request -> {
@@ -19091,7 +19106,7 @@ class PostgresSchemaIntegrationTests {
       assertEquals(email, account.contactEmail());
       assertEquals(1, identityCount(subject));
       assertEquals(1, userCount(account.userId()));
-      assertEquals("https://accounts.google.com", identityIssuer(subject));
+      assertEquals(FIREBASE_TEST_ISSUER, identityIssuer(subject));
     } finally {
       if (account != null) {
         deleteMappedIdentity(account.userId(), subject);
@@ -23379,7 +23394,7 @@ class PostgresSchemaIntegrationTests {
                 """
                      INSERT INTO external_identities (
                          id, user_id, provider, issuer, subject, provider_email, provider_email_verified)
-                     VALUES (?, ?, 'google', 'https://accounts.google.com', ?, ?, TRUE)
+                     VALUES (?, ?, 'google', 'https://securetoken.google.com/novel-web-integration-test', ?, ?, TRUE)
                      """)) {
       insert.setObject(1, UUID.randomUUID());
       insert.setObject(2, userId);
@@ -25094,20 +25109,21 @@ class PostgresSchemaIntegrationTests {
 
   private static GoogleIdTokenVerifier.VerifiedGoogleIdentity verifiedIdentity(
       String subject, String email, String name) {
-    return GoogleIdentityTestFixtures.verifiedIdentity(subject, email, name);
+    return GoogleIdentityTestFixtures.verifiedIdentity(FIREBASE_TEST_ISSUER, subject, email, name);
   }
 
-  private static Jwt googleJwt(String nonce, String subject, String email) {
+  private static Jwt googleJwt(String subject, String email) {
     Instant now = Instant.now();
     return Jwt.withTokenValue("synthetic-google-id-token")
         .header("alg", "RS256")
-        .claim("iss", "https://accounts.google.com")
-        .claim("aud", List.of("novel-web-integration-test.apps.googleusercontent.com"))
+        .claim("iss", "https://securetoken.google.com/novel-web-integration-test")
+        .claim("aud", List.of("novel-web-integration-test"))
         .claim("sub", subject)
         .claim("email", email)
         .claim("email_verified", true)
         .claim("name", "Integration Reader")
-        .claim("nonce", nonce)
+        .claim("auth_time", now.minusSeconds(5).getEpochSecond())
+        .claim("firebase", java.util.Map.of("sign_in_provider", "google.com"))
         .issuedAt(now.minusSeconds(10))
         .expiresAt(now.plusSeconds(300))
         .build();
@@ -25157,8 +25173,9 @@ class PostgresSchemaIntegrationTests {
     try (Connection connection = dataSource.getConnection();
         PreparedStatement select =
             connection.prepareStatement(
-                "SELECT COUNT(*) FROM external_identities WHERE issuer = 'https://accounts.google.com' AND subject = ?")) {
-      select.setString(1, subject);
+                "SELECT COUNT(*) FROM external_identities WHERE issuer = ? AND subject = ?")) {
+      select.setString(1, FIREBASE_TEST_ISSUER);
+      select.setString(2, subject);
       try (ResultSet row = select.executeQuery()) {
         row.next();
         return row.getInt(1);
@@ -25172,9 +25189,10 @@ class PostgresSchemaIntegrationTests {
             connection.prepareStatement(
                 """
                      SELECT user_id FROM external_identities
-                     WHERE issuer = 'https://accounts.google.com' AND subject = ?
+                     WHERE issuer = ? AND subject = ?
                      """)) {
-      select.setString(1, subject);
+      select.setString(1, FIREBASE_TEST_ISSUER);
+      select.setString(2, subject);
       try (ResultSet row = select.executeQuery()) {
         assertTrue(row.next());
         return row.getObject(1, UUID.class);
@@ -25188,9 +25206,10 @@ class PostgresSchemaIntegrationTests {
             connection.prepareStatement(
                 """
                      SELECT user_id FROM external_identities
-                     WHERE issuer = 'https://accounts.google.com' AND subject = ?
+                     WHERE issuer = ? AND subject = ?
                      """)) {
-      select.setString(1, subject);
+      select.setString(1, FIREBASE_TEST_ISSUER);
+      select.setString(2, subject);
       UUID userId = null;
       try (ResultSet row = select.executeQuery()) {
         if (row.next()) {
@@ -25339,7 +25358,7 @@ class PostgresSchemaIntegrationTests {
           connection.prepareStatement(
               """
                     DELETE FROM external_identities
-                    WHERE issuer = 'https://accounts.google.com' AND subject = ?
+                    WHERE issuer = 'https://securetoken.google.com/novel-web-integration-test' AND subject = ?
                     RETURNING user_id
                     """)) {
         deleteIdentity.setString(1, subject);
@@ -25375,7 +25394,7 @@ class PostgresSchemaIntegrationTests {
             """
                 INSERT INTO external_identities (
                     id, user_id, provider, issuer, subject, provider_email, provider_email_verified, last_seen_at)
-                VALUES (?, ?, 'google', 'https://accounts.google.com', ?, ?, TRUE, clock_timestamp())
+                VALUES (?, ?, 'google', 'https://securetoken.google.com/novel-web-integration-test', ?, ?, TRUE, clock_timestamp())
                 """)) {
       insert.setObject(1, UUID.randomUUID());
       insert.setObject(2, userId);

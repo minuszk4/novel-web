@@ -11,7 +11,7 @@ cd apps/api
 .\mvnw.cmd spring-boot:run
 ```
 
-The default profile exposes `/api/v1/system/status` and `/actuator/health`. The optional PostgreSQL profile also provides server sessions, versioned policy, library/work catalogs and personal reading-state/collection routes. Start PostgreSQL and the API using the disposable/local project steps in `apps/api/README.md`; Google sign-in and product policy content still need owner-approved setup.
+The default profile exposes `/api/v1/system/status` and `/actuator/health`. The optional PostgreSQL profile also provides server sessions, versioned policy, library/work catalogs and personal reading-state/collection routes. Start PostgreSQL and the API using the disposable/local project steps in `apps/api/README.md`; Firebase Google sign-in still needs provider/domain setup; product policy content still needs owner approval.
 
 ## Run the web demo
 
@@ -34,9 +34,9 @@ npm audit --audit-level=high
 
 ## Run the static web host in Docker
 
-This image serves the production Angular build as an unprivileged Nginx process. It proxies `/api/` to the configured API upstream so browser requests and session cookies remain on the web origin; `/actuator/` is not exposed. The HTML and static bundles receive a CSP, frame denial, `nosniff`, a no-referrer policy and a restrictive Permissions Policy. Google Identity Services is allowed only from Google's documented script, frame, connection and stylesheet endpoints.
+This image serves the production Angular build as an unprivileged Nginx process. It proxies `/api/` to the configured API upstream so browser requests and session cookies remain on the web origin; `/actuator/` is not exposed. The HTML and static bundles receive a CSP, frame denial, `nosniff`, a no-referrer policy and a restrictive Permissions Policy. Firebase Authentication uses the Google API loader, Identity Toolkit/Secure Token endpoints and the configured Firebase auth domain in the static host CSP.
 
-From this directory, copy the local example and edit its three values:
+From this directory, copy the local example and set the API upstream and Firebase auth domain:
 
 ```powershell
 Copy-Item deploy/.env.example .env
@@ -46,11 +46,11 @@ docker compose --env-file .env -f deploy/compose.yaml up --build
 
 Open `http://localhost:8088`. `API_UPSTREAM` must be reachable from inside the web container and must contain only the API scheme and host, with an optional port (no path). The example targets an API running on the host at port 8080. The default port is published to loopback only.
 
-`GOOGLE_CALLBACK_ORIGIN` is the exact origin of the configured Google credential callback. In production, set it to the callback's HTTPS origin, for example `https://api.example.com`; the API callback URL must remain `/api/v1/auth/google/credential`. The frontend CSP admits that one extra form destination and rejects other external form actions. Configure the Google OAuth client with the public frontend origin and callback URI. Set the API's `NOVEL_WEB_CORS_ALLOWED_ORIGINS` to the exact public frontend origin because the credential callback validates the browser `Origin` header. For local Docker, the corresponding values are `http://localhost:8088` for the frontend origin and `http://localhost:8080` for the callback origin.
+`FIREBASE_AUTH_DOMAIN` must match the `authDomain` returned by the API's Firebase bootstrap; for the provided project it is `novel-web-1fc75.firebaseapp.com`. In Firebase Console, enable Google under Authentication → Sign-in providers and add the browser origin (including `localhost` during development and the ngrok hostname while using it) under Authorized domains. Set `NOVEL_WEB_CORS_ALLOWED_ORIGINS` to the exact frontend origin because the API validates `Origin` on session creation. Firebase popup sign-in has no fixed API callback URI; the API receives the Firebase ID token as bounded JSON and creates Novel's session cookie.
 
-In production, terminate TLS at the selected ingress/load balancer, redirect HTTP to HTTPS, and set HSTS there. The container listens on plain HTTP port 8080 for an internal network; it does not claim to provide production TLS or HSTS. Set `API_UPSTREAM`, `GOOGLE_CALLBACK_ORIGIN`, the API secrets, OAuth client settings and exact origin allowlist in the deployment's secret/config store. No VNPAY or Google credential is included in the image.
+In production, terminate TLS at the selected ingress/load balancer, redirect HTTP to HTTPS, and set HSTS there. The container listens on plain HTTP port 8080 for an internal network; it does not claim to provide production TLS or HSTS. Set `API_UPSTREAM`, `FIREBASE_AUTH_DOMAIN`, the API configuration and exact origin allowlist in the deployment's config store. The Firebase Web App API key is public client configuration; never add a service-account private key to the image.
 
-`npm run test:host-container` builds and runs this container, routes it to a disposable API sentinel and uses Chromium to verify the response policy, Google GIS loading, API proxy path and blocking of inline JavaScript and unapproved form posts. It always removes its test container.
+`npm run test:host-container` builds and runs this container, routes it to a disposable API sentinel and uses Chromium to verify the response policy, Firebase Google sign-in CSP configuration, API proxy path and blocking of inline JavaScript and unapproved form posts. It always removes its test container.
 
 Before committing frontend changes, run `npm run format` to apply the repository Prettier style. CI runs `format:check` so formatting drift fails the frontend job.
 
@@ -80,7 +80,7 @@ The 2026-11-11 core-journey UX follow-up raises the mobile API-status retry, Rea
 
 The Reader's mobile header keeps a visible arrow to return to Work Detail while hiding the longer text label. The link has the accessible name “Quay lại chi tiết tác phẩm” and a minimum 40×40 px hit area; the browser regression verifies it is visible and navigates back at 360, 768 and 1280 px.
 
-Run the current account journey from the repository root with `.\tools\e2e\run-library-postgres.ps1 -IncludeAccountDataExport`. It creates a randomly named disposable PostgreSQL project, applies 188 Liquibase changesets, starts the real API and drives Angular through its proxy in Chromium. The 12/12 no-mock run covers private import, Reader progress/bookmark, account export request/download and ZIP-content checks for the imported work. It removes only its container/network/volume, private staging and synthetic ZIPs; evidence is written to `.ai/evidence/library-live-postgres-<date>/`. The harness pre-provisions a synthetic session/policy state, so it does not exercise Google GIS or interactive policy consent.
+Run the current account journey from the repository root with `.\tools\e2e\run-library-postgres.ps1 -IncludeAccountDataExport`. It creates a randomly named disposable PostgreSQL project, applies 188 Liquibase changesets, starts the real API and drives Angular through its proxy in Chromium. The 12/12 no-mock run covers private import, Reader progress/bookmark, account export request/download and ZIP-content checks for the imported work. It removes only its container/network/volume, private staging and synthetic ZIPs; evidence is written to `.ai/evidence/library-live-postgres-<date>/`. The harness pre-provisions a synthetic session/policy state, so it does not exercise real Firebase Google sign-in or interactive policy consent.
 
 Mobile import regressions also verify that unsupported-format feedback and the selected filename stay above the fixed action bar, the selected-file “Đổi tệp” control is usable and clears the previous rights affirmation, and Review keeps its submit action above bottom navigation. These UI checks use the metadata-only demo path; they do not replace the account-import API tests or live storage configuration.
 
@@ -96,7 +96,7 @@ Reader table-of-contents and settings drawers use modal keyboard behavior: focus
 
 ## Routes in this slice
 
-- `/`, `/sign-in`, `/app/setup` — landing, Google Identity Services entry and account policy setup.
+- `/`, `/sign-in`, `/app/setup` — landing, Firebase Google sign-in entry and account policy setup.
 - `/app/home`, `/app/library`, `/app/search`, `/app/history`, `/app/notifications` — private reading state, discovery and inbox.
 - `/app/import`, `/app/import/review` — metadata-only demo import, or server-backed EPUB/TXT/HTML/Markdown import and private commit.
 - `/app/works/:workId`, `/app/reader/:workId/:chapterId` — work detail, access-aware Reader, credit paywall, progress, bookmarks and notes.
@@ -108,7 +108,7 @@ Reader table-of-contents and settings drawers use modal keyboard behavior: focus
 
 ## Integration boundary
 
-Google Identity Services is wired into sign-in: the client requests a server bootstrap, loads GIS and renders Google's provider button. A real Google sign-in still requires a configured client, allowed origins/callback URI, and deployment secrets. Local/live browser fixtures use synthetic authenticated sessions and do not verify a real Google account.
+Firebase Google sign-in is wired into the sign-in page: the client requests Firebase Web App configuration and a one-use state, opens the Google provider popup through the Firebase JavaScript SDK, then exchanges its short-lived ID token for Novel's server session. The API verifies project issuer/audience, token lifetime, verified email and Google provider. Live sign-in still requires Google provider enablement and authorized domains in Firebase Console.
 
 With a valid server session, the client reads `/auth/me`, current policy documents and account library/work/reading-state APIs. Account import supports EPUB/TXT up to the configured limit (default 50 MiB), HTML up to 4 MiB and Markdown up to 16 MiB. Markdown chapters come from repeated top-level headings; visible link labels and image alt text stay while destinations and raw HTML are discarded. The flow records rights confirmation, sends bytes to a one-time private staging target, asks the API to scan/parse, loads an editable paginated preview and commits with version/idempotency checks. The default staging path is under `java.io.tmpdir`; production still needs private durable storage plus cleanup and backup operations.
 

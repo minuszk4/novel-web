@@ -2,9 +2,7 @@ import { expect, test } from './support';
 
 const nonce = 'S'.repeat(43);
 
-test('static container applies CSP, supports Google GIS and proxies API same-origin', async ({
-  page,
-}) => {
+test('static container applies Firebase CSP and proxies API same-origin', async ({ page }) => {
   await page.addInitScript(() => {
     const monitoredWindow = window as unknown as {
       __cspViolations: Array<{ directive: string; blockedURI: string }>;
@@ -18,35 +16,27 @@ test('static container applies CSP, supports Google GIS and proxies API same-ori
     });
   });
 
-  await page.route('**/api/v1/auth/google/bootstrap**', (route) =>
+  await page.route('**/api/v1/auth/firebase/bootstrap**', (route) =>
     route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({
-        clientId: 'novel-static-test.apps.googleusercontent.com',
-        loginUri: new URL(
-          '/api/v1/auth/google/credential',
-          process.env['GOOGLE_CALLBACK_ORIGIN'] ?? 'https://api.example.test',
-        ).href,
-        nonce,
+        firebaseConfig: {
+          apiKey: 'firebase-test-key-static-host-not-a-credential',
+          authDomain: 'novel-static-test.firebaseapp.com',
+          projectId: 'novel-static-test',
+          appId: '1:123456789012:web:abcdef1234567890',
+        },
+        state: nonce,
         locale: 'vi',
         attemptExpiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
       }),
     }),
   );
-  await page.route('https://accounts.google.com/gsi/client', (route) =>
+  await page.route('https://novel-static-test.firebaseapp.com/**', (route) =>
     route.fulfill({
-      contentType: 'application/javascript',
-      body: `window.google = { accounts: { id: {
-        initialize() {},
-        renderButton(parent) {
-          const button = document.createElement('button');
-          button.type = 'button';
-          button.setAttribute('aria-label', 'Sign in with Google');
-          button.textContent = 'Sign in with Google';
-          parent.append(button);
-        }
-      } } };`,
+      contentType: 'text/html',
+      body: '<!doctype html><title>Firebase Auth</title>',
     }),
   );
 
@@ -54,15 +44,16 @@ test('static container applies CSP, supports Google GIS and proxies API same-ori
   expect(pageResponse?.status()).toBe(200);
   const csp = pageResponse?.headers()['content-security-policy'] ?? '';
   expect(csp).toContain("default-src 'self'");
-  expect(csp).toContain("form-action 'self' https://api.example.test");
+  expect(csp).toContain("form-action 'self'");
   expect(csp).toContain("frame-ancestors 'none'");
-  expect(csp).toContain('https://accounts.google.com/gsi/client');
-  expect(csp).toContain('https://accounts.google.com/gsi/');
+  expect(csp).toContain('https://apis.google.com');
+  expect(csp).toContain('https://identitytoolkit.googleapis.com');
+  expect(csp).toContain('https://novel-static-test.firebaseapp.com');
   expect(pageResponse?.headers()['x-content-type-options']).toBe('nosniff');
   expect(pageResponse?.headers()['x-frame-options']).toBe('DENY');
   expect(pageResponse?.headers()['referrer-policy']).toBe('strict-origin-when-cross-origin');
 
-  await expect(page.getByRole('button', { name: 'Sign in with Google' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Tiếp tục với Google' })).toBeEnabled();
   const appViolations = await page.evaluate(() => {
     const monitoredWindow = window as unknown as {
       __cspViolations: Array<{ directive: string; blockedURI: string }>;

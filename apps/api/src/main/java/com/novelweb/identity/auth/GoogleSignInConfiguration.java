@@ -1,75 +1,66 @@
 package com.novelweb.identity.auth;
 
-import java.net.URI;
-import java.net.URISyntaxException;
+import java.util.regex.Pattern;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
-/** Shared Google sign-in configuration and readiness checks. */
+/** Public Firebase web configuration and server-side Google sign-in readiness checks. */
 @Component
 public class GoogleSignInConfiguration {
 
-  private static final String GOOGLE_CLIENT_ID_SUFFIX = ".apps.googleusercontent.com";
-  private static final String CREDENTIAL_CALLBACK_PATH = "/api/v1/auth/google/credential";
+  private static final Pattern PROJECT_ID = Pattern.compile("[a-z0-9-]{1,30}");
+  private static final Pattern AUTH_DOMAIN = Pattern.compile("[A-Za-z0-9.-]{1,253}");
 
-  private final String webClientId;
+  private final String apiKey;
+  private final String authDomain;
+  private final String projectId;
+  private final String appId;
   private final String rateLimitHmacKey;
-  private final URI credentialCallbackUri;
 
   public GoogleSignInConfiguration(
-      @Value("${novel.auth.google.web-client-id:}") String webClientId,
-      @Value("${novel.auth.google.credential-callback-uri:}") String credentialCallbackUri,
+      @Value("${novel.auth.google.firebase-api-key:}") String apiKey,
+      @Value("${novel.auth.google.firebase-auth-domain:}") String authDomain,
+      @Value("${novel.auth.google.firebase-project-id:}") String projectId,
+      @Value("${novel.auth.google.firebase-app-id:}") String appId,
       @Value("${novel.auth.google.rate-limit-hmac-key:}") String rateLimitHmacKey) {
-    this.webClientId = webClientId == null ? "" : webClientId.trim();
-    this.rateLimitHmacKey = rateLimitHmacKey == null ? "" : rateLimitHmacKey.trim();
-    this.credentialCallbackUri = parseCredentialCallbackUri(credentialCallbackUri);
+    this.apiKey = normalized(apiKey);
+    this.authDomain = normalized(authDomain);
+    this.projectId = normalized(projectId);
+    this.appId = normalized(appId);
+    this.rateLimitHmacKey = normalized(rateLimitHmacKey);
   }
 
   public boolean isReadyForSignIn() {
-    return isPlausibleWebClientId()
-        && credentialCallbackUri != null
+    return apiKey.length() >= 20
+        && apiKey.chars().noneMatch(Character::isWhitespace)
+        && AUTH_DOMAIN.matcher(authDomain).matches()
+        && PROJECT_ID.matcher(projectId).matches()
+        && appId.length() >= 10
+        && appId.chars().noneMatch(Character::isWhitespace)
         && GoogleAuthRateLimitKeyHasher.isValidKey(rateLimitHmacKey);
   }
 
-  private boolean isPlausibleWebClientId() {
-    return webClientId.length() > GOOGLE_CLIENT_ID_SUFFIX.length()
-        && webClientId.endsWith(GOOGLE_CLIENT_ID_SUFFIX)
-        && webClientId.chars().noneMatch(Character::isWhitespace);
+  public String apiKey() {
+    return apiKey;
   }
 
-  public String webClientId() {
-    return webClientId;
+  public String authDomain() {
+    return authDomain;
+  }
+
+  public String projectId() {
+    return projectId;
+  }
+
+  public String appId() {
+    return appId;
   }
 
   public String rateLimitHmacKey() {
     return rateLimitHmacKey;
   }
 
-  public URI credentialCallbackUri() {
-    return credentialCallbackUri;
-  }
-
-  private static URI parseCredentialCallbackUri(String rawValue) {
-    if (rawValue == null || rawValue.isBlank()) {
-      return null;
-    }
-    try {
-      URI uri = new URI(rawValue.trim());
-      boolean secure = "https".equalsIgnoreCase(uri.getScheme());
-      boolean localDevelopment =
-          "http".equalsIgnoreCase(uri.getScheme()) && "localhost".equalsIgnoreCase(uri.getHost());
-      if ((!secure && !localDevelopment)
-          || !uri.isAbsolute()
-          || uri.getHost() == null
-          || uri.getRawUserInfo() != null
-          || uri.getRawQuery() != null
-          || uri.getRawFragment() != null
-          || !CREDENTIAL_CALLBACK_PATH.equals(uri.getRawPath())) {
-        return null;
-      }
-      return uri;
-    } catch (URISyntaxException exception) {
-      return null;
-    }
+  private static String normalized(String value) {
+    return value == null ? "" : value.trim();
   }
 }

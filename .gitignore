@@ -16,3 +16,6 @@
 **/.env
 **/.env.*
 !**/.env.example
+
+# Firebase Admin SDK credentials contain private keys and are not needed by this client-token flow
+**/*firebase-adminsdk*.json

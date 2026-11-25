@@ -16,10 +16,9 @@ if ! printf '%s\n' "$api_authority" | grep -Eq '^[A-Za-z0-9._-]+(:[0-9]{1,5})?$'
   exit 1
 fi
 
-google_callback_origin=${GOOGLE_CALLBACK_ORIGIN:-}
-if [ -n "$google_callback_origin" ] && \
-  ! printf '%s\n' "$google_callback_origin" | \
-    grep -Eq '^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?$|^http://localhost(:[0-9]{1,5})?$'; then
-  echo "GOOGLE_CALLBACK_ORIGIN must be one HTTPS origin (or localhost HTTP for development)." >&2
+firebase_auth_domain=${FIREBASE_AUTH_DOMAIN:-}
+if [ -n "$firebase_auth_domain" ] && \
+  ! printf '%s\n' "$firebase_auth_domain" | grep -Eq '^[A-Za-z0-9.-]{1,253}$'; then
+  echo "FIREBASE_AUTH_DOMAIN must be a hostname without scheme, path, query or fragment." >&2
   exit 1
 fi
