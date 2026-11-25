@@ -565,6 +565,7 @@ class PostgresSchemaIntegrationTests {
       String ownerCsrf = csrfTokenService.tokenFor(ownerSession.cookieValue());
       String recipientCsrf = csrfTokenService.tokenFor(recipientSession.cookieValue());
       String outsiderCsrf = csrfTokenService.tokenFor(outsiderSession.cookieValue());
+      String publicationRequestId = UUID.randomUUID().toString();
       String invitationId = UUID.randomUUID().toString();
       String invitationPath =
           "/api/v1/authoring/manuscripts/" + work.id() + "/invitations/" + invitationId;
@@ -811,7 +812,7 @@ class PostgresSchemaIntegrationTests {
                       .header(
                           HttpHeaders.IF_MATCH,
                           publicationReadiness.getResponse().getHeader(HttpHeaders.ETAG))
-                      .header("Idempotency-Key", "collaborator-publish-deny-0001")
+                      .header("Idempotency-Key", publicationRequestId)
                       .contentType(MediaType.APPLICATION_JSON)
                       .content("{\"actionCode\":\"PUBLISH_NOW\"}"))
               .andReturn();
