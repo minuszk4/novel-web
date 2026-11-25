@@ -6,6 +6,7 @@ import com.novelweb.payment.credit.CreditTopUpOrderService.CreateResult;
 import com.novelweb.payment.credit.CreditTopUpOrderService.Provider;
 import com.novelweb.payment.credit.CreditTopUpOrderService.TopUpOrder;
 import com.novelweb.payment.momo.MomoTestGatewayClient;
+import java.time.Instant;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.function.Predicate;
@@ -100,7 +101,8 @@ public final class CreditTopUpCheckoutService {
                 claim.order().quote().amountVnd(),
                 claim.order().id(),
                 claim.order().requestId(),
-                clientIpAddress);
+                clientIpAddress,
+                claim.order().createdAt());
       } else {
         MomoTestGatewayClient.CreateResult providerResult =
             momoProviderCreate.create(
@@ -131,7 +133,12 @@ public final class CreditTopUpCheckoutService {
 
   @FunctionalInterface
   public interface VnPayProviderCreate {
-    String create(long amountVnd, UUID orderId, UUID requestId, String clientIpAddress);
+    String create(
+        long amountVnd,
+        UUID orderId,
+        UUID requestId,
+        String clientIpAddress,
+        Instant paymentRequestCreatedAt);
   }
 
   /** The URL is available for the initial/replayed create result only; never log this value. */

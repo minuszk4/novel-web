@@ -64,6 +64,24 @@ class VnPayTestGatewayClientTests {
     assertThat(fields.get("vnp_IpAddr")).isEqualTo("127.0.0.1");
   }
 
+  @Test
+  void usesThePersistedPaymentRequestInstantForProviderAndQueryTransactionDate() {
+    Instant paymentRequestCreatedAt = Instant.parse("2026-11-25T12:01:23Z");
+    VnPayTestGatewayClient client = new VnPayTestGatewayClient(settings(), fixedClock());
+
+    Map<String, String> fields =
+        parseQuery(
+            URI.create(
+                    client.createCreditTopUp(1_000, ORDER_ID, "127.0.0.1", paymentRequestCreatedAt))
+                .getRawQuery());
+
+    assertThat(fields)
+        .containsEntry("vnp_CreateDate", "20261125190123")
+        .containsEntry("vnp_ExpireDate", "20261125191623");
+    assertThat(VnPayTestGatewayClient.formatVnPayDate(paymentRequestCreatedAt))
+        .isEqualTo(fields.get("vnp_CreateDate"));
+  }
+
   private static VnPayTestGatewaySettings settings() {
     return new VnPayTestGatewaySettings(
         "ABCD1234",

@@ -3,6 +3,7 @@ package com.novelweb.payment.vnpay;
 import java.net.URI;
 import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.Map;
@@ -29,12 +30,20 @@ public final class VnPayTestGatewayClient {
   }
 
   public String createCreditTopUp(long amountVnd, UUID orderId, String clientIpAddress) {
+    return createCreditTopUp(amountVnd, orderId, clientIpAddress, clock.instant());
+  }
+
+  public String createCreditTopUp(
+      long amountVnd, UUID orderId, String clientIpAddress, Instant paymentRequestCreatedAt) {
     if (amountVnd < 1_000 || amountVnd > 50_000_000) {
       throw new IllegalArgumentException("VNPAY TEST amount is outside the approved range");
     }
     if (orderId == null) throw new IllegalArgumentException("VNPAY order reference is required");
+    if (paymentRequestCreatedAt == null) {
+      throw new IllegalArgumentException("VNPAY payment request creation time is required");
+    }
     String ipAddress = normalizeIpAddress(clientIpAddress);
-    var now = clock.instant().atZone(VIETNAM_TIME);
+    var now = paymentRequestCreatedAt.atZone(VIETNAM_TIME);
     Map<String, String> fields = new TreeMap<>();
     fields.put("vnp_Amount", Long.toString(Math.multiplyExact(amountVnd, 100L)));
     fields.put("vnp_Command", "pay");
@@ -73,8 +82,23 @@ public final class VnPayTestGatewayClient {
     return createCreditTopUp(amountVnd, orderId, clientIpAddress);
   }
 
+  public String createCreditTopUp(
+      long amountVnd,
+      UUID orderId,
+      UUID requestId,
+      String clientIpAddress,
+      Instant paymentRequestCreatedAt) {
+    if (requestId == null) throw new IllegalArgumentException("VNPAY request ID is required");
+    return createCreditTopUp(amountVnd, orderId, clientIpAddress, paymentRequestCreatedAt);
+  }
+
   public static String compactOrderReference(UUID orderId) {
     return orderId.toString().replace("-", "");
+  }
+
+  public static String formatVnPayDate(Instant instant) {
+    if (instant == null) throw new IllegalArgumentException("VNPAY timestamp is required");
+    return VNPAY_DATE.format(instant.atZone(VIETNAM_TIME));
   }
 
   private static String normalizeIpAddress(String value) {

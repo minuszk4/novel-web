@@ -130,7 +130,8 @@ public final class MomoTestOrderReconciliationService {
             """
                 SELECT id, user_id, amount_vnd, reconciliation_attempt_count
                 FROM credit_top_up_orders
-                WHERE status IN ('PENDING', 'UNKNOWN', 'INITIATING')
+                WHERE provider = 'MOMO' AND environment = 'TEST'
+                  AND status IN ('PENDING', 'UNKNOWN', 'INITIATING')
                   AND (status <> 'INITIATING'
                        OR updated_at <= clock_timestamp() - (? * INTERVAL '1 second'))
                   AND reconciliation_review_required_at IS NULL

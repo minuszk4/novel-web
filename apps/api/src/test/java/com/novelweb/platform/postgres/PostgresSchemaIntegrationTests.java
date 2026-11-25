@@ -20771,6 +20771,57 @@ class PostgresSchemaIntegrationTests {
   }
 
   @Test
+  void legacyMomoReconcilerNeverClaimsVnPayOrders() throws Exception {
+    UUID userId = createSessionTestUser("VNPAY provider isolation owner");
+    try {
+      CreditTopUpOrderService.TopUpOrder created =
+          creditTopUpOrderService
+              .createOrReplay(
+                  userId,
+                  "vnpay-provider-isolation-" + UUID.randomUUID(),
+                  CreditPackCatalog.vnPayTestFixture(),
+                  "vnpay-test-credits-100",
+                  1,
+                  CreditTopUpOrderService.Provider.VNPAY)
+              .order();
+      assertNotNull(created);
+      assertEquals(
+          CreditTopUpOrderService.CheckoutOutcome.CLAIMED,
+          creditTopUpOrderService.claimProviderCreate(userId, created.id()).outcome());
+      String checkoutUrl =
+          "https://sandbox.vnpayment.vn/paymentv2/vpcpay.html?vnp_SecureHash=" + "a".repeat(128);
+      assertEquals(
+          CreditTopUpOrderService.CheckoutOutcome.READY,
+          creditTopUpOrderService
+              .finishProviderCreate(
+                  userId, created.id(), checkoutUrl, VnPayTestCheckoutUrlPolicy::allows)
+              .outcome());
+
+      AtomicInteger queryCalls = new AtomicInteger();
+      MomoTestOrderReconciliationService legacyWorker =
+          new MomoTestOrderReconciliationService(
+              dataSource,
+              creditLedgerService,
+              "MOMOTEST123",
+              (request, amountVnd) -> {
+                queryCalls.incrementAndGet();
+                return new MomoTestGatewayClient.QueryResult(
+                    com.novelweb.payment.momo.MomoQueryResponseValidator.Outcome.UNKNOWN,
+                    null,
+                    MomoTestGatewayClient.FailureCode.TRANSPORT);
+              },
+              5);
+
+      assertEquals(0, legacyWorker.reconcileDueBatch());
+      assertEquals(0, queryCalls.get());
+      assertEquals(CreditTopUpOrderService.OrderStatus.PENDING, topUpOrderStatus(created.id()));
+      assertEquals(0, momoReconciliationEventCount(created.id()));
+    } finally {
+      deleteSessionTestUser(userId);
+    }
+  }
+
+  @Test
   void momoTestReconciliationSettlesVerifiedOrdersAndBoundsRetriesAcrossWorkers() throws Exception {
     UUID userId = createSessionTestUser("MoMo reconciliation owner");
     try {

@@ -12,6 +12,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
+import tools.jackson.databind.ObjectMapper;
 
 /** Installs the VNPAY sandbox adapter only after explicit opt-in and complete TEST settings. */
 @Configuration(proxyBeanMethods = false)
@@ -29,6 +30,19 @@ public class VnPayTestGatewayConfiguration {
   @Bean
   VnPayTestGatewayClient vnPayTestGatewayClient(VnPayTestGatewaySettings settings) {
     return new VnPayTestGatewayClient(settings);
+  }
+
+  @Bean
+  VnPayTestQueryDrTransport vnPayTestQueryDrTransport() {
+    return VnPayTestQueryDrTransport.jdk();
+  }
+
+  @Bean
+  VnPayTestQueryDrClient vnPayTestQueryDrClient(
+      VnPayTestGatewaySettings settings,
+      ObjectMapper objectMapper,
+      VnPayTestQueryDrTransport transport) {
+    return new VnPayTestQueryDrClient(settings, objectMapper, transport);
   }
 
   @Bean
