@@ -566,6 +566,52 @@ class PostgresSchemaIntegrationTests {
       String ownerCsrf = csrfTokenService.tokenFor(ownerSession.cookieValue());
       String recipientCsrf = csrfTokenService.tokenFor(recipientSession.cookieValue());
       String outsiderCsrf = csrfTokenService.tokenFor(outsiderSession.cookieValue());
+      MvcResult ownerCreatedSharedChapter =
+          mockMvc
+              .perform(
+                  post("/api/v1/authoring/manuscripts/{id}/chapters", work.id())
+                      .cookie(ownerCookie)
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .header("Idempotency-Key", "owner-shared-chapter-0001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          objectMapper.writeValueAsString(Map.of("title", "Shared saved draft"))))
+              .andReturn();
+      assertEquals(201, ownerCreatedSharedChapter.getResponse().getStatus());
+      UUID sharedChapterId =
+          UUID.fromString(
+              objectMapper
+                  .readTree(ownerCreatedSharedChapter.getResponse().getContentAsString())
+                  .path("id")
+                  .asText());
+      String sharedDraftPath = "/api/v1/authoring/manuscripts/{workId}/chapters/{chapterId}/draft";
+      MvcResult ownerBlankSharedDraft =
+          mockMvc
+              .perform(get(sharedDraftPath, work.id(), sharedChapterId).cookie(ownerCookie))
+              .andReturn();
+      assertEquals(200, ownerBlankSharedDraft.getResponse().getStatus());
+      assertEquals("\"draft-0\"", ownerBlankSharedDraft.getResponse().getHeader(HttpHeaders.ETAG));
+      String ownerSharedRevisionBody =
+          "{\"sourceFormat\":\"plain_text\",\"normalizedContent\":\"Owner saved content.\","
+              + "\"segments\":[{\"ordinal\":1,\"type\":\"paragraph\","
+              + "\"sourceText\":\"Owner saved content.\","
+              + "\"stableAnchor\":\"owner-shared-chapter-p1\"}]}";
+      MvcResult ownerSavedSharedDraft =
+          mockMvc
+              .perform(
+                  post(
+                          "/api/v1/authoring/manuscripts/{workId}/chapters/{chapterId}/revisions",
+                          work.id(),
+                          sharedChapterId)
+                      .cookie(ownerCookie)
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .header(HttpHeaders.IF_MATCH, "\"draft-0\"")
+                      .header("Idempotency-Key", "owner-shared-draft-0001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(ownerSharedRevisionBody))
+              .andReturn();
+      assertEquals(201, ownerSavedSharedDraft.getResponse().getStatus());
+      assertEquals("\"draft-1\"", ownerSavedSharedDraft.getResponse().getHeader(HttpHeaders.ETAG));
       String publicationRequestId = UUID.randomUUID().toString();
       String invitationId = UUID.randomUUID().toString();
       String invitationPath =
@@ -690,6 +736,102 @@ class PostgresSchemaIntegrationTests {
               .perform(get("/api/v1/authoring/manuscripts/{id}", work.id()).cookie(recipientCookie))
               .andReturn();
       assertEquals(200, viewDetails.getResponse().getStatus());
+      MvcResult viewOutline =
+          mockMvc
+              .perform(
+                  get("/api/v1/authoring/manuscripts/{id}/chapters", work.id())
+                      .cookie(recipientCookie))
+              .andReturn();
+      assertEquals(200, viewOutline.getResponse().getStatus());
+      assertTrue(
+          viewOutline.getResponse().getHeader(HttpHeaders.CACHE_CONTROL).contains("no-store"));
+      JsonNode viewOutlineBody =
+          objectMapper.readTree(viewOutline.getResponse().getContentAsString());
+      assertEquals(1, viewOutlineBody.path("items").size());
+      assertEquals(
+          "Shared saved draft", viewOutlineBody.path("items").get(0).path("title").asText());
+      assertTrue(viewOutlineBody.path("items").get(0).path("hasSavedDraftContent").asBoolean());
+
+      MvcResult viewSavedDraft =
+          mockMvc
+              .perform(get(sharedDraftPath, work.id(), sharedChapterId).cookie(recipientCookie))
+              .andReturn();
+      assertEquals(200, viewSavedDraft.getResponse().getStatus());
+      assertTrue(
+          viewSavedDraft.getResponse().getHeader(HttpHeaders.CACHE_CONTROL).contains("no-store"));
+      assertEquals("\"draft-1\"", viewSavedDraft.getResponse().getHeader(HttpHeaders.ETAG));
+      assertEquals(
+          "Owner saved content.",
+          objectMapper
+              .readTree(viewSavedDraft.getResponse().getContentAsString())
+              .path("normalizedContent")
+              .asText());
+
+      MvcResult viewCreateDenied =
+          mockMvc
+              .perform(
+                  post("/api/v1/authoring/manuscripts/{id}/chapters", work.id())
+                      .cookie(recipientCookie)
+                      .header("X-CSRF-Token", recipientCsrf)
+                      .header("Idempotency-Key", "view-create-chapter-0001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          objectMapper.writeValueAsString(Map.of("title", "View must not create"))))
+              .andReturn();
+      assertEquals(404, viewCreateDenied.getResponse().getStatus());
+      assertTrue(
+          viewCreateDenied.getResponse().getContentAsString().contains("MANUSCRIPT_NOT_FOUND"));
+
+      String viewAttemptedRevisionBody =
+          "{\"sourceFormat\":\"plain_text\",\"normalizedContent\":\"View must not replace content.\","
+              + "\"segments\":[{\"ordinal\":1,\"type\":\"paragraph\","
+              + "\"sourceText\":\"View must not replace content.\","
+              + "\"stableAnchor\":\"view-attempt-p1\"}]}";
+      MvcResult viewRevisionDenied =
+          mockMvc
+              .perform(
+                  post(
+                          "/api/v1/authoring/manuscripts/{workId}/chapters/{chapterId}/revisions",
+                          work.id(),
+                          sharedChapterId)
+                      .cookie(recipientCookie)
+                      .header("X-CSRF-Token", recipientCsrf)
+                      .header(HttpHeaders.IF_MATCH, "\"draft-1\"")
+                      .header("Idempotency-Key", "view-save-draft-0001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(viewAttemptedRevisionBody))
+              .andReturn();
+      assertEquals(404, viewRevisionDenied.getResponse().getStatus());
+      assertTrue(
+          viewRevisionDenied.getResponse().getContentAsString().contains("MANUSCRIPT_NOT_FOUND"));
+      assertFalse(
+          viewRevisionDenied.getResponse().getContentAsString().contains("View must not replace"));
+      MvcResult ownerOutlineAfterViewDenials =
+          mockMvc
+              .perform(
+                  get("/api/v1/authoring/manuscripts/{id}/chapters", work.id()).cookie(ownerCookie))
+              .andReturn();
+      assertEquals(200, ownerOutlineAfterViewDenials.getResponse().getStatus());
+      assertEquals(
+          1,
+          objectMapper
+              .readTree(ownerOutlineAfterViewDenials.getResponse().getContentAsString())
+              .path("items")
+              .size());
+      MvcResult ownerDraftAfterViewDenials =
+          mockMvc
+              .perform(get(sharedDraftPath, work.id(), sharedChapterId).cookie(ownerCookie))
+              .andReturn();
+      assertEquals(200, ownerDraftAfterViewDenials.getResponse().getStatus());
+      assertEquals(
+          "\"draft-1\"", ownerDraftAfterViewDenials.getResponse().getHeader(HttpHeaders.ETAG));
+      assertEquals(
+          "Owner saved content.",
+          objectMapper
+              .readTree(ownerDraftAfterViewDenials.getResponse().getContentAsString())
+              .path("normalizedContent")
+              .asText());
+
       MvcResult viewEditDenied =
           mockMvc
               .perform(
