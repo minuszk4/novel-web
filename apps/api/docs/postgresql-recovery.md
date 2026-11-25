@@ -2,7 +2,9 @@
 
 This procedure verifies a PostgreSQL custom-format logical dump against a **new, empty database** in a uniquely named disposable Compose project. It does not overwrite the source database. Never point this drill at the persistent `novel-web-local` project or production.
 
-The 2026-11-11 and 2026-11-13 figures below are historical checkpoints. The latest source-level drill (2026-11-14) uses PostgreSQL 17 and verifies all 103 current Liquibase changesets, 60 application tables and 62 public tables including Liquibase metadata. It passes 127/127 PostgreSQL migration/integration tests, dumps a synthetic marker row, fully rolls back the scratch schema, restores into a second empty database, and matches the marker and every public table row count. Cleanup removes only its random Compose project; `novel-web-local` remains healthy. Evidence: `.ai/evidence/postgres-data-recovery-2026-11-14-215119/` (Git-ignored).
+Latest source-level drill on 2026-11-26, source 73d0248: PostgreSQL 17 applies all 194 Liquibase changesets and 111 application tables. PostgreSQL migration/integration verification passes 221/221 with no skipped cases. The drill dumps a synthetic marker, fully rolls back the scratch schema, restores into a second empty database and matches the marker plus every row count across 113 public tables (including Liquibase metadata). Cleanup removed only its generated Compose project/container/network/volume; persistent novel-web-local remained healthy. Evidence: .ai/evidence/postgres-data-recovery-2026-11-26-055005/ (Git-ignored).
+
+The 2026-11-11 through 2026-11-14 figures below are historical checkpoints.
 
 ## One-command disposable recovery drill
 
