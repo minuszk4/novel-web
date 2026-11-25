@@ -27,6 +27,8 @@ In the PostgreSQL profile, Google sign-in requires `GOOGLE_AUTH_WEB_CLIENT_ID`, 
 
 For bootstrap throttling behind a reverse proxy, optionally set `GOOGLE_AUTH_TRUSTED_PROXIES` to a comma-separated list of exact proxy IP addresses or IPv4/IPv6 CIDRs. When unset, all forwarding headers are ignored and the socket peer is rate-limited. When set, `X-Forwarded-For` is used only if the socket peer matches the allowlist; the resolver walks the chain from the nearest hop toward the client and stops at the first untrusted address. Malformed or oversized chains fall back to the socket peer. Configure only ingress proxy networks (`/0` is rejected), firewall the API so clients cannot impersonate those peers, and configure each proxy to discard client-supplied forwarding headers before appending its observed peer. The app does not trust `Forwarded`, `X-Real-IP`, or forwarding headers from unlisted peers.
 
+`NOVEL_WEB_CORS_ALLOWED_ORIGINS` overrides the local exact-origin list as a comma-separated value (scheme, host and optional port only). When Google sign-in posts through the static web container, this list must contain the browser-visible frontend origin; the callback destination is separately configured by `GOOGLE_AUTH_CREDENTIAL_CALLBACK_URI` and the frontend host's `GOOGLE_CALLBACK_ORIGIN`.
+
 ## Run the API without a database
 
 From `apps/api`:

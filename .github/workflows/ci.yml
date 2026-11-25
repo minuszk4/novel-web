@@ -27,6 +27,7 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - run: npm run test:ci
       - run: npm run test:e2e
+      - run: npm run test:host-container
       - run: npm run build
       - run: npm audit --audit-level=high
       - uses: actions/upload-artifact@v7
@@ -37,6 +38,8 @@ jobs:
             apps/web/reports/junit.xml
             apps/web/reports/e2e-junit.xml
             apps/web/reports/e2e-results/
+            apps/web/reports/static-host-e2e-junit.xml
+            apps/web/reports/static-host-e2e-results/
             apps/web/coverage/web/
           if-no-files-found: warn
           retention-days: 14

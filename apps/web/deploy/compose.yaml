@@ -1,0 +1,23 @@
+name: novel-web-static
+
+services:
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    ports:
+      - "127.0.0.1:${WEB_PORT:-8088}:8080"
+    environment:
+      API_UPSTREAM: ${API_UPSTREAM:-http://host.docker.internal:8080}
+      GOOGLE_CALLBACK_ORIGIN: ${GOOGLE_CALLBACK_ORIGIN:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /etc/nginx/conf.d:rw,noexec,nosuid,size=1m,uid=101,gid=101,mode=0755
+      - /var/cache/nginx:rw,noexec,nosuid,size=8m,uid=101,gid=101,mode=0755
+      - /tmp:rw,noexec,nosuid,size=16m,uid=101,gid=101,mode=1777

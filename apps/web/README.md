@@ -32,6 +32,26 @@ npm run build
 npm audit --audit-level=high
 ```
 
+## Run the static web host in Docker
+
+This image serves the production Angular build as an unprivileged Nginx process. It proxies `/api/` to the configured API upstream so browser requests and session cookies remain on the web origin; `/actuator/` is not exposed. The HTML and static bundles receive a CSP, frame denial, `nosniff`, a no-referrer policy and a restrictive Permissions Policy. Google Identity Services is allowed only from Google's documented script, frame, connection and stylesheet endpoints.
+
+From this directory, copy the local example and edit its three values:
+
+```powershell
+Copy-Item deploy/.env.example .env
+# Edit .env, then:
+docker compose --env-file .env -f deploy/compose.yaml up --build
+```
+
+Open `http://localhost:8088`. `API_UPSTREAM` must be reachable from inside the web container and must contain only the API scheme and host, with an optional port (no path). The example targets an API running on the host at port 8080. The default port is published to loopback only.
+
+`GOOGLE_CALLBACK_ORIGIN` is the exact origin of the configured Google credential callback. In production, set it to the callback's HTTPS origin, for example `https://api.example.com`; the API callback URL must remain `/api/v1/auth/google/credential`. The frontend CSP admits that one extra form destination and rejects other external form actions. Configure the Google OAuth client with the public frontend origin and callback URI. Set the API's `NOVEL_WEB_CORS_ALLOWED_ORIGINS` to the exact public frontend origin because the credential callback validates the browser `Origin` header. For local Docker, the corresponding values are `http://localhost:8088` for the frontend origin and `http://localhost:8080` for the callback origin.
+
+In production, terminate TLS at the selected ingress/load balancer, redirect HTTP to HTTPS, and set HSTS there. The container listens on plain HTTP port 8080 for an internal network; it does not claim to provide production TLS or HSTS. Set `API_UPSTREAM`, `GOOGLE_CALLBACK_ORIGIN`, the API secrets, OAuth client settings and exact origin allowlist in the deployment's secret/config store. No MoMo or Google credential is included in the image.
+
+`npm run test:host-container` builds and runs this container, routes it to a disposable API sentinel and uses Chromium to verify the response policy, Google GIS loading, API proxy path and blocking of inline JavaScript and unapproved form posts. It always removes its test container.
+
 Before committing frontend changes, run `npm run format` to apply the repository Prettier style. CI runs `format:check` so formatting drift fails the frontend job.
 
 `test:ci` writes JUnit XML to `reports/junit.xml` and HTML/Cobertura coverage under `coverage/web/`. Coverage includes all `src/**/*.ts` files except specs. The Angular test target enforces a baseline floor of 15% statements, 18% branches, 20% functions and 15% lines; the clean-clone 41-test suite at `f6fc681` measures 18.95%, 25.35%, 26.96% and 18.54%, respectively. These floors prevent regression while the test suite grows; they are not a release-readiness target. CI retains the JUnit and coverage artifacts for 14 days.

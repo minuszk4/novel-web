@@ -7,11 +7,12 @@
     "build": "ng build",
     "watch": "ng build --watch --configuration development",
     "format": "prettier --write \"src/**/*.{ts,html,css}\"",
-    "format:check": "prettier --check \"src/**/*.{ts,html,css}\" \"tools/security/**/*.mjs\" package.json",
+    "format:check": "prettier --check \"src/**/*.{ts,html,css}\" \"tools/security/**/*.mjs\" \"tools/e2e/**/*.mjs\" \"e2e/static-host-security.spec.ts\" playwright.config.ts playwright.static-host.config.ts package.json",
     "test": "ng test",
     "check:security-sinks": "node tools/security/check-angular-html-sinks.mjs",
     "test:ci": "npm run check:security-sinks && node --test tools/security/check-angular-html-sinks.test.mjs && ng test --watch=false --isolate --coverage --reporters=default --reporters=junit --output-file=reports/junit.xml",
     "test:e2e": "playwright test",
+    "test:host-container": "node tools/e2e/run-static-host-tests.mjs",
     "test:e2e:postgres": "playwright test --config=playwright.live-postgres.config.ts",
     "test:performance": "npm run build && playwright test --config=playwright.performance.config.ts",
     "test:reader-matrix": "npm run build && playwright test --config=playwright.reader-matrix.config.ts"

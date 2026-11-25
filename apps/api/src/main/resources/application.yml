@@ -126,8 +126,7 @@ novel:
   web:
     cors:
       allowed-origins:
-        - http://localhost:4200
-        - http://127.0.0.1:4200
+        - ${NOVEL_WEB_CORS_ALLOWED_ORIGINS:http://localhost:4200,http://127.0.0.1:4200}
   imports:
     parser:
       poll-delay: ${NOVEL_IMPORT_PARSER_POLL_DELAY:1s}

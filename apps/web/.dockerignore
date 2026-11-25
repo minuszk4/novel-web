@@ -1,0 +1,11 @@
+node_modules
+.angular
+dist
+coverage
+reports
+test-results
+e2e-results
+.git
+.ai
+.env
+.env.*
