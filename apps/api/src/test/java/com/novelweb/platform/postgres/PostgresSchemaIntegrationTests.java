@@ -17517,6 +17517,135 @@ class PostgresSchemaIntegrationTests {
   }
 
   @Test
+  void workspaceAdminCannotChangeOwnerRoleOrPromoteSelf() throws Exception {
+    UUID ownerId = createSessionTestUser("Workspace admin role owner");
+    UUID adminId = createSessionTestUser("Workspace admin role admin");
+    UUID readerId = createSessionTestUser("Workspace admin role reader");
+    UUID workspaceId = null;
+    try {
+      addCurrentPolicyAcceptances(ownerId);
+      addCurrentPolicyAcceptances(adminId);
+      addCurrentPolicyAcceptances(readerId);
+      workspaceId = workspaceService.createWorkspace(ownerId, "Workspace Role Protection").id();
+      workspaceService.addMember(ownerId, workspaceId, adminId, WorkspaceRepository.Role.ADMIN);
+      workspaceService.addMember(ownerId, workspaceId, readerId, WorkspaceRepository.Role.READER);
+
+      SessionService.IssuedSession ownerSession = sessionService.create(ownerId).orElseThrow();
+      SessionService.IssuedSession adminSession = sessionService.create(adminId).orElseThrow();
+      var ownerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", ownerSession.cookieValue());
+      var adminCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", adminSession.cookieValue());
+      String adminCsrf = csrfTokenService.tokenFor(adminSession.cookieValue());
+      String memberRoute = "/api/v1/workspaces/{workspaceId}/members/{memberUserId}";
+
+      MvcResult workspaceBeforeAttempts =
+          mockMvc
+              .perform(get("/api/v1/workspaces/{workspaceId}", workspaceId).cookie(ownerCookie))
+              .andReturn();
+      assertEquals(200, workspaceBeforeAttempts.getResponse().getStatus());
+      String originalEtag = workspaceBeforeAttempts.getResponse().getHeader(HttpHeaders.ETAG);
+      MvcResult auditBeforeAttempts =
+          mockMvc
+              .perform(
+                  get("/api/v1/workspaces/{workspaceId}/membership-audit", workspaceId)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(200, auditBeforeAttempts.getResponse().getStatus());
+      int originalAuditCount =
+          objectMapper
+              .readTree(auditBeforeAttempts.getResponse().getContentAsString())
+              .path("items")
+              .size();
+
+      MvcResult adminCannotChangeOwnerRole =
+          mockMvc
+              .perform(
+                  put(memberRoute, workspaceId, ownerId)
+                      .cookie(adminCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, adminCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"role\":\"admin\"}"))
+              .andReturn();
+      assertEquals(409, adminCannotChangeOwnerRole.getResponse().getStatus());
+      assertTrue(
+          adminCannotChangeOwnerRole
+              .getResponse()
+              .getContentAsString()
+              .contains("WORKSPACE_OWNER_PROTECTED"));
+      assertTrue(
+          adminCannotChangeOwnerRole
+              .getResponse()
+              .getHeader(HttpHeaders.CACHE_CONTROL)
+              .contains("no-store"));
+
+      MvcResult adminCannotPromoteSelf =
+          mockMvc
+              .perform(
+                  put(memberRoute, workspaceId, adminId)
+                      .cookie(adminCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, adminCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"role\":\"owner\"}"))
+              .andReturn();
+      assertEquals(400, adminCannotPromoteSelf.getResponse().getStatus());
+      assertTrue(
+          adminCannotPromoteSelf
+              .getResponse()
+              .getContentAsString()
+              .contains("INVALID_WORKSPACE_REQUEST"));
+      assertTrue(
+          adminCannotPromoteSelf
+              .getResponse()
+              .getHeader(HttpHeaders.CACHE_CONTROL)
+              .contains("no-store"));
+
+      MvcResult workspaceAfterAttempts =
+          mockMvc
+              .perform(get("/api/v1/workspaces/{workspaceId}", workspaceId).cookie(ownerCookie))
+              .andReturn();
+      assertEquals(originalEtag, workspaceAfterAttempts.getResponse().getHeader(HttpHeaders.ETAG));
+      MvcResult rosterAfterAttempts =
+          mockMvc
+              .perform(
+                  get("/api/v1/workspaces/{workspaceId}/members", workspaceId).cookie(ownerCookie))
+              .andReturn();
+      assertEquals(200, rosterAfterAttempts.getResponse().getStatus());
+      JsonNode memberRows =
+          objectMapper
+              .readTree(rosterAfterAttempts.getResponse().getContentAsString())
+              .path("items");
+      Map<String, String> memberRoles = new HashMap<>();
+      for (JsonNode member : memberRows) {
+        memberRoles.put(member.path("userId").asText(), member.path("role").asText());
+      }
+      assertEquals(
+          Map.of(
+              ownerId.toString(), "owner",
+              adminId.toString(), "admin",
+              readerId.toString(), "reader"),
+          memberRoles);
+      MvcResult auditAfterAttempts =
+          mockMvc
+              .perform(
+                  get("/api/v1/workspaces/{workspaceId}/membership-audit", workspaceId)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(
+          originalAuditCount,
+          objectMapper
+              .readTree(auditAfterAttempts.getResponse().getContentAsString())
+              .path("items")
+              .size());
+    } finally {
+      if (workspaceId != null) deleteWorkspaceTestData(workspaceId);
+      deleteSessionTestUser(ownerId);
+      deleteSessionTestUser(adminId);
+      deleteSessionTestUser(readerId);
+    }
+  }
+
+  @Test
   void workspaceEmailInvitationsRequireVerifiedRecipientAndAreOneUseAndRateLimited()
       throws Exception {
     UUID ownerId = createSessionTestUser("Workspace Invitation Owner");
