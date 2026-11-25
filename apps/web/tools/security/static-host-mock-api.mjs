@@ -8,9 +8,29 @@ const server = createServer((request, response) => {
   }
 
   if (request.url?.startsWith('/api/')) {
+    if (request.url === '/api/v1/static-host-probe-error') {
+      response.writeHead(403, {
+        'Cache-Control': 'no-store',
+        'Content-Type': 'application/problem+json; charset=utf-8',
+        Pragma: 'no-cache',
+        'X-Static-Host-Proxy': 'reached-api',
+      });
+      response.end(
+        JSON.stringify({
+          type: 'about:blank',
+          title: 'Forbidden',
+          status: 403,
+          detail: 'This endpoint is not available in the current API slice.',
+          code: 'FORBIDDEN',
+        }),
+      );
+      return;
+    }
+
     response.writeHead(200, {
       'Cache-Control': 'no-store',
       'Content-Type': 'application/json; charset=utf-8',
+      Pragma: 'no-cache',
       'X-Static-Host-Proxy': 'reached-api',
     });
     response.end(JSON.stringify({ proxied: true, path: request.url }));

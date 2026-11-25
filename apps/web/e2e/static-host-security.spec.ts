@@ -65,7 +65,17 @@ test('static container applies Firebase CSP and proxies API same-origin', async 
   const proxiedApi = await page.request.get('/api/v1/static-host-probe');
   expect(proxiedApi.status()).toBe(200);
   expect(proxiedApi.headers()['x-static-host-proxy']).toBe('reached-api');
+  expect(proxiedApi.headers()['cache-control']).toBe('no-store');
+  expect(proxiedApi.headers()['pragma']).toBe('no-cache');
   expect(await proxiedApi.json()).toEqual({ proxied: true, path: '/api/v1/static-host-probe' });
+
+  const proxiedApiError = await page.request.get('/api/v1/static-host-probe-error');
+  expect(proxiedApiError.status()).toBe(403);
+  expect(proxiedApiError.headers()['x-static-host-proxy']).toBe('reached-api');
+  expect(proxiedApiError.headers()['cache-control']).toBe('no-store');
+  expect(proxiedApiError.headers()['pragma']).toBe('no-cache');
+  expect(proxiedApiError.headers()['content-type']).toContain('application/problem+json');
+  expect(await proxiedApiError.json()).toMatchObject({ status: 403, code: 'FORBIDDEN' });
 
   const enforcement = await page.evaluate(async () => {
     const inlineScript = document.createElement('script');
