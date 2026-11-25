@@ -93,7 +93,7 @@ try {
 
     Push-Location $apiDirectory
     try {
-        & .\mvnw.cmd -B -ntp -Ppostgres '-Dpostgres.integration=true' '-Dspring.profiles.active=postgres' '-Dtest=PostgresSchemaIntegrationTests,PostgresLegacyImportMigrationTests,PostgresTranslationJobSchemaTests,PostgresTranslationJobEnqueueTests,PostgresTranslationUnitLeaseTests,PostgresQueueMetricsIntegrationTests,PostgresPublicCatalogIntegrationTests,PostgresAccountDataExportIntegrationTests' clean verify 2>&1 |
+        & .\mvnw.cmd -B -ntp -Ppostgres '-Dpostgres.integration=true' '-Dspring.profiles.active=postgres' '-Dnovel.security.csrf.hmac-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' '-Dnovel.library.cursor.hmac-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' '-Dtest=PostgresSchemaIntegrationTests,PostgresLegacyImportMigrationTests,PostgresTranslationJobSchemaTests,PostgresTranslationJobEnqueueTests,PostgresTranslationUnitLeaseTests,PostgresQueueMetricsIntegrationTests,PostgresPublicCatalogIntegrationTests,PostgresAccountDataExportIntegrationTests' clean verify 2>&1 |
             Tee-Object -FilePath (Join-Path $evidenceDirectory 'postgres-maven-verify.log') | Out-Null
         $mavenExitCode = $LASTEXITCODE
     }

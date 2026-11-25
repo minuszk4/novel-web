@@ -30,7 +30,7 @@ test('production web reaches the PostgreSQL API through its same-origin proxy', 
     integrations: {
       googleOidcEnabled: false,
       vnpayTestEnabled: false,
-      vnpayEnvironment: 'TEST',
+      vnpayEnvironment: 'OFF',
     },
     features: {
       commerceSandboxEnabled: false,

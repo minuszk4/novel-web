@@ -320,6 +320,7 @@ class PostgresSchemaIntegrationTests {
           "credit_balance_projection",
           "credit_top_up_orders",
           "momo_test_ipn_events",
+          "vnpay_test_ipn_events",
           "momo_test_reconciliation_events",
           "content_entitlements",
           "public_catalog_rate_limits",
@@ -528,7 +529,7 @@ class PostgresSchemaIntegrationTests {
             connection.prepareStatement("SELECT COUNT(*) FROM databasechangelog");
         ResultSet changesets = changesetCount.executeQuery()) {
       changesets.next();
-      assertEquals(189, changesets.getInt(1), "unexpected number of applied changesets");
+      assertEquals(190, changesets.getInt(1), "unexpected number of applied changesets");
     }
 
     Set<String> actualTables = new HashSet<>();
