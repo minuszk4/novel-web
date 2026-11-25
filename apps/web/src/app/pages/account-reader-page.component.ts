@@ -222,6 +222,7 @@ export class AccountReaderPageComponent {
   private requestedWorkId: string | null = null;
   private requestedChapterId: string | null = null;
   private loadToken = 0;
+  private readerHeadingFocusRequest = 0;
   private panelReturnFocus: HTMLElement | null = null;
   private pendingBookmarkPosition: { chapterId: string; segmentAnchor: string | null } | null =
     null;
@@ -2118,7 +2119,26 @@ export class AccountReaderPageComponent {
 
   private focusReaderHeading(): void {
     if (typeof window === 'undefined') return;
+    const requestId = ++this.readerHeadingFocusRequest;
+    const loadToken = this.loadToken;
+    const chapterId = this.activeChapter()?.id;
+    const previouslyFocused = document.activeElement;
     requestAnimationFrame(() => {
+      if (
+        requestId !== this.readerHeadingFocusRequest ||
+        loadToken !== this.loadToken ||
+        chapterId !== this.activeChapter()?.id
+      ) {
+        return;
+      }
+      const currentlyFocused = document.activeElement;
+      if (
+        currentlyFocused !== previouslyFocused &&
+        currentlyFocused !== document.body &&
+        currentlyFocused !== document.documentElement
+      ) {
+        return;
+      }
       document
         .querySelector<HTMLElement>('.account-reader-content')
         ?.scrollTo({ top: 0, behavior: 'auto' });
