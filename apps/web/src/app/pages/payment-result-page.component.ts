@@ -15,6 +15,7 @@ type LoadPhase = 'invalid' | 'loading' | 'ready' | 'error';
 type BalancePhase = 'idle' | 'loading' | 'ready' | 'error';
 
 const orderIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const vnpayOrderReferencePattern = /^[0-9a-f]{32}$/i;
 const amountFormatter = new Intl.NumberFormat('vi-VN');
 
 @Component({
@@ -50,7 +51,13 @@ export class PaymentResultPageComponent {
   constructor() {
     this.route.queryParamMap.pipe(takeUntilDestroyed()).subscribe((params) => {
       const candidate = params.get('orderId');
-      const id = candidate && orderIdPattern.test(candidate) ? candidate : null;
+      const txnRef = params.get('vnp_TxnRef');
+      const id =
+        candidate && orderIdPattern.test(candidate)
+          ? candidate
+          : txnRef && vnpayOrderReferencePattern.test(txnRef)
+            ? `${txnRef.slice(0, 8)}-${txnRef.slice(8, 12)}-${txnRef.slice(12, 16)}-${txnRef.slice(16, 20)}-${txnRef.slice(20)}`
+            : null;
       this.orderId.set(id);
       this.order.set(null);
       this.statusError.set(null);

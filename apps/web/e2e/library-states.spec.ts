@@ -656,8 +656,8 @@ async function installAcceptedAccountRoutes(page: Page): Promise<void> {
       environment: 'test',
       integrations: {
         googleOidcEnabled: false,
-        momoTestEnabled: false,
-        momoEnvironment: 'disabled',
+        vnpayTestEnabled: false,
+        vnpayEnvironment: 'disabled',
       },
       features: {
         importProcessingEnabled: false,

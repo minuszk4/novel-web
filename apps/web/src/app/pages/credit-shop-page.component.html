@@ -34,13 +34,13 @@
     <span aria-hidden="true">ⓘ</span>
     @if (sandboxEnabled()) {
       <p>
-        <strong>MoMo TEST — không dùng tiền thật.</strong>
+        <strong>VNPAY TEST — không dùng tiền thật.</strong>
         Số dư chỉ thay đổi khi máy chủ xác nhận thanh toán. Trở về từ trang thanh toán không có
         nghĩa giao dịch đã thành công.
       </p>
     } @else {
       <p>
-        <strong>MoMo TEST hiện chưa được bật.</strong>
+        <strong>VNPAY TEST hiện chưa được bật.</strong>
         Không tạo lệnh nạp khi máy chủ chưa xác nhận đúng môi trường TEST.
       </p>
     }
@@ -87,7 +87,7 @@
     <section class="credit-shop-state-card" role="alert">
       <h2>Chưa kiểm tra được môi trường</h2>
       <p>
-        Không thể xác nhận MoMo TEST đang bật. Vì an toàn, danh sách gói và nút nạp đang bị khóa.
+        Không thể xác nhận VNPAY TEST đang bật. Vì an toàn, danh sách gói và nút nạp đang bị khóa.
       </p>
       <button class="button button-outline" type="button" (click)="retryCatalog()">
         Kiểm tra lại
@@ -230,7 +230,7 @@
             target="_blank"
             rel="noopener noreferrer"
           >
-            Mở trang MoMo TEST <span aria-hidden="true">↗</span>
+            Mở trang VNPAY TEST <span aria-hidden="true">↗</span>
           </a>
         }
         @if (isOrderPending(order.status)) {
@@ -282,7 +282,7 @@
           @if (pack.bonusCredits > 0) {
             Kèm {{ amount(pack.bonusCredits) }} credit thưởng.
           }
-          Gói này thuộc MoMo TEST và không dùng tiền thật.
+          Gói này thuộc VNPAY TEST và không dùng tiền thật.
         </p>
         <p class="credit-shop-confirm-note">
           Việc tạo lệnh chưa cộng credit. Chỉ trạng thái thanh toán do máy chủ xác nhận mới cập nhật

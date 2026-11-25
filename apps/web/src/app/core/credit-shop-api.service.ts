@@ -71,7 +71,7 @@ export class CreditShopApiError extends Error {
 }
 
 const catalogUrl = '/api/v1/credit-packs';
-const createOrderUrl = '/api/v1/momo/payment-orders';
+const createOrderUrl = '/api/v1/vnpay/payment-orders';
 const orderStatusUrl = (orderId: string) => `/api/v1/payment-orders/${orderId}`;
 const csrfUrl = '/api/v1/auth/csrf';
 const csrfTokenPattern = /^[A-Za-z0-9_-]{43}$/;
@@ -297,10 +297,10 @@ function parseCheckoutUrl(value: unknown): string | null {
     const url = new URL(value);
     if (
       url.protocol !== 'https:' ||
-      url.hostname.toLowerCase() !== 'test-payment.momo.vn' ||
+      url.hostname.toLowerCase() !== 'sandbox.vnpayment.vn' ||
       (url.port !== '' && url.port !== '443') ||
-      url.pathname !== '/v2/gateway/pay' ||
-      !url.search ||
+      url.pathname !== '/paymentv2/vpcpay.html' ||
+      !/^[0-9a-f]{128}$/i.test(url.searchParams.get('vnp_SecureHash') ?? '') ||
       url.username ||
       url.password ||
       url.hash

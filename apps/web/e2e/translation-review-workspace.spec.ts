@@ -85,8 +85,8 @@ async function installReviewRoutes(
       environment: 'test',
       integrations: {
         googleOidcEnabled: false,
-        momoTestEnabled: false,
-        momoEnvironment: 'disabled',
+        vnpayTestEnabled: false,
+        vnpayEnvironment: 'disabled',
       },
       features: {
         importProcessingEnabled: false,

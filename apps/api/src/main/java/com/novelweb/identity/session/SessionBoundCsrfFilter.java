@@ -1,6 +1,5 @@
 package com.novelweb.identity.session;
 
-import com.novelweb.payment.momo.MomoTestIpnController;
 import com.novelweb.platform.security.ApiProblemWriter;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -18,7 +17,6 @@ import org.springframework.web.filter.OncePerRequestFilter;
 public class SessionBoundCsrfFilter extends OncePerRequestFilter {
 
   private static final String GOOGLE_CREDENTIAL_CALLBACK = "/api/v1/auth/google/credential";
-  private static final String MOMO_TEST_IPN_CALLBACK = MomoTestIpnController.PATH;
   private static final String LOGOUT = "/api/v1/auth/logout";
   private static final Set<String> SAFE_METHODS = Set.of("GET", "HEAD", "OPTIONS", "TRACE");
 
@@ -36,8 +34,7 @@ public class SessionBoundCsrfFilter extends OncePerRequestFilter {
       HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
       throws ServletException, IOException {
     if (SAFE_METHODS.contains(request.getMethod())
-        || GOOGLE_CREDENTIAL_CALLBACK.equals(request.getRequestURI())
-        || MOMO_TEST_IPN_CALLBACK.equals(request.getRequestURI())) {
+        || GOOGLE_CREDENTIAL_CALLBACK.equals(request.getRequestURI())) {
       filterChain.doFilter(request, response);
       return;
     }

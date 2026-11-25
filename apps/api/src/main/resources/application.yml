@@ -83,20 +83,11 @@ novel:
     publication:
       enabled: ${NOVEL_TRANSLATION_PUBLICATION_ENABLED:false}
   payment:
-    momo:
+    vnpay:
       test:
-        enabled: ${NOVEL_MOMO_TEST_ENABLED:false}
-        environment: ${MOMO_ENV:}
-        partner-code: ${MOMO_TEST_PARTNER_CODE:}
-        access-key: ${MOMO_TEST_ACCESS_KEY:}
-        secret-key: ${MOMO_TEST_SECRET_KEY:}
-        base-url: ${MOMO_TEST_BASE_URL:}
-        ipn-url: ${MOMO_TEST_IPN_URL:}
-        redirect-url: ${MOMO_TEST_REDIRECT_URL:}
-        reconciliation:
-          enabled: ${NOVEL_MOMO_TEST_RECONCILIATION_ENABLED:false}
-          poll-delay: ${NOVEL_MOMO_TEST_RECONCILIATION_POLL_DELAY:30s}
-          batch-size: ${NOVEL_MOMO_TEST_RECONCILIATION_BATCH_SIZE:5}
+        enabled: ${NOVEL_VNPAY_TEST_ENABLED:false}
+        tmn-code: ${VNPAY_TEST_TMN_CODE:}
+        hash-secret: ${VNPAY_TEST_HASH_SECRET:}
   account-data-export:
     enabled: ${NOVEL_ACCOUNT_DATA_EXPORT_ENABLED:false}
     worker-enabled: ${NOVEL_ACCOUNT_DATA_EXPORT_WORKER_ENABLED:false}

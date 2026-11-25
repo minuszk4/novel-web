@@ -6,9 +6,9 @@ import { CommerceHistoryApiError, CommerceHistoryApiService } from './commerce-h
 
 const order = {
   id: '11111111-1111-4111-8111-111111111111',
-  packId: 'momo-test-credits-100',
+  packId: 'vnpay-test-credits-100',
   packVersion: 1,
-  provider: 'MOMO',
+  provider: 'VNPAY',
   environment: 'TEST',
   currency: 'VND',
   amountVnd: 1000,

@@ -4,6 +4,7 @@ import com.novelweb.identity.session.SessionAuthenticationFilter;
 import com.novelweb.identity.session.SessionBoundCsrfFilter;
 import com.novelweb.identity.session.SessionCsrfTokenService;
 import com.novelweb.payment.momo.MomoTestIpnController;
+import com.novelweb.payment.vnpay.VnPayTestIpnController;
 import java.time.Duration;
 import java.util.List;
 import org.springframework.beans.factory.ObjectProvider;
@@ -67,6 +68,7 @@ public class ApiSecurityConfiguration {
                   .requestMatchers(HttpMethod.GET, "/actuator/metrics", "/actuator/metrics/**")
                   .permitAll();
               if (environment.acceptsProfiles(Profiles.of("postgres"))) {
+                authorize.requestMatchers(HttpMethod.GET, VnPayTestIpnController.PATH).permitAll();
                 authorize.requestMatchers(HttpMethod.POST, MomoTestIpnController.PATH).permitAll();
                 authorize
                     .requestMatchers(HttpMethod.GET, "/api/v1/me/privacy-preferences")
@@ -91,7 +93,10 @@ public class ApiSecurityConfiguration {
                     .permitAll();
                 authorize
                     .requestMatchers(
-                        HttpMethod.POST, "/api/v1/momo/payment-orders", "/api/v1/chapters/*/unlock")
+                        HttpMethod.POST,
+                        "/api/v1/vnpay/payment-orders",
+                        "/api/v1/momo/payment-orders",
+                        "/api/v1/chapters/*/unlock")
                     .permitAll();
                 authorize
                     .requestMatchers(

@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { CreditShopApiError, CreditShopApiService } from './credit-shop-api.service';
 
 const pack = {
-  packId: 'momo-test-credits-100',
+  packId: 'vnpay-test-credits-100',
   packVersion: 1,
   environment: 'TEST',
   currency: 'VND',
@@ -30,7 +30,7 @@ const order = {
   createdAt: '2026-11-15T10:00:00Z',
 };
 const csrfToken = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
-const idempotencyKey = 'momo-test-checkout-key-0001';
+const idempotencyKey = 'vnpay-test-checkout-key-0001';
 
 describe('CreditShopApiService', () => {
   let api: CreditShopApiService;
@@ -65,7 +65,7 @@ describe('CreditShopApiService', () => {
     const result = api.createOrder(pack, idempotencyKey);
     http.expectOne('/api/v1/auth/csrf').flush({ token: csrfToken });
     await nextTask();
-    const request = http.expectOne('/api/v1/momo/payment-orders');
+    const request = http.expectOne('/api/v1/vnpay/payment-orders');
     expect(request.request.method).toBe('POST');
     expect(request.request.body).toEqual({ packId: pack.packId, packVersion: pack.packVersion });
     expect(request.request.headers.get('X-CSRF-Token')).toBe(csrfToken);
@@ -74,7 +74,8 @@ describe('CreditShopApiService', () => {
       {
         order,
         checkoutOutcome: 'READY',
-        checkoutUrl: 'https://test-payment.momo.vn/v2/gateway/pay?token=signed',
+        checkoutUrl:
+          'https://sandbox.vnpayment.vn/paymentv2/vpcpay.html?vnp_SecureHash=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       },
       {
         status: 201,
@@ -89,11 +90,11 @@ describe('CreditShopApiService', () => {
     });
   });
 
-  it('rejects a checkout URL outside the exact HTTPS MoMo TEST host and path', async () => {
+  it('rejects a checkout URL outside the exact HTTPS VNPAY TEST host and path', async () => {
     const result = api.createOrder(pack, idempotencyKey);
     http.expectOne('/api/v1/auth/csrf').flush({ token: csrfToken });
     await nextTask();
-    http.expectOne('/api/v1/momo/payment-orders').flush(
+    http.expectOne('/api/v1/vnpay/payment-orders').flush(
       {
         order,
         checkoutOutcome: 'READY',
@@ -117,7 +118,7 @@ describe('CreditShopApiService', () => {
     http.expectOne('/api/v1/auth/csrf').flush({ token: csrfToken });
     await nextTask();
     http
-      .expectOne('/api/v1/momo/payment-orders')
+      .expectOne('/api/v1/vnpay/payment-orders')
       .flush(
         { code: 'CREDIT_PACK_VERSION_STALE', detail: 'sensitive provider message' },
         { status: 409, statusText: 'Conflict' },

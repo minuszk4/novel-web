@@ -66,7 +66,7 @@ for (const viewport of viewports) {
   }
 }
 
-test('offline and unverified MoMo states explain the restriction in text', async ({ page }) => {
+test('offline and unverified VNPAY states explain the restriction in text', async ({ page }) => {
   await page.setViewportSize({ width: 360, height: 800 });
   await page.route('**/api/v1/system/status', (route) => route.abort());
   await page.route('**/api/v1/credit-packs', (route) => route.abort());
@@ -76,7 +76,7 @@ test('offline and unverified MoMo states explain the restriction in text', async
   const connectionStatus = page.locator('.demo-banner');
   await expect(connectionStatus).toHaveAttribute('role', 'status');
   await expect(connectionStatus).toContainText('API local chưa phản hồi.');
-  await expect(connectionStatus).toContainText('MoMo Test chưa được bật.');
+  await expect(connectionStatus).toContainText('VNPAY Test chưa được bật.');
   await expect(connectionStatus.getByRole('button', { name: 'Thử lại' })).toBeVisible();
 
   const shopStatus = page.locator('.credit-shop-state-card');

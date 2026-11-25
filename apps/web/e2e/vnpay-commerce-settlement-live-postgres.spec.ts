@@ -4,40 +4,37 @@ import { expect, test } from './support';
 test('synthetic signed settlement grants credits once and unlocks a public chapter', async ({
   page,
 }) => {
-  const sessionToken = process.env['MOMO_COMMERCE_LIVE_TEST_SESSION_TOKEN'];
-  const otherSessionToken = process.env['MOMO_COMMERCE_LIVE_TEST_OTHER_SESSION_TOKEN'];
-  const orderId = process.env['MOMO_COMMERCE_LIVE_TEST_ORDER_ID'];
-  const requestId = process.env['MOMO_COMMERCE_LIVE_TEST_REQUEST_ID'];
-  const workId = process.env['MOMO_COMMERCE_LIVE_TEST_WORK_ID'];
-  const chapterId = process.env['MOMO_COMMERCE_LIVE_TEST_CHAPTER_ID'];
-  const privateWorkId = process.env['MOMO_COMMERCE_LIVE_TEST_PRIVATE_WORK_ID'];
-  const privateChapterId = process.env['MOMO_COMMERCE_LIVE_TEST_PRIVATE_CHAPTER_ID'];
+  const sessionToken = process.env['VNPAY_COMMERCE_LIVE_TEST_SESSION_TOKEN'];
+  const otherSessionToken = process.env['VNPAY_COMMERCE_LIVE_TEST_OTHER_SESSION_TOKEN'];
+  const orderId = process.env['VNPAY_COMMERCE_LIVE_TEST_ORDER_ID'];
+  const workId = process.env['VNPAY_COMMERCE_LIVE_TEST_WORK_ID'];
+  const chapterId = process.env['VNPAY_COMMERCE_LIVE_TEST_CHAPTER_ID'];
+  const privateWorkId = process.env['VNPAY_COMMERCE_LIVE_TEST_PRIVATE_WORK_ID'];
+  const privateChapterId = process.env['VNPAY_COMMERCE_LIVE_TEST_PRIVATE_CHAPTER_ID'];
   const expectedPrivateWorkTitle =
     process.env['AUTHORING_OUTLINE_LIVE_TEST_EXPECTED_TITLE'] ?? 'Live E2E Novel Two';
-  const successScreenshot = process.env['MOMO_COMMERCE_LIVE_TEST_SUCCESS_SCREENSHOT'];
-  const unlockScreenshot = process.env['MOMO_COMMERCE_LIVE_TEST_UNLOCK_SCREENSHOT'];
-  const accessKey = process.env['MOMO_TEST_ACCESS_KEY'];
-  const secretKey = process.env['MOMO_TEST_SECRET_KEY'];
+  const successScreenshot = process.env['VNPAY_COMMERCE_LIVE_TEST_SUCCESS_SCREENSHOT'];
+  const unlockScreenshot = process.env['VNPAY_COMMERCE_LIVE_TEST_UNLOCK_SCREENSHOT'];
+  const tmnCode = process.env['VNPAY_TEST_TMN_CODE'];
+  const hashSecret = process.env['VNPAY_TEST_HASH_SECRET'];
 
   test.skip(
     !sessionToken ||
       !otherSessionToken ||
       !orderId ||
-      !requestId ||
       !workId ||
       !chapterId ||
       !privateWorkId ||
       !privateChapterId ||
       !successScreenshot ||
       !unlockScreenshot ||
-      !accessKey ||
-      !secretKey,
+      !tmnCode ||
+      !hashSecret,
     'run tools/e2e/run-library-postgres.ps1 -IncludeCommerceSettlement for the disposable fixture',
   );
   expect(sessionToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
   expect(otherSessionToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
   expect(orderId).toMatch(/^[0-9a-f-]{36}$/i);
-  expect(requestId).toMatch(/^[0-9a-f-]{36}$/i);
   expect(workId).toMatch(/^[0-9a-f-]{36}$/i);
   expect(chapterId).toMatch(/^[0-9a-f-]{36}$/i);
   expect(privateWorkId).toMatch(/^[0-9a-f-]{36}$/i);
@@ -79,47 +76,34 @@ test('synthetic signed settlement grants credits once and unlocks a public chapt
   expect((await initialOrderResponse!.json()).status).toBe('PENDING');
   await expect(page.getByText('Số dư hiện tại:')).toHaveCount(0);
 
+  const txnRef = orderId!.replaceAll('-', '');
   const notification = {
-    amount: 1000,
-    extraData: '',
-    message: 'Successful.',
-    orderId: orderId!,
-    orderInfo: 'Novel Web credit top-up',
-    orderType: 'momo_wallet',
-    partnerCode: process.env['MOMO_TEST_PARTNER_CODE'] ?? 'SYNTHETIC-TEST-PARTNER',
-    payType: 'qr',
-    requestId: requestId!,
-    responseTime: Date.now(),
-    resultCode: 0,
-    transId: Date.now() * 1000,
+    vnp_Amount: '100000',
+    vnp_CurrCode: 'VND',
+    vnp_OrderInfo: `Nap credit ${txnRef}`,
+    vnp_ResponseCode: '00',
+    vnp_TmnCode: tmnCode!,
+    vnp_TransactionNo: String(Date.now()),
+    vnp_TransactionStatus: '00',
+    vnp_TxnRef: txnRef,
   };
-  const canonicalNotification =
-    `accessKey=${accessKey}` +
-    `&amount=${notification.amount}` +
-    `&extraData=${notification.extraData}` +
-    `&message=${notification.message}` +
-    `&orderId=${notification.orderId}` +
-    `&orderInfo=${notification.orderInfo}` +
-    `&orderType=${notification.orderType}` +
-    `&partnerCode=${notification.partnerCode}` +
-    `&payType=${notification.payType}` +
-    `&requestId=${notification.requestId}` +
-    `&responseTime=${notification.responseTime}` +
-    `&resultCode=${notification.resultCode}` +
-    `&transId=${notification.transId}`;
+  const canonicalNotification = Object.entries(notification)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value).replaceAll('%20', '+')}`)
+    .join('&');
   const signedNotification = {
     ...notification,
-    signature: createHmac('sha256', secretKey!).update(canonicalNotification).digest('hex'),
+    vnp_SecureHash: createHmac('sha512', hashSecret!).update(canonicalNotification).digest('hex'),
   };
+  const callbackUrl = new URL('http://localhost:4300/api/v1/payments/vnpay/ipn');
+  for (const [key, value] of Object.entries(signedNotification)) callbackUrl.searchParams.set(key, value);
 
-  const firstIpn = await page.request.post('http://localhost:4300/api/v1/payments/momo/ipn', {
-    data: signedNotification,
-  });
-  expect(firstIpn.status()).toBe(204);
-  const duplicateIpn = await page.request.post('http://localhost:4300/api/v1/payments/momo/ipn', {
-    data: signedNotification,
-  });
-  expect(duplicateIpn.status()).toBe(204);
+  const firstIpn = await page.request.get(callbackUrl.toString());
+  expect(firstIpn.status()).toBe(200);
+  expect(await firstIpn.json()).toMatchObject({ RspCode: '00' });
+  const duplicateIpn = await page.request.get(callbackUrl.toString());
+  expect(duplicateIpn.status()).toBe(200);
+  expect(await duplicateIpn.json()).toMatchObject({ RspCode: '02' });
 
   const confirmedOrderResponse = page.waitForResponse(
     (response) =>
@@ -580,7 +564,7 @@ test('synthetic signed settlement grants credits once and unlocks a public chapt
   await expect(page.getByRole('heading', { name: 'Live Paid Chapter' })).toBeVisible();
   await expect(page.getByText(/Bạn còn 0 credit đã mua, chưa đủ 10 credit/)).toBeVisible();
   await expect(page.getByRole('button', { name: 'Tiếp tục đến xác nhận' })).toHaveCount(0);
-  await expect(page.getByRole('link', { name: 'Nạp credit MoMo TEST' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Nạp credit VNPAY TEST' })).toBeVisible();
   expect(chapterContentRequests).toEqual([]);
 
   await page.context().clearCookies();

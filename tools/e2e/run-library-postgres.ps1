@@ -69,21 +69,19 @@ $environmentNames = @(
     'NOVEL_TRANSLATION_FAKE_ENABLED', 'NOVEL_TRANSLATION_FAKE_API_ENABLED',
     'NOVEL_TRANSLATION_FAKE_WORKER_ENABLED', 'NOVEL_TRANSLATION_REVIEW_ENABLED',
     'NOVEL_TRANSLATION_PUBLICATION_ENABLED',
-    'NOVEL_MOMO_TEST_ENABLED', 'NOVEL_MOMO_TEST_RECONCILIATION_ENABLED', 'MOMO_ENV',
+    'NOVEL_VNPAY_TEST_ENABLED', 'VNPAY_TEST_TMN_CODE', 'VNPAY_TEST_HASH_SECRET', 'NOVEL_APP_BASE_URL',
     'NOVEL_ACCOUNT_DATA_EXPORT_ENABLED', 'NOVEL_ACCOUNT_DATA_EXPORT_WORKER_ENABLED',
     'NOVEL_ACCOUNT_EXPORT_ROOT', 'NOVEL_ACCOUNT_EXPORT_POLL_DELAY',
     'ACCOUNT_EXPORT_LIVE_TEST_SESSION_TOKEN', 'ACCOUNT_EXPORT_LIVE_TEST_SCREENSHOT',
-    'MOMO_TEST_PARTNER_CODE', 'MOMO_TEST_ACCESS_KEY', 'MOMO_TEST_SECRET_KEY',
-    'MOMO_TEST_BASE_URL', 'MOMO_TEST_IPN_URL', 'MOMO_TEST_REDIRECT_URL',
     'LIBRARY_LIVE_TEST_SESSION_TOKEN', 'LIBRARY_LIVE_TEST_LIBRARY_ID',
-    'MOMO_PAYMENT_RETURN_LIVE_TEST_SESSION_TOKEN', 'MOMO_PAYMENT_RETURN_LIVE_TEST_ORDER_ID',
-    'MOMO_PAYMENT_RETURN_LIVE_TEST_SCREENSHOT',
-    'MOMO_COMMERCE_LIVE_TEST_SESSION_TOKEN', 'MOMO_COMMERCE_LIVE_TEST_OTHER_SESSION_TOKEN',
-    'MOMO_COMMERCE_LIVE_TEST_ORDER_ID',
-    'MOMO_COMMERCE_LIVE_TEST_REQUEST_ID', 'MOMO_COMMERCE_LIVE_TEST_WORK_ID',
-    'MOMO_COMMERCE_LIVE_TEST_PRIVATE_WORK_ID', 'MOMO_COMMERCE_LIVE_TEST_PRIVATE_CHAPTER_ID',
-    'MOMO_COMMERCE_LIVE_TEST_CHAPTER_ID', 'MOMO_COMMERCE_LIVE_TEST_SUCCESS_SCREENSHOT',
-    'MOMO_COMMERCE_LIVE_TEST_UNLOCK_SCREENSHOT',
+    'VNPAY_PAYMENT_RETURN_LIVE_TEST_SESSION_TOKEN', 'VNPAY_PAYMENT_RETURN_LIVE_TEST_ORDER_ID',
+    'VNPAY_PAYMENT_RETURN_LIVE_TEST_SCREENSHOT',
+    'VNPAY_COMMERCE_LIVE_TEST_SESSION_TOKEN', 'VNPAY_COMMERCE_LIVE_TEST_OTHER_SESSION_TOKEN',
+    'VNPAY_COMMERCE_LIVE_TEST_ORDER_ID',
+    'VNPAY_COMMERCE_LIVE_TEST_REQUEST_ID', 'VNPAY_COMMERCE_LIVE_TEST_WORK_ID',
+    'VNPAY_COMMERCE_LIVE_TEST_PRIVATE_WORK_ID', 'VNPAY_COMMERCE_LIVE_TEST_PRIVATE_CHAPTER_ID',
+    'VNPAY_COMMERCE_LIVE_TEST_CHAPTER_ID', 'VNPAY_COMMERCE_LIVE_TEST_SUCCESS_SCREENSHOT',
+    'VNPAY_COMMERCE_LIVE_TEST_UNLOCK_SCREENSHOT',
     'NOVEL_IMPORT_STAGING_ROOT', 'LIBRARY_LIVE_TEST_WORK_IDS', 'LIBRARY_LIVE_TEST_SCREENSHOT', 'READER_LIVE_TEST_WORK_ID',
     'AUTHORING_LIVE_TEST_TITLE', 'AUTHORING_LIVE_TEST_SCREENSHOT',
     'AUTHORING_OUTLINE_LIVE_TEST_WORK_ID', 'AUTHORING_OUTLINE_LIVE_TEST_SCREENSHOT',
@@ -221,8 +219,8 @@ $privateImportScreenshotPath = Join-Path $evidenceDirectory 'private-import-comm
 $glossaryImportScreenshotPath = Join-Path $evidenceDirectory 'glossary-import-live.png'
 $glossaryEditorScreenshotPath = Join-Path $evidenceDirectory 'glossary-editor-live.png'
 $authoringScreenshotPath = Join-Path $evidenceDirectory 'authoring-create-live.png'
-$commerceSuccessScreenshotPath = Join-Path $evidenceDirectory 'momo-commerce-success-live.png'
-$commerceUnlockScreenshotPath = Join-Path $evidenceDirectory 'momo-commerce-unlocked-chapter-live.png'
+$commerceSuccessScreenshotPath = Join-Path $evidenceDirectory 'vnpay-commerce-success-live.png'
+$commerceUnlockScreenshotPath = Join-Path $evidenceDirectory 'vnpay-commerce-unlocked-chapter-live.png'
 $authoringOutlineScreenshotPath = Join-Path $evidenceDirectory 'authoring-outline-live.png'
 $buildLog = Join-Path $evidenceDirectory 'api-build.log'
 $apiStdout = Join-Path $evidenceDirectory 'api-stdout.log'
@@ -274,8 +272,7 @@ try {
     $env:NOVEL_TRANSLATION_FAKE_WORKER_ENABLED = 'false'
     $env:NOVEL_TRANSLATION_REVIEW_ENABLED = 'false'
     $env:NOVEL_TRANSLATION_PUBLICATION_ENABLED = 'false'
-    $env:NOVEL_MOMO_TEST_ENABLED = 'false'
-    $env:NOVEL_MOMO_TEST_RECONCILIATION_ENABLED = 'false'
+    $env:NOVEL_VNPAY_TEST_ENABLED = 'false'
     $env:NOVEL_ACCOUNT_DATA_EXPORT_ENABLED = 'false'
     $env:NOVEL_ACCOUNT_DATA_EXPORT_WORKER_ENABLED = 'false'
     if ($IncludeNotificationInbox) {
@@ -295,15 +292,11 @@ try {
     }
     if ($IncludePaymentReturn -or $IncludeCommerceSettlement) {
         # Synthetic secrets exist only for the disposable process; this journey issues no provider request.
-        $env:NOVEL_MOMO_TEST_ENABLED = 'true'
+        $env:NOVEL_VNPAY_TEST_ENABLED = 'true'
         $env:NOVEL_FEATURE_COMMERCE_SANDBOX_ENABLED = 'true'
-        $env:MOMO_ENV = 'test'
-        $env:MOMO_TEST_PARTNER_CODE = 'SYNTHETIC-TEST-PARTNER'
-        $env:MOMO_TEST_ACCESS_KEY = 'synthetic-test-access-only'
-        $env:MOMO_TEST_SECRET_KEY = 'synthetic-test-secret-only'
-        $env:MOMO_TEST_BASE_URL = 'https://test-payment.momo.vn'
-        $env:MOMO_TEST_IPN_URL = 'https://localhost:4300/api/v1/payments/momo/ipn'
-        $env:MOMO_TEST_REDIRECT_URL = 'https://localhost:4300/app/payment/result'
+        $env:VNPAY_TEST_TMN_CODE = 'ABCD1234'
+        $env:VNPAY_TEST_HASH_SECRET = 'synthetic-test-secret-only'
+        $env:NOVEL_APP_BASE_URL = 'https://novel.example'
     }
     if ($IncludeAccountDataExport) {
         # Enable only inside this disposable API process and keep generated archives in its evidence folder.
@@ -467,7 +460,7 @@ INSERT INTO credit_top_up_orders
      currency, amount_vnd, paid_credits, bonus_credits, status)
 VALUES
     ('$paymentReturnOrderId', '$paymentReturnUserId', gen_random_uuid(), 'payment-return-$paymentReturnOrderId',
-     'momo-test-credits-100', 1, 'MOMO', 'TEST', 'VND', 1000, 100, 0, 'PENDING');
+     'vnpay-test-credits-100', 1, 'VNPAY', 'TEST', 'VND', 1000, 100, 0, 'PENDING');
 "@
     }
     $commerceSettlementFixtureSql = ''
@@ -528,7 +521,7 @@ INSERT INTO credit_top_up_orders
      currency, amount_vnd, paid_credits, bonus_credits, status)
 VALUES
     ('$commerceOrderId', '$userId', '$commerceRequestId', 'commerce-settlement-$commerceOrderId',
-     'momo-test-credits-100', 1, 'MOMO', 'TEST', 'VND', 1000, 100, 0, 'PENDING');
+     'vnpay-test-credits-100', 1, 'VNPAY', 'TEST', 'VND', 1000, 100, 0, 'PENDING');
 "@
     }
 
@@ -645,23 +638,23 @@ COMMIT;
         $env:ACCOUNT_EXPORT_LIVE_TEST_SESSION_TOKEN = $sessionToken
         $env:ACCOUNT_EXPORT_LIVE_TEST_SCREENSHOT = Join-Path $evidenceDirectory 'account-data-export-live.png'
     }
-    $paymentReturnScreenshotPath = Join-Path $evidenceDirectory 'momo-payment-return-pending-live.png'
+    $paymentReturnScreenshotPath = Join-Path $evidenceDirectory 'vnpay-payment-return-pending-live.png'
     if ($IncludePaymentReturn) {
-        $env:MOMO_PAYMENT_RETURN_LIVE_TEST_SESSION_TOKEN = $paymentReturnSessionToken
-        $env:MOMO_PAYMENT_RETURN_LIVE_TEST_ORDER_ID = [string]$paymentReturnOrderId
-        $env:MOMO_PAYMENT_RETURN_LIVE_TEST_SCREENSHOT = $paymentReturnScreenshotPath
+        $env:VNPAY_PAYMENT_RETURN_LIVE_TEST_SESSION_TOKEN = $paymentReturnSessionToken
+        $env:VNPAY_PAYMENT_RETURN_LIVE_TEST_ORDER_ID = [string]$paymentReturnOrderId
+        $env:VNPAY_PAYMENT_RETURN_LIVE_TEST_SCREENSHOT = $paymentReturnScreenshotPath
     }
     if ($IncludeCommerceSettlement) {
-        $env:MOMO_COMMERCE_LIVE_TEST_SESSION_TOKEN = $sessionToken
-        $env:MOMO_COMMERCE_LIVE_TEST_OTHER_SESSION_TOKEN = $commerceOtherSessionToken
-        $env:MOMO_COMMERCE_LIVE_TEST_ORDER_ID = [string]$commerceOrderId
-        $env:MOMO_COMMERCE_LIVE_TEST_REQUEST_ID = [string]$commerceRequestId
-        $env:MOMO_COMMERCE_LIVE_TEST_WORK_ID = [string]$commerceWorkId
-        $env:MOMO_COMMERCE_LIVE_TEST_CHAPTER_ID = [string]$commerceChapterId
-        $env:MOMO_COMMERCE_LIVE_TEST_PRIVATE_WORK_ID = [string]$secondWorkId
-        $env:MOMO_COMMERCE_LIVE_TEST_PRIVATE_CHAPTER_ID = [string]$translationChapterId
-        $env:MOMO_COMMERCE_LIVE_TEST_SUCCESS_SCREENSHOT = $commerceSuccessScreenshotPath
-        $env:MOMO_COMMERCE_LIVE_TEST_UNLOCK_SCREENSHOT = $commerceUnlockScreenshotPath
+        $env:VNPAY_COMMERCE_LIVE_TEST_SESSION_TOKEN = $sessionToken
+        $env:VNPAY_COMMERCE_LIVE_TEST_OTHER_SESSION_TOKEN = $commerceOtherSessionToken
+        $env:VNPAY_COMMERCE_LIVE_TEST_ORDER_ID = [string]$commerceOrderId
+        $env:VNPAY_COMMERCE_LIVE_TEST_REQUEST_ID = [string]$commerceRequestId
+        $env:VNPAY_COMMERCE_LIVE_TEST_WORK_ID = [string]$commerceWorkId
+        $env:VNPAY_COMMERCE_LIVE_TEST_CHAPTER_ID = [string]$commerceChapterId
+        $env:VNPAY_COMMERCE_LIVE_TEST_PRIVATE_WORK_ID = [string]$secondWorkId
+        $env:VNPAY_COMMERCE_LIVE_TEST_PRIVATE_CHAPTER_ID = [string]$translationChapterId
+        $env:VNPAY_COMMERCE_LIVE_TEST_SUCCESS_SCREENSHOT = $commerceSuccessScreenshotPath
+        $env:VNPAY_COMMERCE_LIVE_TEST_UNLOCK_SCREENSHOT = $commerceUnlockScreenshotPath
     }
     $env:READER_LIVE_TEST_WORK_ID = [string]$firstWorkId
     $env:READER_LIVE_TEST_CHAPTER_ID = [string]$readerChapterId
@@ -856,8 +849,8 @@ COMMIT;
                 $e2eSpecs += 'e2e/translation-live-postgres.spec.ts'
             }
             if ($IncludeAuthoringChapterEditor) { $e2eSpecs += 'e2e/authoring-chapter-editor-live-postgres.spec.ts' }
-            if ($IncludePaymentReturn) { $e2eSpecs += 'e2e/momo-payment-return-live-postgres.spec.ts' }
-            if ($IncludeCommerceSettlement) { $e2eSpecs += 'e2e/momo-commerce-settlement-live-postgres.spec.ts' }
+            if ($IncludePaymentReturn) { $e2eSpecs += 'e2e/vnpay-payment-return-live-postgres.spec.ts' }
+            if ($IncludeCommerceSettlement) { $e2eSpecs += 'e2e/vnpay-commerce-settlement-live-postgres.spec.ts' }
             if ($IncludeAccountDataExport) { $e2eSpecs += 'e2e/account-data-export-live-postgres.spec.ts' }
         }
 
@@ -993,7 +986,7 @@ COMMIT;
 
     if ($IncludePaymentReturn) {
         $paymentReturnSummary = & $docker @composeArguments exec -T postgres psql -v ON_ERROR_STOP=1 -tA -U novelweb -d novelweb -c "SELECT o.status || '|' || o.paid_credits::text || '|' || (SELECT COUNT(*) FROM credit_ledger_entries e WHERE e.source_type = 'PAYMENT_ORDER' AND e.source_id = o.id)::text || '|' || COALESCE((SELECT SUM(p.balance) FROM credit_balance_projection p WHERE p.user_id = o.user_id), 0)::text FROM credit_top_up_orders o WHERE o.id = '$paymentReturnOrderId' AND o.user_id = '$paymentReturnUserId';"
-        if ($LASTEXITCODE -ne 0) { throw 'Could not verify the pending MoMo TEST order and credit ledger.' }
+        if ($LASTEXITCODE -ne 0) { throw 'Could not verify the pending VNPAY TEST order and credit ledger.' }
         $paymentReturnParts = ([string]$paymentReturnSummary).Trim() -split '\|'
         if ($paymentReturnParts.Count -ne 4 -or $paymentReturnParts[0] -ne 'PENDING' -or $paymentReturnParts[1] -ne '100' -or $paymentReturnParts[2] -ne '0' -or $paymentReturnParts[3] -ne '0') {
             throw "Pending payment return unexpectedly granted credit: $paymentReturnSummary"
@@ -1166,8 +1159,8 @@ COMMIT;
         $(if ($authoringEditorParts.Count -eq 6) { '- PostgreSQL authoring editor: three immutable revisions, three idempotency receipts, explicit local-version conflict resolution, latest revision pointer matches the saved content and chapter remains draft/unpublished' } else { '- PostgreSQL authoring editor: not requested' })
         $(if ($publicationRightsParts.Count -eq 3) { "- PostgreSQL policy acknowledgement: $($publicationRightsParts[0]) immutable acceptance and $($publicationRightsParts[1]) idempotency receipt; digest matches the exact synthetic display text" } else { '- PostgreSQL policy acknowledgement: not requested' })
         $(if ($translationParts.Count -eq 4) { "- PostgreSQL fake-local translation: $($translationParts[0]) job, $($translationParts[2]) successful attempt and $($translationParts[3]) unpublished candidate segment verified with the fake marker" } else { '- PostgreSQL fake-local translation: not requested' })
-        $(if ($IncludePaymentReturn) { '- MoMo TEST return: isolated synthetic actor/order remained PENDING after refresh; payment ledger and balance projection remained zero; browser made no create/IPN request; reconciliation worker was disabled; no MoMo network request was made' } else { '- MoMo TEST return: not requested' })
-        $(if ($IncludeCommerceSettlement) { '- MoMo TEST commerce: a locally signed synthetic IPN was delivered twice to the real API; actor-owned order settled once, 100 paid credits were granted once, the Reader debited exactly 10 paid credits after explicit confirmation, one entitlement unlocked the public chapter and the saved balance is 90; a second actor received 404 for the order, empty histories/zero balance and no paid chapter body; no MoMo network request or reconciliation query was made' } else { '- MoMo TEST commerce settlement/unlock: not requested' })
+        $(if ($IncludePaymentReturn) { '- VNPAY TEST return: isolated synthetic actor/order remained PENDING after refresh; payment ledger and balance projection remained zero; browser made no create/IPN request; no provider network request was made' } else { '- VNPAY TEST return: not requested' })
+        $(if ($IncludeCommerceSettlement) { '- VNPAY TEST commerce: a locally HMAC-SHA512-signed synthetic IPN was delivered twice to the real API; actor-owned order settled once, 100 paid credits were granted once, the Reader debited exactly 10 paid credits after explicit confirmation, one entitlement unlocked the public chapter and the saved balance is 90; a second actor received 404 for the order, empty histories/zero balance and no paid chapter body; no VNPAY network request or QueryDr reconciliation was made' } else { '- VNPAY TEST commerce settlement/unlock: not requested' })
         $(if ($accountExportParts.Count -eq 4) { "- Account data export: Chromium requested and downloaded a ZIP through the real API; PostgreSQL records READY, $($accountExportParts[1]) bytes and a 32-byte SHA-256; synthetic ZIP artifacts removed after verification" } else { '- Account data export browser/API/PostgreSQL journey: not requested' })
         $(if ($accountExportContentVerified) { '- Export archive content: imported private work, chapter text, saved Reader progress and bookmark verified in ZIP JSONL entries' } elseif ($IncludeAccountDataExport -and -not $AccountDataExportOnly) { '- Export archive content check: failed or incomplete' } else { '- Export archive content verification: not requested' })
         '- API route mocks: none'
@@ -1175,7 +1168,7 @@ COMMIT;
         "- Cleanup: $cleanup"
         "- Staging cleanup: $stagingCleanup"
         "- Account export cleanup: $exportArtifactCleanup"
-        "- Screenshots: $([System.IO.Path]::GetFileName($screenshotPath)), $([System.IO.Path]::GetFileName($workDetailScreenshotPath)), $([System.IO.Path]::GetFileName($readerScreenshotPath))$(if ($IncludeAccountDataExport) { ', account-data-export-live.png' } else { '' })$(if ($IncludeCultivationRankUp) { ', cultivation-rank-up-live.png' } else { '' }), $([System.IO.Path]::GetFileName($glossaryImportScreenshotPath)), $([System.IO.Path]::GetFileName($glossaryEditorScreenshotPath)), $([System.IO.Path]::GetFileName($authoringScreenshotPath))$(if ($IncludeAuthoringOutline) { ', authoring-outline-live.png' } else { '' })$(if ($IncludeAuthoringChapterEditor) { ', authoring-chapter-editor-live.png' } else { '' })$(if ($IncludePublicationRightsAcceptance) { ', publication-rights-policy-live.png' } else { '' })$(if ($IncludePublicationReviewWorkspace) { ', publication-review-workspace-live.png, publication-chapter-release-live.png' } else { '' })$(if ($IncludeNotificationInbox) { ', notification-inbox-live.png' } else { '' })$(if ($IncludeTranslationPreview) { ', translation-job-live.png' } else { '' })$(if ($IncludePaymentReturn) { ', momo-payment-return-pending-live.png, momo-payment-history-zero-live.png' } else { '' })$(if ($IncludeCommerceSettlement) { ', momo-commerce-success-live.png, momo-commerce-unlocked-chapter-live.png' } else { '' }), private-import-commit-live.png, private-import-detail-live.png, private-import-reader-live.png, private-import-html-commit-live.png, private-import-html-detail-live.png, private-import-html-reader-live.png, private-import-markdown-commit-live.png, private-import-markdown-detail-live.png, private-import-markdown-reader-live.png, private-import-epub-commit-live.png, private-import-epub-detail-live.png, private-import-epub-reader-live.png"
+        "- Screenshots: $([System.IO.Path]::GetFileName($screenshotPath)), $([System.IO.Path]::GetFileName($workDetailScreenshotPath)), $([System.IO.Path]::GetFileName($readerScreenshotPath))$(if ($IncludeAccountDataExport) { ', account-data-export-live.png' } else { '' })$(if ($IncludeCultivationRankUp) { ', cultivation-rank-up-live.png' } else { '' }), $([System.IO.Path]::GetFileName($glossaryImportScreenshotPath)), $([System.IO.Path]::GetFileName($glossaryEditorScreenshotPath)), $([System.IO.Path]::GetFileName($authoringScreenshotPath))$(if ($IncludeAuthoringOutline) { ', authoring-outline-live.png' } else { '' })$(if ($IncludeAuthoringChapterEditor) { ', authoring-chapter-editor-live.png' } else { '' })$(if ($IncludePublicationRightsAcceptance) { ', publication-rights-policy-live.png' } else { '' })$(if ($IncludePublicationReviewWorkspace) { ', publication-review-workspace-live.png, publication-chapter-release-live.png' } else { '' })$(if ($IncludeNotificationInbox) { ', notification-inbox-live.png' } else { '' })$(if ($IncludeTranslationPreview) { ', translation-job-live.png' } else { '' })$(if ($IncludePaymentReturn) { ', vnpay-payment-return-pending-live.png, vnpay-payment-history-zero-live.png' } else { '' })$(if ($IncludeCommerceSettlement) { ', vnpay-commerce-success-live.png, vnpay-commerce-unlocked-chapter-live.png' } else { '' }), private-import-commit-live.png, private-import-detail-live.png, private-import-reader-live.png, private-import-html-commit-live.png, private-import-html-detail-live.png, private-import-html-reader-live.png, private-import-markdown-commit-live.png, private-import-markdown-detail-live.png, private-import-markdown-reader-live.png, private-import-epub-commit-live.png, private-import-epub-detail-live.png, private-import-epub-reader-live.png"
         $(if ($IncludeCultivationRankUp) { '- Cultivation response trace: cultivation-rank-up-trace.json' } else { '- Cultivation response trace: not requested' })
         $(if ($IncludeDatabaseRestartRecovery) { '- Database restart probes: database-restart-probes.txt, postgres-stop.log, postgres-start.log' } else { '- Database restart probes: not requested' })
         "- Logs: api-build.log, api-stdout.log, api-stderr.log, playwright.log$(if ($IncludeAuthoringDraftApi) { ', authoring-draft-api-test.log' } else { '' })$(if ($IncludeAuthoringEmptyChapterDelete) { ', authoring-empty-chapter-delete-api-test.log' } else { '' })"

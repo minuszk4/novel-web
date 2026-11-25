@@ -58,8 +58,8 @@ const publicCatalogEnabledStatus = {
   environment: 'test',
   integrations: {
     googleOidcEnabled: false,
-    momoTestEnabled: false,
-    momoEnvironment: 'TEST',
+    vnpayTestEnabled: false,
+    vnpayEnvironment: 'TEST',
   },
   features: {
     importProcessingEnabled: false,
@@ -227,8 +227,8 @@ async function installAccountLibraryRoutes(page: Page): Promise<{ stateReads: ()
       environment: 'test',
       integrations: {
         googleOidcEnabled: false,
-        momoTestEnabled: false,
-        momoEnvironment: 'disabled',
+        vnpayTestEnabled: false,
+        vnpayEnvironment: 'disabled',
       },
       features: {
         importProcessingEnabled: false,

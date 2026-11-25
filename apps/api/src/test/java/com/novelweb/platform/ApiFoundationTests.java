@@ -24,7 +24,7 @@ import org.springframework.test.web.servlet.MockMvc;
       "novel.auth.google.web-client-id=",
       "novel.auth.google.credential-callback-uri=",
       "novel.auth.google.rate-limit-hmac-key=",
-      "novel.payment.momo.test.enabled=false"
+      "novel.payment.vnpay.test.enabled=false"
     })
 @AutoConfigureMockMvc
 class ApiFoundationTests {
@@ -58,7 +58,9 @@ class ApiFoundationTests {
         .andExpect(jsonPath("$.environment").value("local"))
         .andExpect(jsonPath("$.integrations.googleOidcEnabled").value(false))
         .andExpect(jsonPath("$.integrations.momoTestEnabled").value(false))
-        .andExpect(jsonPath("$.integrations.momoEnvironment").value("TEST"))
+        .andExpect(jsonPath("$.integrations.momoEnvironment").value("OFF"))
+        .andExpect(jsonPath("$.integrations.vnpayTestEnabled").value(false))
+        .andExpect(jsonPath("$.integrations.vnpayEnvironment").value("OFF"))
         .andExpect(jsonPath("$.features.importProcessingEnabled").value(false))
         .andExpect(jsonPath("$.features.cultivationEnabled").value(false))
         .andExpect(jsonPath("$.features.commerceSandboxEnabled").value(false));

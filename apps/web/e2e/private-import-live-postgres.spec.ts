@@ -98,7 +98,7 @@ test('private import commit refreshes Library, Work Detail and PostgreSQL Reader
   expect(ownerImportPreview.headers().etag).toBeTruthy();
   expect((await ownerImportPreview.text()).length).toBeGreaterThan(0);
 
-  const otherSessionToken = process.env['MOMO_COMMERCE_LIVE_TEST_OTHER_SESSION_TOKEN'];
+  const otherSessionToken = process.env['VNPAY_COMMERCE_LIVE_TEST_OTHER_SESSION_TOKEN'];
   if (otherSessionToken) {
     expect(otherSessionToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
     await page.context().clearCookies();

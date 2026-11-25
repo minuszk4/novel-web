@@ -52,8 +52,20 @@ public class CreditTopUpOrderService {
       CreditPackCatalog catalog,
       String packId,
       int packVersion) {
+    return createOrReplay(userId, idempotencyKey, catalog, packId, packVersion, Provider.MOMO);
+  }
+
+  /** Creates/replays an order for the selected TEST provider using an immutable server quote. */
+  public CreateResult createOrReplay(
+      UUID userId,
+      String idempotencyKey,
+      CreditPackCatalog catalog,
+      String packId,
+      int packVersion,
+      Provider provider) {
     Objects.requireNonNull(userId, "user id is required");
     Objects.requireNonNull(catalog, "server-owned credit pack catalog is required");
+    Objects.requireNonNull(provider, "payment provider is required");
     if (idempotencyKey == null || !IDEMPOTENCY_KEY.matcher(idempotencyKey).matches()) {
       return CreateResult.outcome(Outcome.INVALID_IDEMPOTENCY_KEY);
     }
@@ -70,7 +82,9 @@ public class CreditTopUpOrderService {
         if (existing.isPresent()) {
           TopUpOrder prior = existing.orElseThrow();
           connection.commit();
-          return prior.quote().packId().equals(packId) && prior.quote().version() == packVersion
+          return prior.provider() == provider
+                  && prior.quote().packId().equals(packId)
+                  && prior.quote().version() == packVersion
               ? CreateResult.replayed(prior)
               : CreateResult.outcome(Outcome.IDEMPOTENCY_KEY_REUSED);
         }
@@ -87,7 +101,7 @@ public class CreditTopUpOrderService {
         }
         validateTestQuote(quote);
 
-        TopUpOrder inserted = insertOrder(connection, userId, idempotencyKey, quote);
+        TopUpOrder inserted = insertOrder(connection, userId, idempotencyKey, quote, provider);
         connection.commit();
         return CreateResult.created(inserted);
       } catch (SQLException | RuntimeException exception) {
@@ -222,12 +236,23 @@ public class CreditTopUpOrderService {
    * ambiguous. The compare-and-set protects a later IPN/query terminal result from being replaced.
    */
   public CheckoutClaim finishProviderCreate(UUID userId, UUID orderId, String validatedPayUrl) {
+    return finishProviderCreate(
+        userId,
+        orderId,
+        validatedPayUrl,
+        com.novelweb.payment.momo.MomoTestCheckoutUrlPolicy::allows);
+  }
+
+  /** Persists a provider URL only when it passes that provider's strict sandbox URL policy. */
+  public CheckoutClaim finishProviderCreate(
+      UUID userId,
+      UUID orderId,
+      String validatedCheckoutUrl,
+      java.util.function.Predicate<String> checkoutUrlPolicy) {
     Objects.requireNonNull(userId, "user id is required");
     Objects.requireNonNull(orderId, "order id is required");
-    String safePayUrl =
-        com.novelweb.payment.momo.MomoTestCheckoutUrlPolicy.allows(validatedPayUrl)
-            ? validatedPayUrl
-            : null;
+    Objects.requireNonNull(checkoutUrlPolicy, "checkout URL policy is required");
+    String safePayUrl = checkoutUrlPolicy.test(validatedCheckoutUrl) ? validatedCheckoutUrl : null;
     OrderStatus nextStatus = safePayUrl == null ? OrderStatus.UNKNOWN : OrderStatus.PENDING;
     try (Connection connection = dataSource.getConnection()) {
       connection.setAutoCommit(false);
@@ -315,7 +340,11 @@ public class CreditTopUpOrderService {
   }
 
   private static TopUpOrder insertOrder(
-      Connection connection, UUID userId, String idempotencyKey, CreditPackQuote quote)
+      Connection connection,
+      UUID userId,
+      String idempotencyKey,
+      CreditPackQuote quote,
+      Provider provider)
       throws SQLException {
     UUID orderId = UUID.randomUUID();
     UUID requestId = UUID.randomUUID();
@@ -326,7 +355,7 @@ public class CreditTopUpOrderService {
                     id, user_id, request_id, idempotency_key, pack_id, pack_version,
                     provider, environment, currency, amount_vnd, paid_credits, bonus_credits,
                     paid_credit_expires_at, bonus_credit_expires_at, status)
-                VALUES (?, ?, ?, ?, ?, ?, 'MOMO', ?, ?, ?, ?, ?, ?, ?, 'CREATED')
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'CREATED')
                 RETURNING created_at
                 """)) {
       insert.setObject(1, orderId);
@@ -335,20 +364,21 @@ public class CreditTopUpOrderService {
       insert.setString(4, idempotencyKey);
       insert.setString(5, quote.packId());
       insert.setInt(6, quote.version());
-      insert.setString(7, quote.environment().name());
-      insert.setString(8, quote.currency());
-      insert.setLong(9, quote.amountVnd());
-      insert.setLong(10, quote.paidCredits());
-      insert.setLong(11, quote.bonusCredits());
-      setInstant(insert, 12, quote.paidExpiresAt());
-      setInstant(insert, 13, quote.bonusExpiresAt());
+      insert.setString(7, provider.name());
+      insert.setString(8, quote.environment().name());
+      insert.setString(9, quote.currency());
+      insert.setLong(10, quote.amountVnd());
+      insert.setLong(11, quote.paidCredits());
+      insert.setLong(12, quote.bonusCredits());
+      setInstant(insert, 13, quote.paidExpiresAt());
+      setInstant(insert, 14, quote.bonusExpiresAt());
       try (ResultSet row = insert.executeQuery()) {
         if (!row.next()) throw new SQLException("Top-up order insert returned no snapshot");
         return new TopUpOrder(
             orderId,
             userId,
             requestId,
-            Provider.MOMO,
+            provider,
             quote,
             OrderStatus.CREATED,
             row.getObject("created_at", OffsetDateTime.class).toInstant());
@@ -430,7 +460,8 @@ public class CreditTopUpOrderService {
   }
 
   public enum Provider {
-    MOMO
+    MOMO,
+    VNPAY
   }
 
   public enum OrderStatus {

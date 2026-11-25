@@ -81,8 +81,8 @@ const releaseDisabledStatus: ApiSystemStatus = {
   environment: 'test',
   integrations: {
     googleOidcEnabled: false,
-    momoTestEnabled: false,
-    momoEnvironment: 'TEST',
+    vnpayTestEnabled: false,
+    vnpayEnvironment: 'TEST',
   },
   features: {
     importProcessingEnabled: false,

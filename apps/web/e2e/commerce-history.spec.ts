@@ -28,9 +28,9 @@ const account = {
 
 const order = {
   id: orderId,
-  packId: 'momo-test-credits-100',
+  packId: 'vnpay-test-credits-100',
   packVersion: 1,
-  provider: 'MOMO',
+  provider: 'VNPAY',
   environment: 'TEST',
   currency: 'VND',
   amountVnd: 1000,
@@ -54,7 +54,7 @@ async function installAccountRoutes(page: Page): Promise<void> {
     json(route, {
       apiVersion: 'v1',
       environment: 'test',
-      integrations: { googleOidcEnabled: false, momoTestEnabled: true, momoEnvironment: 'TEST' },
+      integrations: { googleOidcEnabled: false, vnpayTestEnabled: true, vnpayEnvironment: 'TEST' },
       features: {
         importProcessingEnabled: false,
         cultivationEnabled: false,
@@ -104,7 +104,7 @@ const viewports = [
 
 const paymentOrderStateLabels = [
   { status: 'CREATED', label: 'Đã tạo lệnh' },
-  { status: 'INITIATING', label: 'Đang kết nối MoMo' },
+  { status: 'INITIATING', label: 'Đang kết nối VNPAY' },
   { status: 'PENDING', label: 'Đang chờ xác nhận' },
   { status: 'UNKNOWN', label: 'Đang đối soát' },
   { status: 'SUCCEEDED', label: 'Thành công' },
@@ -261,7 +261,7 @@ for (const viewport of viewports) {
   });
 }
 
-test('labels all MoMo payment-order lifecycle states in text at mobile width', async ({
+test('labels all VNPAY payment-order lifecycle states in text at mobile width', async ({
   page,
 }, testInfo) => {
   await page.setViewportSize({ width: 360, height: 800 });
@@ -277,12 +277,12 @@ test('labels all MoMo payment-order lifecycle states in text at mobile width', a
     .poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth))
     .toBe(true);
   await page.screenshot({
-    path: testInfo.outputPath('momo-order-states-360x800.png'),
+    path: testInfo.outputPath('vnpay-order-states-360x800.png'),
     fullPage: true,
   });
 });
 
-test('keeps all MoMo order labels legible in forced-colors mode on mobile', async ({
+test('keeps all VNPAY order labels legible in forced-colors mode on mobile', async ({
   page,
 }, testInfo) => {
   await page.setViewportSize({ width: 360, height: 800 });
@@ -328,7 +328,7 @@ test('keeps all MoMo order labels legible in forced-colors mode on mobile', asyn
     .first()
     .evaluate((item) => item.scrollIntoView({ block: 'start', behavior: 'instant' }));
   await page.screenshot({
-    path: testInfo.outputPath('momo-order-status-forced-colors-visible-360x800.png'),
+    path: testInfo.outputPath('vnpay-order-status-forced-colors-visible-360x800.png'),
   });
 });
 

@@ -46,8 +46,8 @@ for (const viewport of [
           environment: 'test',
           integrations: {
             googleOidcEnabled: false,
-            momoTestEnabled: false,
-            momoEnvironment: 'TEST',
+            vnpayTestEnabled: false,
+            vnpayEnvironment: 'TEST',
           },
           features: {
             importProcessingEnabled: false,
@@ -349,8 +349,8 @@ test('feature-off and unapproved manuscripts never render the publish control', 
         environment: 'test',
         integrations: {
           googleOidcEnabled: false,
-          momoTestEnabled: false,
-          momoEnvironment: 'TEST',
+          vnpayTestEnabled: false,
+          vnpayEnvironment: 'TEST',
         },
         features: {
           importProcessingEnabled: false,

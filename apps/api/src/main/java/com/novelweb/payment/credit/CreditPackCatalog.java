@@ -7,10 +7,9 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 
-/** Immutable server-owned quote catalog for the explicitly enabled MoMo TEST environment. */
+/** Immutable server-owned quote catalog for the explicitly enabled payment TEST environment. */
 public final class CreditPackCatalog {
 
-  private static final String TEST_PACK_ID = "momo-test-credits-100";
   private static final int TEST_PACK_VERSION = 1;
   private static final long TEST_PACK_PRICE_VND = 1_000;
   private static final long TEST_PAID_CREDITS = 100;
@@ -26,7 +25,7 @@ public final class CreditPackCatalog {
     for (CreditPackQuote quote : quotes) {
       Objects.requireNonNull(quote, "credit pack quote is required");
       if (quote.environment() != PaymentEnvironment.TEST) {
-        throw new IllegalArgumentException("this catalog accepts MoMo TEST quotes only");
+        throw new IllegalArgumentException("this catalog accepts TEST quotes only");
       }
       if (!packVersions.add(quote.packId() + ":" + quote.version())) {
         throw new IllegalArgumentException("duplicate credit pack version");
@@ -37,10 +36,19 @@ public final class CreditPackCatalog {
 
   /** Builds the single owner-approved sandbox fixture; it contains no production offer. */
   public static CreditPackCatalog momoTestFixture() {
+    return testFixture("momo-test-credits-100");
+  }
+
+  /** Builds the approved VNPAY TEST fixture; it contains no production offer. */
+  public static CreditPackCatalog vnPayTestFixture() {
+    return testFixture("vnpay-test-credits-100");
+  }
+
+  private static CreditPackCatalog testFixture(String packId) {
     return new CreditPackCatalog(
         List.of(
             new CreditPackQuote(
-                TEST_PACK_ID,
+                packId,
                 TEST_PACK_VERSION,
                 PaymentEnvironment.TEST,
                 "VND",
@@ -98,7 +106,7 @@ public final class CreditPackCatalog {
         throw new IllegalArgumentException("credit pack quote values are invalid");
       }
       if (!currency.equals("VND")) {
-        throw new IllegalArgumentException("MoMo credit pack amount must be VND");
+        throw new IllegalArgumentException("credit pack amount must be VND");
       }
       if (Math.addExact(paidCredits, bonusCredits) <= 0) {
         throw new IllegalArgumentException("credit pack must grant positive credits");

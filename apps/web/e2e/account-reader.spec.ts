@@ -154,8 +154,8 @@ async function installReaderRoutes(
       environment: 'test',
       integrations: {
         googleOidcEnabled: false,
-        momoTestEnabled: false,
-        momoEnvironment: 'disabled',
+        vnpayTestEnabled: false,
+        vnpayEnvironment: 'disabled',
       },
       features: {
         importProcessingEnabled: false,
@@ -462,8 +462,8 @@ async function installCultivationSessionRoutes(
       environment: 'test',
       integrations: {
         googleOidcEnabled: false,
-        momoTestEnabled: false,
-        momoEnvironment: 'disabled',
+        vnpayTestEnabled: false,
+        vnpayEnvironment: 'disabled',
       },
       features: {
         importProcessingEnabled: false,
@@ -608,8 +608,8 @@ async function installPublicLockedManifest(page: Page, commerceEnabled: boolean)
       environment: 'test',
       integrations: {
         googleOidcEnabled: false,
-        momoTestEnabled: commerceEnabled,
-        momoEnvironment: commerceEnabled ? 'TEST' : 'OFF',
+        vnpayTestEnabled: commerceEnabled,
+        vnpayEnvironment: commerceEnabled ? 'TEST' : 'OFF',
       },
       features: {
         importProcessingEnabled: false,
@@ -1356,7 +1356,7 @@ test('paid chapter confirmation stays keyboard-accessible at desktop width', asy
   await expectNoAxeViolations(page);
 });
 
-test('does not request a quote or show an unlock action when MoMo TEST is off', async ({
+test('does not request a quote or show an unlock action when VNPAY TEST is off', async ({
   page,
 }) => {
   await installReaderRoutes(page, 200, false);
@@ -1369,7 +1369,7 @@ test('does not request a quote or show an unlock action when MoMo TEST is off', 
 
   await page.goto(`/app/reader/${workId}/${chapterIds[1]}`);
   await expect(page.getByRole('heading', { name: 'Bản nháp' })).toBeVisible();
-  await expect(page.getByText(/MoMo TEST chưa được bật/)).toBeVisible();
+  await expect(page.getByText(/VNPAY TEST chưa được bật/)).toBeVisible();
   await expect(page.getByRole('button', { name: /mở chương/i })).toHaveCount(0);
   await expect.poll(() => quoteRequests).toBe(0);
   await expectNoAxeViolations(page);
@@ -1742,8 +1742,8 @@ test('account Reader starts and tracks a clearly fake local translation preview'
       environment: 'test',
       integrations: {
         googleOidcEnabled: false,
-        momoTestEnabled: false,
-        momoEnvironment: 'disabled',
+        vnpayTestEnabled: false,
+        vnpayEnvironment: 'disabled',
       },
       features: {
         importProcessingEnabled: false,

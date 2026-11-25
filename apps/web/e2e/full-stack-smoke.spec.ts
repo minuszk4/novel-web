@@ -29,8 +29,8 @@ test('production web reaches the PostgreSQL API through its same-origin proxy', 
     environment: 'local-docker',
     integrations: {
       googleOidcEnabled: false,
-      momoTestEnabled: false,
-      momoEnvironment: 'TEST',
+      vnpayTestEnabled: false,
+      vnpayEnvironment: 'TEST',
     },
     features: {
       commerceSandboxEnabled: false,

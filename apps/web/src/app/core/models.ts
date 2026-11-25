@@ -33,8 +33,8 @@ export interface ApiSystemStatus {
   environment: string;
   integrations: {
     googleOidcEnabled: boolean;
-    momoTestEnabled: boolean;
-    momoEnvironment: string;
+    vnpayTestEnabled: boolean;
+    vnpayEnvironment: string;
   };
   features: {
     importProcessingEnabled: boolean;

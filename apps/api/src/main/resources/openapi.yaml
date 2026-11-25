@@ -15,11 +15,11 @@ info:
     History is derived from the latest saved progress per accessible readable work, is visible for 365 days, and never returns chapter body text.
     Versioned cultivation catalogs, authenticated profile settings, private daily XP activity and bounded private Reader sessions with atomic XP awards are implemented in the PostgreSQL profile. The approved starting policy awards 1 XP per complete active Reader minute, capped at 120 XP per UTC day; same-day sub-minute remainder does not cross UTC midnight; top-ups and unlocks award none. The user selected the existing rank thresholds for a controlled pilot; cultivation remains feature-gated and off by default pending pilot observation and release review.
     Scoped glossary storage, actor-scoped catalog listing/creation, active and writer-only latest-revision reads, version-checked immutable draft creation, authenticated diff/lint/match preview, lint-gated revision publication with append-only audit, strict JSON/CSV/TSV import preview and resolved atomic draft apply, and active/writer-only latest snapshot export are implemented in the PostgreSQL profile. Translation job enqueue/status/retry/cancel are available only as an explicit fake-local development preview and never call an external NMT provider. Manual translation readiness/submission plus assigned-reviewer queue/detail and append-only accept/reject decisions are available only behind `NOVEL_TRANSLATION_REVIEW_ENABLED`; the flag defaults off. Writer and reviewer UI are implemented behind the default-off manual-review gate. Owner release, retained release history, rollback-as-new-version and translated Reader delivery are implemented behind `NOVEL_TRANSLATION_PUBLICATION_ENABLED`; release requires an accepted current human-authored snapshot, active adaptation rights and explicit owner confirmation. Fake-generated placeholder output cannot be submitted or published. `features.translationFakePreviewEnabled` is true only when the required profiles and provider/API/worker opt-in flags are active.
-    The authenticated PostgreSQL profile also exposes the current actor's available paid and non-expired bonus credit totals from the rebuildable balance projection; the response is no-store and does not expose another account's ledger. When the MoMo TEST gate is explicitly enabled with valid TEST configuration, the profile also exposes server-priced public-chapter unlock quotes and an idempotent paid-credit unlock that commits the debit with an immutable entitlement; private/draft chapters remain unavailable and no production purchase is enabled.
+    The authenticated PostgreSQL profile also exposes the current actor's available paid and non-expired bonus credit totals from the rebuildable balance projection; the response is no-store and does not expose another account's ledger. When the VNPAY TEST gate and commerce sandbox are explicitly enabled with valid TEST configuration, the profile also exposes server-priced public-chapter unlock quotes and an idempotent paid-credit unlock that commits the debit with an immutable entitlement; private/draft chapters remain unavailable and no production purchase is enabled.
     Workspace management routes in the PostgreSQL profile expose the caller's active workspace list, idempotent workspace create by client-chosen UUID, member roster, role setting, member revocation and ownership transfer. Mutations require current policy acceptance and session CSRF; repository transactions recheck active workspace roles and update the membership-bound access-scope version. Exact-UUID membership remains available; opt-in SMTP invitations use verified recipient email, a one-use expiring token, strict consent, sender/workspace/recipient rate limits and a durable delivery outbox. Invitation mail and its HMAC key are disabled unless explicitly configured. Append-only membership audit history is visible only to active owners/admins, paginated newest-first, retained for the lifetime of a workspace and cascaded only when that workspace is deleted; historical actors are not inferred during migration.
     Active workspace members can list the workspace's shared libraries; only owners/admins can idempotently create an empty shared library. Workspace membership and library-scope versions bind no-store ETags and signed cursors; deep links resolve through the actor's currently accessible library list.
     An opt-in, metadata-only guest catalog endpoint is available in the PostgreSQL profile. It is disabled by default and returns only authored, active, explicitly public works owned by active users with at least one ready chapter; it does not return descriptions or chapter bodies. Admin-only publication-reviewer role assignment, bounded eligible-account search and status-filtered assignment history are implemented in the PostgreSQL profile; the current-user response exposes the caller's server-derived security capability for navigation only. Owners can submit private manuscripts and staged draft chapters on public works for immutable rights review. Active assigned reviewers receive an actor-bound queue and privacy-filtered scope snapshots; decisions are idempotent, ETag-bound and never publish content. Owner-confirmed release for a manuscript or staged chapter is behind `NOVEL_PUBLICATION_RELEASE_ENABLED`, which remains off by default. Chapter release atomically makes the reviewed revision ready, refreshes previously granted scope approvals and writes an identifier-only publication outbox event. Whole-manuscript scheduled release is separately gated by default-off API and worker flags; private visibility is retained until due and current rights, policy, approval and content snapshots are revalidated at the due time. Paid chapters may expose the separately approved first 10% Unicode-code-point preview only while current metadata, text, sale and `FREE_PREVIEW` scopes remain approved; free-preview requests must include commercial-sale rights. Full chapter access still requires entitlement. The API does not bootstrap system administrators, let authors define policy or self-review. Following stores the current actor's public-work preference; an opt-in outbox worker creates privacy-filtered in-app chapter notifications. Email digest, owner takedown/unpublish, edge rate limits and guest chapter-body access remain separate work.
-    Account export request, actor-scoped status and authenticated download routes are implemented in the PostgreSQL profile behind default-off API/worker gates. Exports require current Terms/Privacy acceptance and a session established by recent Google sign-in, use a repeatable-read snapshot and a bounded ZIP of JSONL data, and include full revisions/segments for account-owned works, including work stored in a shared workspace library. Other members' and unowned shared-workspace content, provider-generated translation candidates, import staging bytes, external binary assets and session/provider secrets are listed as exclusions in the manifest. MoMo TEST orders/settlement/reconciliation, credit ledger and unlock entitlements for the actor are included; account deletion and legal retention workflows remain unimplemented.
+    Account export request, actor-scoped status and authenticated download routes are implemented in the PostgreSQL profile behind default-off API/worker gates. Exports require current Terms/Privacy acceptance and a session established by recent Google sign-in, use a repeatable-read snapshot and a bounded ZIP of JSONL data, and include full revisions/segments for account-owned works, including work stored in a shared workspace library. Other members' and unowned shared-workspace content, provider-generated translation candidates, import staging bytes, external binary assets and session/provider secrets are listed as exclusions in the manifest. TEST payment orders, settlement events, credit ledger and unlock entitlements for the actor are included; account deletion and legal retention workflows remain unimplemented.
     Manuscript collaboration is available only in the PostgreSQL profile behind default-off API and invitation-worker gates. Owners can grant only VIEW and EDIT to a private authored manuscript; verified-email acceptance is required before access. Owner-only publication rights and release controls remain unchanged.
 servers:
   - url: http://127.0.0.1:8080
@@ -63,7 +63,7 @@ tags:
     description: Assigned reviewers can read pending requests, view privacy-filtered immutable scope snapshots and record idempotent decisions. Approval never publishes; owner release and schedule are separate default-off operations.
     x-implementation-status: partial
   - name: Commerce
-    description: Actor-owned credit balance/ledger, payment-order and purchase history, MoMo TEST-only gated pack checkout/IPN settlement/reconciliation, and paid-credit chapter unlock are implemented. Production payment remains unavailable.
+    description: Actor-owned credit balance/ledger, payment-order and purchase history, VNPAY TEST-only gated pack checkout/IPN settlement, and paid-credit chapter unlock are implemented. Production payment and automatic QueryDr reconciliation remain unavailable.
     x-implementation-status: partial
   - name: Account privacy
     description: High-risk account export request, actor-only job status and short-lived authenticated artifact download; disabled by default.
@@ -5874,7 +5874,7 @@ paths:
       x-implementation-status: test-only-feature-flag
       summary: Read the current server-owned price for a public chapter
       description: >-
-        Available only in the PostgreSQL profile when MoMo TEST is explicitly enabled with valid TEST
+        Available only in the PostgreSQL profile when VNPAY TEST is explicitly enabled with valid TEST
         configuration. Requires an authenticated account with current Terms and Privacy acceptance.
         A quote is returned only for an active work whose visibility is public and whose chapter is ready
         at its current revision; private, missing, draft, deleted and unavailable chapters are masked as
@@ -5918,12 +5918,12 @@ paths:
       summary: Unlock a public chapter with paid credits
       description: >-
         Requires an authenticated account, current Terms and Privacy acceptance, session-bound CSRF,
-        `Idempotency-Key`, a current price version and explicit MoMo TEST configuration in the
+        `Idempotency-Key`, a current price version and explicit VNPAY TEST configuration in the
         PostgreSQL profile. The browser supplies no amount, credit bucket or credit quantity. The
         server rechecks public work visibility and ready/current chapter state under row locks, debits
         exactly 10 PAID credits for the current version, and inserts the entitlement in the same
         transaction. Bonus credits are not consumed. The separate unlock action is never triggered by
-        a MoMo redirect or top-up callback. Retries with the same key and chapter return the saved
+        a VNPAY redirect or top-up callback. Retries with the same key and chapter return the saved
         entitlement without a second debit; using the key for another chapter conflicts. A different
         key for an already-owned chapter returns the existing entitlement. A debit failure leaves no
         entitlement. Responses are no-store; no production payment or unlock is enabled by default.
@@ -7141,7 +7141,7 @@ paths:
         storage. At most one queued/processing export is allowed per actor. The worker creates a repeatable-read ZIP
         snapshot with a manifest and actor-scoped JSONL datasets. The manifest lists shared workspace data,
         provider-generated translation candidates, source uploads, external binary assets and credentials that are
-        excluded. The actor's MoMo TEST orders, settlement/reconciliation events, credit ledger and unlock
+        excluded. The actor's VNPAY TEST orders, settlement events, credit ledger and unlock
         entitlements are included and labeled TEST. This endpoint does not represent or export production payments.
       security:
         - appSession: []
@@ -7465,13 +7465,13 @@ paths:
           $ref: '#/components/responses/Problem'
   /api/v1/credit-packs:
     get:
-      operationId: listMomoTestCreditPacks
+      operationId: listVnPayTestCreditPacks
       tags: [Commerce]
       x-implementation-status: test-only-feature-flag
-      summary: List available MoMo TEST credit packs
+      summary: List available VNPAY TEST credit packs
       description: >-
         Returns the server-owned TEST catalog only in the PostgreSQL profile after explicit
-        NOVEL_MOMO_TEST_ENABLED=true and full TEST configuration. Requires an authenticated account
+        NOVEL_VNPAY_TEST_ENABLED=true and full TEST configuration. Requires an authenticated account
         with current Terms and Privacy acceptance. Amount, credit quantities, environment and expiry
         are server-owned; values are sandbox fixtures, not production offers. Response is no-store.
       security:
@@ -7489,15 +7489,15 @@ paths:
           $ref: '#/components/responses/Problem'
         '503':
           $ref: '#/components/responses/Problem'
-  /api/v1/momo/payment-orders:
+  /api/v1/vnpay/payment-orders:
     post:
-      operationId: createMomoTestPaymentOrder
+      operationId: createVnPayTestPaymentOrder
       tags: [Commerce]
       x-implementation-status: test-only-feature-flag
-      summary: Create or replay a MoMo TEST credit top-up
+      summary: Create or replay a VNPAY TEST credit top-up
       description: >-
         Requires an authenticated account, current Terms and Privacy acceptance, session-bound CSRF,
-        Idempotency-Key and the explicit MoMo TEST feature configuration. The request selects only a
+        Idempotency-Key and the explicit VNPAY TEST feature configuration. The request selects only a
         server-owned pack ID/version; price, credits, VND currency, TEST environment and provider URLs
         cannot be supplied by the client. A durable order snapshot is created before one provider create
         attempt. Same-key/same-request replay never creates another provider order. Only this response
@@ -7564,7 +7564,7 @@ paths:
           $ref: '#/components/responses/Problem'
   /api/v1/payment-orders/{orderId}:
     get:
-      operationId: getMomoTestPaymentOrder
+      operationId: getVnPayTestPaymentOrder
       tags: [Commerce]
       x-implementation-status: test-only-feature-flag
       summary: Read the status of the current user's payment order
@@ -7602,18 +7602,19 @@ paths:
       operationId: receiveMomoTestPaymentNotification
       tags: [Commerce]
       x-implementation-status: test-only-feature-flag
-      summary: Receive a signed MoMo TEST payment notification
+      summary: Receive a legacy signed MoMo TEST notification
+      deprecated: true
       description: >-
-        Server-to-server callback available only in the PostgreSQL profile when MoMo TEST has been explicitly
-        enabled with validated TEST credentials and HTTPS callback settings. The server verifies the HMAC signature,
+        Legacy server-to-server callback for already-created MoMo TEST orders. New credit top-ups use VNPAY and
+        no new MoMo order is created. This route remains available only in the PostgreSQL profile when legacy
+        MoMo TEST is explicitly enabled with validated TEST credentials and HTTPS callback settings. The server verifies the HMAC signature,
         matches the saved MoMo TEST order, request and VND amount, deduplicates the signed event, and appends the
         paid-credit grant atomically with the successful order transition. The order snapshots autoCapture=true;
         result code 9000 with a positive transaction ID is settled under MoMo's one-step rule, while a two-step
         order with autoCapture=false remains pending. Structurally complete callbacks are acknowledged with 204 even
         when signature/business validation fails; those callbacks never settle an order or grant credits.
-        Gated customer catalog/create/status routes are available in the same PostgreSQL profile when TEST is
-        explicitly enabled; payment-order history, missing-IPN reconciliation and chapter-unlock routes remain
-        unavailable. There is no production payment and the feature flag remains off by default. Responds 204
+        Actor-owned payment-order history and chapter-unlock routes use the VNPAY TEST integration. The legacy
+        MoMo feature remains off by default. There is no production payment. Responds 204
         within the provider callback contract; response has no body.
       security: []
       requestBody:
@@ -7642,6 +7643,93 @@ paths:
           description: Content-Type must be application/json.
         '503':
           description: Notification could not be committed; provider may retry.
+  /api/v1/payments/vnpay/ipn:
+    get:
+      operationId: receiveVnPayTestPaymentNotification
+      tags: [Commerce]
+      x-implementation-status: test-only-feature-flag
+      summary: Receive a signed VNPAY TEST payment notification
+      description: >-
+        VNPAY TEST server-to-server callback. Available only in the PostgreSQL profile after explicit opt-in
+        and validated sandbox credentials. The server verifies HMAC-SHA512, merchant code, order reference,
+        amount, response and transaction status, deduplicates events, and atomically grants paid credits only
+        for verified successful payments. A browser Return URL never settles an order. Invalid signature,
+        unknown order, amount mismatch, duplicate and transient database outcomes use VNPAY's JSON
+        RspCode/Message acknowledgement contract. Suspected or unknown transactions do not grant credits.
+        VNPAY calls this IPN with GET. This test integration is disabled by default and is not a production
+        payment integration.
+      security: []
+      parameters:
+        - name: vnp_TmnCode
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9]{8}$'
+        - name: vnp_CurrCode
+          in: query
+          required: true
+          schema:
+            type: string
+            const: VND
+        - name: vnp_TxnRef
+          in: query
+          required: true
+          schema:
+            type: string
+            maxLength: 100
+        - name: vnp_Amount
+          in: query
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: vnp_OrderInfo
+          in: query
+          required: true
+          schema:
+            type: string
+            maxLength: 255
+        - name: vnp_TransactionNo
+          in: query
+          required: true
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+        - name: vnp_ResponseCode
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: '^[0-9]{2}$'
+        - name: vnp_TransactionStatus
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: '^[0-9]{2}$'
+        - name: vnp_SecureHash
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: '^[0-9a-fA-F]{128}$'
+      responses:
+        '200':
+          description: Callback result using the VNPAY IPN acknowledgement contract.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [RspCode, Message]
+                properties:
+                  RspCode:
+                    type: string
+                    pattern: '^[0-9]{2}$'
+                  Message:
+                    type: string
+                    maxLength: 255
   /api/v1/me/reader-preferences:
     get:
       operationId: getReaderPreferences
@@ -10477,7 +10565,7 @@ components:
           example: local
         integrations:
           type: object
-          required: [googleOidcEnabled, momoTestEnabled, momoEnvironment]
+          required: [googleOidcEnabled, momoTestEnabled, momoEnvironment, vnpayTestEnabled, vnpayEnvironment]
           properties:
             googleOidcEnabled:
               type: boolean
@@ -10487,10 +10575,16 @@ components:
                 readiness; it does not verify reachability or credentials with Google.
             momoTestEnabled:
               type: boolean
-              const: false
+              description: Legacy MoMo adapter readiness; the application uses VNPAY for new top-ups.
             momoEnvironment:
               type: string
-              const: TEST
+              enum: [TEST, OFF]
+            vnpayTestEnabled:
+              type: boolean
+              description: True only when the validated VNPAY TEST adapter is explicitly enabled.
+            vnpayEnvironment:
+              type: string
+              enum: [TEST, OFF]
         features:
           type: object
           required: [importProcessingEnabled, cultivationEnabled, commerceSandboxEnabled, publicCatalogEnabled, publicationReleaseEnabled, publicationSchedulerApiEnabled, translationFakePreviewEnabled, translationManualSubmissionEnabled, translationPublicationEnabled]
@@ -13047,7 +13141,7 @@ components:
           type: [string, 'null']
           format: uri
           description: >-
-            Validated MoMo TEST hosted checkout URL available only in the create response when provider
+            Validated VNPAY TEST hosted checkout URL available only in the create response when provider
             creation has been verified. Never returned by order status/history.
     PaymentOrderHistoryPage:
       type: object
@@ -13079,7 +13173,7 @@ components:
           minimum: 1
         provider:
           type: string
-          const: MOMO
+          enum: [MOMO, VNPAY]
         environment:
           type: string
           const: TEST

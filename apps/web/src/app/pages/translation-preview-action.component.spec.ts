@@ -15,7 +15,7 @@ const jobId = '66666666-6666-4666-8666-666666666666';
 const fakeStatus = (enabled: boolean) => ({
   apiVersion: 'v1',
   environment: 'local',
-  integrations: { googleOidcEnabled: false, momoTestEnabled: false, momoEnvironment: 'TEST' },
+  integrations: { googleOidcEnabled: false, vnpayTestEnabled: false, vnpayEnvironment: 'TEST' },
   features: {
     importProcessingEnabled: false,
     cultivationEnabled: false,

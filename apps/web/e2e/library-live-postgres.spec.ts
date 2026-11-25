@@ -95,7 +95,7 @@ test('account library renders data from the real API and PostgreSQL session', as
     ]),
   );
 
-  const otherSessionToken = process.env['MOMO_COMMERCE_LIVE_TEST_OTHER_SESSION_TOKEN'];
+  const otherSessionToken = process.env['VNPAY_COMMERCE_LIVE_TEST_OTHER_SESSION_TOKEN'];
   if (otherSessionToken) {
     expect(otherSessionToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
     const ownerCsrfResponse = await page.request.get(`${baseUrl}/api/v1/auth/csrf`);

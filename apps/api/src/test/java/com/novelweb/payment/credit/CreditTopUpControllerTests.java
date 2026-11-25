@@ -3,6 +3,7 @@ package com.novelweb.payment.credit;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -37,7 +38,7 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 @ExtendWith(MockitoExtension.class)
 class CreditTopUpControllerTests {
 
-  private static final String PACK_ID = "momo-test-credits-100";
+  private static final String PACK_ID = "vnpay-test-credits-100";
   private static final int PACK_VERSION = 1;
   private static final String IDEMPOTENCY_KEY = "credit-top-up-route-key-01";
 
@@ -47,7 +48,7 @@ class CreditTopUpControllerTests {
 
   @Mock private PolicyService policyService;
 
-  private final CreditPackCatalog catalog = CreditPackCatalog.momoTestFixture();
+  private final CreditPackCatalog catalog = CreditPackCatalog.vnPayTestFixture();
   private MockMvc mockMvc;
   private UUID actorId;
 
@@ -69,7 +70,7 @@ class CreditTopUpControllerTests {
     var anonymousCreate =
         mockMvc
             .perform(
-                post("/api/v1/momo/payment-orders")
+                post("/api/v1/vnpay/payment-orders")
                     .contentType(MediaType.APPLICATION_JSON)
                     .header("Idempotency-Key", IDEMPOTENCY_KEY)
                     .content(requestBody()))
@@ -99,7 +100,7 @@ class CreditTopUpControllerTests {
     var policyBlockedCreate =
         mockMvc
             .perform(
-                post("/api/v1/momo/payment-orders")
+                post("/api/v1/vnpay/payment-orders")
                     .principal(authentication())
                     .header("Idempotency-Key", IDEMPOTENCY_KEY)
                     .contentType(MediaType.APPLICATION_JSON)
@@ -145,19 +146,21 @@ class CreditTopUpControllerTests {
     when(policyService.requiredAcceptance(actorId))
         .thenReturn(PolicyService.RequiredAcceptance.COMPLETE);
     TopUpOrder order = sampleOrder(actorId);
-    String checkoutUrl = "https://test-payment.momo.vn/v2/gateway/pay?token=synthetic-token";
+    String checkoutUrl =
+        "https://sandbox.vnpayment.vn/paymentv2/vpcpay.html?vnp_SecureHash=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     when(checkoutService.createOrReplay(
             eq(actorId),
             eq(IDEMPOTENCY_KEY),
             any(CreditPackCatalog.class),
             eq(PACK_ID),
-            eq(PACK_VERSION)))
+            eq(PACK_VERSION),
+            anyString()))
         .thenReturn(new CheckoutResult(Outcome.CREATED, CheckoutOutcome.READY, order, checkoutUrl));
 
     var response =
         mockMvc
             .perform(
-                post("/api/v1/momo/payment-orders")
+                post("/api/v1/vnpay/payment-orders")
                     .principal(authentication())
                     .header("Idempotency-Key", IDEMPOTENCY_KEY)
                     .contentType(MediaType.APPLICATION_JSON)
@@ -174,7 +177,7 @@ class CreditTopUpControllerTests {
     assertTrue(!response.getContentAsString().contains(order.userId().toString()));
     assertTrue(!response.getContentAsString().contains(order.requestId().toString()));
     verify(checkoutService)
-        .createOrReplay(actorId, IDEMPOTENCY_KEY, catalog, PACK_ID, PACK_VERSION);
+        .createOrReplay(actorId, IDEMPOTENCY_KEY, catalog, PACK_ID, PACK_VERSION, "127.0.0.1");
   }
 
   @Test
@@ -187,14 +190,15 @@ class CreditTopUpControllerTests {
             eq(IDEMPOTENCY_KEY),
             any(CreditPackCatalog.class),
             eq(PACK_ID),
-            eq(PACK_VERSION)))
+            eq(PACK_VERSION),
+            anyString()))
         .thenReturn(
             new CheckoutResult(
                 Outcome.REPLAYED, CheckoutOutcome.PROVIDER_RESULT_UNKNOWN, order, null));
     var replay =
         mockMvc
             .perform(
-                post("/api/v1/momo/payment-orders")
+                post("/api/v1/vnpay/payment-orders")
                     .principal(authentication())
                     .header("Idempotency-Key", IDEMPOTENCY_KEY)
                     .contentType(MediaType.APPLICATION_JSON)
@@ -207,12 +211,17 @@ class CreditTopUpControllerTests {
     assertTrue(!replay.getContentAsString().contains("checkoutUrl\":\"https://"));
 
     when(checkoutService.createOrReplay(
-            eq(actorId), eq(IDEMPOTENCY_KEY), any(CreditPackCatalog.class), eq(PACK_ID), eq(2)))
+            eq(actorId),
+            eq(IDEMPOTENCY_KEY),
+            any(CreditPackCatalog.class),
+            eq(PACK_ID),
+            eq(2),
+            anyString()))
         .thenReturn(new CheckoutResult(Outcome.PACK_VERSION_STALE, null, null, null));
     var stale =
         mockMvc
             .perform(
-                post("/api/v1/momo/payment-orders")
+                post("/api/v1/vnpay/payment-orders")
                     .principal(authentication())
                     .header("Idempotency-Key", IDEMPOTENCY_KEY)
                     .contentType(MediaType.APPLICATION_JSON)
@@ -262,7 +271,7 @@ class CreditTopUpControllerTests {
     var missingVersion =
         mockMvc
             .perform(
-                post("/api/v1/momo/payment-orders")
+                post("/api/v1/vnpay/payment-orders")
                     .principal(authentication())
                     .header("Idempotency-Key", IDEMPOTENCY_KEY)
                     .contentType(MediaType.APPLICATION_JSON)
@@ -297,13 +306,14 @@ class CreditTopUpControllerTests {
               eq(requestKey),
               any(CreditPackCatalog.class),
               eq(PACK_ID),
-              eq(PACK_VERSION)))
+              eq(PACK_VERSION),
+              anyString()))
           .thenReturn(new CheckoutResult(expected.outcome(), null, null, "sensitive-checkout-url"));
 
       var response =
           mockMvc
               .perform(
-                  post("/api/v1/momo/payment-orders")
+                  post("/api/v1/vnpay/payment-orders")
                       .principal(authentication())
                       .header("Idempotency-Key", requestKey)
                       .contentType(MediaType.APPLICATION_JSON)
@@ -335,7 +345,7 @@ class CreditTopUpControllerTests {
     var createResponse =
         mockMvc
             .perform(
-                post("/api/v1/momo/payment-orders")
+                post("/api/v1/vnpay/payment-orders")
                     .principal(authentication())
                     .header("Idempotency-Key", IDEMPOTENCY_KEY)
                     .contentType(MediaType.APPLICATION_JSON)
@@ -402,7 +412,7 @@ class CreditTopUpControllerTests {
     var createResponse =
         disabledShop
             .perform(
-                post("/api/v1/momo/payment-orders")
+                post("/api/v1/vnpay/payment-orders")
                     .principal(authentication())
                     .header("Idempotency-Key", IDEMPOTENCY_KEY)
                     .contentType(MediaType.APPLICATION_JSON)
@@ -441,13 +451,13 @@ class CreditTopUpControllerTests {
         UUID.randomUUID(),
         userId,
         UUID.randomUUID(),
-        Provider.MOMO,
+        Provider.VNPAY,
         quote,
         OrderStatus.PENDING,
         Instant.parse("2026-11-15T10:00:00Z"));
   }
 
   private static CreditPackQuote catalogQuote() {
-    return CreditPackCatalog.momoTestFixture().quote(PACK_ID).orElseThrow();
+    return CreditPackCatalog.vnPayTestFixture().quote(PACK_ID).orElseThrow();
   }
 }

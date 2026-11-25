@@ -137,23 +137,23 @@
       <span class="demo-banner-icon" aria-hidden="true">i</span>
       @if (systemStatus.connection() === 'checking') {
         <p>
-          <strong>Bản demo tương tác.</strong> Đang kiểm tra API local; Google, xử lý file và MoMo
+          <strong>Bản demo tương tác.</strong> Đang kiểm tra API local; Google, xử lý file và VNPAY
           Test chưa được bật.
         </p>
       } @else if (systemStatus.connection() === 'offline') {
         <p>
           <strong>API local chưa phản hồi.</strong> Giao diện vẫn ở chế độ demo; Google, xử lý file
-          và MoMo Test chưa được bật.
+          và VNPAY Test chưa được bật.
         </p>
         <button class="status-retry" type="button" (click)="systemStatus.refresh()">Thử lại</button>
       } @else {
         @if (systemStatus.status(); as status) {
           <p>
             <strong>API {{ status.apiVersion }} đang phản hồi.</strong> Google
-            {{ status.integrations.googleOidcEnabled ? 'đã cấu hình' : 'chưa cấu hình' }} · MoMo
+            {{ status.integrations.googleOidcEnabled ? 'đã cấu hình' : 'chưa cấu hình' }} · VNPAY
             {{
-              status.integrations.momoTestEnabled
-                ? status.integrations.momoEnvironment
+              status.integrations.vnpayTestEnabled
+                ? status.integrations.vnpayEnvironment
                 : 'Test chưa bật'
             }}
             · Import {{ status.features.importProcessingEnabled ? 'sẵn sàng' : 'chưa bật' }}.

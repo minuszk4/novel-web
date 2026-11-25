@@ -28,7 +28,7 @@ export interface CommercePaymentOrder {
   id: string;
   packId: string;
   packVersion: number;
-  provider: 'MOMO';
+  provider: 'MOMO' | 'VNPAY';
   environment: 'TEST';
   currency: 'VND';
   amountVnd: number;
@@ -198,7 +198,7 @@ function parsePaymentOrder(value: unknown): CommercePaymentOrder {
   if (!isRecord(value)) throw invalidResponse();
   const state = value['status'];
   if (
-    value['provider'] !== 'MOMO' ||
+    (value['provider'] !== 'MOMO' && value['provider'] !== 'VNPAY') ||
     value['environment'] !== 'TEST' ||
     value['currency'] !== 'VND' ||
     typeof state !== 'string' ||
@@ -210,7 +210,7 @@ function parsePaymentOrder(value: unknown): CommercePaymentOrder {
     id: parseUuid(value['id']),
     packId: parseText(value['packId'], 80),
     packVersion: parsePositiveInteger(value['packVersion']),
-    provider: 'MOMO',
+    provider: value['provider'],
     environment: 'TEST',
     currency: 'VND',
     amountVnd: parsePositiveInteger(value['amountVnd']),

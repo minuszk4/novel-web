@@ -2,8 +2,6 @@ package com.novelweb.payment.momo;
 
 import com.novelweb.payment.credit.CreditLedgerService;
 import com.novelweb.payment.credit.CreditPackCatalog;
-import com.novelweb.payment.credit.CreditTopUpCheckoutService;
-import com.novelweb.payment.credit.CreditTopUpOrderService;
 import com.novelweb.platform.ProviderCallMetrics;
 import java.util.Map;
 import java.util.Objects;
@@ -68,13 +66,6 @@ public class MomoTestGatewayConfiguration {
     ProviderCallMetrics metrics = metricsProvider.getIfAvailable();
     return new MomoTestGatewayClient(
         settings, objectMapper, transport, metrics == null ? ProviderCallMetrics.noop() : metrics);
-  }
-
-  @Bean
-  @Profile("postgres")
-  CreditTopUpCheckoutService creditTopUpCheckoutService(
-      CreditTopUpOrderService orders, MomoTestGatewayClient gatewayClient) {
-    return new CreditTopUpCheckoutService(orders, gatewayClient::createCreditTopUp);
   }
 
   @Bean

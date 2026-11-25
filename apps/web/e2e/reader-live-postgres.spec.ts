@@ -122,7 +122,7 @@ test('account Reader reads source and persists a bookmark through the real API a
     }),
   ).toBeVisible();
 
-  const otherSessionToken = process.env['MOMO_COMMERCE_LIVE_TEST_OTHER_SESSION_TOKEN'];
+  const otherSessionToken = process.env['VNPAY_COMMERCE_LIVE_TEST_OTHER_SESSION_TOKEN'];
   if (otherSessionToken) {
     expect(otherSessionToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
     await page.context().clearCookies();

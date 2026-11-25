@@ -15,6 +15,7 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.regex.Pattern;
 import javax.sql.DataSource;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Service;
@@ -22,7 +23,7 @@ import org.springframework.stereotype.Service;
 /** Atomically exchanges paid TEST credits for access to an eligible public chapter. */
 @Service
 @Profile("postgres")
-@ConditionalOnProperty(prefix = "novel.payment.momo.test", name = "enabled", havingValue = "true")
+@ConditionalOnProperty(prefix = "novel.payment.vnpay.test", name = "enabled", havingValue = "true")
 public class ChapterUnlockService {
 
   private static final Pattern IDEMPOTENCY_KEY = Pattern.compile("[A-Za-z0-9._~-]{16,128}");
@@ -32,7 +33,9 @@ public class ChapterUnlockService {
   private final CreditPackCatalog catalog;
 
   public ChapterUnlockService(
-      DataSource dataSource, CreditLedgerService creditLedger, CreditPackCatalog catalog) {
+      DataSource dataSource,
+      CreditLedgerService creditLedger,
+      @Qualifier("vnPayTestCreditPackCatalog") CreditPackCatalog catalog) {
     this.dataSource = dataSource;
     this.creditLedger = creditLedger;
     this.catalog = catalog;

@@ -62,6 +62,11 @@ import com.novelweb.payment.momo.MomoTestIpnService;
 import com.novelweb.payment.momo.MomoTestIpnTestSupport;
 import com.novelweb.payment.momo.MomoTestIpnTestSupport.SignedNotification;
 import com.novelweb.payment.momo.MomoTestOrderReconciliationService;
+import com.novelweb.payment.vnpay.VnPayTestCheckoutUrlPolicy;
+import com.novelweb.payment.vnpay.VnPayTestGatewayClient;
+import com.novelweb.payment.vnpay.VnPayTestGatewaySettings;
+import com.novelweb.payment.vnpay.VnPayTestIpnService;
+import com.novelweb.payment.vnpay.VnPayTestSignatureCodec;
 import com.novelweb.progression.cultivation.CultivationRepository;
 import com.novelweb.progression.cultivation.CultivationService;
 import com.novelweb.translation.glossary.GlossaryCatalogController;
@@ -133,6 +138,8 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.util.LinkedMultiValueMap;
+import org.springframework.util.MultiValueMap;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
@@ -167,6 +174,10 @@ import tools.jackson.databind.ObjectMapper;
       "novel.payment.momo.test.base-url=https://test-payment.momo.vn",
       "novel.payment.momo.test.ipn-url=https://novel.example/api/v1/payments/momo/ipn",
       "novel.payment.momo.test.redirect-url=https://novel.example/app/payment/result",
+      "novel.payment.vnpay.test.enabled=true",
+      "novel.payment.vnpay.test.tmn-code=ABCD1234",
+      "novel.payment.vnpay.test.hash-secret=synthetic-vnpay-secret-only",
+      "NOVEL_APP_BASE_URL=https://novel.example",
       "novel.imports.staging.root=${java.io.tmpdir}/novel-web-import-postgres-tests",
       "novel.imports.parser.poll-delay=PT1H",
       "novel.imports.staging.max-upload-bytes=1024",
@@ -363,13 +374,19 @@ class PostgresSchemaIntegrationTests {
 
   @Autowired private CreditTopUpOrderService creditTopUpOrderService;
 
-  @Autowired private CreditPackCatalog creditPackCatalog;
+  @Autowired
+  @org.springframework.beans.factory.annotation.Qualifier("momoTestCreditPackCatalog")
+  private CreditPackCatalog creditPackCatalog;
 
   @MockitoBean private CreditTopUpCheckoutService creditTopUpCheckoutService;
 
   @MockitoBean private PublicationTakedownPurgeTransport purgeTransport;
 
   @Autowired private MomoTestIpnService momoTestIpnService;
+
+  @Autowired private VnPayTestIpnService vnPayTestIpnService;
+
+  @Autowired private VnPayTestGatewaySettings vnPayTestGatewaySettings;
 
   @Autowired private GlossaryRepository glossaryRepository;
 
@@ -19881,7 +19898,7 @@ class PostgresSchemaIntegrationTests {
       String idempotencyKey = "credit-top-up-http-route-01";
       String requestBody =
           objectMapper.writeValueAsString(
-              Map.of("packId", "momo-test-credits-100", "packVersion", 1));
+              Map.of("packId", "vnpay-test-credits-100", "packVersion", 1));
 
       MvcResult catalog = mockMvc.perform(get("/api/v1/credit-packs").cookie(cookie)).andReturn();
       assertEquals(200, catalog.getResponse().getStatus());
@@ -19893,7 +19910,7 @@ class PostgresSchemaIntegrationTests {
       MvcResult csrfRejected =
           mockMvc
               .perform(
-                  post("/api/v1/momo/payment-orders")
+                  post("/api/v1/vnpay/payment-orders")
                       .cookie(cookie)
                       .header("Idempotency-Key", idempotencyKey)
                       .contentType(MediaType.APPLICATION_JSON)
@@ -19904,24 +19921,26 @@ class PostgresSchemaIntegrationTests {
       verifyNoInteractions(creditTopUpCheckoutService);
 
       CreditPackCatalog.CreditPackQuote quote =
-          CreditPackCatalog.momoTestFixture().quote("momo-test-credits-100").orElseThrow();
+          CreditPackCatalog.vnPayTestFixture().quote("vnpay-test-credits-100").orElseThrow();
       UUID orderId = UUID.randomUUID();
       CreditTopUpOrderService.TopUpOrder order =
           new CreditTopUpOrderService.TopUpOrder(
               orderId,
               userId,
               UUID.randomUUID(),
-              CreditTopUpOrderService.Provider.MOMO,
+              CreditTopUpOrderService.Provider.VNPAY,
               quote,
               CreditTopUpOrderService.OrderStatus.PENDING,
               Instant.now());
-      String checkoutUrl = "https://test-payment.momo.vn/v2/gateway/pay?token=synthetic";
+      String checkoutUrl =
+          "https://sandbox.vnpayment.vn/paymentv2/vpcpay.html?vnp_SecureHash=" + "a".repeat(128);
       when(creditTopUpCheckoutService.createOrReplay(
               eq(userId),
               eq(idempotencyKey),
               any(CreditPackCatalog.class),
-              eq("momo-test-credits-100"),
-              eq(1)))
+              eq("vnpay-test-credits-100"),
+              eq(1),
+              eq("127.0.0.1")))
           .thenReturn(
               new CreditTopUpCheckoutService.CheckoutResult(
                   CreditTopUpOrderService.Outcome.CREATED,
@@ -19932,7 +19951,7 @@ class PostgresSchemaIntegrationTests {
       MvcResult checkout =
           mockMvc
               .perform(
-                  post("/api/v1/momo/payment-orders")
+                  post("/api/v1/vnpay/payment-orders")
                       .cookie(cookie)
                       .header("X-CSRF-Token", csrfToken)
                       .header("Idempotency-Key", idempotencyKey)
@@ -19953,8 +19972,9 @@ class PostgresSchemaIntegrationTests {
               eq(userId),
               eq(idempotencyKey),
               any(CreditPackCatalog.class),
-              eq("momo-test-credits-100"),
-              eq(1));
+              eq("vnpay-test-credits-100"),
+              eq(1),
+              eq("127.0.0.1"));
     } finally {
       deleteSessionTestUser(userId);
     }
@@ -20678,6 +20698,75 @@ class PostgresSchemaIntegrationTests {
     } finally {
       deleteSessionTestUser(userId);
     }
+  }
+
+  @Test
+  void signedVnPayTestIpnOverHttpSettlesExactlyOnceAndDoesNotRequireBrowserCsrf() throws Exception {
+    UUID userId = createSessionTestUser("VNPAY IPN HTTP Owner");
+    try {
+      String packId = "vnpay-test-credits-100";
+      CreditPackCatalog catalog = CreditPackCatalog.vnPayTestFixture();
+      CreditTopUpOrderService.TopUpOrder created =
+          creditTopUpOrderService
+              .createOrReplay(
+                  userId,
+                  "vnpay-ipn-http-owner-0001",
+                  catalog,
+                  packId,
+                  1,
+                  CreditTopUpOrderService.Provider.VNPAY)
+              .order();
+      var claim = creditTopUpOrderService.claimProviderCreate(userId, created.id());
+      assertEquals(CreditTopUpOrderService.CheckoutOutcome.CLAIMED, claim.outcome());
+      String checkoutUrl =
+          "https://sandbox.vnpayment.vn/paymentv2/vpcpay.html?vnp_SecureHash=" + "a".repeat(128);
+      assertEquals(
+          CreditTopUpOrderService.CheckoutOutcome.READY,
+          creditTopUpOrderService
+              .finishProviderCreate(
+                  userId, created.id(), checkoutUrl, VnPayTestCheckoutUrlPolicy::allows)
+              .outcome());
+
+      Map<String, String> callback = new HashMap<>();
+      callback.put("vnp_TmnCode", vnPayTestGatewaySettings.tmnCode());
+      callback.put("vnp_CurrCode", "VND");
+      callback.put("vnp_TxnRef", VnPayTestGatewayClient.compactOrderReference(created.id()));
+      callback.put(
+          "vnp_OrderInfo",
+          "Nap credit " + VnPayTestGatewayClient.compactOrderReference(created.id()));
+      callback.put("vnp_Amount", "100000");
+      callback.put("vnp_TransactionNo", "8765432101");
+      callback.put("vnp_ResponseCode", "00");
+      callback.put("vnp_TransactionStatus", "00");
+      callback.put(
+          "vnp_SecureHash",
+          VnPayTestSignatureCodec.sign(callback, vnPayTestGatewaySettings.hashSecret()));
+
+      MvcResult first =
+          mockMvc
+              .perform(get("/api/v1/payments/vnpay/ipn").params(toMultiValueMap(callback)))
+              .andReturn();
+      assertEquals(200, first.getResponse().getStatus());
+      assertTrue(first.getResponse().getContentAsString().contains("\"RspCode\":\"00\""));
+      assertEquals(CreditTopUpOrderService.OrderStatus.SUCCEEDED, topUpOrderStatus(created.id()));
+      assertEquals(100, creditProjectedBalance(userId, "PAID"));
+
+      MvcResult replay =
+          mockMvc
+              .perform(get("/api/v1/payments/vnpay/ipn").params(toMultiValueMap(callback)))
+              .andReturn();
+      assertEquals(200, replay.getResponse().getStatus());
+      assertTrue(replay.getResponse().getContentAsString().contains("\"RspCode\":\"02\""));
+      assertEquals(100, creditProjectedBalance(userId, "PAID"));
+    } finally {
+      deleteSessionTestUser(userId);
+    }
+  }
+
+  private static MultiValueMap<String, String> toMultiValueMap(Map<String, String> values) {
+    MultiValueMap<String, String> result = new LinkedMultiValueMap<>();
+    values.forEach(result::add);
+    return result;
   }
 
   @Test

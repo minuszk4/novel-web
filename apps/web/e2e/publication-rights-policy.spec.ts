@@ -21,8 +21,8 @@ async function installAccount(page: import('@playwright/test').Page): Promise<vo
         environment: 'test',
         integrations: {
           googleOidcEnabled: false,
-          momoTestEnabled: false,
-          momoEnvironment: 'disabled',
+          vnpayTestEnabled: false,
+          vnpayEnvironment: 'disabled',
         },
         features: {
           importProcessingEnabled: true,

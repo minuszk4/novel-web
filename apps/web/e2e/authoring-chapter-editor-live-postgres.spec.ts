@@ -96,7 +96,7 @@ test('private chapter editor saves to PostgreSQL and resolves stale edits by exp
   });
   await expect(page.getByRole('status').filter({ hasText: 'Đã lưu · phiên bản 1' })).toBeVisible();
 
-  const otherSessionToken = process.env['MOMO_COMMERCE_LIVE_TEST_OTHER_SESSION_TOKEN'];
+  const otherSessionToken = process.env['VNPAY_COMMERCE_LIVE_TEST_OTHER_SESSION_TOKEN'];
   if (otherSessionToken) {
     expect(otherSessionToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
     await page.context().clearCookies();

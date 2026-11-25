@@ -253,8 +253,8 @@ export class AccountReaderPageComponent {
     const status = this.systemStatus.status();
     return (
       status?.features.commerceSandboxEnabled === true &&
-      status.integrations.momoTestEnabled === true &&
-      status.integrations.momoEnvironment === 'TEST'
+      status.integrations.vnpayTestEnabled === true &&
+      status.integrations.vnpayEnvironment === 'TEST'
     );
   });
 
@@ -1459,8 +1459,8 @@ export class AccountReaderPageComponent {
     if (token !== this.loadToken || this.activeChapter()?.id !== chapter.id) return;
     if (
       status?.features.commerceSandboxEnabled !== true ||
-      status.integrations.momoTestEnabled !== true ||
-      status.integrations.momoEnvironment !== 'TEST'
+      status.integrations.vnpayTestEnabled !== true ||
+      status.integrations.vnpayEnvironment !== 'TEST'
     ) {
       this.unlockQuoteState.set('disabled');
       return;

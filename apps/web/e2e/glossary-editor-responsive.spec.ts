@@ -95,8 +95,8 @@ async function installRoutes(page: import('@playwright/test').Page): Promise<voi
         environment: 'test',
         integrations: {
           googleOidcEnabled: false,
-          momoTestEnabled: false,
-          momoEnvironment: 'disabled',
+          vnpayTestEnabled: false,
+          vnpayEnvironment: 'disabled',
         },
         features: {
           importProcessingEnabled: false,

@@ -19,6 +19,7 @@ public class SystemStatusController {
   private final GoogleSignInConfiguration googleSignInConfiguration;
   private final boolean cultivationEnabled;
   private final boolean momoTestEnabled;
+  private final boolean vnpayTestEnabled;
   private final boolean commerceSandboxEnabled;
   private final boolean publicCatalogEnabled;
   private final boolean publicationReleaseEnabled;
@@ -47,7 +48,12 @@ public class SystemStatusController {
     this.cultivationEnabled = cultivationEnabled;
     boolean postgresProfile = springEnvironment.acceptsProfiles(Profiles.of("postgres"));
     this.momoTestEnabled = postgresProfile && momoSettings.getIfAvailable() != null;
-    this.commerceSandboxEnabled = postgresProfile && commerceSandboxRequested && momoTestEnabled;
+    this.vnpayTestEnabled =
+        postgresProfile
+            && springEnvironment.getProperty(
+                "novel.payment.vnpay.test.enabled", Boolean.class, false);
+    this.commerceSandboxEnabled =
+        postgresProfile && commerceSandboxRequested && (momoTestEnabled || vnpayTestEnabled);
     PublicCatalogRateLimiter catalogRateLimiter = publicCatalogRateLimiter.getIfAvailable();
     this.publicCatalogEnabled =
         postgresProfile
@@ -80,7 +86,11 @@ public class SystemStatusController {
         "v1",
         environment,
         new ApiSystemStatus.Integrations(
-            googleSignInConfiguration.isReadyForSignIn(), momoTestEnabled, "TEST"),
+            googleSignInConfiguration.isReadyForSignIn(),
+            momoTestEnabled,
+            momoTestEnabled ? "TEST" : "OFF",
+            vnpayTestEnabled,
+            vnpayTestEnabled ? "TEST" : "OFF"),
         new ApiSystemStatus.Features(
             false,
             cultivationEnabled,

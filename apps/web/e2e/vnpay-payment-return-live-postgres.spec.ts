@@ -1,11 +1,11 @@
 import { expect, test } from './support';
 
-test('MoMo return reads a pending order from the real API and does not grant credit', async ({
+test('VNPAY return reads a pending order from the real API and does not grant credit', async ({
   page,
 }) => {
-  const sessionToken = process.env['MOMO_PAYMENT_RETURN_LIVE_TEST_SESSION_TOKEN'];
-  const orderId = process.env['MOMO_PAYMENT_RETURN_LIVE_TEST_ORDER_ID'];
-  const screenshotPath = process.env['MOMO_PAYMENT_RETURN_LIVE_TEST_SCREENSHOT'];
+  const sessionToken = process.env['VNPAY_PAYMENT_RETURN_LIVE_TEST_SESSION_TOKEN'];
+  const orderId = process.env['VNPAY_PAYMENT_RETURN_LIVE_TEST_ORDER_ID'];
+  const screenshotPath = process.env['VNPAY_PAYMENT_RETURN_LIVE_TEST_SCREENSHOT'];
 
   test.skip(
     !sessionToken || !orderId || !screenshotPath,
@@ -33,19 +33,19 @@ test('MoMo return reads a pending order from the real API and does not grant cre
   });
   page.on('request', (request) => {
     const pathname = new URL(request.url()).pathname;
-    if (/\/api\/v1\/(momo\/payment-orders|payments\/momo\/ipn)(?:\/|$)/.test(pathname)) {
+    if (/\/api\/v1\/(vnpay\/payment-orders|payments\/vnpay\/ipn)(?:\/|$)/.test(pathname)) {
       providerOrSettlementRequests.push(`${request.method()} ${pathname}`);
     }
   });
 
-  // MoMo may append resultCode=0 after a return. The application must trust its own saved order.
+  // VNPAY may append resultCode=0 after a return. The application must trust its own saved order.
   await page.goto(
     `http://localhost:4300/app/payment/result?orderId=${encodeURIComponent(orderId!)}&resultCode=0&signature=synthetic-untrusted`,
   );
   const systemStatusResponse = await page.request.get('http://localhost:4300/api/v1/system/status');
   expect(systemStatusResponse.status()).toBe(200);
   expect(await systemStatusResponse.json()).toMatchObject({
-    integrations: { momoTestEnabled: true, momoEnvironment: 'TEST' },
+    integrations: { vnpayTestEnabled: true, vnpayEnvironment: 'TEST' },
     features: { commerceSandboxEnabled: true },
   });
   const currentUserResponse = await page.request.get('http://localhost:4300/api/v1/auth/me');
@@ -56,11 +56,11 @@ test('MoMo return reads a pending order from the real API and does not grant cre
   await expect(page.getByRole('heading', { name: 'Chưa xác nhận thanh toán' })).toBeVisible();
   await expect(page.getByText(/100 credit đã mua chưa được cộng/)).toBeVisible();
   await expect(page.getByText(/Đừng thanh toán lại/)).toBeVisible();
-  await expect(page.getByText(/MoMo TEST — không dùng tiền thật/)).toBeVisible();
+  await expect(page.getByText(/VNPAY TEST — không dùng tiền thật/)).toBeVisible();
   await expect(page.getByText('Đang chờ xác nhận', { exact: true })).toBeVisible();
   const historyScreenshotPath = screenshotPath!.replace(
-    'momo-payment-return-pending-live.png',
-    'momo-payment-history-zero-live.png',
+    'vnpay-payment-return-pending-live.png',
+    'vnpay-payment-history-zero-live.png',
   );
   await page.screenshot({ path: screenshotPath!, fullPage: true });
 

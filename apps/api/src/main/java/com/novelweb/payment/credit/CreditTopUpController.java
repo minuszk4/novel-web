@@ -15,6 +15,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.regex.Pattern;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Profile;
@@ -38,11 +39,11 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
-/** Exposes MoMo TEST pack checkout only after the explicit server-side feature opt-in. */
+/** Exposes VNPAY TEST pack checkout only after explicit server-side feature opt-in. */
 @RestController
 @RequestMapping("/api/v1")
 @Profile("postgres")
-@ConditionalOnProperty(prefix = "novel.payment.momo.test", name = "enabled", havingValue = "true")
+@ConditionalOnProperty(prefix = "novel.payment.vnpay.test", name = "enabled", havingValue = "true")
 public class CreditTopUpController {
 
   private static final Pattern PACK_ID = Pattern.compile("[A-Za-z0-9._-]{1,64}");
@@ -54,7 +55,7 @@ public class CreditTopUpController {
   private final boolean commerceSandboxEnabled;
 
   public CreditTopUpController(
-      CreditPackCatalog catalog,
+      @Qualifier("vnPayTestCreditPackCatalog") CreditPackCatalog catalog,
       CreditTopUpCheckoutService checkoutService,
       CreditTopUpOrderService orderService,
       PolicyService policyService,
@@ -92,7 +93,7 @@ public class CreditTopUpController {
     }
   }
 
-  @PostMapping(value = "/momo/payment-orders", consumes = MediaType.APPLICATION_JSON_VALUE)
+  @PostMapping(value = "/vnpay/payment-orders", consumes = MediaType.APPLICATION_JSON_VALUE)
   public ResponseEntity<?> createPaymentOrder(
       Authentication authentication,
       @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
@@ -121,7 +122,12 @@ public class CreditTopUpController {
     try {
       CheckoutResult result =
           checkoutService.createOrReplay(
-              actor.orElseThrow(), idempotencyKey, catalog, body.packId(), body.packVersion());
+              actor.orElseThrow(),
+              idempotencyKey,
+              catalog,
+              body.packId(),
+              body.packVersion(),
+              request.getRemoteAddr());
       if (result.order() == null) return creationProblem(result.creationOutcome(), request);
 
       HttpStatus status =

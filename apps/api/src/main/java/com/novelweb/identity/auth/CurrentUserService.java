@@ -36,8 +36,12 @@ public class CurrentUserService {
     this.dataSource = dataSource;
     this.cultivationEnabled = cultivationEnabled;
     boolean postgresProfile = springEnvironment.acceptsProfiles(Profiles.of("postgres"));
-    boolean momoTestEnabled = postgresProfile && momoSettings.getIfAvailable() != null;
-    this.commerceSandboxEnabled = postgresProfile && commerceSandboxRequested && momoTestEnabled;
+    boolean testGatewayEnabled =
+        postgresProfile
+            && (momoSettings.getIfAvailable() != null
+                || springEnvironment.getProperty(
+                    "novel.payment.vnpay.test.enabled", Boolean.class, false));
+    this.commerceSandboxEnabled = postgresProfile && commerceSandboxRequested && testGatewayEnabled;
   }
 
   public Optional<CurrentUserResponse> findActiveUser(UUID userId) {

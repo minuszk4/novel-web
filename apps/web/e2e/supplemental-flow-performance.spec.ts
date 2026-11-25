@@ -49,7 +49,7 @@ test.afterAll(async () => {
       viewport: 'configured by the Playwright performance project',
     },
     scope:
-      'Local production Angular build with deterministic Playwright API route mocks. No API, PostgreSQL, parser worker, translation provider, MoMo merchant, network or production traffic latency is measured.',
+      'Local production Angular build with deterministic Playwright API route mocks. No API, PostgreSQL, parser worker, translation provider, VNPAY merchant, network or production traffic latency is measured.',
     measurements,
   };
   await writeFile(
@@ -217,7 +217,7 @@ test('renders fake-local translation status polling under a changing job', async
   });
 });
 
-test('measures repeated MoMo TEST status refresh to visible order state', async ({ page }) => {
+test('measures repeated VNPAY TEST status refresh to visible order state', async ({ page }) => {
   await page.addInitScript(() => {
     (window as PerformanceWindow).__flowNavigationStart = performance.now();
   });
@@ -273,7 +273,7 @@ test('measures repeated MoMo TEST status refresh to visible order state', async 
   expect(statusReads).toBe(paymentRefreshSamples + 1);
 
   measurements.push({
-    flow: 'MoMo TEST payment status refresh',
+    flow: 'VNPAY TEST payment status refresh',
     firstVisibleMs,
     interactionSamplesMs: refreshSamplesMs,
     interactionP95Ms: percentile95(refreshSamplesMs),
@@ -284,7 +284,7 @@ test('measures repeated MoMo TEST status refresh to visible order state', async 
       playwrightDriverWallMs: Number((performance.now() - driverStarted).toFixed(1)),
     },
     scope:
-      'Measures manual status-check request through visible state update using synthetic MoMo TEST records. No merchant checkout/IPN, MoMo network or payment settlement is performed.',
+      'Measures manual status-check request through visible state update using synthetic VNPAY TEST records. No merchant checkout/IPN, VNPAY network or payment settlement is performed.',
   });
 });
 
@@ -296,7 +296,7 @@ async function installAccountRoutes(page: Page): Promise<void> {
     json(route, {
       apiVersion: '10.16.0',
       environment: 'test',
-      integrations: { googleOidcEnabled: false, momoTestEnabled: true, momoEnvironment: 'TEST' },
+      integrations: { googleOidcEnabled: false, vnpayTestEnabled: true, vnpayEnvironment: 'TEST' },
       features: {
         importProcessingEnabled: true,
         cultivationEnabled: false,
@@ -424,7 +424,7 @@ function translationStatus(status: string, completedUnits: number) {
 function paymentOrder(status: 'PENDING' | 'UNKNOWN') {
   return {
     id: paymentOrderId,
-    packId: 'momo-test-credits-100',
+    packId: 'vnpay-test-credits-100',
     packVersion: 1,
     environment: 'TEST',
     currency: 'VND',

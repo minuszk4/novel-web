@@ -13,9 +13,9 @@ import { PurchasesPageComponent } from './purchases-page.component';
 
 const order = {
   id: '11111111-1111-4111-8111-111111111111',
-  packId: 'momo-test-credits-100',
+  packId: 'vnpay-test-credits-100',
   packVersion: 1,
-  provider: 'MOMO' as const,
+  provider: 'VNPAY' as const,
   environment: 'TEST' as const,
   currency: 'VND' as const,
   amountVnd: 1000,
@@ -33,7 +33,7 @@ const order = {
 const activeStatus: ApiSystemStatus = {
   apiVersion: 'v1',
   environment: 'test',
-  integrations: { googleOidcEnabled: false, momoTestEnabled: true, momoEnvironment: 'TEST' },
+  integrations: { googleOidcEnabled: false, vnpayTestEnabled: true, vnpayEnvironment: 'TEST' },
   features: {
     importProcessingEnabled: false,
     cultivationEnabled: false,

@@ -59,8 +59,8 @@ function isApiSystemStatus(value: unknown): value is ApiSystemStatus {
     typeof status.apiVersion === 'string' &&
     typeof status.environment === 'string' &&
     typeof integrations?.googleOidcEnabled === 'boolean' &&
-    typeof integrations.momoTestEnabled === 'boolean' &&
-    typeof integrations.momoEnvironment === 'string' &&
+    typeof integrations.vnpayTestEnabled === 'boolean' &&
+    typeof integrations.vnpayEnvironment === 'string' &&
     typeof features?.importProcessingEnabled === 'boolean' &&
     typeof features.cultivationEnabled === 'boolean' &&
     typeof features.commerceSandboxEnabled === 'boolean' &&

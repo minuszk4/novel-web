@@ -25,8 +25,8 @@ test('glossary import previews without upload-on-selection and saves an atomic d
         environment: 'test',
         integrations: {
           googleOidcEnabled: false,
-          momoTestEnabled: false,
-          momoEnvironment: 'disabled',
+          vnpayTestEnabled: false,
+          vnpayEnvironment: 'disabled',
         },
         features: {
           importProcessingEnabled: false,

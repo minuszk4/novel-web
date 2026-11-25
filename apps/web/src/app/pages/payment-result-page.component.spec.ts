@@ -9,7 +9,7 @@ import { PaymentResultPageComponent } from './payment-result-page.component';
 const orderId = '11111111-1111-4111-8111-111111111111';
 const pendingOrder = {
   id: orderId,
-  packId: 'momo-test-credits-100',
+  packId: 'vnpay-test-credits-100',
   packVersion: 1,
   environment: 'TEST' as const,
   currency: 'VND' as const,
@@ -61,6 +61,25 @@ describe('PaymentResultPageComponent', () => {
     expect(fixture.nativeElement.textContent).toContain('100 credit đã mua chưa được cộng');
     expect(fixture.nativeElement.textContent).toContain('Đừng thanh toán lại');
     expect(fixture.nativeElement.textContent).not.toContain('đã được xác nhận');
+    expect(historyApi.getCreditBalance).not.toHaveBeenCalled();
+  });
+
+  it('maps the VNPAY reference to the saved order and ignores its browser result code', async () => {
+    queryParams.next(
+      convertToParamMap({
+        vnp_TxnRef: orderId.replaceAll('-', ''),
+        vnp_ResponseCode: '00',
+        vnp_TransactionStatus: '00',
+      }),
+    );
+    const fixture = TestBed.createComponent(PaymentResultPageComponent);
+    fixture.detectChanges();
+    await vi.waitFor(() => {
+      fixture.detectChanges();
+      expect(fixture.nativeElement.textContent).toContain('Chưa xác nhận thanh toán');
+    });
+
+    expect(shopApi.getOrderStatus).toHaveBeenCalledWith(orderId);
     expect(historyApi.getCreditBalance).not.toHaveBeenCalled();
   });
 

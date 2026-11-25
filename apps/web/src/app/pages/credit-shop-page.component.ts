@@ -112,7 +112,7 @@ export class CreditShopPageComponent {
     const pack = this.selectedPack();
     if (!pack || this.creatingOrder()) return;
     if (!this.sandboxEnabled()) {
-      this.checkoutError.set('MoMo TEST hiện không được xác nhận là đang bật. Chưa gửi lệnh nạp.');
+      this.checkoutError.set('VNPAY TEST hiện không được xác nhận là đang bật. Chưa gửi lệnh nạp.');
       return;
     }
     if (!this.attempt || !samePack(this.attempt.pack, pack)) {
@@ -131,7 +131,7 @@ export class CreditShopPageComponent {
     if (!this.attempt || !this.uncertainCreate() || this.creatingOrder()) return;
     if (!this.sandboxEnabled()) {
       this.checkoutError.set(
-        'MoMo TEST hiện không được xác nhận là đang bật. Giữ nguyên yêu cầu và thử lại khi môi trường sẵn sàng.',
+        'VNPAY TEST hiện không được xác nhận là đang bật. Giữ nguyên yêu cầu và thử lại khi môi trường sẵn sàng.',
       );
       return;
     }
@@ -159,7 +159,7 @@ export class CreditShopPageComponent {
         this.statusMessage.set('Máy chủ đã xác nhận giao dịch; số credit đã được cập nhật.');
       } else {
         this.statusMessage.set(
-          'Đã tải lại trạng thái do máy chủ lưu. Việc tải lại không gửi truy vấn thanh toán tới MoMo.',
+          'Đã tải lại trạng thái do máy chủ lưu. Việc tải lại không gửi truy vấn thanh toán tới VNPAY.',
         );
       }
     } catch (error) {
@@ -201,7 +201,7 @@ export class CreditShopPageComponent {
     const labels: Record<TopUpOrderState, string> = {
       CREATED: 'Đã tạo lệnh',
       INITIATING: 'Đang tạo phiên thanh toán',
-      PENDING: 'Đang chờ MoMo xác nhận',
+      PENDING: 'Đang chờ VNPAY xác nhận',
       UNKNOWN: 'Đang đối soát',
       SUCCEEDED: 'Đã xác nhận',
       FAILED: 'Thất bại',
@@ -469,8 +469,8 @@ function isNullableDate(value: unknown): value is string | null {
 function isTestCommerceEnabled(status: ApiSystemStatus | null): boolean {
   return (
     status?.features.commerceSandboxEnabled === true &&
-    status.integrations.momoTestEnabled === true &&
-    status.integrations.momoEnvironment === 'TEST'
+    status.integrations.vnpayTestEnabled === true &&
+    status.integrations.vnpayEnvironment === 'TEST'
   );
 }
 

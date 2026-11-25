@@ -40,8 +40,8 @@ describe('LandingPageComponent public catalog', () => {
         environment: 'local',
         integrations: {
           googleOidcEnabled: false,
-          momoTestEnabled: false,
-          momoEnvironment: 'TEST',
+          vnpayTestEnabled: false,
+          vnpayEnvironment: 'TEST',
         },
         features: {
           importProcessingEnabled: false,

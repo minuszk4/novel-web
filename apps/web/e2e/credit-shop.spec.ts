@@ -4,7 +4,7 @@ import type { Page, Route } from '@playwright/test';
 const orderId = '11111111-1111-4111-8111-111111111111';
 const csrfToken = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
 const pack = {
-  packId: 'momo-test-credits-100',
+  packId: 'vnpay-test-credits-100',
   packVersion: 1,
   environment: 'TEST',
   currency: 'VND',
@@ -50,18 +50,18 @@ async function json(route: Route, body: unknown, status = 200): Promise<void> {
 
 async function installAccountRoutes(
   page: Page,
-  options: { commerceEnabled?: boolean; momoTestEnabled?: boolean } = {},
+  options: { commerceEnabled?: boolean; vnpayTestEnabled?: boolean } = {},
 ): Promise<void> {
   const commerceEnabled = options.commerceEnabled ?? true;
-  const momoTestEnabled = options.momoTestEnabled ?? true;
+  const vnpayTestEnabled = options.vnpayTestEnabled ?? true;
   await page.route('**/api/v1/system/status', (route) =>
     json(route, {
       apiVersion: 'v1',
       environment: 'test',
       integrations: {
         googleOidcEnabled: false,
-        momoTestEnabled,
-        momoEnvironment: momoTestEnabled ? 'TEST' : 'OFF',
+        vnpayTestEnabled,
+        vnpayEnvironment: vnpayTestEnabled ? 'TEST' : 'OFF',
       },
       features: {
         importProcessingEnabled: false,
@@ -104,8 +104,8 @@ async function installAccountRoutes(
 }
 
 for (const scenario of [
-  { name: 'commerce sandbox flag', options: { commerceEnabled: false, momoTestEnabled: true } },
-  { name: 'MoMo TEST flag', options: { commerceEnabled: true, momoTestEnabled: false } },
+  { name: 'commerce sandbox flag', options: { commerceEnabled: false, vnpayTestEnabled: true } },
+  { name: 'VNPAY TEST flag', options: { commerceEnabled: true, vnpayTestEnabled: false } },
 ]) {
   test('keeps the shop closed when the ' + scenario.name + ' is off', async ({ page }) => {
     await installAccountRoutes(page, scenario.options);
@@ -115,7 +115,7 @@ for (const scenario of [
       catalogRequests += 1;
       await json(route, { environment: 'TEST', offers: [pack] });
     });
-    await page.route('**/api/v1/momo/payment-orders', async (route) => {
+    await page.route('**/api/v1/vnpay/payment-orders', async (route) => {
       createRequests += 1;
       await json(route, { code: 'SHOULD_NOT_BE_CALLED' }, 500);
     });
@@ -125,7 +125,7 @@ for (const scenario of [
     await expect(page.getByRole('link', { name: 'Xem lịch sử nạp' })).toBeVisible();
     await expect.poll(() => catalogRequests).toBe(0);
     await expect.poll(() => createRequests).toBe(0);
-    await expect(page.getByText('MoMo TEST hiện chưa được bật.')).toBeVisible();
+    await expect(page.getByText('VNPAY TEST hiện chưa được bật.')).toBeVisible();
     await expectNoAxeViolations(page);
   });
 }
@@ -148,7 +148,7 @@ test('requires explicit confirmation and waits for server-confirmed settlement',
   });
   const idempotencyKeys: string[] = [];
   let orderCreates = 0;
-  await page.route('**/api/v1/momo/payment-orders', async (route) => {
+  await page.route('**/api/v1/vnpay/payment-orders', async (route) => {
     orderCreates += 1;
     const request = route.request();
     expect(request.method()).toBe('POST');
@@ -160,7 +160,7 @@ test('requires explicit confirmation and waits for server-confirmed settlement',
       {
         order: pendingOrder,
         checkoutOutcome: 'READY',
-        checkoutUrl: 'https://test-payment.momo.vn/v2/gateway/pay?token=synthetic',
+        checkoutUrl: 'https://sandbox.vnpayment.vn/paymentv2/vpcpay.html?vnp_SecureHash=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       },
       201,
     );
@@ -182,7 +182,7 @@ test('requires explicit confirmation and waits for server-confirmed settlement',
   await expect(page.getByRole('heading', { name: 'Nạp credit' })).toBeVisible();
   await expect(page.getByText('1.000 ₫')).toBeVisible();
   await expect(page.getByText('100 credit đã mua')).toBeVisible();
-  await expect(page.getByText('MoMo TEST — không dùng tiền thật.')).toBeVisible();
+  await expect(page.getByText('VNPAY TEST — không dùng tiền thật.')).toBeVisible();
   await expectNoAxeViolations(page);
   await page.screenshot({
     path: testInfo.outputPath('01-credit-shop-360x800.png'),
@@ -202,13 +202,13 @@ test('requires explicit confirmation and waits for server-confirmed settlement',
 
   await page.getByRole('button', { name: /Chọn gói 100 credit/ }).click();
   await page.getByRole('button', { name: 'Xác nhận tạo lệnh' }).click();
-  await expect(page.getByRole('heading', { name: 'Đang chờ MoMo xác nhận' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Đang chờ VNPAY xác nhận' })).toBeVisible();
   expect(orderCreates).toBe(1);
   expect(idempotencyKeys).toHaveLength(1);
   expect(idempotencyKeys[0]).toMatch(/^[0-9a-f-]{36}$/i);
-  await expect(page.getByRole('link', { name: /Mở trang MoMo TEST/ })).toHaveAttribute(
+  await expect(page.getByRole('link', { name: /Mở trang VNPAY TEST/ })).toHaveAttribute(
     'href',
-    'https://test-payment.momo.vn/v2/gateway/pay?token=synthetic',
+    'https://sandbox.vnpayment.vn/paymentv2/vpcpay.html?vnp_SecureHash=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
   );
   await expect(page.getByRole('link', { name: 'Trở lại chương đang đọc' })).toHaveAttribute(
     'href',
@@ -217,14 +217,14 @@ test('requires explicit confirmation and waits for server-confirmed settlement',
   expect(balanceRequests).toBe(1);
 
   await page
-    .getByRole('heading', { name: 'Đang chờ MoMo xác nhận' })
+    .getByRole('heading', { name: 'Đang chờ VNPAY xác nhận' })
     .evaluate((element) => element.scrollIntoView({ block: 'center', behavior: 'instant' }));
   await page.screenshot({
     path: testInfo.outputPath('02-pending-order-360x800.png'),
     fullPage: false,
   });
   await page.getByRole('button', { name: 'Kiểm tra trạng thái đã lưu' }).click();
-  await expect(page.getByRole('heading', { name: 'Đang chờ MoMo xác nhận' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Đang chờ VNPAY xác nhận' })).toBeVisible();
   expect(balanceRequests).toBe(1);
   expect(statusRequests).toHaveLength(1);
   await expectNoAxeViolations(page);
@@ -264,7 +264,7 @@ test('restores an uncertain create and retries with the same idempotency key', a
   );
   const idempotencyKeys: string[] = [];
   let postCount = 0;
-  await page.route('**/api/v1/momo/payment-orders', async (route) => {
+  await page.route('**/api/v1/vnpay/payment-orders', async (route) => {
     postCount += 1;
     idempotencyKeys.push(route.request().headers()['idempotency-key'] ?? '');
     if (postCount === 1) {
@@ -278,7 +278,7 @@ test('restores an uncertain create and retries with the same idempotency key', a
       body: JSON.stringify({
         order: pendingOrder,
         checkoutOutcome: 'READY',
-        checkoutUrl: 'https://test-payment.momo.vn/v2/gateway/pay?token=replayed',
+        checkoutUrl: 'https://sandbox.vnpayment.vn/paymentv2/vpcpay.html?vnp_SecureHash=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       }),
     });
   });
@@ -293,11 +293,11 @@ test('restores an uncertain create and retries with the same idempotency key', a
   await page.reload();
   await expect(page.getByRole('heading', { name: 'Yêu cầu nạp chưa được xác nhận' })).toBeVisible();
   await page.getByRole('button', { name: 'Thử lại cùng yêu cầu' }).click();
-  await expect(page.getByRole('heading', { name: 'Đang chờ MoMo xác nhận' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Đang chờ VNPAY xác nhận' })).toBeVisible();
   expect(postCount).toBe(2);
   expect(idempotencyKeys).toEqual([firstKey, firstKey]);
-  await expect(page.getByRole('link', { name: /Mở trang MoMo TEST/ })).toHaveAttribute(
+  await expect(page.getByRole('link', { name: /Mở trang VNPAY TEST/ })).toHaveAttribute(
     'href',
-    'https://test-payment.momo.vn/v2/gateway/pay?token=replayed',
+    'https://sandbox.vnpayment.vn/paymentv2/vpcpay.html?vnp_SecureHash=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
   );
 });

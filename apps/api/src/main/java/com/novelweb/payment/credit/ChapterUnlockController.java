@@ -33,11 +33,11 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
-/** Gated chapter unlock API for the MoMo TEST credit fixture. */
+/** Gated chapter unlock API for the VNPAY TEST credit fixture. */
 @RestController
 @RequestMapping("/api/v1/chapters/{chapterId}")
 @Profile("postgres")
-@ConditionalOnProperty(prefix = "novel.payment.momo.test", name = "enabled", havingValue = "true")
+@ConditionalOnProperty(prefix = "novel.payment.vnpay.test", name = "enabled", havingValue = "true")
 public class ChapterUnlockController {
 
   private final ChapterUnlockService unlockService;

@@ -149,7 +149,7 @@ export class PurchasesPageComponent {
   protected orderStatusLabel(state: PaymentOrderState): string {
     const labels: Record<PaymentOrderState, string> = {
       CREATED: 'Đã tạo lệnh',
-      INITIATING: 'Đang kết nối MoMo',
+      INITIATING: 'Đang kết nối VNPAY',
       PENDING: 'Đang chờ xác nhận',
       UNKNOWN: 'Đang đối soát',
       SUCCEEDED: 'Thành công',
@@ -178,7 +178,7 @@ export class PurchasesPageComponent {
   }
 
   protected packLabel(order: CommercePaymentOrder): string {
-    return order.packId === 'momo-test-credits-100'
+    return order.packId === 'vnpay-test-credits-100'
       ? `Gói TEST 100 credit đã mua · phiên bản ${order.packVersion}`
       : `Gói credit · phiên bản ${order.packVersion}`;
   }
@@ -301,8 +301,8 @@ function parseOrderState(value: string | null): PaymentOrderState | null {
 function isTestCommerceEnabled(status: ApiSystemStatus | null): boolean {
   return (
     status?.features.commerceSandboxEnabled === true &&
-    status.integrations.momoTestEnabled === true &&
-    status.integrations.momoEnvironment === 'TEST'
+    status.integrations.vnpayTestEnabled === true &&
+    status.integrations.vnpayEnvironment === 'TEST'
   );
 }
 
