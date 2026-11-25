@@ -534,7 +534,8 @@ class PostgresSchemaIntegrationTests {
   }
 
   @Test
-  void manuscriptCollaborationInvitationGrantsViewAndEditThenRevokesSafely() throws Exception {
+  void manuscriptCollaborationGrantsViewAndEditWhileKeepingOwnerControlsAndRevokesSafely()
+      throws Exception {
     UUID ownerId = createSessionTestUser("Manuscript Collaboration Owner");
     UUID recipientId = createSessionTestUser("Manuscript Collaboration Recipient");
     UUID outsiderId = createSessionTestUser("Manuscript Collaboration Outsider");
@@ -745,6 +746,64 @@ class PostgresSchemaIntegrationTests {
                       .content(editTokenBody))
               .andReturn();
       assertEquals(200, editAccepted.getResponse().getStatus());
+
+      MvcResult ownerPublicationReadiness =
+          mockMvc
+              .perform(
+                  get("/api/v1/authoring/manuscripts/{workId}/publication/readiness", work.id())
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(200, ownerPublicationReadiness.getResponse().getStatus());
+      String publicationReadinessEtag =
+          ownerPublicationReadiness.getResponse().getHeader(HttpHeaders.ETAG);
+
+      MvcResult collaboratorCannotAcceptRightsPolicy =
+          mockMvc
+              .perform(
+                  post(
+                          "/api/v1/authoring/manuscripts/{workId}/publication/rights-policy/acceptance",
+                          work.id())
+                      .cookie(recipientCookie)
+                      .header("X-CSRF-Token", recipientCsrf)
+                      .header("Idempotency-Key", UUID.randomUUID().toString())
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"policyVersion\":\"rights-v1\",\"confirmed\":true}"))
+              .andReturn();
+      assertEquals(404, collaboratorCannotAcceptRightsPolicy.getResponse().getStatus());
+      assertTrue(
+          collaboratorCannotAcceptRightsPolicy
+              .getResponse()
+              .getContentAsString()
+              .contains("MANUSCRIPT_NOT_FOUND"));
+      assertEquals(0, publicationRightsPolicyAcceptanceCount(recipientId, work.id()));
+
+      String publicationRequestBody =
+          objectMapper.writeValueAsString(
+              Map.of(
+                  "policyVersion",
+                  "rights-v1",
+                  "scopeClaims",
+                  List.of(
+                      Map.of("scopeCode", "PUBLIC_METADATA", "rightsBasisCode", "ORIGINAL_WORK"),
+                      Map.of("scopeCode", "CHAPTER_TEXT", "rightsBasisCode", "ORIGINAL_WORK"))));
+      MvcResult collaboratorCannotSubmitForReview =
+          mockMvc
+              .perform(
+                  post("/api/v1/authoring/manuscripts/{workId}/publication/requests", work.id())
+                      .cookie(recipientCookie)
+                      .header("X-CSRF-Token", recipientCsrf)
+                      .header(HttpHeaders.IF_MATCH, publicationReadinessEtag)
+                      .header("Idempotency-Key", "collab-review-" + UUID.randomUUID())
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(publicationRequestBody))
+              .andReturn();
+      assertEquals(404, collaboratorCannotSubmitForReview.getResponse().getStatus());
+      assertTrue(
+          collaboratorCannotSubmitForReview
+              .getResponse()
+              .getContentAsString()
+              .contains("MANUSCRIPT_NOT_FOUND"));
+      assertEquals(0, publicationRequestCount(work.id()));
 
       MvcResult ownerGrantListBeforeEscalationAttempts =
           mockMvc
