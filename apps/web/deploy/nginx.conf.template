@@ -8,6 +8,9 @@ server {
     index index.html;
     server_tokens off;
     access_log /var/log/nginx/access.log novel_redacted;
+    # Nginx error messages may include the full request target. Keep only emergency diagnostics here;
+    # URL-free access records and sanitized API logs retain routine failure observability.
+    error_log /dev/stderr emerg;
 
     # VNPAY sends signed payment fields in query parameters; do not write them to access logs.
     location = /api/v1/payments/vnpay/ipn {

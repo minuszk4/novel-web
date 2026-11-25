@@ -8,6 +8,11 @@ const server = createServer((request, response) => {
   }
 
   if (request.url?.startsWith('/api/')) {
+    if (request.url.startsWith('/api/v1/static-host-probe-upstream-failure')) {
+      request.socket.destroy();
+      return;
+    }
+
     if (request.url === '/api/v1/static-host-probe-error') {
       response.writeHead(403, {
         'Cache-Control': 'no-store',

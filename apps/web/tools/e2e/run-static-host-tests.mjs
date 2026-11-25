@@ -56,6 +56,9 @@ try {
     if (!logs.output.includes('method=GET status=200 duration=')) {
       throw new Error('The redacted static host access log format was not observed.');
     }
+    if (!logs.output.includes('method=GET status=502 duration=')) {
+      throw new Error('The failed upstream request did not produce a redacted status record.');
+    }
   }
 } catch (error) {
   process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);

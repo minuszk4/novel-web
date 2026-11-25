@@ -90,6 +90,11 @@ test('static container applies Firebase CSP and proxies API same-origin', async 
   expect(proxiedApiError.headers()['content-type']).toContain('application/problem+json');
   expect(await proxiedApiError.json()).toMatchObject({ status: 403, code: 'FORBIDDEN' });
 
+  const failedApiProxy = await page.request.get(
+    `/api/v1/static-host-probe-upstream-failure?cursor=${encodeURIComponent(accessLogSentinel)}`,
+  );
+  expect(failedApiProxy.status()).toBe(502);
+
   const enforcement = await page.evaluate(async () => {
     const inlineScript = document.createElement('script');
     inlineScript.textContent = 'window.__unexpectedInlineScript = true';
