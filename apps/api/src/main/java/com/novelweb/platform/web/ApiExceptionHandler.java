@@ -3,6 +3,8 @@ package com.novelweb.platform.web;
 import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.CacheControl;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
@@ -66,6 +68,9 @@ public class ApiExceptionHandler {
     problem.setTitle(title);
     problem.setProperty("code", code);
     problem.setProperty("correlationId", correlationId);
-    return ResponseEntity.status(status).body(problem);
+    return ResponseEntity.status(status)
+        .cacheControl(CacheControl.noStore())
+        .header(HttpHeaders.PRAGMA, "no-cache")
+        .body(problem);
   }
 }

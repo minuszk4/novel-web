@@ -4,6 +4,7 @@ import com.novelweb.platform.web.CorrelationIdFilter;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
+import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Component;
 
 @Component
@@ -20,6 +21,8 @@ public class ApiProblemWriter {
     Object correlation = request.getAttribute(CorrelationIdFilter.REQUEST_ATTRIBUTE);
     String correlationId = correlation instanceof String value ? value : "unavailable";
     response.setStatus(status);
+    response.setHeader(HttpHeaders.CACHE_CONTROL, "no-store");
+    response.setHeader(HttpHeaders.PRAGMA, "no-cache");
     response.setContentType("application/problem+json");
     response.setCharacterEncoding("UTF-8");
     response

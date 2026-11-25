@@ -98,6 +98,8 @@ class ApiFoundationTests {
         .andExpect(header().string("Content-Security-Policy", API_CONTENT_SECURITY_POLICY))
         .andExpect(header().string("X-Content-Type-Options", "nosniff"))
         .andExpect(header().string("Referrer-Policy", "no-referrer"))
+        .andExpect(header().string("Cache-Control", "no-store"))
+        .andExpect(header().string("Pragma", "no-cache"))
         .andExpect(header().exists("X-Correlation-Id"))
         .andExpect(jsonPath("$.status").value(403))
         .andExpect(jsonPath("$.code").value("FORBIDDEN"))

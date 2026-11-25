@@ -31,9 +31,25 @@ class ApiExceptionHandlerTests {
     String logOutput = output.getAll();
     assertEquals(HttpStatus.INTERNAL_SERVER_ERROR, response.getStatusCode());
     assertEquals("The request could not be completed.", response.getBody().getDetail());
+    assertEquals("no-store", response.getHeaders().getCacheControl());
+    assertEquals("no-cache", response.getHeaders().getFirst("Pragma"));
     assertTrue(logOutput.contains(CORRELATION_ID));
     assertTrue(logOutput.contains("exceptionType=IllegalStateException"));
     assertFalse(logOutput.contains(PRIVATE_SENTINEL));
     assertFalse(logOutput.contains("Provider token and chapter text"));
+  }
+
+  @Test
+  void methodNotAllowedProblemIsNotCacheable() {
+    ApiExceptionHandler handler = new ApiExceptionHandler();
+    MockHttpServletRequest request = new MockHttpServletRequest();
+
+    var response =
+        handler.handleMethodNotAllowed(
+            new org.springframework.web.HttpRequestMethodNotSupportedException("POST"), request);
+
+    assertEquals(HttpStatus.METHOD_NOT_ALLOWED, response.getStatusCode());
+    assertEquals("no-store", response.getHeaders().getCacheControl());
+    assertEquals("no-cache", response.getHeaders().getFirst("Pragma"));
   }
 }
