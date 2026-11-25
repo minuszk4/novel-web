@@ -2022,6 +2022,7 @@ test('account Reader discards a cached text selection after chapter navigation',
 
   const annotationOpener = page.getByRole('button', { name: 'Mở ghi chú và đoạn đánh dấu' });
   await annotationOpener.focus();
+  await expect(annotationOpener).toBeFocused();
   await page.keyboard.press('Enter');
   const panel = page.getByRole('dialog', { name: 'Ghi chú & đoạn đánh dấu' });
   await expect(panel.getByRole('heading', { name: 'Chưa có ghi chú nào' })).toBeVisible();
