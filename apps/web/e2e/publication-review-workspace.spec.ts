@@ -30,12 +30,18 @@ function reviewDetail(unresolvedClaim = false) {
       {
         scopeCode: 'PUBLIC_METADATA',
         snapshotSha256: snapshotHash,
+        previewPolicyVersion: null,
+        previewPercent: null,
+        measurement: null,
         work: { title: 'Núi lặng', author: 'Tác giả mẫu', sourceLanguage: 'vi' },
         chapters: [],
       },
       {
         scopeCode: 'CHAPTER_TEXT',
         snapshotSha256: snapshotHash,
+        previewPolicyVersion: null,
+        previewPercent: null,
+        measurement: null,
         work: { title: 'Núi lặng', author: 'Tác giả mẫu', sourceLanguage: 'vi' },
         chapters: [
           {

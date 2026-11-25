@@ -422,6 +422,8 @@ test('account library loads scoped catalog pages and keeps local demo imports se
       workId: firstWorkId,
       sourceRevisionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
       sourceLanguage: 'vi',
+      accessState: 'readable',
+      previewPercent: null,
       segments: [
         {
           anchor: 'opening',
