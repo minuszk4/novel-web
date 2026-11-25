@@ -18,13 +18,14 @@ class ReaderPreferencesServiceTests {
   void acceptsAndPersistsEverySupportedPreference() {
     UUID userId = UUID.randomUUID();
     var expected =
-        new ReaderPreferencesRepository.PreferencesRecord(1, "sepia", "sans", 24, 1.9, 840);
+        new ReaderPreferencesRepository.PreferencesRecord(2, "sepia", "sans", 24, 1.9, 840, true);
     when(repository.save(userId, expected)).thenReturn(expected);
 
     var saved =
         service.save(
             userId,
-            new ReaderPreferencesService.SavePreferencesRequest(1, "sepia", "sans", 24, 1.9, 840));
+            new ReaderPreferencesService.SavePreferencesRequest(
+                2, "sepia", "sans", 24, 1.9, 840, true));
 
     assertEquals(expected, saved);
     verify(repository).save(userId, expected);
@@ -39,35 +40,47 @@ class ReaderPreferencesServiceTests {
             service.save(
                 userId,
                 new ReaderPreferencesService.SavePreferencesRequest(
-                    2, "light", "serif", 20, 1.8, 720)));
+                    1, "light", "serif", 20, 1.8, 720, false)));
     assertThrows(
         ReaderPreferencesService.InvalidPreferencesException.class,
         () ->
             service.save(
                 userId,
                 new ReaderPreferencesService.SavePreferencesRequest(
-                    1, "sepia", "serif", 29, 1.8, 720)));
+                    2, "sepia", "serif", 29, 1.8, 720, false)));
     assertThrows(
         ReaderPreferencesService.InvalidPreferencesException.class,
         () ->
             service.save(
                 userId,
                 new ReaderPreferencesService.SavePreferencesRequest(
-                    1, "dark", "serif", 20, Double.NaN, 720)));
+                    2, "dark", "serif", 20, Double.NaN, 720, false)));
     assertThrows(
         ReaderPreferencesService.InvalidPreferencesException.class,
         () ->
             service.save(
                 userId,
                 new ReaderPreferencesService.SavePreferencesRequest(
-                    1, "light", "sans", 20, 1.8, 559)));
+                    2, "light", "sans", 20, 1.8, 559, false)));
   }
 
   @Test
   void rejectsUnknownPreferenceFields() {
     var request =
-        new ReaderPreferencesService.SavePreferencesRequest(1, "light", "serif", 20, 1.8, 720);
+        new ReaderPreferencesService.SavePreferencesRequest(
+            2, "light", "serif", 20, 1.8, 720, false);
     request.captureUnknownField("trackingId", "must-not-be-accepted");
+
+    assertThrows(
+        ReaderPreferencesService.InvalidPreferencesException.class,
+        () -> service.save(UUID.randomUUID(), request));
+  }
+
+  @Test
+  void requiresThePairedModePreferenceInSchemaVersionTwo() {
+    var request =
+        new ReaderPreferencesService.SavePreferencesRequest(
+            2, "light", "serif", 20, 1.8, 720, null);
 
     assertThrows(
         ReaderPreferencesService.InvalidPreferencesException.class,

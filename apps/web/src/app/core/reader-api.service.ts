@@ -76,12 +76,13 @@ export interface SaveReaderProgressRequest {
 }
 
 export interface ReaderPreferences {
-  schemaVersion: 1;
+  schemaVersion: 2;
   theme: 'light' | 'sepia' | 'dark';
   fontFamily: 'serif' | 'sans';
   fontSize: number;
   lineHeight: number;
   contentWidth: number;
+  pairedModeByDefault: boolean;
 }
 
 export interface ReaderBookmark {
@@ -823,8 +824,8 @@ function parseReaderPreferences(value: unknown): ReaderPreferences {
   if (
     !isRecord(value) ||
     Object.keys(value).sort().join(',') !==
-      'contentWidth,fontFamily,fontSize,lineHeight,schemaVersion,theme' ||
-    value['schemaVersion'] !== 1 ||
+      'contentWidth,fontFamily,fontSize,lineHeight,pairedModeByDefault,schemaVersion,theme' ||
+    value['schemaVersion'] !== 2 ||
     (value['theme'] !== 'light' && value['theme'] !== 'sepia' && value['theme'] !== 'dark') ||
     (value['fontFamily'] !== 'serif' && value['fontFamily'] !== 'sans') ||
     !Number.isSafeInteger(value['fontSize']) ||
@@ -836,17 +837,19 @@ function parseReaderPreferences(value: unknown): ReaderPreferences {
     value['lineHeight'] > 2.2 ||
     !Number.isSafeInteger(value['contentWidth']) ||
     (value['contentWidth'] as number) < 560 ||
-    (value['contentWidth'] as number) > 900
+    (value['contentWidth'] as number) > 900 ||
+    typeof value['pairedModeByDefault'] !== 'boolean'
   ) {
     throw invalidResponse('INVALID_READER_PREFERENCES');
   }
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     theme: value['theme'],
     fontFamily: value['fontFamily'],
     fontSize: value['fontSize'] as number,
     lineHeight: value['lineHeight'],
     contentWidth: value['contentWidth'] as number,
+    pairedModeByDefault: value['pairedModeByDefault'],
   };
 }
 

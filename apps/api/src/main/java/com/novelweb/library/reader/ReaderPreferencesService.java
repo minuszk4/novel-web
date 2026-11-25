@@ -39,11 +39,12 @@ public class ReaderPreferencesService {
         || request.fontFamily() == null
         || request.fontSize() == null
         || request.lineHeight() == null
-        || request.contentWidth() == null) {
+        || request.contentWidth() == null
+        || request.pairedModeByDefault() == null) {
       throw new InvalidPreferencesException("All reader preference fields are required");
     }
-    if (request.schemaVersion() != 1) {
-      throw new InvalidPreferencesException("schemaVersion must be 1");
+    if (request.schemaVersion() != 2) {
+      throw new InvalidPreferencesException("schemaVersion must be 2");
     }
     if (!THEMES.contains(request.theme())) {
       throw new InvalidPreferencesException("theme must be light, sepia, or dark");
@@ -70,7 +71,8 @@ public class ReaderPreferencesService {
             request.fontFamily(),
             request.fontSize(),
             request.lineHeight(),
-            request.contentWidth()));
+            request.contentWidth(),
+            request.pairedModeByDefault()));
   }
 
   public static final class SavePreferencesRequest {
@@ -80,6 +82,7 @@ public class ReaderPreferencesService {
     private Integer fontSize;
     private Double lineHeight;
     private Integer contentWidth;
+    private Boolean pairedModeByDefault;
     private boolean unknownFields;
 
     public SavePreferencesRequest() {}
@@ -90,13 +93,15 @@ public class ReaderPreferencesService {
         String fontFamily,
         Integer fontSize,
         Double lineHeight,
-        Integer contentWidth) {
+        Integer contentWidth,
+        Boolean pairedModeByDefault) {
       this.schemaVersion = schemaVersion;
       this.theme = theme;
       this.fontFamily = fontFamily;
       this.fontSize = fontSize;
       this.lineHeight = lineHeight;
       this.contentWidth = contentWidth;
+      this.pairedModeByDefault = pairedModeByDefault;
     }
 
     public Integer schemaVersion() {
@@ -121,6 +126,10 @@ public class ReaderPreferencesService {
 
     public Integer contentWidth() {
       return contentWidth;
+    }
+
+    public Boolean pairedModeByDefault() {
+      return pairedModeByDefault;
     }
 
     boolean hasUnknownFields() {
@@ -149,6 +158,10 @@ public class ReaderPreferencesService {
 
     public void setContentWidth(Integer contentWidth) {
       this.contentWidth = contentWidth;
+    }
+
+    public void setPairedModeByDefault(Boolean pairedModeByDefault) {
+      this.pairedModeByDefault = pairedModeByDefault;
     }
 
     @JsonAnySetter

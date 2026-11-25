@@ -536,7 +536,7 @@ class PostgresSchemaIntegrationTests {
             connection.prepareStatement("SELECT COUNT(*) FROM databasechangelog");
         ResultSet changesets = changesetCount.executeQuery()) {
       changesets.next();
-      assertEquals(192, changesets.getInt(1), "unexpected number of applied changesets");
+      assertEquals(193, changesets.getInt(1), "unexpected number of applied changesets");
     }
 
     Set<String> actualTables = new HashSet<>();
@@ -15038,16 +15038,18 @@ class PostgresSchemaIntegrationTests {
       assertTrue(defaults.getResponse().getHeader("Cache-Control").contains("no-store"));
       JsonNode defaultPreferences =
           objectMapper.readTree(defaults.getResponse().getContentAsString());
-      assertEquals(1, defaultPreferences.path("schemaVersion").asInt());
+      assertEquals(2, defaultPreferences.path("schemaVersion").asInt());
       assertEquals("light", defaultPreferences.path("theme").asText());
       assertEquals("serif", defaultPreferences.path("fontFamily").asText());
       assertEquals(20, defaultPreferences.path("fontSize").asInt());
       assertEquals(1.8, defaultPreferences.path("lineHeight").asDouble());
       assertEquals(720, defaultPreferences.path("contentWidth").asInt());
+      assertFalse(defaultPreferences.path("pairedModeByDefault").asBoolean());
 
       String requested =
-          "{\"schemaVersion\":1,\"theme\":\"sepia\",\"fontFamily\":\"sans\","
-              + "\"fontSize\":24,\"lineHeight\":1.9,\"contentWidth\":840}";
+          "{\"schemaVersion\":2,\"theme\":\"sepia\",\"fontFamily\":\"sans\","
+              + "\"fontSize\":24,\"lineHeight\":1.9,\"contentWidth\":840,"
+              + "\"pairedModeByDefault\":true}";
       MvcResult missingCsrf =
           mockMvc
               .perform(
@@ -15074,6 +15076,7 @@ class PostgresSchemaIntegrationTests {
       assertEquals(24, savedPreferences.path("fontSize").asInt());
       assertEquals(1.9, savedPreferences.path("lineHeight").asDouble());
       assertEquals(840, savedPreferences.path("contentWidth").asInt());
+      assertTrue(savedPreferences.path("pairedModeByDefault").asBoolean());
 
       MvcResult invalid =
           mockMvc
@@ -15081,8 +15084,9 @@ class PostgresSchemaIntegrationTests {
                   put("/api/v1/me/reader-preferences")
                       .contentType(MediaType.APPLICATION_JSON)
                       .content(
-                          "{\"schemaVersion\":1,\"theme\":\"sepia\",\"fontFamily\":\"sans\","
-                              + "\"fontSize\":99,\"lineHeight\":1.9,\"contentWidth\":840}")
+                          "{\"schemaVersion\":2,\"theme\":\"sepia\",\"fontFamily\":\"sans\","
+                              + "\"fontSize\":99,\"lineHeight\":1.9,\"contentWidth\":840,"
+                              + "\"pairedModeByDefault\":true}")
                       .header("X-CSRF-Token", ownerCsrf)
                       .cookie(ownerCookie))
               .andReturn();
@@ -15094,8 +15098,9 @@ class PostgresSchemaIntegrationTests {
                   put("/api/v1/me/reader-preferences")
                       .contentType(MediaType.APPLICATION_JSON)
                       .content(
-                          "{\"schemaVersion\":1,\"theme\":\"sepia\",\"fontFamily\":\"sans\","
+                          "{\"schemaVersion\":2,\"theme\":\"sepia\",\"fontFamily\":\"sans\","
                               + "\"fontSize\":24,\"lineHeight\":1.9,\"contentWidth\":840,"
+                              + "\"pairedModeByDefault\":true,"
                               + "\"trackingId\":\"must-be-rejected\"}")
                       .header("X-CSRF-Token", ownerCsrf)
                       .cookie(ownerCookie))
@@ -15113,6 +15118,7 @@ class PostgresSchemaIntegrationTests {
       assertEquals(200, otherUser.getResponse().getStatus());
       assertEquals("light", otherPreferences.path("theme").asText());
       assertEquals(20, otherPreferences.path("fontSize").asInt());
+      assertFalse(otherPreferences.path("pairedModeByDefault").asBoolean());
       MvcResult pendingPolicy =
           mockMvc
               .perform(get("/api/v1/me/reader-preferences").cookie(pendingPolicyCookie))

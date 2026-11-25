@@ -47,12 +47,13 @@ const maxManifestPages = 25;
 const maxContentPages = 20;
 const maxSegmentsPerChapter = 20_000;
 const defaultReaderPreferences: ReaderPreferences = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   theme: 'light',
   fontFamily: 'serif',
   fontSize: 20,
   lineHeight: 1.8,
   contentWidth: 720,
+  pairedModeByDefault: false,
 };
 
 type PendingReaderProgress = Omit<SaveReaderProgressRequest, 'expectedVersion'> & {
@@ -125,6 +126,7 @@ export class AccountReaderPageComponent {
   protected readonly fontSize = signal(20);
   protected readonly lineHeight = signal(1.8);
   protected readonly contentWidth = signal(720);
+  protected readonly pairedModeByDefault = signal(false);
   protected readonly work = signal<ReaderWork | null>(null);
   protected readonly workDetailUrl = computed(() => {
     const workId = this.work()?.id;
@@ -550,7 +552,7 @@ export class AccountReaderPageComponent {
     const language = (event.target as HTMLSelectElement).value;
     if (language && !this.availableTranslationLanguages().includes(language)) return;
     if (language === this.selectedReaderLanguage()) return;
-    const preservePairedMode = this.pairedMode();
+    const preservePairedMode = this.pairedMode() || this.pairedModeByDefault();
     this.closePanel(false);
     this.selectedReaderLanguage.set(language);
     this.pairedMode.set(preservePairedMode && language.length > 0);
@@ -564,11 +566,15 @@ export class AccountReaderPageComponent {
     const anchor = this.currentVisibleReaderAnchor();
     if (this.pairedMode()) {
       this.pairedMode.set(false);
+      this.pairedModeByDefault.set(false);
+      this.queuePreferencesSave();
       this.restoreReaderAnchor(anchor);
       return;
     }
     if (this.pairedSourceState() === 'ready') {
       this.pairedMode.set(true);
+      this.pairedModeByDefault.set(true);
+      this.queuePreferencesSave();
       this.restoreReaderAnchor(anchor);
       return;
     }
@@ -584,6 +590,8 @@ export class AccountReaderPageComponent {
       this.pairedSourceSegments.set(sourceSegments);
       this.pairedSourceState.set('ready');
       this.pairedMode.set(true);
+      this.pairedModeByDefault.set(true);
+      this.queuePreferencesSave();
       this.restoreReaderAnchor(anchor);
     } catch (error) {
       if (token !== this.loadToken) return;
@@ -1123,6 +1131,7 @@ export class AccountReaderPageComponent {
 
   protected resetPreferences(): void {
     this.applyReaderPreferences(defaultReaderPreferences);
+    this.pairedMode.set(false);
     this.queuePreferencesSave();
   }
 
@@ -2389,16 +2398,18 @@ export class AccountReaderPageComponent {
     this.fontSize.set(preferences.fontSize);
     this.lineHeight.set(preferences.lineHeight);
     this.contentWidth.set(preferences.contentWidth);
+    this.pairedModeByDefault.set(preferences.pairedModeByDefault);
   }
 
   private currentReaderPreferences(): ReaderPreferences {
     return {
-      schemaVersion: 1,
+      schemaVersion: 2,
       theme: this.theme(),
       fontFamily: this.fontFamily(),
       fontSize: this.fontSize(),
       lineHeight: this.lineHeight(),
       contentWidth: this.contentWidth(),
+      pairedModeByDefault: this.pairedModeByDefault(),
     };
   }
 

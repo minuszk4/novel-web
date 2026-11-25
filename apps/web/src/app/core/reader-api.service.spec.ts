@@ -295,12 +295,13 @@ describe('ReaderApiService', () => {
 
   it('loads and saves bounded per-account reader preferences', async () => {
     const preferences = {
-      schemaVersion: 1 as const,
+      schemaVersion: 2 as const,
       theme: 'sepia' as const,
       fontFamily: 'sans' as const,
       fontSize: 24,
       lineHeight: 1.9,
       contentWidth: 840,
+      pairedModeByDefault: true,
     };
     const loaded = service.getReaderPreferences();
     http.expectOne({ method: 'GET', url: '/api/v1/me/reader-preferences' }).flush(preferences);
@@ -674,12 +675,13 @@ describe('ReaderApiService', () => {
   it('rejects preferences outside the server contract', async () => {
     const loaded = service.getReaderPreferences();
     http.expectOne({ method: 'GET', url: '/api/v1/me/reader-preferences' }).flush({
-      schemaVersion: 1,
+      schemaVersion: 2,
       theme: 'sepia',
       fontFamily: 'sans',
       fontSize: 40,
       lineHeight: 1.8,
       contentWidth: 720,
+      pairedModeByDefault: false,
     });
     await expect(loaded).rejects.toMatchObject({
       status: 502,
@@ -688,12 +690,13 @@ describe('ReaderApiService', () => {
 
     const unknownField = service.getReaderPreferences();
     http.expectOne({ method: 'GET', url: '/api/v1/me/reader-preferences' }).flush({
-      schemaVersion: 1,
+      schemaVersion: 2,
       theme: 'light',
       fontFamily: 'serif',
       fontSize: 20,
       lineHeight: 1.8,
       contentWidth: 720,
+      pairedModeByDefault: false,
       trackingId: 'must-be-rejected',
     });
     await expect(unknownField).rejects.toMatchObject({

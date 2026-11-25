@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 13.0.0
+  version: 14.0.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Firebase-backed Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -13318,12 +13318,13 @@ components:
     ReaderPreferences:
       type: object
       additionalProperties: false
-      required: [schemaVersion, theme, fontFamily, fontSize, lineHeight, contentWidth]
+      required:
+        [schemaVersion, theme, fontFamily, fontSize, lineHeight, contentWidth, pairedModeByDefault]
       properties:
         schemaVersion:
           type: integer
-          const: 1
-          default: 1
+          const: 2
+          default: 2
           description: Preferences payload version; unsupported versions fail validation.
         theme:
           type: string
@@ -13348,6 +13349,10 @@ components:
           minimum: 560
           maximum: 900
           default: 720
+        pairedModeByDefault:
+          type: boolean
+          default: false
+          description: After a released translation is selected, prefer the paired source/translation Reader view.
     ReadingProgress:
       type: object
       additionalProperties: false

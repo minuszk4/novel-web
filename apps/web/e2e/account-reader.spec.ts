@@ -67,12 +67,13 @@ interface MockProgress {
 }
 
 interface MockReaderPreferences {
-  schemaVersion: 1;
+  schemaVersion: 2;
   theme: 'light' | 'sepia' | 'dark';
   fontFamily: 'serif' | 'sans';
   fontSize: number;
   lineHeight: number;
   contentWidth: number;
+  pairedModeByDefault: boolean;
 }
 
 interface MockProgressWrite extends Omit<MockProgress, 'version' | 'updatedAt' | 'workId'> {
@@ -139,12 +140,13 @@ async function installReaderRoutes(
     updatedAt: null,
   };
   const readerPreferences: MockReaderPreferences = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     theme: 'light',
     fontFamily: 'serif',
     fontSize: 20,
     lineHeight: 1.8,
     contentWidth: 720,
+    pairedModeByDefault: false,
   };
   const bookmarks: MockReaderBookmark[] = [...initialBookmarks];
   const annotations: MockReaderAnnotation[] = [...initialAnnotations];
@@ -990,12 +992,13 @@ test('keeps a bookmark jump retryable when the next manifest page is temporarily
 test('restores and syncs Reader typography preferences across reloads', async ({ page }) => {
   await page.setViewportSize({ width: 360, height: 800 });
   const preferences: MockReaderPreferences = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     theme: 'dark',
     fontFamily: 'serif',
     fontSize: 22,
     lineHeight: 1.7,
     contentWidth: 760,
+    pairedModeByDefault: false,
   };
   const writes: MockReaderPreferences[] = [];
   await installReaderRoutes(page, 200, false);
@@ -1032,12 +1035,13 @@ test('restores and syncs Reader typography preferences across reloads', async ({
   await expect.poll(() => writes.at(-1)?.contentWidth).toBe(840);
   await expect(settings.getByRole('status')).toContainText('Cài đặt đã đồng bộ');
   expect(writes.at(-1)).toEqual({
-    schemaVersion: 1,
+    schemaVersion: 2,
     theme: 'sepia',
     fontFamily: 'serif',
     fontSize: 23,
     lineHeight: 1.9,
     contentWidth: 840,
+    pairedModeByDefault: false,
   });
 
   await page.reload();
@@ -1920,12 +1924,26 @@ test('public Reader pairs matching anchors and rejects a mismatched released tra
   await expect(page.getByRole('heading', { name: 'Cánh cửa mở' })).toBeVisible();
   const languagePicker = page.getByLabel('Ngôn ngữ');
   await expect(languagePicker).toBeVisible();
+  await expect(languagePicker.locator('option[value="en"]')).toHaveCount(1);
   await languagePicker.selectOption('en');
   await expect(page.getByText('The First Day', { exact: true })).toBeVisible();
+  const preferenceSave = page.waitForResponse(
+    (response) =>
+      response.url().includes('/api/v1/me/reader-preferences') &&
+      response.request().method() === 'PUT',
+  );
   await page.getByRole('button', { name: 'Đọc song ngữ' }).click();
+  await preferenceSave;
 
   const sourceGroup = page.getByRole('group', { name: 'Nguyên tác · vi · đoạn 1' });
   const translationGroup = page.getByRole('group', { name: 'Bản dịch · en · đoạn 1' });
+  await expect(sourceGroup).toContainText('Ngày đầu tiên');
+  await expect(translationGroup).toContainText('The First Day');
+  await page.reload();
+  await expect(page.getByRole('heading', { name: 'Cánh cửa mở' })).toBeVisible();
+  await expect(languagePicker.locator('option[value="en"]')).toHaveCount(1);
+  await languagePicker.selectOption('en');
+  await expect(page.getByRole('button', { name: 'Chỉ đọc bản dịch' })).toBeVisible();
   await expect(sourceGroup).toContainText('Ngày đầu tiên');
   await expect(translationGroup).toContainText('The First Day');
   const desktopColumns = await Promise.all([
@@ -1953,7 +1971,7 @@ test('public Reader pairs matching anchors and rejects a mismatched released tra
   await expect(page.getByRole('button', { name: 'Chỉ đọc bản dịch' })).toBeVisible();
   await languagePicker.selectOption('fr');
   await expect(page.getByText('Le premier jour', { exact: true })).toBeVisible();
-  expect(sourceContentRequests).toHaveLength(3);
+  expect(sourceContentRequests).toHaveLength(5);
   await expect(page.locator('.reader-paired-error')).toBeVisible();
   await expect(page.locator('.reader-paired-segment')).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Đọc song ngữ' })).toBeVisible();

@@ -16,7 +16,7 @@ import org.springframework.stereotype.Repository;
 public class ReaderPreferencesRepository {
 
   private static final PreferencesRecord DEFAULTS =
-      new PreferencesRecord(1, "light", "serif", 20, 1.8, 720);
+      new PreferencesRecord(2, "light", "serif", 20, 1.8, 720, false);
 
   private final DataSource dataSource;
 
@@ -51,8 +51,9 @@ public class ReaderPreferencesRepository {
             connection.prepareStatement(
                 """
                     INSERT INTO reader_preferences
-                        (user_id, schema_version, theme, font_family, font_size, line_height, content_width)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                        (user_id, schema_version, theme, font_family, font_size, line_height,
+                         content_width, paired_mode_by_default)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT (user_id) DO UPDATE SET
                         schema_version = EXCLUDED.schema_version,
                         theme = EXCLUDED.theme,
@@ -60,6 +61,7 @@ public class ReaderPreferencesRepository {
                         font_size = EXCLUDED.font_size,
                         line_height = EXCLUDED.line_height,
                         content_width = EXCLUDED.content_width,
+                        paired_mode_by_default = EXCLUDED.paired_mode_by_default,
                         updated_at = clock_timestamp()
                     """)) {
           upsert.setObject(1, actorUserId);
@@ -69,6 +71,7 @@ public class ReaderPreferencesRepository {
           upsert.setInt(5, preferences.fontSize());
           upsert.setDouble(6, preferences.lineHeight());
           upsert.setInt(7, preferences.contentWidth());
+          upsert.setBoolean(8, preferences.pairedModeByDefault());
           upsert.executeUpdate();
         }
         PreferencesRecord saved = select(connection, actorUserId, false);
@@ -105,7 +108,7 @@ public class ReaderPreferencesRepository {
             """
                 SELECT p.user_id IS NOT NULL AS has_preferences,
                        p.schema_version, p.theme, p.font_family, p.font_size,
-                       p.line_height, p.content_width
+                       p.line_height, p.content_width, p.paired_mode_by_default
                 FROM users u
                 LEFT JOIN reader_preferences p ON p.user_id = u.id
                 WHERE u.id = ? AND u.status = 'active'
@@ -121,7 +124,8 @@ public class ReaderPreferencesRepository {
             row.getString("font_family"),
             row.getInt("font_size"),
             row.getDouble("line_height"),
-            row.getInt("content_width"));
+            row.getInt("content_width"),
+            row.getBoolean("paired_mode_by_default"));
       }
     }
   }
@@ -132,7 +136,8 @@ public class ReaderPreferencesRepository {
       String fontFamily,
       int fontSize,
       double lineHeight,
-      int contentWidth) {}
+      int contentWidth,
+      boolean pairedModeByDefault) {}
 
   public static final class PreferencesNotFoundException extends RuntimeException {}
 }
