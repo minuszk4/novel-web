@@ -17289,6 +17289,126 @@ class PostgresSchemaIntegrationTests {
   }
 
   @Test
+  void workspaceAdminCannotTransferOwnership() throws Exception {
+    UUID ownerId = createSessionTestUser("Workspace admin boundary owner");
+    UUID adminId = createSessionTestUser("Workspace admin boundary admin");
+    UUID readerId = createSessionTestUser("Workspace admin boundary reader");
+    UUID workspaceId = null;
+    try {
+      addCurrentPolicyAcceptances(ownerId);
+      addCurrentPolicyAcceptances(adminId);
+      addCurrentPolicyAcceptances(readerId);
+      workspaceId = workspaceService.createWorkspace(ownerId, "Workspace Admin Boundary").id();
+      workspaceService.addMember(ownerId, workspaceId, adminId, WorkspaceRepository.Role.ADMIN);
+      workspaceService.addMember(ownerId, workspaceId, readerId, WorkspaceRepository.Role.READER);
+
+      SessionService.IssuedSession ownerSession = sessionService.create(ownerId).orElseThrow();
+      SessionService.IssuedSession adminSession = sessionService.create(adminId).orElseThrow();
+      var ownerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", ownerSession.cookieValue());
+      var adminCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", adminSession.cookieValue());
+      String adminCsrf = csrfTokenService.tokenFor(adminSession.cookieValue());
+
+      MvcResult workspaceBeforeAttempt =
+          mockMvc
+              .perform(get("/api/v1/workspaces/{workspaceId}", workspaceId).cookie(ownerCookie))
+              .andReturn();
+      assertEquals(200, workspaceBeforeAttempt.getResponse().getStatus());
+      String originalEtag = workspaceBeforeAttempt.getResponse().getHeader(HttpHeaders.ETAG);
+      MvcResult auditBeforeAttempt =
+          mockMvc
+              .perform(
+                  get("/api/v1/workspaces/{workspaceId}/membership-audit", workspaceId)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(200, auditBeforeAttempt.getResponse().getStatus());
+      int originalAuditCount =
+          objectMapper
+              .readTree(auditBeforeAttempt.getResponse().getContentAsString())
+              .path("items")
+              .size();
+
+      MvcResult adminCanReadRoster =
+          mockMvc
+              .perform(
+                  get("/api/v1/workspaces/{workspaceId}/members", workspaceId).cookie(adminCookie))
+              .andReturn();
+      assertEquals(200, adminCanReadRoster.getResponse().getStatus());
+      assertEquals(
+          3,
+          objectMapper
+              .readTree(adminCanReadRoster.getResponse().getContentAsString())
+              .path("items")
+              .size());
+
+      MvcResult adminCannotTransferOwnership =
+          mockMvc
+              .perform(
+                  put("/api/v1/workspaces/{workspaceId}/owner", workspaceId)
+                      .cookie(adminCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, adminCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"newOwnerUserId\":\"" + readerId + "\"}"))
+              .andReturn();
+      assertEquals(404, adminCannotTransferOwnership.getResponse().getStatus());
+      assertTrue(
+          adminCannotTransferOwnership
+              .getResponse()
+              .getContentAsString()
+              .contains("WORKSPACE_NOT_FOUND"));
+      assertTrue(
+          adminCannotTransferOwnership
+              .getResponse()
+              .getHeader(HttpHeaders.CACHE_CONTROL)
+              .contains("no-store"));
+
+      MvcResult workspaceAfterAttempt =
+          mockMvc
+              .perform(get("/api/v1/workspaces/{workspaceId}", workspaceId).cookie(ownerCookie))
+              .andReturn();
+      assertEquals(originalEtag, workspaceAfterAttempt.getResponse().getHeader(HttpHeaders.ETAG));
+      MvcResult rosterAfterAttempt =
+          mockMvc
+              .perform(
+                  get("/api/v1/workspaces/{workspaceId}/members", workspaceId).cookie(ownerCookie))
+              .andReturn();
+      assertEquals(200, rosterAfterAttempt.getResponse().getStatus());
+      JsonNode memberRows =
+          objectMapper
+              .readTree(rosterAfterAttempt.getResponse().getContentAsString())
+              .path("items");
+      Map<String, String> memberRoles = new HashMap<>();
+      for (JsonNode member : memberRows) {
+        memberRoles.put(member.path("userId").asText(), member.path("role").asText());
+      }
+      assertEquals(
+          Map.of(
+              ownerId.toString(), "owner",
+              adminId.toString(), "admin",
+              readerId.toString(), "reader"),
+          memberRoles);
+      MvcResult auditAfterAttempt =
+          mockMvc
+              .perform(
+                  get("/api/v1/workspaces/{workspaceId}/membership-audit", workspaceId)
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(
+          originalAuditCount,
+          objectMapper
+              .readTree(auditAfterAttempt.getResponse().getContentAsString())
+              .path("items")
+              .size());
+    } finally {
+      if (workspaceId != null) deleteWorkspaceTestData(workspaceId);
+      deleteSessionTestUser(ownerId);
+      deleteSessionTestUser(adminId);
+      deleteSessionTestUser(readerId);
+    }
+  }
+
+  @Test
   void workspaceEmailInvitationsRequireVerifiedRecipientAndAreOneUseAndRateLimited()
       throws Exception {
     UUID ownerId = createSessionTestUser("Workspace Invitation Owner");
