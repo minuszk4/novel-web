@@ -106,6 +106,36 @@ Starting the PostgreSQL-profile API runs Liquibase and may change the selected d
 
 The `postgres` Maven profile is opt-in. It reads `DATABASE_URL`, `DATABASE_USERNAME` and `DATABASE_PASSWORD` from `.env` and uses a five-connection Hikari pool. The Compose container additionally reads `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` and `POSTGRES_PORT`. The sample password is local-only; never reuse it outside development.
 
+## Run the complete local Docker stack
+
+The `full-stack` Compose profile starts PostgreSQL 17, the PostgreSQL-profile API and the production Angular/Nginx image. Only the web host is exposed to the host machine; browser API calls pass through its same-origin `/api` proxy. PostgreSQL migrations run at API startup. The API uses a named local staging volume for imports, and the Postgres data volume persists across ordinary `down`/`up` restarts. Provider integrations, MoMo sandbox, public catalog, publication and translation flags remain off unless their separate opt-in requirements are met.
+
+The repeatable browser smoke starts an isolated project with random loopback ports, visits the production web image in Chromium, calls the real PostgreSQL API through Nginx, checks the default-off integrations and then removes only its uniquely named containers, network and temporary volumes. Prepare `apps/api/.env` as described above; install frontend dependencies and Playwright Chromium once, then run from `apps/api`:
+
+```powershell
+Push-Location ../web
+npm ci
+npx playwright install chromium
+npm run test:full-stack
+Pop-Location
+```
+
+To keep a development stack running, use a project name distinct from `novel-web-local` and choose free loopback ports. This protects the older local database from the current migration chain; the current persistent `novel-web-local` volume has 55 changesets/26 application tables, while source currently has 121 changesets/71 application tables. Back up and review that database before considering any migration. In one PowerShell session from `apps/api`:
+
+```powershell
+$stackProject = 'novel-web-stack-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+$env:POSTGRES_PORT = '55432'
+$env:WEB_PORT = '8088'
+$env:STACK_GOOGLE_CALLBACK_ORIGIN = 'http://localhost:8088'
+$env:STACK_GOOGLE_AUTH_CREDENTIAL_CALLBACK_URI = 'http://localhost:8088/api/v1/auth/google/credential'
+$env:STACK_CORS_ALLOWED_ORIGINS = 'http://localhost:8088'
+docker compose -p $stackProject --profile full-stack up --build -d --wait --wait-timeout 300
+Invoke-RestMethod http://localhost:8088/api/v1/system/status
+docker compose -p $stackProject ps
+```
+
+Open `http://localhost:8088`. Stop while preserving the local database and import staging with `docker compose -p $stackProject --profile full-stack down`; removing the project volumes with `down --volumes` permanently deletes those local data files. Choose another project name and free ports if the suggested values are already in use. The callback origin and callback URI above are local HTTP examples only; live Google sign-in still requires the Google client ID, authorized origin/callback and separate HMAC keys in `.env`. Terms/Privacy content is intentionally not seeded, so policy-dependent operations remain fail-closed in a clean local database.
+
 Stop PostgreSQL while keeping the local data volume with `docker compose --profile database stop postgres`. Do not add `-v` unless you explicitly intend to delete that volume.
 
 ### Reset a disposable PostgreSQL project

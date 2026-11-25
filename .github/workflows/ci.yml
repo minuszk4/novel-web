@@ -9,6 +9,42 @@ permissions:
   contents: read
 
 jobs:
+  full-stack:
+    name: Docker full-stack browser smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Create local-only Compose test configuration
+        shell: bash
+        run: |
+          cat > ../api/.env <<'EOF'
+          POSTGRES_DB=novelweb
+          POSTGRES_USER=novelweb
+          POSTGRES_PASSWORD=ci-local-only
+          DATABASE_PASSWORD=ci-local-only
+          EOF
+      - run: npm run test:full-stack
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: full-stack-smoke-results
+          path: |
+            apps/web/reports/full-stack-smoke-junit.xml
+            apps/web/reports/full-stack-smoke-results/
+          if-no-files-found: warn
+          retention-days: 14
+
   web:
     name: Frontend checks
     runs-on: ubuntu-latest
