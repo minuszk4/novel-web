@@ -60,13 +60,15 @@
     <aside class="chapter-editor-privacy" aria-label="Thông tin về quyền riêng tư">
       <span aria-hidden="true">▣</span>
       <div>
-        <strong>{{
-          isSharedReadOnly() ? 'Bản thảo riêng tư được chia sẻ' : 'Bản thảo riêng tư'
-        }}</strong>
+        <strong>{{ isOwner() ? 'Bản thảo riêng tư' : 'Bản thảo riêng tư được chia sẻ' }}</strong>
         <p>
-          @if (isSharedReadOnly()) {
-            Bạn chỉ có quyền xem. Chương được hiển thị ở dạng văn bản thuần; chỉ owner có thể xuất
-            bản.
+          @if (!isOwner()) {
+            @if (isSharedReadOnly()) {
+              Bạn chỉ có quyền xem. Chương được hiển thị ở dạng văn bản thuần; chỉ owner có thể gửi
+              duyệt hoặc xuất bản.
+            } @else {
+              Bạn có quyền chỉnh sửa nội dung. Chỉ owner có thể gửi chương đi duyệt hoặc xuất bản.
+            }
           } @else {
             Bản xem trước chỉ đọc phiên bản đã lưu gần nhất. Chương này chưa được xuất bản.
           }
@@ -191,7 +193,7 @@
       }
     </section>
 
-    @if (!isSharedReadOnly() && isPublicWork() && (draft()?.revisionNo ?? 0) > 0) {
+    @if (isOwner() && isPublicWork() && (draft()?.revisionNo ?? 0) > 0) {
       <app-publication-chapter-release-panel
         [workId]="workId ?? ''"
         [chapterId]="chapterId ?? ''"

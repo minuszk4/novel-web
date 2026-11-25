@@ -83,6 +83,7 @@ describe('AuthoringOutlinePageComponent', () => {
     createPrivateChapter: ReturnType<typeof vi.fn>;
     deletePrivateEmptyChapter: ReturnType<typeof vi.fn>;
   };
+  let collaborationApi: { permissionsForWork: ReturnType<typeof vi.fn> };
   let policyStatus: ReturnType<typeof signal>;
 
   beforeEach(() => {
@@ -113,6 +114,7 @@ describe('AuthoringOutlinePageComponent', () => {
       createPrivateChapter: vi.fn().mockResolvedValue(createdChapter()),
       deletePrivateEmptyChapter: vi.fn().mockResolvedValue(undefined),
     };
+    collaborationApi = { permissionsForWork: vi.fn().mockResolvedValue(null) };
     policyStatus = signal('accepted');
     TestBed.configureTestingModule({
       imports: [AuthoringOutlinePageComponent],
@@ -123,10 +125,7 @@ describe('AuthoringOutlinePageComponent', () => {
           useValue: { paramMap: of(convertToParamMap({ workId })) },
         },
         { provide: AuthoringApiService, useValue: api },
-        {
-          provide: AuthoringCollaborationApiService,
-          useValue: { permissionsForWork: vi.fn().mockResolvedValue(null) },
-        },
+        { provide: AuthoringCollaborationApiService, useValue: collaborationApi },
         { provide: PolicyOnboardingService, useValue: { status: policyStatus } },
         { provide: SystemStatusService, useValue: { status: signal(null) } },
       ],
@@ -149,6 +148,26 @@ describe('AuthoringOutlinePageComponent', () => {
     expect(fixture.nativeElement.querySelector('a[href*="/reader/"]')).toBeNull();
     expect(fixture.nativeElement.textContent).toContain('Bản thảo riêng tư · Chưa xuất bản');
     expect(api.getCurrentPublicationRightsPolicy).not.toHaveBeenCalled();
+  });
+
+  it('lets an EDIT collaborator manage draft content while keeping owner publication controls hidden', async () => {
+    collaborationApi.permissionsForWork.mockResolvedValue(['VIEW', 'EDIT']);
+    api.listPrivateChapters.mockResolvedValue(page([chapter()]));
+    const fixture = TestBed.createComponent(AuthoringOutlinePageComponent);
+    fixture.detectChanges();
+    await settle(fixture);
+    fixture.detectChanges();
+
+    expect(fixture.nativeElement.textContent).toContain('quyền xem và chỉnh sửa');
+    expect(fixture.nativeElement.querySelector('.authoring-outline-metadata-trigger')).toBeTruthy();
+    expect(
+      fixture.nativeElement.querySelector('#authoring-edit-chapter-' + firstChapterId),
+    ).toBeTruthy();
+    expect(fixture.nativeElement.textContent).toContain('Thêm chương');
+    expect(fixture.nativeElement.querySelector('a[href$="/collaborators"]')).toBeNull();
+    expect(fixture.nativeElement.querySelector('app-publication-readiness-panel')).toBeNull();
+    expect(fixture.nativeElement.querySelector('app-publication-rights-policy-panel')).toBeNull();
+    fixture.destroy();
   });
 
   it('lets the owner stage drafts on a public work without offering public metadata or release controls', async () => {

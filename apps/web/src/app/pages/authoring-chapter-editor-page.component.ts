@@ -62,6 +62,7 @@ export class AuthoringChapterEditorPageComponent {
   protected readonly isPublicWork = signal(false);
   protected readonly workTitle = signal('');
   protected readonly isSharedReadOnly = signal(false);
+  protected readonly isOwner = signal(true);
 
   private readonly route = inject(ActivatedRoute);
   private readonly api = inject(AuthoringApiService);
@@ -411,6 +412,7 @@ export class AuthoringChapterEditorPageComponent {
       if (token !== this.loadToken) return;
       const readOnly = permissions !== null && !permissions.includes('EDIT');
       this.isSharedReadOnly.set(readOnly);
+      this.isOwner.set(permissions === null);
       this.isPublicWork.set(manuscript.visibility === 'public');
       this.workTitle.set(manuscript.title);
       this.draft.set(draft);

@@ -126,6 +126,8 @@ describe('AuthoringChapterEditorPageComponent', () => {
     getChapterPublicationReadiness: ReturnType<typeof vi.fn>;
     savePrivateChapterDraftRevision: ReturnType<typeof vi.fn>;
   };
+  let collaborationApi: { permissionsForWork: ReturnType<typeof vi.fn> };
+  let currentSystemStatus: ApiSystemStatus;
   let policyStatus: ReturnType<typeof signal>;
 
   beforeEach(() => {
@@ -135,6 +137,8 @@ describe('AuthoringChapterEditorPageComponent', () => {
       getChapterPublicationReadiness: vi.fn().mockResolvedValue(chapterReadiness()),
       savePrivateChapterDraftRevision: vi.fn().mockResolvedValue(revision(1)),
     };
+    collaborationApi = { permissionsForWork: vi.fn().mockResolvedValue(null) };
+    currentSystemStatus = releaseDisabledStatus;
     policyStatus = signal('accepted');
     TestBed.configureTestingModule({
       imports: [AuthoringChapterEditorPageComponent],
@@ -145,14 +149,11 @@ describe('AuthoringChapterEditorPageComponent', () => {
           useValue: { paramMap: of(convertToParamMap({ workId, chapterId })) },
         },
         { provide: AuthoringApiService, useValue: api },
-        {
-          provide: AuthoringCollaborationApiService,
-          useValue: { permissionsForWork: vi.fn().mockResolvedValue(null) },
-        },
+        { provide: AuthoringCollaborationApiService, useValue: collaborationApi },
         { provide: PolicyOnboardingService, useValue: { status: policyStatus } },
         {
           provide: SystemStatusService,
-          useValue: { status: signal<ApiSystemStatus | null>(releaseDisabledStatus) },
+          useValue: { status: () => currentSystemStatus },
         },
       ],
     });
@@ -195,6 +196,39 @@ describe('AuthoringChapterEditorPageComponent', () => {
     );
     expect(fixture.nativeElement.textContent).toContain('Đang chờ người duyệt');
     expect(fixture.nativeElement.querySelector('button[type="submit"]')).toBeNull();
+    fixture.destroy();
+  });
+
+  it('lets an EDIT collaborator save a public-work draft without owner release controls', async () => {
+    collaborationApi.permissionsForWork.mockResolvedValue(['VIEW', 'EDIT']);
+    currentSystemStatus = {
+      ...releaseDisabledStatus,
+      features: { ...releaseDisabledStatus.features, publicationReleaseEnabled: true },
+    };
+    api.getPrivateManuscript.mockResolvedValue(manuscript('public'));
+    api.getPrivateChapterDraft.mockResolvedValue(draft(1, 'Bản nháp đã lưu.'));
+    api.getChapterPublicationReadiness.mockResolvedValue({
+      ...chapterReadiness(),
+      canSubmit: true,
+      currentRequestState: 'APPROVED_UNPUBLISHED',
+      blockerCodes: [],
+    });
+    const fixture = await createEditor();
+
+    expect(fixture.nativeElement.querySelector('app-publication-chapter-release-panel')).toBeNull();
+    expect(fixture.nativeElement.textContent).toContain('Bản thảo riêng tư được chia sẻ');
+    expect(fixture.nativeElement.textContent).toContain(
+      'Bạn có quyền chỉnh sửa nội dung. Chỉ owner có thể gửi chương đi duyệt hoặc xuất bản.',
+    );
+    expect(api.getChapterPublicationReadiness).not.toHaveBeenCalled();
+
+    fixture.componentInstance.updateContent(inputEvent('Bản chỉnh sửa của cộng tác viên.'));
+    await fixture.componentInstance.saveNow();
+
+    expect(api.savePrivateChapterDraftRevision).toHaveBeenCalledOnce();
+    expect(api.savePrivateChapterDraftRevision.mock.calls[0][3].normalizedContent).toBe(
+      'Bản chỉnh sửa của cộng tác viên.',
+    );
     fixture.destroy();
   });
 
