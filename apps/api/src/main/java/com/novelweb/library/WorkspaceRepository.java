@@ -357,11 +357,13 @@ public class WorkspaceRepository {
   public WorkspaceRecord transferOwnership(
       UUID actorUserId, UUID workspaceId, UUID newOwnerUserId) {
     Objects.requireNonNull(newOwnerUserId, "new owner user id is required");
-    if (actorUserId.equals(newOwnerUserId)) throw new OwnershipTransferRequiredException();
     return inTransaction(
         "Unable to transfer workspace ownership",
         connection -> {
           requireOwner(connection, actorUserId, workspaceId);
+          if (actorUserId.equals(newOwnerUserId)) {
+            throw new OwnershipTransferRequiredException();
+          }
           MemberRecord nextOwner = findMemberForUpdate(connection, workspaceId, newOwnerUserId);
           if (nextOwner == null || nextOwner.status() != MemberStatus.ACTIVE) {
             throw new WorkspaceMemberNotFoundException();

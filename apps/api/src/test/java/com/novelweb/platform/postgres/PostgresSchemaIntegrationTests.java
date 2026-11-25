@@ -16894,6 +16894,131 @@ class PostgresSchemaIntegrationTests {
       assertTrue(
           readerCannotManage.getResponse().getContentAsString().contains("WORKSPACE_NOT_FOUND"));
 
+      String ownerTransferRoute = "/api/v1/workspaces/{workspaceId}/owner";
+      String memberListRoute = "/api/v1/workspaces/{workspaceId}/members";
+      MvcResult auditBeforeRejectedMembershipActions =
+          mockMvc.perform(get(auditRoute, workspaceId).cookie(ownerCookie)).andReturn();
+      assertEquals(200, auditBeforeRejectedMembershipActions.getResponse().getStatus());
+      int membershipEventsBeforeRejectedActions =
+          objectMapper
+              .readTree(auditBeforeRejectedMembershipActions.getResponse().getContentAsString())
+              .path("items")
+              .size();
+
+      MvcResult readerCannotRevokeOwner =
+          mockMvc
+              .perform(
+                  delete(memberRoute, workspaceId, ownerId)
+                      .cookie(readerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, readerCsrf))
+              .andReturn();
+      assertEquals(404, readerCannotRevokeOwner.getResponse().getStatus());
+      assertTrue(
+          readerCannotRevokeOwner
+              .getResponse()
+              .getContentAsString()
+              .contains("WORKSPACE_NOT_FOUND"));
+      assertTrue(
+          readerCannotRevokeOwner
+              .getResponse()
+              .getHeader(HttpHeaders.CACHE_CONTROL)
+              .contains("no-store"));
+
+      MvcResult readerCannotTransferOwnership =
+          mockMvc
+              .perform(
+                  put(ownerTransferRoute, workspaceId)
+                      .cookie(readerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, readerCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"newOwnerUserId\":\"" + readerId + "\"}"))
+              .andReturn();
+      assertEquals(404, readerCannotTransferOwnership.getResponse().getStatus());
+      assertTrue(
+          readerCannotTransferOwnership
+              .getResponse()
+              .getContentAsString()
+              .contains("WORKSPACE_NOT_FOUND"));
+
+      String outsiderCsrf = csrfTokenService.tokenFor(outsiderSession.cookieValue());
+      MvcResult outsiderCannotChangeMemberRole =
+          mockMvc
+              .perform(
+                  put(memberRoute, workspaceId, readerId)
+                      .cookie(outsiderCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, outsiderCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"role\":\"admin\"}"))
+              .andReturn();
+      assertEquals(404, outsiderCannotChangeMemberRole.getResponse().getStatus());
+      assertTrue(
+          outsiderCannotChangeMemberRole
+              .getResponse()
+              .getContentAsString()
+              .contains("WORKSPACE_NOT_FOUND"));
+
+      MvcResult outsiderCannotTransferOwnership =
+          mockMvc
+              .perform(
+                  put(ownerTransferRoute, workspaceId)
+                      .cookie(outsiderCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, outsiderCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"newOwnerUserId\":\"" + outsiderId + "\"}"))
+              .andReturn();
+      assertEquals(404, outsiderCannotTransferOwnership.getResponse().getStatus());
+      assertTrue(
+          outsiderCannotTransferOwnership
+              .getResponse()
+              .getContentAsString()
+              .contains("WORKSPACE_NOT_FOUND"));
+
+      MvcResult ownerCannotTransferToSelf =
+          mockMvc
+              .perform(
+                  put(ownerTransferRoute, workspaceId)
+                      .cookie(ownerCookie)
+                      .header(SessionCsrfTokenService.TOKEN_HEADER_NAME, ownerCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"newOwnerUserId\":\"" + ownerId + "\"}"))
+              .andReturn();
+      assertEquals(409, ownerCannotTransferToSelf.getResponse().getStatus());
+      assertTrue(
+          ownerCannotTransferToSelf
+              .getResponse()
+              .getContentAsString()
+              .contains("WORKSPACE_OWNER_PROTECTED"));
+
+      MvcResult workspaceAfterRejectedMembershipActions =
+          mockMvc
+              .perform(get("/api/v1/workspaces/{workspaceId}", workspaceId).cookie(ownerCookie))
+              .andReturn();
+      assertEquals(200, workspaceAfterRejectedMembershipActions.getResponse().getStatus());
+      assertEquals(
+          "\"workspace-" + workspaceId + "-5\"",
+          workspaceAfterRejectedMembershipActions.getResponse().getHeader(HttpHeaders.ETAG));
+      MvcResult membersAfterRejectedActionsResult =
+          mockMvc.perform(get(memberListRoute, workspaceId).cookie(ownerCookie)).andReturn();
+      assertEquals(200, membersAfterRejectedActionsResult.getResponse().getStatus());
+      JsonNode memberRows =
+          objectMapper
+              .readTree(membersAfterRejectedActionsResult.getResponse().getContentAsString())
+              .path("items");
+      Map<String, String> memberRoles = new HashMap<>();
+      for (JsonNode member : memberRows) {
+        memberRoles.put(member.path("userId").asText(), member.path("role").asText());
+      }
+      assertEquals(Map.of(ownerId.toString(), "owner", readerId.toString(), "reader"), memberRoles);
+      MvcResult auditAfterRejectedMembershipActions =
+          mockMvc.perform(get(auditRoute, workspaceId).cookie(ownerCookie)).andReturn();
+      assertEquals(200, auditAfterRejectedMembershipActions.getResponse().getStatus());
+      assertEquals(
+          membershipEventsBeforeRejectedActions,
+          objectMapper
+              .readTree(auditAfterRejectedMembershipActions.getResponse().getContentAsString())
+              .path("items")
+              .size());
+
       MvcResult outsiderCannotRead =
           mockMvc
               .perform(get("/api/v1/workspaces/{workspaceId}", workspaceId).cookie(outsiderCookie))
