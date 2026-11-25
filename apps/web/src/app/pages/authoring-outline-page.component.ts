@@ -19,6 +19,10 @@ import {
   newAuthoringIdempotencyKey,
 } from '../core/authoring-api.service';
 import { PolicyOnboardingService } from '../core/policy-onboarding.service';
+import {
+  AuthoringCollaborationApiService,
+  ManuscriptPermission,
+} from '../core/authoring-collaboration-api.service';
 import { PublicationRightsPolicyPanelComponent } from './publication-rights-policy-panel.component';
 import { PublicationReadinessPanelComponent } from './publication-readiness-panel.component';
 
@@ -46,6 +50,7 @@ export class AuthoringOutlinePageComponent {
   protected readonly policy = inject(PolicyOnboardingService);
   protected readonly pageState = signal<OutlinePageState>('loading');
   protected readonly manuscript = signal<PrivateManuscriptDetails | null>(null);
+  protected readonly collaboratorPermissions = signal<ManuscriptPermission[] | null>(null);
   protected readonly isMetadataFormOpen = signal(false);
   protected readonly metadataDraft = signal<UpdatePrivateManuscriptInput | null>(null);
   protected readonly metadataFieldErrors = signal<ManuscriptMetadataFieldErrors>({});
@@ -80,6 +85,7 @@ export class AuthoringOutlinePageComponent {
 
   private readonly route = inject(ActivatedRoute);
   private readonly api = inject(AuthoringApiService);
+  private readonly collaborationApi = inject(AuthoringCollaborationApiService);
   private readonly destroyRef = inject(DestroyRef);
   private readonly injector = inject(Injector);
   private requestedWorkId: string | null = null;
@@ -119,6 +125,7 @@ export class AuthoringOutlinePageComponent {
       this.publicationPolicyOpenRequest.set(0);
       this.readinessRefreshRequest.set(0);
       this.manuscript.set(null);
+      this.collaboratorPermissions.set(null);
       this.isMetadataFormOpen.set(false);
       this.metadataDraft.set(null);
       this.metadataFieldErrors.set({});
@@ -163,6 +170,15 @@ export class AuthoringOutlinePageComponent {
 
   protected get chapterTitleLength(): number {
     return Array.from(this.chapterTitle()).length;
+  }
+
+  protected get isOwner(): boolean {
+    return this.collaboratorPermissions() === null;
+  }
+
+  protected get canEdit(): boolean {
+    const permissions = this.collaboratorPermissions();
+    return permissions === null || permissions.includes('EDIT');
   }
 
   protected get metadataTitleLength(): number {
@@ -211,6 +227,7 @@ export class AuthoringOutlinePageComponent {
   openAddForm(): void {
     if (
       this.policy.status() !== 'accepted' ||
+      !this.canEdit ||
       this.pageState() !== 'ready' ||
       this.isMetadataFormOpen()
     )
@@ -237,6 +254,7 @@ export class AuthoringOutlinePageComponent {
     const current = this.manuscript();
     if (
       !current ||
+      !this.canEdit ||
       current.visibility !== 'private' ||
       this.policy.status() !== 'accepted' ||
       this.pageState() !== 'ready' ||
@@ -272,7 +290,13 @@ export class AuthoringOutlinePageComponent {
   }
 
   updateMetadataField(field: keyof UpdatePrivateManuscriptInput, event: Event): void {
-    if (this.isSavingMetadata() || this.isMetadataUncertain() || this.metadataConflict()) return;
+    if (
+      !this.canEdit ||
+      this.isSavingMetadata() ||
+      this.isMetadataUncertain() ||
+      this.metadataConflict()
+    )
+      return;
     const input = event.target as HTMLInputElement;
     const current = this.metadataDraft();
     if (!current) return;
@@ -296,6 +320,7 @@ export class AuthoringOutlinePageComponent {
       !draft ||
       !workId ||
       this.policy.status() !== 'accepted' ||
+      !this.canEdit ||
       this.isSavingMetadata()
     ) {
       return;
@@ -318,7 +343,7 @@ export class AuthoringOutlinePageComponent {
   async saveMetadataOnLatest(): Promise<void> {
     const latest = this.metadataConflict();
     const draft = this.metadataDraft();
-    if (!latest || !draft || this.isSavingMetadata()) return;
+    if (!latest || !draft || !this.canEdit || this.isSavingMetadata()) return;
     const values = {
       title: draft.title.trim(),
       author: draft.author.trim(),
@@ -397,7 +422,7 @@ export class AuthoringOutlinePageComponent {
   }
 
   updateChapterTitle(event: Event): void {
-    if (this.isCreateUncertain()) return;
+    if (!this.canEdit || this.isCreateUncertain()) return;
     const input = event.target as HTMLInputElement;
     this.chapterTitle.set(input.value);
     this.titleError.set(null);
@@ -440,7 +465,8 @@ export class AuthoringOutlinePageComponent {
   async addChapter(event: Event): Promise<void> {
     event.preventDefault();
     const workId = this.requestedWorkId;
-    if (this.policy.status() !== 'accepted' || !workId || this.isCreating()) return;
+    if (this.policy.status() !== 'accepted' || !this.canEdit || !workId || this.isCreating())
+      return;
     const token = this.loadToken;
 
     let attempt = this.pendingCreateAttempt;
@@ -651,12 +677,14 @@ export class AuthoringOutlinePageComponent {
 
     this.pageState.set('loading');
     try {
-      const [manuscript, page] = await Promise.all([
+      const [manuscript, page, permissions] = await Promise.all([
         this.api.getPrivateManuscript(workId),
         this.api.listPrivateChapters(workId, undefined, 25),
+        this.collaborationApi.permissionsForWork(workId),
       ]);
       if (token !== this.loadToken) return;
       this.manuscript.set(manuscript);
+      this.collaboratorPermissions.set(permissions);
       this.chapters.set(page.items);
       this.nextCursor.set(page.nextCursor);
       this.pageState.set('ready');

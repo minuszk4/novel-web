@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 10.16.0
+  version: 10.17.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -20,6 +20,7 @@ info:
     Active workspace members can list the workspace's shared libraries; only owners/admins can idempotently create an empty shared library. Workspace membership and library-scope versions bind no-store ETags and signed cursors; deep links resolve through the actor's currently accessible library list.
     An opt-in, metadata-only guest catalog endpoint is available in the PostgreSQL profile. It is disabled by default and returns only authored, active, explicitly public works owned by active users with at least one ready chapter; it does not return descriptions or chapter bodies. Admin-only publication-reviewer role assignment, bounded eligible-account search and status-filtered assignment history are implemented in the PostgreSQL profile; the current-user response exposes the caller's server-derived security capability for navigation only. Owners can submit private manuscripts and staged draft chapters on public works for immutable rights review. Active assigned reviewers receive an actor-bound queue and privacy-filtered scope snapshots; decisions are idempotent, ETag-bound and never publish content. Owner-confirmed release for a manuscript or staged chapter is behind `NOVEL_PUBLICATION_RELEASE_ENABLED`, which remains off by default. Chapter release atomically makes the reviewed revision ready, refreshes previously granted scope approvals and writes an identifier-only publication outbox event. Whole-manuscript scheduled release is separately gated by default-off API and worker flags; private visibility is retained until due and current rights, policy, approval and content snapshots are revalidated at the due time. The API does not bootstrap system administrators, let authors define policy or self-review. Following stores the current actor's public-work preference; outbox delivery consumers, email digest, owner unpublish, edge rate limits and guest reader access remain separate work.
     Account export request, actor-scoped status and authenticated download routes are implemented in the PostgreSQL profile behind default-off API/worker gates. Exports require current Terms/Privacy acceptance and a session established by recent Google sign-in, use a repeatable-read snapshot and a bounded ZIP of JSONL data, and include full revisions/segments for account-owned works, including work stored in a shared workspace library. Other members' and unowned shared-workspace content, provider-generated translation candidates, import staging bytes, external binary assets and session/provider secrets are listed as exclusions in the manifest. MoMo TEST orders/settlement/reconciliation, credit ledger and unlock entitlements for the actor are included; account deletion and legal retention workflows remain unimplemented.
+    Manuscript collaboration is available only in the PostgreSQL profile behind default-off API and invitation-worker gates. Owners can grant only VIEW and EDIT to a private authored manuscript; verified-email acceptance is required before access. Owner-only publication rights and release controls remain unchanged.
 servers:
   - url: http://127.0.0.1:8080
 tags:
@@ -2280,6 +2281,102 @@ paths:
           $ref: '#/components/responses/Problem'
         '503':
           $ref: '#/components/responses/Problem'
+  /api/v1/me/authoring-invitations/{invitationId}/resolve:
+    post:
+      operationId: resolveManuscriptInvitation
+      tags: [Authoring]
+      x-implementation-status: implemented-postgres-profile
+      summary: Resolve a manuscript invitation for the signed-in recipient
+      description: >-
+        Requires an active session, verified Google email matching the invitation, current policy and a valid
+        domain-separated HMAC token in the strict POST body. Returns metadata, requested VIEW/EDIT permissions and
+        expiry only; no chapter prose is returned before acceptance. Invalid, foreign, expired or consumed invitations
+        are masked as not found. Requires CSRF and uses no-store.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - $ref: '#/components/parameters/ManuscriptInvitationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ManuscriptInvitationTokenRequest'}
+      responses:
+        '200':
+          description: Safe invitation details for the verified recipient.
+          headers:
+            Cache-Control: {schema: {type: string, const: no-store}}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ManuscriptInvitationPreview'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /api/v1/me/authoring-invitations/{invitationId}/accept:
+    post:
+      operationId: acceptManuscriptInvitation
+      tags: [Authoring]
+      x-implementation-status: implemented-postgres-profile
+      summary: Accept a verified-email manuscript invitation
+      description: >-
+        Rechecks recipient identity, current policy, expiry and pending state in the grant transaction. Acceptance is
+        idempotent for the same recipient and cannot grant publication rights. Requires CSRF and no-store.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - $ref: '#/components/parameters/ManuscriptInvitationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ManuscriptInvitationTokenRequest'}
+      responses:
+        '200':
+          description: Invitation accepted; VIEW/EDIT grant is active.
+          headers:
+            Cache-Control: {schema: {type: string, const: no-store}}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ManuscriptInvitationDecision'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /api/v1/me/authoring-invitations/{invitationId}/reject:
+    post:
+      operationId: rejectManuscriptInvitation
+      tags: [Authoring]
+      x-implementation-status: implemented-postgres-profile
+      summary: Reject a verified-email manuscript invitation
+      description: Rechecks recipient identity, current policy, expiry and pending state; exact reject replay is idempotent. Requires CSRF and no-store.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - $ref: '#/components/parameters/ManuscriptInvitationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ManuscriptInvitationTokenRequest'}
+      responses:
+        '200':
+          description: Invitation rejected; no collaborator grant is created.
+          headers:
+            Cache-Control: {schema: {type: string, const: no-store}}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ManuscriptInvitationDecision'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
   /api/v1/me/workspace-invitations/{invitationId}/resolve:
     post:
       operationId: resolveCurrentUserWorkspaceInvitation
@@ -2909,6 +3006,209 @@ paths:
           $ref: '#/components/responses/Problem'
         '503':
           $ref: '#/components/responses/Problem'
+  /api/v1/authoring/manuscripts/{workId}/contributors:
+    get:
+      operationId: listManuscriptCollaborators
+      tags: [Authoring]
+      x-implementation-status: implemented-postgres-profile
+      summary: List owner-managed collaborator grants and pending invitations
+      description: >-
+        Owner-only, no-store list of up to 100 active collaborator grants and pending invitation summaries. It never
+        returns email addresses, user IDs, invitation tokens, prose or worker diagnostics. Current Terms/Privacy
+        acceptance is required. Collaboration must be enabled and invitation configuration must pass readiness.
+      security:
+        - appSession: []
+      parameters:
+        - $ref: '#/components/parameters/AuthoringWorkId'
+      responses:
+        '200':
+          description: Safe active grants and pending invitations.
+          headers:
+            Cache-Control: {schema: {type: string, const: no-store}}
+            Pragma: {schema: {type: string, const: no-cache}}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ManuscriptCollaborationManagement'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /api/v1/authoring/manuscripts/{workId}/invitations:
+    get:
+      operationId: listManuscriptInvitations
+      tags: [Authoring]
+      x-implementation-status: implemented-postgres-profile
+      summary: List pending manuscript invitations
+      description: Owner-only pending summaries, at most 100; no invited email, token, inviter ID or outbox state.
+      security:
+        - appSession: []
+      parameters:
+        - $ref: '#/components/parameters/AuthoringWorkId'
+      responses:
+        '200':
+          description: Pending invitations for the current owner's manuscript.
+          headers:
+            Cache-Control: {schema: {type: string, const: no-store}}
+            Pragma: {schema: {type: string, const: no-cache}}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ManuscriptInvitationList'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /api/v1/authoring/manuscripts/{workId}/invitations/{invitationId}:
+    put:
+      operationId: inviteManuscriptCollaborator
+      tags: [Authoring]
+      x-implementation-status: implemented-postgres-profile
+      summary: Queue a verified-email manuscript invitation
+      description: >-
+        Owner-only create or exact replay using a caller-chosen invitation UUID. The strict body records permission
+        to contact the supplied address. Creation does not disclose whether an account exists or grant access. A 202
+        means the invitation and outbox row committed, not that email was delivered. Requires CSRF and current policy.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - $ref: '#/components/parameters/AuthoringWorkId'
+        - $ref: '#/components/parameters/AuthoringInvitationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ManuscriptInvitationCreate'}
+      responses:
+        '202':
+          description: Invitation durably queued; delivery is asynchronous.
+          headers:
+            Cache-Control: {schema: {type: string, const: no-store}}
+            Pragma: {schema: {type: string, const: no-cache}}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ManuscriptInvitationQueued'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+    delete:
+      operationId: revokeManuscriptInvitation
+      tags: [Authoring]
+      x-implementation-status: implemented-postgres-profile
+      summary: Revoke a pending manuscript invitation
+      description: Owner-only, CSRF-protected, idempotent revocation of a pending invitation and cancellation of queued delivery.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - $ref: '#/components/parameters/AuthoringWorkId'
+        - $ref: '#/components/parameters/AuthoringInvitationId'
+      responses:
+        '204':
+          description: Invitation revoked or already revoked.
+          headers:
+            Cache-Control: {schema: {type: string, const: no-store}}
+            Pragma: {schema: {type: string, const: no-cache}}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /api/v1/authoring/manuscripts/{workId}/contributors/{grantId}:
+    put:
+      operationId: requestManuscriptCollaboratorPermissionChange
+      tags: [Authoring]
+      x-implementation-status: implemented-postgres-profile
+      summary: Ask an existing collaborator to accept changed permissions
+      description: >-
+        Owner-only. Requires the current strong grant ETag, a new invitation UUID, an allowed VIEW/EDIT permission
+        set and explicit email-contact confirmation. Existing permissions remain active until the recipient accepts.
+        Requires CSRF and current policy; stale grant version returns 412.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - $ref: '#/components/parameters/AuthoringWorkId'
+        - $ref: '#/components/parameters/ManuscriptGrantId'
+        - name: If-Match
+          in: header
+          required: true
+          schema: {type: string, pattern: '^"manuscript-grant-[1-9][0-9]*"$'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ManuscriptPermissionChange'}
+      responses:
+        '202':
+          description: Permission-change invitation durably queued.
+          headers:
+            Cache-Control: {schema: {type: string, const: no-store}}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ManuscriptInvitationQueued'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '412': {$ref: '#/components/responses/Problem'}
+        '428': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+    delete:
+      operationId: revokeManuscriptCollaborator
+      tags: [Authoring]
+      x-implementation-status: implemented-postgres-profile
+      summary: Revoke a manuscript collaborator grant
+      description: >-
+        Owner-only version-checked revocation. The manuscript row serializes the access change against concurrent
+        reads/writes; already-running work finishes before revocation commits. Requires CSRF and current policy.
+      security:
+        - appSession: []
+          csrfToken: []
+      parameters:
+        - $ref: '#/components/parameters/AuthoringWorkId'
+        - $ref: '#/components/parameters/ManuscriptGrantId'
+        - name: If-Match
+          in: header
+          required: true
+          schema: {type: string, pattern: '^"manuscript-grant-[1-9][0-9]*"$'}
+      responses:
+        '204':
+          description: Grant revoked or the exact revocation replayed.
+          headers:
+            Cache-Control: {schema: {type: string, const: no-store}}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '412': {$ref: '#/components/responses/Problem'}
+        '428': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /api/v1/authoring/collaborations:
+    get:
+      operationId: listSharedManuscripts
+      tags: [Authoring]
+      x-implementation-status: implemented-postgres-profile
+      summary: List accepted manuscript collaborations for the current actor
+      description: >-
+        No-store list of at most 100 active grants for the session actor. Returns only safe work metadata and VIEW/EDIT
+        permissions. Revoked, deleted or no-longer-private manuscripts are omitted. Requires current policy acceptance.
+      security:
+        - appSession: []
+      responses:
+        '200':
+          description: Current actor's active shared manuscripts.
+          headers:
+            Cache-Control: {schema: {type: string, const: no-store}}
+            Pragma: {schema: {type: string, const: no-cache}}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SharedManuscriptList'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
   /api/v1/authoring/manuscripts/{workId}/publication/rights-policy:
     get:
       operationId: getCurrentPublicationRightsPolicyForManuscript
@@ -8811,6 +9111,27 @@ paths:
         '503':
           $ref: '#/components/responses/Problem'
 components:
+  parameters:
+    AuthoringWorkId:
+      name: workId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    AuthoringInvitationId:
+      name: invitationId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    ManuscriptInvitationId:
+      name: invitationId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    ManuscriptGrantId:
+      name: grantId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
   securitySchemes:
     appSession:
       type: apiKey
@@ -8829,6 +9150,155 @@ components:
         type: string
         pattern: '^"annotation-[1-9][0-9]*"$'
   schemas:
+    ManuscriptPermission:
+      type: string
+      enum: [VIEW, EDIT]
+    ManuscriptCollaborationManagement:
+      type: object
+      additionalProperties: false
+      required: [collaborators, invitations]
+      properties:
+        collaborators:
+          type: array
+          maxItems: 100
+          items: {$ref: '#/components/schemas/ManuscriptCollaborator'}
+        invitations:
+          type: array
+          maxItems: 100
+          items: {$ref: '#/components/schemas/ManuscriptInvitationSummary'}
+    ManuscriptCollaborator:
+      type: object
+      additionalProperties: false
+      required: [id, permissions, version, grantedAt, etag]
+      properties:
+        id: {type: string, format: uuid}
+        permissions:
+          type: array
+          minItems: 1
+          maxItems: 2
+          uniqueItems: true
+          contains: {$ref: '#/components/schemas/ManuscriptPermission'}
+          items: {$ref: '#/components/schemas/ManuscriptPermission'}
+        version: {type: integer, minimum: 1}
+        grantedAt: {type: string, format: date-time}
+        etag: {type: string, pattern: '^"manuscript-grant-[1-9][0-9]*"$'}
+    ManuscriptInvitationSummary:
+      type: object
+      additionalProperties: false
+      required: [id, permissions, status, createdAt, expiresAt]
+      properties:
+        id: {type: string, format: uuid}
+        permissions:
+          type: array
+          minItems: 1
+          maxItems: 2
+          uniqueItems: true
+          items: {$ref: '#/components/schemas/ManuscriptPermission'}
+        status: {type: string, const: pending}
+        createdAt: {type: string, format: date-time}
+        expiresAt: {type: string, format: date-time}
+    ManuscriptInvitationList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items: {$ref: '#/components/schemas/ManuscriptInvitationSummary'}
+    ManuscriptInvitationCreate:
+      type: object
+      additionalProperties: false
+      required: [email, permissions, confirmedPermissionToEmail]
+      properties:
+        email: {type: string, format: email, minLength: 3, maxLength: 320}
+        permissions:
+          type: array
+          minItems: 1
+          maxItems: 2
+          uniqueItems: true
+          items: {$ref: '#/components/schemas/ManuscriptPermission'}
+        confirmedPermissionToEmail: {type: boolean, const: true}
+    ManuscriptPermissionChange:
+      type: object
+      additionalProperties: false
+      required: [invitationId, permissions, confirmedPermissionToEmail]
+      properties:
+        invitationId: {type: string, format: uuid}
+        permissions:
+          type: array
+          minItems: 1
+          maxItems: 2
+          uniqueItems: true
+          items: {$ref: '#/components/schemas/ManuscriptPermission'}
+        confirmedPermissionToEmail: {type: boolean, const: true}
+    ManuscriptInvitationQueued:
+      type: object
+      additionalProperties: false
+      required: [id, permissions, status, expiresAt, message]
+      properties:
+        id: {type: string, format: uuid}
+        permissions:
+          type: array
+          minItems: 1
+          maxItems: 2
+          uniqueItems: true
+          items: {$ref: '#/components/schemas/ManuscriptPermission'}
+        status: {type: string, enum: [pending, accepted, rejected, revoked, expired]}
+        expiresAt: {type: string, format: date-time}
+        message: {type: string, maxLength: 200}
+    ManuscriptInvitationTokenRequest:
+      type: object
+      additionalProperties: false
+      required: [token]
+      properties:
+        token: {type: string, pattern: '^[A-Za-z0-9_-]{43}$'}
+    ManuscriptInvitationPreview:
+      type: object
+      additionalProperties: false
+      required: [id, title, author, permissions, expiresAt]
+      properties:
+        id: {type: string, format: uuid}
+        title: {type: string, minLength: 1, maxLength: 300}
+        author: {type: string, maxLength: 300}
+        permissions:
+          type: array
+          minItems: 1
+          maxItems: 2
+          uniqueItems: true
+          items: {$ref: '#/components/schemas/ManuscriptPermission'}
+        expiresAt: {type: string, format: date-time}
+    ManuscriptInvitationDecision:
+      type: object
+      additionalProperties: false
+      required: [id, status]
+      properties:
+        id: {type: string, format: uuid}
+        status: {type: string, enum: [accepted, rejected]}
+    SharedManuscriptList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items: {$ref: '#/components/schemas/SharedManuscript'}
+    SharedManuscript:
+      type: object
+      additionalProperties: false
+      required: [workId, title, author, permissions, grantedAt]
+      properties:
+        workId: {type: string, format: uuid}
+        title: {type: string, minLength: 1, maxLength: 300}
+        author: {type: string, maxLength: 300}
+        permissions:
+          type: array
+          minItems: 1
+          maxItems: 2
+          uniqueItems: true
+          items: {$ref: '#/components/schemas/ManuscriptPermission'}
+        grantedAt: {type: string, format: date-time}
     MyWorkSubscriptionPage:
       type: object
       additionalProperties: false

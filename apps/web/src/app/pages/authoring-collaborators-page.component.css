@@ -1,0 +1,130 @@
+:host {
+  display: block;
+}
+.collaboration-page {
+  max-width: 900px;
+  padding-bottom: 64px;
+}
+.collaboration-page h1 {
+  overflow-wrap: anywhere;
+}
+.collaboration-page header > p:not(.eyebrow) {
+  max-width: 700px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+.collaboration-panel {
+  margin-top: 18px;
+  padding: 22px;
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow-soft);
+}
+.collaboration-panel h2 {
+  margin-top: 0;
+}
+.collaboration-form,
+.collaboration-form label,
+.collaboration-grant-actions {
+  display: grid;
+  gap: 10px;
+}
+.collaboration-form {
+  max-width: 650px;
+  gap: 18px;
+}
+.collaboration-form input[type='email'] {
+  min-height: 44px;
+  width: 100%;
+  margin-top: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+}
+.collaboration-form fieldset {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 14px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+}
+.collaboration-check {
+  display: flex !important;
+  align-items: flex-start;
+  gap: 10px !important;
+  min-height: 44px;
+  line-height: 1.5;
+}
+.collaboration-check input {
+  flex: 0 0 22px;
+  width: 22px;
+  height: 22px;
+  margin: 2px 0 0;
+}
+.collaboration-help,
+.collaboration-list span {
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.5;
+}
+.collaboration-consent {
+  max-width: 650px;
+}
+.collaboration-list {
+  display: grid;
+  gap: 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.collaboration-list > li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 14px 0;
+  border-top: 1px solid var(--border-soft);
+}
+.collaboration-list > li > div:first-child {
+  display: grid;
+  gap: 5px;
+}
+.collaboration-grant-actions {
+  min-width: min(100%, 320px);
+}
+.collaboration-status,
+.collaboration-error {
+  padding: 12px 14px;
+  border-radius: 8px;
+  line-height: 1.5;
+}
+.collaboration-status {
+  background: var(--surface-soft);
+}
+.collaboration-error {
+  color: var(--danger-text, #9f2d34);
+  background: #fff2f1;
+}
+.button-danger {
+  min-height: 44px;
+  color: var(--danger-text, #9f2d34);
+  border: 1px solid currentColor;
+  border-radius: 8px;
+  background: transparent;
+  padding: 8px 14px;
+}
+@media (max-width: 600px) {
+  .collaboration-panel {
+    padding: 16px;
+  }
+  .collaboration-list > li {
+    display: grid;
+  }
+  .collaboration-grant-actions,
+  .collaboration-grant-actions button {
+    width: 100%;
+  }
+}

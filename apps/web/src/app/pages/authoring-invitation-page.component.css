@@ -1,0 +1,43 @@
+:host {
+  display: block;
+}
+.manuscript-invitation-page {
+  max-width: 760px;
+  padding-top: 30px;
+  padding-bottom: 64px;
+}
+.manuscript-invitation-page h1,
+.manuscript-invitation-card h2 {
+  overflow-wrap: anywhere;
+}
+.invitation-message {
+  line-height: 1.6;
+}
+.manuscript-invitation-card {
+  margin: 22px 0;
+  padding: 24px;
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow-soft);
+}
+.manuscript-invitation-card p,
+.manuscript-invitation-card li {
+  line-height: 1.6;
+}
+.invitation-actions,
+.invitation-recovery {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 18px;
+}
+@media (max-width: 560px) {
+  .manuscript-invitation-card {
+    padding: 16px;
+  }
+  .invitation-actions > *,
+  .invitation-recovery > * {
+    width: 100%;
+  }
+}

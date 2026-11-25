@@ -1,0 +1,173 @@
+<div class="page-wrap collaboration-page">
+  <header class="page-heading">
+    <p class="eyebrow">AUTHOR STUDIO · QUYỀN THEO BẢN THẢO</p>
+    <h1 #pageHeading tabindex="-1">Cộng tác bản thảo</h1>
+    <p>
+      Mời người khác xem hoặc chỉnh sửa bản thảo này. Chỉ owner được gửi bản thảo đi duyệt và xuất
+      bản.
+    </p>
+    <a class="button button-outline" [routerLink]="['/app/authoring', workId, 'chapters']"
+      >Quay lại dàn ý</a
+    >
+  </header>
+
+  @if (notice(); as message) {
+    <p class="collaboration-status" role="status" aria-live="polite">{{ message }}</p>
+  }
+  @if (error(); as message) {
+    <p class="collaboration-error" role="alert">{{ message }}</p>
+  }
+
+  @if (state() === 'loading') {
+    <p role="status" aria-live="polite">Đang tải danh sách cộng tác…</p>
+  } @else if (state() === 'error') {
+    <section class="collaboration-panel">
+      <h2>Chưa mở được quyền cộng tác</h2>
+      <button class="button button-primary" type="button" (click)="retry()">Tải lại</button>
+      @if (error()?.includes('đăng nhập')) {
+        <a
+          class="button button-outline"
+          [routerLink]="['/sign-in']"
+          [queryParams]="{ returnTo: signInReturnTo }"
+          >Đăng nhập bằng Google</a
+        >
+      }
+      @if (error()?.includes('chính sách hiện hành')) {
+        <a class="button button-outline" routerLink="/app/setup">Xem chính sách tài khoản</a>
+      }
+    </section>
+  } @else if (management(); as data) {
+    <section class="collaboration-panel" aria-labelledby="invite-heading">
+      <h2 id="invite-heading">Mời cộng tác viên</h2>
+      <p>
+        Địa chỉ email chỉ được dùng để gửi lời mời. Chúng tôi không xác nhận địa chỉ đã có tài khoản
+        hay chưa.
+      </p>
+      <form class="collaboration-form" novalidate (submit)="sendInvitation($event)">
+        <label for="collaborator-email">
+          Email người nhận
+          <input
+            id="collaborator-email"
+            type="email"
+            autocomplete="email"
+            maxlength="320"
+            required
+            [value]="email()"
+            [disabled]="busy() || !!invitationAttempt()"
+            (input)="updateEmail($event)"
+          />
+        </label>
+        <fieldset>
+          <legend>Quyền được cấp</legend>
+          <label class="collaboration-check"
+            ><input type="checkbox" checked disabled /> Chỉ xem bản thảo và nội dung đã lưu</label
+          >
+          <label class="collaboration-check"
+            ><input
+              type="checkbox"
+              [checked]="includeEdit()"
+              [disabled]="busy() || !!invitationAttempt()"
+              (change)="updateIncludeEdit($event)"
+            />
+            Có thể chỉnh sửa thông tin và chương nháp</label
+          >
+          <p class="collaboration-help">
+            Không quyền nào cho phép người cộng tác tự duyệt hoặc xuất bản.
+          </p>
+        </fieldset>
+        <label class="collaboration-check collaboration-consent">
+          <input
+            type="checkbox"
+            [checked]="consent()"
+            [disabled]="busy()"
+            (change)="updateConsent($event)"
+          />
+          Tôi có quyền liên hệ địa chỉ này và yêu cầu Novel gửi lời mời cộng tác.
+        </label>
+        <button class="button button-primary" type="submit" [disabled]="busy() || !consent()">
+          {{ busy() ? 'Đang gửi…' : invitationAttempt() ? 'Thử lại cùng lời mời' : 'Gửi lời mời' }}
+        </button>
+      </form>
+    </section>
+
+    <section class="collaboration-panel" aria-labelledby="contributors-heading">
+      <h2 id="contributors-heading">Cộng tác viên hiện tại</h2>
+      @if (data.collaborators.length === 0) {
+        <p>Chưa có ai được cấp quyền cho bản thảo này.</p>
+      } @else {
+        <ul class="collaboration-list">
+          @for (grant of data.collaborators; track grant.id) {
+            <li>
+              <div>
+                <strong>{{ permissionLabel(grant.permissions) }}</strong>
+                <span>Được cấp {{ grant.grantedAt | date: 'mediumDate' }}</span>
+              </div>
+              <div class="collaboration-grant-actions">
+                <label class="collaboration-check">
+                  <input
+                    type="checkbox"
+                    [checked]="editChoices()[grant.id] ?? grant.permissions.includes('EDIT')"
+                    [disabled]="busy()"
+                    (change)="updateEditChoice(grant.id, $event)"
+                  />
+                  Quyền chỉnh sửa
+                </label>
+                <label class="collaboration-check">
+                  <input
+                    type="checkbox"
+                    [checked]="editConsents()[grant.id] ?? false"
+                    [disabled]="busy()"
+                    (change)="updateEditConsent(grant.id, $event)"
+                  />
+                  Tôi có quyền liên hệ người này để cập nhật quyền.
+                </label>
+                <button
+                  class="button button-outline"
+                  type="button"
+                  [disabled]="busy()"
+                  (click)="changePermissions(grant)"
+                >
+                  Gửi lời mời cập nhật quyền
+                </button>
+                <button
+                  class="button button-danger"
+                  type="button"
+                  [disabled]="busy()"
+                  (click)="revokeCollaborator(grant)"
+                >
+                  Thu hồi quyền
+                </button>
+              </div>
+            </li>
+          }
+        </ul>
+      }
+    </section>
+
+    <section class="collaboration-panel" aria-labelledby="pending-heading">
+      <h2 id="pending-heading">Lời mời đang chờ</h2>
+      @if (data.invitations.length === 0) {
+        <p>Không có lời mời nào đang chờ.</p>
+      } @else {
+        <ul class="collaboration-list">
+          @for (invitation of data.invitations; track invitation.id) {
+            <li>
+              <div>
+                <strong>{{ permissionLabel(invitation.permissions) }}</strong>
+                <span>Hết hạn {{ invitation.expiresAt | date: 'medium' }}</span>
+              </div>
+              <button
+                class="button button-outline"
+                type="button"
+                [disabled]="busy()"
+                (click)="revokeInvitation(invitation)"
+              >
+                Thu hồi lời mời
+              </button>
+            </li>
+          }
+        </ul>
+      }
+    </section>
+  }
+</div>

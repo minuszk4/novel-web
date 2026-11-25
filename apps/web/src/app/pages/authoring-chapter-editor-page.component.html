@@ -60,8 +60,17 @@
     <aside class="chapter-editor-privacy" aria-label="Thông tin về quyền riêng tư">
       <span aria-hidden="true">▣</span>
       <div>
-        <strong>Bản thảo riêng tư</strong>
-        <p>Bản xem trước chỉ đọc phiên bản đã lưu gần nhất. Chương này chưa được xuất bản.</p>
+        <strong>{{
+          isSharedReadOnly() ? 'Bản thảo riêng tư được chia sẻ' : 'Bản thảo riêng tư'
+        }}</strong>
+        <p>
+          @if (isSharedReadOnly()) {
+            Bạn chỉ có quyền xem. Chương được hiển thị ở dạng văn bản thuần; chỉ owner có thể xuất
+            bản.
+          } @else {
+            Bản xem trước chỉ đọc phiên bản đã lưu gần nhất. Chương này chưa được xuất bản.
+          }
+        </p>
       </div>
     </aside>
 
@@ -82,31 +91,39 @@
         </p>
       </div>
 
-      <div class="chapter-editor-mode-actions">
-        <button
-          class="button button-outline"
-          type="button"
-          [disabled]="!canPreviewSavedRevision && !isPreviewMode()"
-          aria-describedby="chapter-preview-help"
-          (click)="togglePreviewMode()"
-        >
-          {{ isPreviewMode() ? 'Tiếp tục biên tập' : 'Xem bản đã lưu' }}
-        </button>
-        <p id="chapter-preview-help">
-          @if (isPreviewMode()) {
-            Đang xem nội dung đã lưu ở dạng văn bản thuần; nội dung chưa xuất bản hoặc chia sẻ.
-          } @else if (canPreviewSavedRevision) {
-            Bản xem trước không lưu nội dung và không hiển thị thay đổi chưa lưu.
-          } @else {
-            {{ previewUnavailableText }}
-          }
-        </p>
-      </div>
+      @if (!isSharedReadOnly()) {
+        <div class="chapter-editor-mode-actions">
+          <button
+            class="button button-outline"
+            type="button"
+            [disabled]="!canPreviewSavedRevision && !isPreviewMode()"
+            aria-describedby="chapter-preview-help"
+            (click)="togglePreviewMode()"
+          >
+            {{ isPreviewMode() ? 'Tiếp tục biên tập' : 'Xem bản đã lưu' }}
+          </button>
+          <p id="chapter-preview-help">
+            @if (isPreviewMode()) {
+              Đang xem nội dung đã lưu ở dạng văn bản thuần; nội dung chưa xuất bản hoặc chia sẻ.
+            } @else if (canPreviewSavedRevision) {
+              Bản xem trước không lưu nội dung và không hiển thị thay đổi chưa lưu.
+            } @else {
+              {{ previewUnavailableText }}
+            }
+          </p>
+        </div>
+      }
 
       @if (isPreviewMode()) {
         <article class="chapter-editor-preview" aria-labelledby="chapter-editor-preview-title">
           <header>
-            <p class="eyebrow">BẢN THẢO RIÊNG TƯ · BẢN ĐÃ LƯU</p>
+            <p class="eyebrow">
+              {{
+                isSharedReadOnly()
+                  ? 'BẢN THẢO ĐƯỢC CHIA SẺ · CHỈ XEM'
+                  : 'BẢN THẢO RIÊNG TƯ · BẢN ĐÃ LƯU'
+              }}
+            </p>
             <h3 id="chapter-editor-preview-title">{{ draft()?.title }}</h3>
             <p>Phiên bản {{ draft()?.revisionNo }} · Chưa xuất bản</p>
           </header>
@@ -174,7 +191,7 @@
       }
     </section>
 
-    @if (isPublicWork() && (draft()?.revisionNo ?? 0) > 0) {
+    @if (!isSharedReadOnly() && isPublicWork() && (draft()?.revisionNo ?? 0) > 0) {
       <app-publication-chapter-release-panel
         [workId]="workId ?? ''"
         [chapterId]="chapterId ?? ''"

@@ -20,6 +20,7 @@ import {
   newAuthoringIdempotencyKey,
 } from '../core/authoring-api.service';
 import { PolicyOnboardingService } from '../core/policy-onboarding.service';
+import { AuthoringCollaborationApiService } from '../core/authoring-collaboration-api.service';
 import { PublicationChapterReleasePanelComponent } from './publication-chapter-release-panel.component';
 
 type PageState = 'loading' | 'guest' | 'error' | 'ready';
@@ -60,9 +61,11 @@ export class AuthoringChapterEditorPageComponent {
   protected readonly isPreviewMode = signal(false);
   protected readonly isPublicWork = signal(false);
   protected readonly workTitle = signal('');
+  protected readonly isSharedReadOnly = signal(false);
 
   private readonly route = inject(ActivatedRoute);
   private readonly api = inject(AuthoringApiService);
+  private readonly collaborationApi = inject(AuthoringCollaborationApiService);
   private readonly router = inject(Router);
   private readonly destroyRef = inject(DestroyRef);
   private workId: string | null = null;
@@ -148,6 +151,7 @@ export class AuthoringChapterEditorPageComponent {
   protected get canSave(): boolean {
     return (
       this.pageState() === 'ready' &&
+      !this.isSharedReadOnly() &&
       this.saveState() !== 'conflict' &&
       this.saveState() !== 'uncertain' &&
       !this.isSaving() &&
@@ -185,6 +189,7 @@ export class AuthoringChapterEditorPageComponent {
   }
 
   protected togglePreviewMode(): void {
+    if (this.isSharedReadOnly()) return;
     if (this.isPreviewMode()) {
       this.isPreviewMode.set(false);
       this.announcement.set('Đã quay lại trình soạn thảo.');
@@ -211,7 +216,7 @@ export class AuthoringChapterEditorPageComponent {
     const workId = this.workId;
     const chapterId = this.chapterId;
     const etag = this.currentEtag;
-    if (!workId || !chapterId || !etag || this.isSaving()) return;
+    if (this.isSharedReadOnly() || !workId || !chapterId || !etag || this.isSaving()) return;
     if (this.saveState() === 'conflict') return;
 
     if (!this.attempt) {
@@ -332,7 +337,8 @@ export class AuthoringChapterEditorPageComponent {
   }
 
   updateContent(event: Event): void {
-    if (this.saveState() === 'uncertain' || this.pageState() !== 'ready') return;
+    if (this.isSharedReadOnly() || this.saveState() === 'uncertain' || this.pageState() !== 'ready')
+      return;
     const textarea = event.target as HTMLTextAreaElement;
     this.content.set(textarea.value);
     this.byteLength.set(utf8Bytes(textarea.value));
@@ -377,6 +383,7 @@ export class AuthoringChapterEditorPageComponent {
 
   private async load(token: number): Promise<void> {
     this.isPreviewMode.set(false);
+    this.isSharedReadOnly.set(false);
     this.pageError.set(null);
     this.saveError.set(null);
     this.conflictError.set(null);
@@ -396,11 +403,14 @@ export class AuthoringChapterEditorPageComponent {
 
     this.pageState.set('loading');
     try {
-      const [draft, manuscript] = await Promise.all([
+      const [draft, manuscript, permissions] = await Promise.all([
         this.api.getPrivateChapterDraft(this.workId, this.chapterId),
         this.api.getPrivateManuscript(this.workId),
+        this.collaborationApi.permissionsForWork(this.workId),
       ]);
       if (token !== this.loadToken) return;
+      const readOnly = permissions !== null && !permissions.includes('EDIT');
+      this.isSharedReadOnly.set(readOnly);
       this.isPublicWork.set(manuscript.visibility === 'public');
       this.workTitle.set(manuscript.title);
       this.draft.set(draft);
@@ -411,6 +421,7 @@ export class AuthoringChapterEditorPageComponent {
       this.byteLength.set(utf8Bytes(draft.normalizedContent));
       this.hasOversizedSegment.set(hasOversizedParagraph(draft.normalizedContent));
       this.saveState.set('saved');
+      this.isPreviewMode.set(readOnly);
       this.pageState.set('ready');
     } catch (error) {
       if (token !== this.loadToken) return;

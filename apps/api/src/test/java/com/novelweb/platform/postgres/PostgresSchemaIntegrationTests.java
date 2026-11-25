@@ -39,6 +39,8 @@ import com.novelweb.library.PublicCatalogRepository;
 import com.novelweb.library.WorkspaceMembershipAuditRepository;
 import com.novelweb.library.WorkspaceRepository;
 import com.novelweb.library.WorkspaceService;
+import com.novelweb.library.collaboration.AuthoringCollaborationService;
+import com.novelweb.library.collaboration.AuthoringInvitationTokenService;
 import com.novelweb.library.imports.ImportParseService;
 import com.novelweb.library.imports.ImportStagingCleanupService;
 import com.novelweb.library.imports.ImportStagingRateLimiter;
@@ -195,6 +197,9 @@ import tools.jackson.databind.ObjectMapper;
       "spring.mail.password=smtp-test-password",
       "novel.workspaces.invitations.ttl=PT168H",
       "novel.workspaces.invitations.poll-delay=PT1H",
+      "novel.authoring.collaboration.enabled=true",
+      "novel.authoring.collaboration.invitation-worker-enabled=false",
+      "novel.authoring.collaboration.ttl=PT168H",
       "novel.publication.purge.required-targets=CDN",
       "novel.publication.purge.targets.cdn.endpoint=https://purge.example.test/v1/work",
       "novel.publication.purge.targets.cdn.bearer-token=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
@@ -235,6 +240,11 @@ class PostgresSchemaIntegrationTests {
           "workspace_membership_audit_events",
           "workspace_invitations",
           "workspace_invitation_outbox",
+          "authoring_manuscript_invitations",
+          "authoring_manuscript_invitation_outbox",
+          "authoring_manuscript_invitation_events",
+          "authoring_manuscript_contributors",
+          "authoring_manuscript_contributor_events",
           "library_reading_states",
           "reader_progress",
           "reader_preferences",
@@ -385,6 +395,10 @@ class PostgresSchemaIntegrationTests {
 
   @Autowired private WorkspaceInvitationTokenService workspaceInvitationTokenService;
 
+  @Autowired private AuthoringCollaborationService authoringCollaborationService;
+
+  @Autowired private AuthoringInvitationTokenService authoringInvitationTokenService;
+
   @BeforeAll
   void insertPolicyDocumentFixtures() throws SQLException {
     insertPolicyTestDocuments();
@@ -497,7 +511,7 @@ class PostgresSchemaIntegrationTests {
             connection.prepareStatement("SELECT COUNT(*) FROM databasechangelog");
         ResultSet changesets = changesetCount.executeQuery()) {
       changesets.next();
-      assertEquals(186, changesets.getInt(1), "unexpected number of applied changesets");
+      assertEquals(188, changesets.getInt(1), "unexpected number of applied changesets");
     }
 
     Set<String> actualTables = new HashSet<>();
@@ -517,6 +531,341 @@ class PostgresSchemaIntegrationTests {
       }
     }
     assertEquals(EXPECTED_APPLICATION_TABLES, actualTables);
+  }
+
+  @Test
+  void manuscriptCollaborationInvitationGrantsViewAndEditThenRevokesSafely() throws Exception {
+    UUID ownerId = createSessionTestUser("Manuscript Collaboration Owner");
+    UUID recipientId = createSessionTestUser("Manuscript Collaboration Recipient");
+    UUID outsiderId = createSessionTestUser("Manuscript Collaboration Outsider");
+    String recipientEmail = contactEmail(recipientId);
+    addCurrentPolicyAcceptances(ownerId);
+    addCurrentPolicyAcceptances(recipientId);
+    addCurrentPolicyAcceptances(outsiderId);
+    LibraryRepository.WorkRecord work =
+        libraryService.createPrivateAuthoredWork(
+            ownerId,
+            "Shared manuscript",
+            "Owner Author",
+            "vi",
+            "collaboration-" + UUID.randomUUID());
+
+    try {
+      SessionService.IssuedSession ownerSession = sessionService.create(ownerId).orElseThrow();
+      SessionService.IssuedSession recipientSession =
+          sessionService.create(recipientId).orElseThrow();
+      SessionService.IssuedSession outsiderSession =
+          sessionService.create(outsiderId).orElseThrow();
+      var ownerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", ownerSession.cookieValue());
+      var recipientCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", recipientSession.cookieValue());
+      var outsiderCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", outsiderSession.cookieValue());
+      String ownerCsrf = csrfTokenService.tokenFor(ownerSession.cookieValue());
+      String recipientCsrf = csrfTokenService.tokenFor(recipientSession.cookieValue());
+      String outsiderCsrf = csrfTokenService.tokenFor(outsiderSession.cookieValue());
+      String invitationId = UUID.randomUUID().toString();
+      String invitationPath =
+          "/api/v1/authoring/manuscripts/" + work.id() + "/invitations/" + invitationId;
+      String viewOnlyBody =
+          objectMapper.writeValueAsString(
+              Map.of(
+                  "email",
+                  recipientEmail,
+                  "permissions",
+                  List.of("VIEW"),
+                  "confirmedPermissionToEmail",
+                  true));
+
+      MvcResult queued =
+          mockMvc
+              .perform(
+                  put(invitationPath)
+                      .cookie(ownerCookie)
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(viewOnlyBody))
+              .andReturn();
+      assertEquals(202, queued.getResponse().getStatus());
+      assertTrue(queued.getResponse().getHeader(HttpHeaders.CACHE_CONTROL).contains("no-store"));
+      assertFalse(queued.getResponse().getContentAsString().contains(recipientEmail));
+      MvcResult exactInviteRetry =
+          mockMvc
+              .perform(
+                  put(invitationPath)
+                      .cookie(ownerCookie)
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(viewOnlyBody))
+              .andReturn();
+      assertEquals(202, exactInviteRetry.getResponse().getStatus());
+      MvcResult changedInviteRetry =
+          mockMvc
+              .perform(
+                  put(invitationPath)
+                      .cookie(ownerCookie)
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          objectMapper.writeValueAsString(
+                              Map.of(
+                                  "email",
+                                  recipientEmail,
+                                  "permissions",
+                                  List.of("VIEW", "EDIT"),
+                                  "confirmedPermissionToEmail",
+                                  true))))
+              .andReturn();
+      assertEquals(409, changedInviteRetry.getResponse().getStatus());
+
+      MvcResult pendingList =
+          mockMvc
+              .perform(
+                  get("/api/v1/authoring/manuscripts/{id}/contributors", work.id())
+                      .cookie(ownerCookie))
+              .andReturn();
+      assertEquals(200, pendingList.getResponse().getStatus());
+      assertFalse(pendingList.getResponse().getContentAsString().contains(recipientEmail));
+      assertFalse(pendingList.getResponse().getContentAsString().contains(recipientId.toString()));
+
+      String token = authoringInvitationTokenService.tokenFor(UUID.fromString(invitationId));
+      String resolvePath = "/api/v1/me/authoring-invitations/" + invitationId + "/resolve";
+      String tokenBody = objectMapper.writeValueAsString(Map.of("token", token));
+      MvcResult mismatchedEmail =
+          mockMvc
+              .perform(
+                  post(resolvePath)
+                      .cookie(outsiderCookie)
+                      .header("X-CSRF-Token", outsiderCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(tokenBody))
+              .andReturn();
+      assertEquals(404, mismatchedEmail.getResponse().getStatus());
+      assertFalse(mismatchedEmail.getResponse().getContentAsString().contains(recipientEmail));
+      MvcResult resolved =
+          mockMvc
+              .perform(
+                  post(resolvePath)
+                      .cookie(recipientCookie)
+                      .header("X-CSRF-Token", recipientCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(tokenBody))
+              .andReturn();
+      assertEquals(200, resolved.getResponse().getStatus());
+      assertTrue(resolved.getResponse().getContentAsString().contains("Shared manuscript"));
+      assertFalse(resolved.getResponse().getContentAsString().contains(recipientEmail));
+
+      MvcResult accepted =
+          mockMvc
+              .perform(
+                  post("/api/v1/me/authoring-invitations/{id}/accept", invitationId)
+                      .cookie(recipientCookie)
+                      .header("X-CSRF-Token", recipientCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(tokenBody))
+              .andReturn();
+      assertEquals(200, accepted.getResponse().getStatus());
+      MvcResult exactAcceptRetry =
+          mockMvc
+              .perform(
+                  post("/api/v1/me/authoring-invitations/{id}/accept", invitationId)
+                      .cookie(recipientCookie)
+                      .header("X-CSRF-Token", recipientCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(tokenBody))
+              .andReturn();
+      assertEquals(200, exactAcceptRetry.getResponse().getStatus());
+
+      MvcResult sharedList =
+          mockMvc
+              .perform(get("/api/v1/authoring/collaborations").cookie(recipientCookie))
+              .andReturn();
+      assertEquals(200, sharedList.getResponse().getStatus());
+      assertTrue(sharedList.getResponse().getContentAsString().contains("Shared manuscript"));
+      MvcResult viewDetails =
+          mockMvc
+              .perform(get("/api/v1/authoring/manuscripts/{id}", work.id()).cookie(recipientCookie))
+              .andReturn();
+      assertEquals(200, viewDetails.getResponse().getStatus());
+      MvcResult viewEditDenied =
+          mockMvc
+              .perform(
+                  put("/api/v1/authoring/manuscripts/{id}", work.id())
+                      .cookie(recipientCookie)
+                      .header("X-CSRF-Token", recipientCsrf)
+                      .header(
+                          HttpHeaders.IF_MATCH,
+                          viewDetails.getResponse().getHeader(HttpHeaders.ETAG))
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          objectMapper.writeValueAsString(
+                              Map.of(
+                                  "title",
+                                  "Should remain unchanged",
+                                  "author",
+                                  "Owner Author",
+                                  "language",
+                                  "vi"))))
+              .andReturn();
+      assertEquals(404, viewEditDenied.getResponse().getStatus());
+
+      UUID editInvitationId = UUID.randomUUID();
+      String editInvitationPath =
+          "/api/v1/authoring/manuscripts/" + work.id() + "/invitations/" + editInvitationId;
+      String editBody =
+          objectMapper.writeValueAsString(
+              Map.of(
+                  "email",
+                  recipientEmail,
+                  "permissions",
+                  List.of("VIEW", "EDIT"),
+                  "confirmedPermissionToEmail",
+                  true));
+      MvcResult editQueued =
+          mockMvc
+              .perform(
+                  put(editInvitationPath)
+                      .cookie(ownerCookie)
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(editBody))
+              .andReturn();
+      assertEquals(202, editQueued.getResponse().getStatus());
+      String editToken = authoringInvitationTokenService.tokenFor(editInvitationId);
+      String editTokenBody = objectMapper.writeValueAsString(Map.of("token", editToken));
+      MvcResult editAccepted =
+          mockMvc
+              .perform(
+                  post("/api/v1/me/authoring-invitations/{id}/accept", editInvitationId)
+                      .cookie(recipientCookie)
+                      .header("X-CSRF-Token", recipientCsrf)
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(editTokenBody))
+              .andReturn();
+      assertEquals(200, editAccepted.getResponse().getStatus());
+
+      MvcResult createdChapter =
+          mockMvc
+              .perform(
+                  post("/api/v1/authoring/manuscripts/{id}/chapters", work.id())
+                      .cookie(recipientCookie)
+                      .header("X-CSRF-Token", recipientCsrf)
+                      .header("Idempotency-Key", "collab-chapter-" + UUID.randomUUID())
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(
+                          objectMapper.writeValueAsString(Map.of("title", "Collaborator chapter"))))
+              .andReturn();
+      assertEquals(201, createdChapter.getResponse().getStatus());
+      UUID collaboratorChapterId =
+          UUID.fromString(
+              objectMapper
+                  .readTree(createdChapter.getResponse().getContentAsString())
+                  .path("id")
+                  .asText());
+      String collaboratorDraftPath =
+          "/api/v1/authoring/manuscripts/{workId}/chapters/{chapterId}/draft";
+      MvcResult collaboratorDraft =
+          mockMvc
+              .perform(
+                  get(collaboratorDraftPath, work.id(), collaboratorChapterId)
+                      .cookie(recipientCookie))
+              .andReturn();
+      assertEquals(200, collaboratorDraft.getResponse().getStatus());
+      assertEquals("\"draft-0\"", collaboratorDraft.getResponse().getHeader(HttpHeaders.ETAG));
+      String collaboratorRevisionBody =
+          "{\"sourceFormat\":\"plain_text\",\"normalizedContent\":\"Collaborator paragraph.\","
+              + "\"segments\":[{\"ordinal\":1,\"type\":\"paragraph\","
+              + "\"sourceText\":\"Collaborator paragraph.\","
+              + "\"stableAnchor\":\"collaborator-chapter-p1\"}]}";
+      MvcResult collaboratorRevision =
+          mockMvc
+              .perform(
+                  post(
+                          "/api/v1/authoring/manuscripts/{workId}/chapters/{chapterId}/revisions",
+                          work.id(),
+                          collaboratorChapterId)
+                      .cookie(recipientCookie)
+                      .header("X-CSRF-Token", recipientCsrf)
+                      .header(HttpHeaders.IF_MATCH, "\"draft-0\"")
+                      .header("Idempotency-Key", "collaborator-draft-save-0001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content(collaboratorRevisionBody))
+              .andReturn();
+      assertEquals(201, collaboratorRevision.getResponse().getStatus());
+      assertEquals("\"draft-1\"", collaboratorRevision.getResponse().getHeader(HttpHeaders.ETAG));
+
+      String publicationReadinessPath =
+          "/api/v1/authoring/manuscripts/" + work.id() + "/publication/readiness";
+      MvcResult publicationReadiness =
+          mockMvc.perform(get(publicationReadinessPath).cookie(ownerCookie)).andReturn();
+      assertEquals(200, publicationReadiness.getResponse().getStatus());
+      String publicationActionsPath =
+          "/api/v1/authoring/manuscripts/" + work.id() + "/publication-actions";
+      MvcResult collaboratorPublish =
+          mockMvc
+              .perform(
+                  post(publicationActionsPath)
+                      .cookie(recipientCookie)
+                      .header("X-CSRF-Token", recipientCsrf)
+                      .header(
+                          HttpHeaders.IF_MATCH,
+                          publicationReadiness.getResponse().getHeader(HttpHeaders.ETAG))
+                      .header("Idempotency-Key", "collaborator-publish-deny-0001")
+                      .contentType(MediaType.APPLICATION_JSON)
+                      .content("{\"actionCode\":\"PUBLISH_NOW\"}"))
+              .andReturn();
+      assertEquals(404, collaboratorPublish.getResponse().getStatus());
+      assertEquals("private", publicationWorkVisibility(work.id()));
+      assertEquals(0, publicationReleaseEventCount(work.id()));
+
+      MvcResult grantList =
+          mockMvc
+              .perform(
+                  get("/api/v1/authoring/manuscripts/{id}/contributors", work.id())
+                      .cookie(ownerCookie))
+              .andReturn();
+      JsonNode grantJson = objectMapper.readTree(grantList.getResponse().getContentAsString());
+      assertEquals(200, grantList.getResponse().getStatus());
+      assertEquals(1, grantJson.path("collaborators").size());
+      assertEquals(2, grantJson.path("collaborators").get(0).path("version").asInt());
+      String grantId = grantJson.path("collaborators").get(0).path("id").asText();
+      String grantEtag = grantJson.path("collaborators").get(0).path("etag").asText();
+      String revokePath = "/api/v1/authoring/manuscripts/" + work.id() + "/contributors/" + grantId;
+      MvcResult revoked =
+          mockMvc
+              .perform(
+                  delete(revokePath)
+                      .cookie(ownerCookie)
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .header(HttpHeaders.IF_MATCH, grantEtag))
+              .andReturn();
+      assertEquals(204, revoked.getResponse().getStatus());
+      MvcResult exactRevokeRetry =
+          mockMvc
+              .perform(
+                  delete(revokePath)
+                      .cookie(ownerCookie)
+                      .header("X-CSRF-Token", ownerCsrf)
+                      .header(HttpHeaders.IF_MATCH, grantEtag))
+              .andReturn();
+      assertEquals(204, exactRevokeRetry.getResponse().getStatus());
+      MvcResult revokedDeepLink =
+          mockMvc
+              .perform(get("/api/v1/authoring/manuscripts/{id}", work.id()).cookie(recipientCookie))
+              .andReturn();
+      assertEquals(404, revokedDeepLink.getResponse().getStatus());
+
+      assertEquals(2, rowCount("authoring_manuscript_invitations", "work_id", work.id()));
+      assertEquals(4, rowCount("authoring_manuscript_invitation_events", "work_id", work.id()));
+      assertEquals(3, rowCount("authoring_manuscript_contributor_events", "work_id", work.id()));
+    } finally {
+      deleteManuscriptCollaborationTestData(work.id());
+      deleteLibraryTestData(ownerId);
+      deleteSessionTestUser(ownerId);
+      deleteSessionTestUser(recipientId);
+      deleteSessionTestUser(outsiderId);
+    }
   }
 
   @Test
@@ -12904,7 +13253,7 @@ class PostgresSchemaIntegrationTests {
               .perform(get(draftPath, foreignWorkId, foreignChapter.id()).cookie(ownerCookie))
               .andReturn();
       assertEquals(404, foreign.getResponse().getStatus());
-      assertTrue(foreign.getResponse().getContentAsString().contains("DRAFT_CHAPTER_NOT_FOUND"));
+      assertTrue(foreign.getResponse().getContentAsString().contains("MANUSCRIPT_NOT_FOUND"));
 
       MvcResult foreignWrite =
           mockMvc
@@ -12918,8 +13267,7 @@ class PostgresSchemaIntegrationTests {
                       .cookie(ownerCookie))
               .andReturn();
       assertEquals(404, foreignWrite.getResponse().getStatus());
-      assertTrue(
-          foreignWrite.getResponse().getContentAsString().contains("DRAFT_CHAPTER_NOT_FOUND"));
+      assertTrue(foreignWrite.getResponse().getContentAsString().contains("MANUSCRIPT_NOT_FOUND"));
 
       assertThrows(
           IllegalStateException.class,
@@ -21650,6 +21998,89 @@ class PostgresSchemaIntegrationTests {
       assertEquals(1, insert.executeUpdate());
     }
     return userId;
+  }
+
+  private String contactEmail(UUID userId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement("SELECT contact_email FROM users WHERE id = ?")) {
+      select.setObject(1, userId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getString(1);
+      }
+    }
+  }
+
+  private int rowCount(String table, String column, UUID value) throws SQLException {
+    if (!Set.of(
+            "authoring_manuscript_invitations",
+            "authoring_manuscript_invitation_outbox",
+            "authoring_manuscript_invitation_events",
+            "authoring_manuscript_contributors",
+            "authoring_manuscript_contributor_events")
+        .contains(table)) {
+      throw new IllegalArgumentException("Unsupported synthetic collaboration table");
+    }
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT count(*) FROM " + table + " WHERE " + column + " = ?")) {
+      select.setObject(1, value);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getInt(1);
+      }
+    }
+  }
+
+  private void deleteManuscriptCollaborationTestData(UUID workId) throws SQLException {
+    List<String> guardedTriggers =
+        List.of(
+            "authoring_manuscript_invitation_events|trg_authoring_manuscript_invitation_events_immutable",
+            "authoring_manuscript_invitation_outbox|trg_authoring_manuscript_invitation_outbox_state",
+            "authoring_manuscript_contributor_events|trg_authoring_manuscript_contributor_events_immutable",
+            "authoring_manuscript_contributors|trg_authoring_manuscript_contributor_grant_guard",
+            "authoring_manuscript_invitations|trg_authoring_manuscript_invitation_transition");
+    List<String> guardedTables =
+        List.of(
+            "authoring_manuscript_invitation_events",
+            "authoring_manuscript_invitation_outbox",
+            "authoring_manuscript_contributor_events",
+            "authoring_manuscript_contributors",
+            "authoring_manuscript_invitations");
+    try (Connection connection = dataSource.getConnection()) {
+      connection.setAutoCommit(false);
+      try {
+        try (java.sql.Statement statement = connection.createStatement()) {
+          for (String trigger : guardedTriggers) {
+            String[] parts = trigger.split("\\|", 2);
+            statement.execute("ALTER TABLE " + parts[0] + " DISABLE TRIGGER " + parts[1]);
+          }
+        }
+        for (String table : guardedTables) {
+          String deleteSql =
+              table.equals("authoring_manuscript_invitation_outbox")
+                  ? "DELETE FROM authoring_manuscript_invitation_outbox WHERE invitation_id IN "
+                      + "(SELECT id FROM authoring_manuscript_invitations WHERE work_id = ?)"
+                  : "DELETE FROM " + table + " WHERE work_id = ?";
+          try (PreparedStatement delete = connection.prepareStatement(deleteSql)) {
+            delete.setObject(1, workId);
+            delete.executeUpdate();
+          }
+        }
+        try (java.sql.Statement statement = connection.createStatement()) {
+          for (String trigger : guardedTriggers) {
+            String[] parts = trigger.split("\\|", 2);
+            statement.execute("ALTER TABLE " + parts[0] + " ENABLE TRIGGER " + parts[1]);
+          }
+        }
+        connection.commit();
+      } catch (SQLException exception) {
+        connection.rollback();
+        throw exception;
+      }
+    }
   }
 
   private UUID insertCultivationXpLedger(

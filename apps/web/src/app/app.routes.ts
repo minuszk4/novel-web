@@ -28,6 +28,14 @@ export const routes: Routes = [
     title: 'Lời mời workspace — Novel',
   },
   {
+    path: 'manuscript-invitations/:invitationId',
+    loadComponent: () =>
+      import('./pages/authoring-invitation-page.component').then(
+        (page) => page.AuthoringInvitationPageComponent,
+      ),
+    title: 'Lời mời cộng tác bản thảo — Novel',
+  },
+  {
     path: 'works/demo-story',
     loadComponent: () =>
       import('./pages/work-detail-page.component').then((page) => page.WorkDetailPageComponent),
@@ -89,6 +97,22 @@ export const routes: Routes = [
             (page) => page.AuthoringCreatePageComponent,
           ),
         title: 'Tạo bản thảo — Novel',
+      },
+      {
+        path: 'authoring/shared',
+        loadComponent: () =>
+          import('./pages/authoring-shared-page.component').then(
+            (page) => page.AuthoringSharedPageComponent,
+          ),
+        title: 'Được chia sẻ với tôi — Novel',
+      },
+      {
+        path: 'authoring/:workId/collaborators',
+        loadComponent: () =>
+          import('./pages/authoring-collaborators-page.component').then(
+            (page) => page.AuthoringCollaboratorsPageComponent,
+          ),
+        title: 'Cộng tác bản thảo — Novel',
       },
       {
         path: 'authoring/:workId/translations',

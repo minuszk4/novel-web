@@ -117,6 +117,12 @@ novel:
       sender-address: ${NOVEL_MAIL_FROM:}
       ttl: ${NOVEL_WORKSPACE_INVITATION_TTL:7d}
       poll-delay: ${NOVEL_WORKSPACE_INVITATION_POLL_DELAY:PT15S}
+  authoring:
+    collaboration:
+      enabled: ${NOVEL_AUTHORING_COLLABORATION_ENABLED:false}
+      invitation-worker-enabled: ${NOVEL_AUTHORING_COLLABORATION_INVITATION_WORKER_ENABLED:false}
+      ttl: ${NOVEL_AUTHORING_COLLABORATION_INVITATION_TTL:7d}
+      poll-delay: ${NOVEL_AUTHORING_COLLABORATION_INVITATION_POLL_DELAY:PT15S}
   web:
     cors:
       allowed-origins:

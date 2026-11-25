@@ -36,6 +36,12 @@
   gap: 10px 16px;
 }
 
+.authoring-outline-collaborator-note {
+  max-width: 680px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
 .authoring-outline-metadata-trigger {
   min-height: 44px;
 }

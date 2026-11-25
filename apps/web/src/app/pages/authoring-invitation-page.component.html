@@ -1,0 +1,70 @@
+<main class="page-wrap manuscript-invitation-page">
+  <p class="eyebrow">LỜI MỜI CỘNG TÁC</p>
+  <h1 tabindex="-1">Lời mời xem bản thảo</h1>
+  <p
+    class="invitation-message"
+    [attr.role]="state() === 'error' ? 'alert' : 'status'"
+    aria-live="polite"
+  >
+    {{ message() }}
+  </p>
+
+  @if (state() === 'loading' || state() === 'saving') {
+    <p>Vui lòng đợi trong giây lát…</p>
+  }
+  @if (invitation(); as details) {
+    <section class="manuscript-invitation-card" aria-labelledby="invited-work-title">
+      <p class="eyebrow">BẢN THẢO RIÊNG TƯ</p>
+      <h2 id="invited-work-title">{{ details.title }}</h2>
+      <p>Tác giả: {{ details.author || 'Chưa đặt bút danh' }}</p>
+      <p>Bạn chỉ xem được nội dung sau khi chấp nhận lời mời và xác minh đúng email người nhận.</p>
+      <h3>Quyền được yêu cầu</h3>
+      <ul>
+        @for (permission of details.permissions; track permission) {
+          <li>{{ permissionLabel(permission) }}</li>
+        }
+      </ul>
+      <p>Lời mời hết hạn {{ details.expiresAt | date: 'medium' }}.</p>
+      <p>Chỉ owner có thể gửi bản thảo đi duyệt hoặc xuất bản.</p>
+      @if (state() === 'ready') {
+        <div class="invitation-actions">
+          <button class="button button-primary" type="button" (click)="decide('accept')">
+            Chấp nhận lời mời
+          </button>
+          <button class="button button-outline" type="button" (click)="decide('reject')">
+            Từ chối
+          </button>
+        </div>
+      }
+    </section>
+  }
+
+  @if (state() === 'error') {
+    <nav class="invitation-recovery" aria-label="Cách tiếp tục">
+      @if (message().includes('Đăng nhập bằng Google')) {
+        <a
+          class="button button-primary"
+          [routerLink]="['/sign-in']"
+          [queryParams]="{ returnTo: signInReturnTo }"
+          >Đăng nhập bằng Google</a
+        >
+      } @else if (message().includes('xác nhận chính sách')) {
+        <a
+          class="button button-primary"
+          routerLink="/app/setup"
+          [queryParams]="{ returnUrl: policyReturnUrl }"
+          >Xem chính sách tài khoản</a
+        >
+      } @else if (message().includes('tạm thời')) {
+        <button class="button button-primary" type="button" (click)="retry()">Thử lại</button>
+      }
+      <a class="button button-outline" routerLink="/">Về trang chủ</a>
+    </nav>
+  }
+
+  @if (state() === 'accepted' || state() === 'rejected') {
+    <a class="button button-primary" routerLink="/app/authoring/shared"
+      >Mở các bản thảo được chia sẻ</a
+    >
+  }
+</main>

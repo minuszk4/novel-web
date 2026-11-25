@@ -12,17 +12,34 @@
           {{ details.chapterCount }} chương
         </p>
         @if (details.visibility === 'private') {
-          <button
-            #editMetadataButton
-            class="button button-outline authoring-outline-metadata-trigger"
-            type="button"
-            [disabled]="isMetadataFormOpen() || isAddFormOpen() || isSavingMetadata()"
-            (click)="openMetadataForm()"
-          >
-            Sửa thông tin
-          </button>
+          @if (canEdit) {
+            <button
+              #editMetadataButton
+              class="button button-outline authoring-outline-metadata-trigger"
+              type="button"
+              [disabled]="isMetadataFormOpen() || isAddFormOpen() || isSavingMetadata()"
+              (click)="openMetadataForm()"
+            >
+              Sửa thông tin
+            </button>
+          }
+          @if (isOwner) {
+            <a
+              class="button button-outline authoring-outline-metadata-trigger"
+              [routerLink]="['/app/authoring', details.id, 'collaborators']"
+            >
+              Quản lý cộng tác
+            </a>
+          }
         }
       </div>
+      @if (!isOwner) {
+        <p class="authoring-outline-collaborator-note">
+          Bản thảo được chia sẻ với bạn · quyền
+          {{ collaboratorPermissions()?.includes('EDIT') ? 'xem và chỉnh sửa' : 'chỉ xem' }}. Chỉ
+          owner có thể gửi đi duyệt hoặc xuất bản.
+        </p>
+      }
     }
     @if (manuscript()?.visibility === 'public') {
       <p>
@@ -256,17 +273,20 @@
             Chỉ bạn xem được chương mới và nội dung đang soạn. Người đọc chỉ thấy những chương đã
             được duyệt và phát hành.
           </p>
-        } @else {
+        } @else if (isOwner) {
           <strong>Riêng tư mặc định</strong>
           <p>
             Chỉ bạn có thể xem mục lục này. Hiện tại mỗi chương chỉ lưu tên, ngôn ngữ và thứ tự.
           </p>
+        } @else {
+          <strong>Bản thảo riêng tư được chia sẻ</strong>
+          <p>Chương nháp không xuất hiện trong Reader, danh mục công khai hoặc cửa hàng credit.</p>
         }
       </div>
     </aside>
 
     @if (manuscript(); as details) {
-      @if (details.visibility === 'private') {
+      @if (details.visibility === 'private' && isOwner) {
         <app-publication-rights-policy-panel
           [workId]="details.id"
           [workTitle]="details.title"
@@ -307,14 +327,16 @@
           </p>
           <h2 id="outline-list-title">Các chương</h2>
         </div>
-        <button
-          #addChapterButton
-          class="button button-primary"
-          type="button"
-          (click)="openAddForm()"
-        >
-          Thêm chương
-        </button>
+        @if (canEdit) {
+          <button
+            #addChapterButton
+            class="button button-primary"
+            type="button"
+            (click)="openAddForm()"
+          >
+            Thêm chương
+          </button>
+        }
       </div>
 
       @if (isAddFormOpen()) {
@@ -418,7 +440,7 @@
               >
                 {{ chapterAvailability(chapter) }}
               </span>
-              @if (chapter.status === 'draft') {
+              @if (chapter.status === 'draft' && canEdit) {
                 <a
                   class="button button-outline authoring-outline-edit"
                   [id]="'authoring-edit-chapter-' + chapter.id"

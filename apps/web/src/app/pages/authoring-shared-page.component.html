@@ -1,0 +1,129 @@
+<div class="page-wrap shared-manuscripts-page">
+  <header class="page-heading">
+    <p class="eyebrow">AUTHOR STUDIO · CỘNG TÁC</p>
+    <h1 tabindex="-1">Được chia sẻ với tôi</h1>
+    <p>
+      Bản thảo riêng tư được hiển thị theo quyền owner đã cấp. Chỉ owner mới có thể gửi đi duyệt
+      hoặc xuất bản.
+    </p>
+    <a class="button button-outline" routerLink="/app/authoring">Về tác phẩm của tôi</a>
+  </header>
+
+  @if (state() === 'loading') {
+    <p role="status" aria-live="polite">Đang tải bản thảo được chia sẻ…</p>
+  } @else if (state() === 'error') {
+    <section class="shared-panel">
+      <p role="alert">{{ pageError() }}</p>
+      @if (pageError()?.includes('Đăng nhập')) {
+        <a
+          class="button button-primary"
+          [routerLink]="['/sign-in']"
+          [queryParams]="{ returnTo: '/app/authoring/shared' }"
+          >Đăng nhập bằng Google</a
+        >
+      } @else if (pageError()?.includes('xác nhận chính sách')) {
+        <a
+          class="button button-primary"
+          routerLink="/app/setup"
+          [queryParams]="{ returnUrl: '/app/authoring/shared' }"
+          >Xem chính sách tài khoản</a
+        >
+      } @else {
+        <button class="button button-primary" type="button" (click)="retry()">Tải lại</button>
+      }
+    </section>
+  } @else if (items().length === 0) {
+    <section class="shared-panel">
+      <h2>Chưa có bản thảo nào được chia sẻ</h2>
+      <p>Khi bạn chấp nhận lời mời bằng email đã xác minh, bản thảo sẽ xuất hiện tại đây.</p>
+    </section>
+  } @else {
+    @if (error(); as message) {
+      <p class="shared-error" role="alert">{{ message }}</p>
+    }
+    <ul class="shared-work-list">
+      @for (item of items(); track item.workId) {
+        <li class="shared-panel">
+          <div class="shared-work-heading">
+            <div>
+              <p class="eyebrow">{{ permissionLabel(item.permissions) }}</p>
+              <h2>{{ item.title }}</h2>
+              <p>
+                {{ item.author || 'Chưa đặt bút danh' }} · Được chia sẻ
+                {{ item.grantedAt | date: 'mediumDate' }}
+              </p>
+            </div>
+            <div class="shared-work-actions">
+              @if (canEdit(item)) {
+                <a
+                  class="button button-primary"
+                  [routerLink]="['/app/authoring', item.workId, 'chapters']"
+                  >Mở để chỉnh sửa</a
+                >
+              }
+              <button
+                class="button button-outline"
+                type="button"
+                [attr.aria-expanded]="expanded()[item.workId] ?? false"
+                [attr.aria-controls]="'shared-chapters-' + item.workId"
+                (click)="toggleWork(item)"
+              >
+                {{ expanded()[item.workId] ? 'Ẩn chương' : 'Xem mục lục' }}
+              </button>
+            </div>
+          </div>
+          @if (expanded()[item.workId]) {
+            <section
+              [id]="'shared-chapters-' + item.workId"
+              class="shared-chapters"
+              [attr.aria-label]="'Mục lục ' + item.title"
+            >
+              @if (loadingWorks()[item.workId]) {
+                <p role="status" aria-live="polite">Đang tải mục lục…</p>
+              } @else if (chapterItems()[item.workId]?.length) {
+                <ol>
+                  @for (chapter of chapterItems()[item.workId]; track chapter.id) {
+                    <li>
+                      <div>
+                        <strong>Chương {{ chapter.ordinal }} · {{ chapter.title }}</strong
+                        ><span>{{
+                          chapter.contentAvailable || chapter.hasSavedDraftContent
+                            ? 'Có nội dung đã lưu'
+                            : 'Chưa có nội dung đã lưu'
+                        }}</span>
+                      </div>
+                      @if (chapter.contentAvailable || chapter.hasSavedDraftContent) {
+                        <button
+                          class="button button-outline"
+                          type="button"
+                          [disabled]="loadingDrafts()[item.workId + ':' + chapter.id]"
+                          (click)="openDraft(item, chapter)"
+                        >
+                          {{
+                            loadingDrafts()[item.workId + ':' + chapter.id]
+                              ? 'Đang tải…'
+                              : draftFor(item, chapter)
+                                ? 'Đã mở nội dung'
+                                : 'Xem nội dung đã lưu'
+                          }}
+                        </button>
+                      }
+                      @if (draftFor(item, chapter); as draft) {
+                        <pre class="shared-draft-content">{{ draft.normalizedContent }}</pre>
+                      }
+                    </li>
+                  }
+                </ol>
+                @if ((chapterItems()[item.workId]?.length ?? 0) >= 25) {
+                  <p>Đang hiển thị 25 chương đầu tiên.</p>
+                }
+              } @else {
+                <p>Bản thảo chưa có chương.</p>
+              }
+            </section>
+          }
+        </li>
+      }
+    </ul>
+  }
+</div>

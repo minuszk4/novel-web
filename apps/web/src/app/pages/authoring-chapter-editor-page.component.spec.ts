@@ -15,6 +15,7 @@ import { PolicyOnboardingService } from '../core/policy-onboarding.service';
 import { ApiSystemStatus } from '../core/models';
 import { SystemStatusService } from '../core/system-status.service';
 import { AuthoringChapterEditorPageComponent } from './authoring-chapter-editor-page.component';
+import { AuthoringCollaborationApiService } from '../core/authoring-collaboration-api.service';
 
 const workId = '11111111-1111-4111-8111-111111111111';
 const chapterId = '22222222-2222-4222-8222-222222222222';
@@ -144,6 +145,10 @@ describe('AuthoringChapterEditorPageComponent', () => {
           useValue: { paramMap: of(convertToParamMap({ workId, chapterId })) },
         },
         { provide: AuthoringApiService, useValue: api },
+        {
+          provide: AuthoringCollaborationApiService,
+          useValue: { permissionsForWork: vi.fn().mockResolvedValue(null) },
+        },
         { provide: PolicyOnboardingService, useValue: { status: policyStatus } },
         {
           provide: SystemStatusService,

@@ -18,6 +18,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import javax.sql.DataSource;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Repository;
 
@@ -26,9 +27,14 @@ import org.springframework.stereotype.Repository;
 public class LibraryRepository {
 
   private final DataSource dataSource;
+  private final boolean authoringCollaborationEnabled;
 
-  public LibraryRepository(DataSource dataSource) {
+  public LibraryRepository(
+      DataSource dataSource,
+      @Value("${novel.authoring.collaboration.enabled:false}")
+          boolean authoringCollaborationEnabled) {
     this.dataSource = dataSource;
+    this.authoringCollaborationEnabled = authoringCollaborationEnabled;
   }
 
   public String libraryListAccessFingerprint(UUID actorUserId) {
@@ -751,6 +757,8 @@ public class LibraryRepository {
           }
         }
 
+        requireManuscriptPermission(connection, ownerUserId, workId, "EDIT", true);
+
         String language;
         try (PreparedStatement manuscript =
             connection.prepareStatement(
@@ -758,7 +766,7 @@ public class LibraryRepository {
                     SELECT w.source_language
                     FROM works w
                     JOIN libraries l ON l.id = w.library_id
-                    WHERE w.id = ? AND w.owner_user_id = ?
+                    WHERE w.id = ?
                       AND w.source_kind = 'authored' AND w.visibility IN ('private', 'public')
                       AND w.status = 'active' AND w.deleted_at IS NULL
                       AND l.owner_user_id = w.owner_user_id AND l.workspace_id IS NULL
@@ -766,7 +774,6 @@ public class LibraryRepository {
                     FOR UPDATE OF w, l
                     """)) {
           manuscript.setObject(1, workId);
-          manuscript.setObject(2, ownerUserId);
           try (ResultSet row = manuscript.executeQuery()) {
             if (!row.next()) throw new WorkNotFoundException();
             language = row.getString("source_language");
@@ -888,25 +895,7 @@ public class LibraryRepository {
           }
         }
 
-        try (PreparedStatement manuscript =
-            connection.prepareStatement(
-                """
-                    SELECT w.id
-                    FROM works w
-                    JOIN libraries l ON l.id = w.library_id
-                    WHERE w.id = ? AND w.owner_user_id = ?
-                      AND w.source_kind = 'authored' AND w.visibility IN ('private', 'public')
-                      AND w.status = 'active' AND w.deleted_at IS NULL
-                      AND l.owner_user_id = w.owner_user_id AND l.workspace_id IS NULL
-                      AND l.visibility = 'private' AND l.deleted_at IS NULL
-                    FOR SHARE OF w, l
-                    """)) {
-          manuscript.setObject(1, workId);
-          manuscript.setObject(2, ownerUserId);
-          try (ResultSet row = manuscript.executeQuery()) {
-            if (!row.next()) throw new WorkNotFoundException();
-          }
-        }
+        requireManuscriptPermission(connection, ownerUserId, workId, "VIEW", false);
 
         List<ChapterOutlineRecord> chapters = new ArrayList<>(limit + 1);
         try (PreparedStatement select =
@@ -964,6 +953,8 @@ public class LibraryRepository {
           }
         }
 
+        requireManuscriptPermission(connection, ownerUserId, workId, "EDIT", true);
+
         String status;
         UUID currentRevisionId;
         boolean hasRevision;
@@ -978,7 +969,7 @@ public class LibraryRepository {
                     FROM chapters c
                     JOIN works w ON w.id = c.work_id
                     JOIN libraries l ON l.id = w.library_id
-                    WHERE c.id = ? AND c.work_id = ? AND w.owner_user_id = ?
+                    WHERE c.id = ? AND c.work_id = ?
                       AND w.source_kind = 'authored' AND w.visibility IN ('private', 'public')
                       AND w.status = 'active' AND w.deleted_at IS NULL
                       AND l.owner_user_id = w.owner_user_id AND l.workspace_id IS NULL
@@ -987,7 +978,6 @@ public class LibraryRepository {
                     """)) {
           lock.setObject(1, chapterId);
           lock.setObject(2, workId);
-          lock.setObject(3, ownerUserId);
           try (ResultSet row = lock.executeQuery()) {
             if (!row.next()) throw new ChapterNotFoundException();
             status = row.getString("status");
@@ -1134,6 +1124,17 @@ public class LibraryRepository {
           }
         }
 
+        if ("private".equals(visibility)) {
+          requireManuscriptPermission(connection, ownerUserId, workId, "VIEW", false);
+        }
+
+        String actorPredicate =
+            "private".equals(visibility)
+                ? "(w.owner_user_id = ? OR EXISTS (SELECT 1 FROM authoring_manuscript_contributors contributor "
+                    + "WHERE contributor.work_id = w.id AND contributor.owner_user_id = w.owner_user_id "
+                    + "AND contributor.contributor_user_id = ? AND contributor.revoked_at IS NULL "
+                    + "AND contributor.permissions @> ARRAY['VIEW']::TEXT[]))"
+                : "w.owner_user_id = ?";
         String query =
             """
                 SELECT w.id, w.title, w.author, w.source_language, w.visibility, w.created_at,
@@ -1142,17 +1143,23 @@ public class LibraryRepository {
                 FROM works w
                 JOIN libraries l ON l.id = w.library_id
                 LEFT JOIN chapters c ON c.work_id = w.id
-                WHERE w.id = ? AND w.owner_user_id = ? AND w.source_kind = 'authored'
+                WHERE w.id = ? AND %s AND w.source_kind = 'authored'
                   AND w.visibility = ? AND w.status = 'active'
                   AND w.deleted_at IS NULL AND l.owner_user_id = w.owner_user_id
                   AND l.workspace_id IS NULL AND l.visibility = 'private' AND l.deleted_at IS NULL
                 GROUP BY w.id
-                """;
+                """
+                .formatted(actorPredicate);
         PrivateAuthoredWorkDetails details;
         try (PreparedStatement select = connection.prepareStatement(query)) {
           select.setObject(1, workId);
           select.setObject(2, ownerUserId);
-          select.setString(3, visibility);
+          if ("private".equals(visibility)) {
+            select.setObject(3, ownerUserId);
+            select.setString(4, visibility);
+          } else {
+            select.setString(3, visibility);
+          }
           try (ResultSet row = select.executeQuery()) {
             if (!row.next()) throw new WorkNotFoundException();
             details =
@@ -1203,6 +1210,8 @@ public class LibraryRepository {
           }
         }
 
+        requireManuscriptPermission(connection, ownerUserId, workId, "EDIT", true);
+
         PrivateAuthoredWorkDetails current;
         try (PreparedStatement select =
             connection.prepareStatement(
@@ -1213,14 +1222,13 @@ public class LibraryRepository {
                             WHERE c.work_id = w.id AND c.deleted_at IS NULL) AS chapter_count
                     FROM works w
                     JOIN libraries l ON l.id = w.library_id
-                    WHERE w.id = ? AND w.owner_user_id = ? AND w.source_kind = 'authored'
+                    WHERE w.id = ? AND w.source_kind = 'authored'
                       AND w.visibility = 'private' AND w.status = 'active'
                       AND w.deleted_at IS NULL AND l.owner_user_id = w.owner_user_id
                       AND l.workspace_id IS NULL AND l.visibility = 'private' AND l.deleted_at IS NULL
                     FOR UPDATE OF w
                     """)) {
           select.setObject(1, workId);
-          select.setObject(2, ownerUserId);
           try (ResultSet row = select.executeQuery()) {
             if (!row.next()) throw new WorkNotFoundException();
             current =
@@ -1255,14 +1263,13 @@ public class LibraryRepository {
                     SET title = ?, author = ?, source_language = ?,
                         authoring_metadata_version = authoring_metadata_version + 1,
                         updated_at = clock_timestamp()
-                    WHERE id = ? AND owner_user_id = ? AND authoring_metadata_version = ?
+                    WHERE id = ? AND authoring_metadata_version = ?
                     """)) {
           update.setString(1, title);
           update.setString(2, author);
           update.setString(3, language);
           update.setObject(4, workId);
-          update.setObject(5, ownerUserId);
-          update.setLong(6, expectedVersion);
+          update.setLong(5, expectedVersion);
           if (update.executeUpdate() != 1) {
             throw new ManuscriptMetadataConflictException(current.metadataVersion());
           }
@@ -1663,6 +1670,8 @@ public class LibraryRepository {
           }
         }
 
+        requireManuscriptPermission(connection, ownerUserId, workId, "EDIT", true);
+
         int currentRevisionNo;
         try (PreparedStatement lock =
             connection.prepareStatement(
@@ -1675,7 +1684,7 @@ public class LibraryRepository {
                     LEFT JOIN chapter_revisions current_revision
                       ON current_revision.id = c.source_revision_id
                      AND current_revision.chapter_id = c.id
-                    WHERE c.id = ? AND c.work_id = ? AND w.owner_user_id = ?
+                    WHERE c.id = ? AND c.work_id = ?
                       AND w.source_kind = 'authored' AND w.visibility IN ('private', 'public')
                       AND w.status = 'active' AND w.deleted_at IS NULL
                       AND l.owner_user_id = w.owner_user_id AND l.workspace_id IS NULL
@@ -1685,7 +1694,6 @@ public class LibraryRepository {
                     """)) {
           lock.setObject(1, chapterId);
           lock.setObject(2, workId);
-          lock.setObject(3, ownerUserId);
           try (ResultSet row = lock.executeQuery()) {
             if (!row.next()) throw new ChapterNotFoundException();
             currentRevisionNo = row.getInt("current_revision_no");
@@ -1824,8 +1832,8 @@ public class LibraryRepository {
     Objects.requireNonNull(chapterId, "chapter id is required");
     try (Connection connection = dataSource.getConnection()) {
       connection.setTransactionIsolation(Connection.TRANSACTION_REPEATABLE_READ);
-      connection.setReadOnly(true);
       connection.setAutoCommit(false);
+      requireManuscriptPermission(connection, ownerUserId, workId, "VIEW", false);
       try (PreparedStatement select =
           connection.prepareStatement(
               """
@@ -1839,7 +1847,7 @@ public class LibraryRepository {
                   JOIN users u ON u.id = w.owner_user_id
                   LEFT JOIN chapter_revisions r
                     ON r.id = c.source_revision_id AND r.chapter_id = c.id
-                  WHERE c.id = ? AND c.work_id = ? AND w.owner_user_id = ?
+                  WHERE c.id = ? AND c.work_id = ?
                     AND w.source_kind = 'authored' AND w.visibility IN ('private', 'public')
                     AND w.status = 'active' AND w.deleted_at IS NULL
                     AND l.owner_user_id = w.owner_user_id AND l.workspace_id IS NULL
@@ -1848,7 +1856,6 @@ public class LibraryRepository {
                   """)) {
         select.setObject(1, chapterId);
         select.setObject(2, workId);
-        select.setObject(3, ownerUserId);
         try (ResultSet row = select.executeQuery()) {
           if (!row.next()) {
             connection.commit();
@@ -1965,6 +1972,43 @@ public class LibraryRepository {
     } catch (SQLException exception) {
       if ("23505".equals(exception.getSQLState())) throw new DuplicateAssetException();
       throw new IllegalStateException("Unable to register asset metadata", exception);
+    }
+  }
+
+  private void requireManuscriptPermission(
+      Connection connection, UUID actorUserId, UUID workId, String permission, boolean write)
+      throws SQLException {
+    try (PreparedStatement select =
+        connection.prepareStatement(
+            """
+            SELECT work.id
+              FROM works work
+              JOIN libraries library ON library.id = work.library_id
+              JOIN users owner ON owner.id = work.owner_user_id AND owner.status = 'active'
+             WHERE work.id = ? AND work.source_kind = 'authored'
+               AND work.visibility IN ('private', 'public')
+               AND work.status = 'active' AND work.deleted_at IS NULL
+               AND library.owner_user_id = work.owner_user_id
+               AND library.workspace_id IS NULL AND library.visibility = 'private'
+               AND library.deleted_at IS NULL
+               AND (work.owner_user_id = ? OR (? AND EXISTS (
+                    SELECT 1 FROM authoring_manuscript_contributors contributor
+                     WHERE contributor.work_id = work.id
+                       AND contributor.owner_user_id = work.owner_user_id
+                       AND contributor.contributor_user_id = ?
+                       AND contributor.revoked_at IS NULL
+                       AND contributor.permissions @> ARRAY[?]::TEXT[])))
+             FOR %s OF work, library
+            """
+                .formatted(write ? "UPDATE" : "SHARE"))) {
+      select.setObject(1, workId);
+      select.setObject(2, actorUserId);
+      select.setBoolean(3, authoringCollaborationEnabled);
+      select.setObject(4, actorUserId);
+      select.setString(5, permission);
+      try (ResultSet row = select.executeQuery()) {
+        if (!row.next()) throw new WorkNotFoundException();
+      }
     }
   }
 

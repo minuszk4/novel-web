@@ -158,7 +158,20 @@ try {
         'databasechangeloglock',
         'cultivation_rank_catalogs',
         'cultivation_rank_catalog_entries',
-        'security_role_assignment_events'
+        'security_role_assignment_events',
+        'users',
+        'sessions',
+        'policy_acceptances',
+        'libraries',
+        'works',
+        'chapters',
+        'authoring_manuscript_creations',
+        'authoring_chapter_creations',
+        'authoring_manuscript_invitations',
+        'authoring_manuscript_invitation_outbox',
+        'authoring_manuscript_invitation_events',
+        'authoring_manuscript_contributors',
+        'authoring_manuscript_contributor_events'
     )
     foreach ($table in $tables) {
         if ($table -notmatch '^[a-z0-9_]+$') { throw "Unexpected public table name '$table'; stopping before destructive operations." }
