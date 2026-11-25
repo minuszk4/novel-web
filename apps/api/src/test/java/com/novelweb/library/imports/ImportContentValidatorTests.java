@@ -10,6 +10,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Random;
 import java.util.zip.CRC32;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -239,6 +240,36 @@ class ImportContentValidatorTests {
         () ->
             validator(100, 1_048_576, 2_097_152, 100.0, 16, Duration.ofNanos(1))
                 .validate(valid, "timed.epub", "application/epub+zip"));
+  }
+
+  @Test
+  void malformedEpubMutationCorpusDoesNotEscapeAsUncheckedFailure() throws IOException {
+    byte[] validBytes = Files.readAllBytes(writeEpub("mutation-source.epub", safeEntries()));
+    Random mutations = new Random(0x45505542L);
+    ImportContentValidator boundedValidator =
+        validator(100, 1_048_576, 2_097_152, 100.0, 16, Duration.ofMillis(250));
+
+    for (int sample = 0; sample < 128; sample++) {
+      byte[] candidate = validBytes.clone();
+      int mutationCount = 1 + mutations.nextInt(4);
+      for (int mutation = 0; mutation < mutationCount; mutation++) {
+        int offset = mutations.nextInt(candidate.length);
+        candidate[offset] ^= (byte) (1 << mutations.nextInt(Byte.SIZE));
+      }
+
+      Path archive = write("mutated-" + sample + ".epub", candidate);
+      assertDoesNotThrow(
+          () -> {
+            try {
+              boundedValidator.validate(
+                  archive, archive.getFileName().toString(), "application/epub+zip");
+            } catch (IOException expectedInvalidArchive) {
+              // Invalid input may fail validation or I/O, but must not crash through unchecked
+              // code.
+            }
+          },
+          "mutation sample " + sample + " escaped the archive-validation boundary");
+    }
   }
 
   private ImportContentValidator validator(
