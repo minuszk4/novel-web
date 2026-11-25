@@ -1,16 +1,22 @@
 package com.novelweb.platform;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 
+@ExtendWith(OutputCaptureExtension.class)
 class OperationalQueueMetricsTests {
 
   @Test
-  void refreshPublishesOnlyFixedAggregateMetricsAndRetainsLastGoodSnapshotOnFailure() {
+  void refreshPublishesFixedMetricsAndRetainsLastGoodSnapshotWithoutLoggingFailureDetails(
+      CapturedOutput output) {
     SimpleMeterRegistry registry = new SimpleMeterRegistry();
     AtomicInteger reads = new AtomicInteger();
     QueueMetricsSnapshot expected =
@@ -18,7 +24,7 @@ class OperationalQueueMetricsTests {
     QueueMetricsSnapshotReader reader =
         () -> {
           if (reads.incrementAndGet() == 1) return expected;
-          throw new IllegalStateException("synthetic database outage");
+          throw new IllegalStateException("synthetic database outage queue-secret-49d37a");
         };
     OperationalQueueMetrics metrics = new OperationalQueueMetrics(reader, registry);
 
@@ -52,5 +58,11 @@ class OperationalQueueMetricsTests {
     assertEquals(0.0, registry.get("novel.queue.snapshot.last.refresh.succeeded").gauge().value());
     assertEquals(1.0, registry.get("novel.queue.snapshot.refresh.failures").counter().count());
     assertTrue(registry.getMeters().stream().allMatch(meter -> meter.getId().getTags().isEmpty()));
+    String logs = output.getAll();
+    assertTrue(logs.contains("Operational queue metrics refresh failed"));
+    assertFalse(logs.contains("queue-secret-49d37a"));
+    assertFalse(logs.contains("synthetic database outage"));
+    assertFalse(logs.contains("IllegalStateException"));
+    assertFalse(logs.contains("at com.novelweb"));
   }
 }
