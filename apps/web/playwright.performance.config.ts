@@ -2,12 +2,12 @@ import { defineConfig, devices } from '@playwright/test';
 
 export default defineConfig({
   testDir: './e2e',
-  testMatch: /(?:account-reader|library-search)-performance\.spec\.ts$/,
+  testMatch: /(?:account-reader|library-search|supplemental-flow)-performance\.spec\.ts$/,
   fullyParallel: false,
   forbidOnly: true,
   workers: 1,
-  reporter: [['list'], ['junit', { outputFile: 'reports/reader-performance-junit.xml' }]],
-  outputDir: 'reports/reader-performance-results',
+  reporter: [['list'], ['junit', { outputFile: 'reports/performance-junit.xml' }]],
+  outputDir: 'reports/performance-results',
   timeout: 180_000,
   expect: { timeout: 15_000 },
   use: {
