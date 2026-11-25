@@ -1,16 +1,12 @@
-FROM eclipse-temurin:21-jdk-alpine AS build
-
-RUN apk add --no-cache curl unzip
+FROM maven:3.10.2-eclipse-temurin-21-alpine AS build
 
 WORKDIR /workspace
 
-COPY .mvn .mvn
-COPY mvnw pom.xml ./
-RUN chmod 0755 mvnw
+COPY pom.xml ./
 
 COPY config config
 COPY src src
-RUN ./mvnw -B -ntp -Ppostgres -DskipTests package
+RUN mvn -B -ntp -Ppostgres -DskipTests package
 
 FROM eclipse-temurin:21-jre-alpine
 
