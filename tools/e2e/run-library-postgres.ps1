@@ -117,6 +117,7 @@ $stagingCleanup = 'Not created'
 $appliedChangesets = 0
 $cultivationLedgerXp = 0
 $cultivationLedgerEntries = 0
+$accountExportContentVerified = $false
 $glossaryParts = @()
 $publicationRightsParts = @()
 $publicationReviewParts = @()
@@ -880,6 +881,51 @@ COMMIT;
         if ((Get-Item -LiteralPath $accountExportPath).Length -ne [long]$accountExportParts[1]) {
             throw 'The account export artifact size does not match its PostgreSQL record.'
         }
+        if (-not $AccountDataExportOnly) {
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            $importedWorkIdOutput = & $docker @composeArguments exec -T postgres psql -v ON_ERROR_STOP=1 -tA -U novelweb -d novelweb -c "SELECT id::text FROM works WHERE owner_user_id = '$userId' AND title = 'Live Private Import Novel' ORDER BY created_at DESC LIMIT 1;"
+            if ($LASTEXITCODE -ne 0) { throw 'Could not find the imported work fixture for account-export verification.' }
+            $importedWorkId = ([string]$importedWorkIdOutput).Trim()
+            if ($importedWorkId -notmatch '^[0-9a-fA-F-]{36}$') {
+                throw 'Expected a private-import work before verifying exported archive content.'
+            }
+
+            $accountArchive = [System.IO.Compression.ZipFile]::OpenRead($accountExportPath)
+            try {
+                $expectedEntries = @(
+                    'owned_works.jsonl',
+                    'owned_chapter_segments.jsonl',
+                    'reader_progress.jsonl',
+                    'reader_bookmarks.jsonl'
+                )
+                $archiveEntryText = @{}
+                foreach ($entryName in $expectedEntries) {
+                    $entry = $accountArchive.GetEntry($entryName)
+                    if ($null -eq $entry) { throw "Account export is missing required dataset '$entryName'." }
+                    $entryStream = $entry.Open()
+                    $entryReader = [System.IO.StreamReader]::new($entryStream)
+                    try { $archiveEntryText[$entryName] = $entryReader.ReadToEnd() }
+                    finally {
+                        $entryReader.Dispose()
+                        $entryStream.Dispose()
+                    }
+                }
+                if (-not $archiveEntryText['owned_works.jsonl'].Contains('Live Private Import Novel')) {
+                    throw 'Account export does not include the imported private work record.'
+                }
+                if (-not $archiveEntryText['owned_chapter_segments.jsonl'].Contains('Progress paragraph 40')) {
+                    throw 'Account export does not include the imported private chapter text.'
+                }
+                foreach ($entryName in @('reader_progress.jsonl', 'reader_bookmarks.jsonl')) {
+                    if (-not $archiveEntryText[$entryName].Contains($importedWorkId)) {
+                        throw "Account export dataset '$entryName' does not include the imported work's saved state."
+                    }
+                }
+                $accountExportContentVerified = $true
+            } finally {
+                $accountArchive.Dispose()
+            }
+        }
     }
 
     if ($IncludeTranslationReviewWorkspace) {
@@ -1074,7 +1120,7 @@ COMMIT;
             throw 'Cleanup guard rejected export path outside this run evidence directory.'
         }
         Remove-Item -LiteralPath $resolvedExportRoot -Recurse -Force
-        $exportArtifactCleanup = 'Removed the synthetic account ZIP after validating download and database metadata'
+        $exportArtifactCleanup = 'Removed synthetic account ZIP artifacts after validating download and database metadata'
     }
     if ($composeStarted) {
         if ($project -notmatch '^novel-web-disposable-[a-f0-9]{8}$') { throw "Cleanup guard rejected project name: $project" }
@@ -1106,7 +1152,7 @@ COMMIT;
         $(if ($IncludePublicationRightsAcceptance) { '- Publication-rights browser/API: disposable synthetic approved policy only; the real acceptance endpoint committed the first confirmation, the browser received a synthetic 503, and same-key retry replayed the same acceptance' } else { '- Publication-rights browser/API: not requested' })
         $(if ($IncludePublicationReviewWorkspace) { '- Reviewer workspace + staged chapter browser/API: owner submitted a whole-work snapshot, assigned reviewer approved it, and owner explicitly released the work; owner then created/saved a private chapter on that public work, submitted an exact chapter snapshot in Author Studio, reviewer approved without making it public, and owner separately released it; PostgreSQL confirms the ready chapter, APPROVED_UNPUBLISHED request receipt, one immutable chapter-release event, one identifier-only outbox row, public work visibility and six immutable scope approval receipts' } else { '- Reviewer workspace browser/API: not requested' })
         $(if ($IncludeNotificationInbox -and $result -eq 'PASS') { "- Notification inbox: enabled only in the disposable API process; the owner-confirmed release outbox was consumed, the signed-in follower saw the real chapter metadata, read state survived reload, and a second actor could not list or mark the row. PostgreSQL summary: $($notificationParts -join '|')" } elseif ($IncludeNotificationInbox) { '- Notification inbox end-to-end: requested but not verified because the browser journey or PostgreSQL invariants failed' } else { '- Notification inbox end-to-end: not requested' })
-        "- Browser journey: session cookie/policy → rights receipt → upload/parse/preview/private commit → refreshed Library → Work Detail → Reader source/bookmark, then opt-in → server-timed Reader session → XP award → private profile/activity → glossary import/draft edit/revision preview$(if ($IncludeTranslationPreview) { ' → fake-local Reader translation → redacted job status → unpublished PostgreSQL candidate' } else { '' })$(if ($IncludeAuthoringOutline) { ' → private authoring chapter outline → CSRF/idempotent blank-chapter creation' } else { '' })$(if ($IncludeAuthoringChapterEditor) { ' → private chapter editor → immutable save → competing writer → explicit conflict resolution' } else { '' })$(if ($IncludePublicationRightsAcceptance) { ' → exact synthetic rights policy → explicit author acknowledgement → lost-response same-key retry' } else { '' })$(if ($IncludePublicationReviewWorkspace) { ' → whole-work rights review/release → public-work draft edit → chapter-scoped rights request/reviewer approval → owner-confirmed chapter release' } else { '' })$(if ($IncludeNotificationInbox -and $result -eq 'PASS') { ' → worker delivery → actor inbox → persisted read state → second-actor isolation' } elseif ($IncludeNotificationInbox) { ' → notification delivery journey requested but not verified' } else { '' })$(if ($IncludeCommerceSettlement) { ' → synthetic signed TEST settlement → paid-credit ledger/projection → explicit Reader unlock/entitlement' } else { '' })"
+        "- Browser journey: session cookie/policy → rights receipt → upload/parse/preview/private commit → refreshed Library → Work Detail → Reader source → persisted progress/bookmark$(if ($IncludeAccountDataExport) { ' → account ZIP export after import' } else { '' }), then opt-in → server-timed Reader session → XP award → private profile/activity → glossary import/draft edit/revision preview$(if ($IncludeTranslationPreview) { ' → fake-local Reader translation → redacted job status → unpublished PostgreSQL candidate' } else { '' })$(if ($IncludeAuthoringOutline) { ' → private authoring chapter outline → CSRF/idempotent blank-chapter creation' } else { '' })$(if ($IncludeAuthoringChapterEditor) { ' → private chapter editor → immutable save → competing writer → explicit conflict resolution' } else { '' })$(if ($IncludePublicationRightsAcceptance) { ' → exact synthetic rights policy → explicit author acknowledgement → lost-response same-key retry' } else { '' })$(if ($IncludePublicationReviewWorkspace) { ' → whole-work rights review/release → public-work draft edit → chapter-scoped rights request/reviewer approval → owner-confirmed chapter release' } else { '' })$(if ($IncludeNotificationInbox -and $result -eq 'PASS') { ' → worker delivery → actor inbox → persisted read state → second-actor isolation' } elseif ($IncludeNotificationInbox) { ' → notification delivery journey requested but not verified' } else { '' })$(if ($IncludeCommerceSettlement) { ' → synthetic signed TEST settlement → paid-credit ledger/projection → explicit Reader unlock/entitlement' } else { '' })"
         $(if ($IncludeAuthoringDraftApi) { '- Separate PostgreSQL authoring draft API test: 1/1 passed for owner/policy/CSRF gates, ETags, immutable writes, exact replay, stale-version response, outline/Reader isolation, and persisted row counts; see authoring-draft-api-test.log' } else { '- Separate PostgreSQL authoring draft API test: not requested' })
         $(if ($IncludeAuthoringEmptyChapterDelete) { '- Separate PostgreSQL empty chapter deletion API tests: 2/2 passed for soft delete/replay/security and transactional save/delete race; see authoring-empty-chapter-delete-api-test.log' } else { '- Separate PostgreSQL empty chapter deletion API tests: not requested' })
         '- Cultivation feature flag: enabled only in this random disposable API process; prior process value restored during cleanup'
@@ -1122,7 +1168,8 @@ COMMIT;
         $(if ($translationParts.Count -eq 4) { "- PostgreSQL fake-local translation: $($translationParts[0]) job, $($translationParts[2]) successful attempt and $($translationParts[3]) unpublished candidate segment verified with the fake marker" } else { '- PostgreSQL fake-local translation: not requested' })
         $(if ($IncludePaymentReturn) { '- MoMo TEST return: isolated synthetic actor/order remained PENDING after refresh; payment ledger and balance projection remained zero; browser made no create/IPN request; reconciliation worker was disabled; no MoMo network request was made' } else { '- MoMo TEST return: not requested' })
         $(if ($IncludeCommerceSettlement) { '- MoMo TEST commerce: a locally signed synthetic IPN was delivered twice to the real API; actor-owned order settled once, 100 paid credits were granted once, the Reader debited exactly 10 paid credits after explicit confirmation, one entitlement unlocked the public chapter and the saved balance is 90; a second actor received 404 for the order, empty histories/zero balance and no paid chapter body; no MoMo network request or reconciliation query was made' } else { '- MoMo TEST commerce settlement/unlock: not requested' })
-        $(if ($accountExportParts.Count -eq 4) { "- Account data export: Chromium requested and downloaded a ZIP through the real API; PostgreSQL records READY, $($accountExportParts[1]) bytes and a 32-byte SHA-256; synthetic ZIP removed after verification" } else { '- Account data export browser/API/PostgreSQL journey: not requested' })
+        $(if ($accountExportParts.Count -eq 4) { "- Account data export: Chromium requested and downloaded a ZIP through the real API; PostgreSQL records READY, $($accountExportParts[1]) bytes and a 32-byte SHA-256; synthetic ZIP artifacts removed after verification" } else { '- Account data export browser/API/PostgreSQL journey: not requested' })
+        $(if ($accountExportContentVerified) { '- Export archive content: imported private work, chapter text, saved Reader progress and bookmark verified in ZIP JSONL entries' } elseif ($IncludeAccountDataExport -and -not $AccountDataExportOnly) { '- Export archive content check: failed or incomplete' } else { '- Export archive content verification: not requested' })
         '- API route mocks: none'
         "- Elapsed: $duration seconds"
         "- Cleanup: $cleanup"
