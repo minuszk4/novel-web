@@ -279,7 +279,10 @@ test('glossary import previews without upload-on-selection and saves an atomic d
     page.getByText(/Bản xem trước chưa tạo thay đổi\. Nếu áp dụng, tệp chỉ tạo bản nháp/),
   ).toBeVisible();
   await expect(
-    page.getByText(/các công việc dịch đã tạo vẫn giữ nguyên phiên bản glossary/),
+    page.getByText(/không tự khởi chạy lại việc dịch/),
+  ).toBeVisible();
+  await expect(
+    page.getByText(/chưa thể tính số đơn vị bị ảnh hưởng; điều này không có nghĩa tác động bằng 0/),
   ).toBeVisible();
   expect(traffic.previewRequests).toBe(1);
   expect(traffic.previewIfMatch).toBe('"v4"');
