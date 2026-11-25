@@ -20681,6 +20681,12 @@ class PostgresSchemaIntegrationTests {
               .andReturn();
       assertEquals(404, foreignResponse.getResponse().getStatus());
       assertTrue(
+          foreignResponse.getResponse().getHeader(HttpHeaders.CACHE_CONTROL).contains("no-store"));
+      assertEquals("no-cache", foreignResponse.getResponse().getHeader(HttpHeaders.PRAGMA));
+      assertTrue(!foreignResponse.getResponse().getContentAsString().contains("checkoutUrl"));
+      assertTrue(!foreignResponse.getResponse().getContentAsString().contains("requestId"));
+      assertTrue(!foreignResponse.getResponse().getContentAsString().contains(ownerId.toString()));
+      assertTrue(
           foreignResponse.getResponse().getContentAsString().contains("PAYMENT_ORDER_NOT_FOUND"));
     } finally {
       deleteSessionTestUser(ownerId);
