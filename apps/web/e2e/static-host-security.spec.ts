@@ -1,6 +1,8 @@
 import { expect, test } from './support';
 
 const nonce = 'S'.repeat(43);
+const accessLogSentinel =
+  process.env['STATIC_HOST_LOG_SENTINEL'] ?? 'static-host-access-log-sentinel-20261126';
 
 test('static container applies Firebase CSP and proxies API same-origin', async ({ page }) => {
   await page.addInitScript(() => {
@@ -62,12 +64,23 @@ test('static container applies Firebase CSP and proxies API same-origin', async 
   });
   expect(appViolations).toEqual([]);
 
-  const proxiedApi = await page.request.get('/api/v1/static-host-probe');
+  const proxiedApi = await page.request.get(
+    `/api/v1/static-host-probe?cursor=${encodeURIComponent(accessLogSentinel)}`,
+  );
   expect(proxiedApi.status()).toBe(200);
   expect(proxiedApi.headers()['x-static-host-proxy']).toBe('reached-api');
   expect(proxiedApi.headers()['cache-control']).toBe('no-store');
   expect(proxiedApi.headers()['pragma']).toBe('no-cache');
-  expect(await proxiedApi.json()).toEqual({ proxied: true, path: '/api/v1/static-host-probe' });
+  expect(await proxiedApi.json()).toEqual({
+    proxied: true,
+    path: `/api/v1/static-host-probe?cursor=${encodeURIComponent(accessLogSentinel)}`,
+  });
+
+  const invitationLanding = await page.request.get(
+    `/app/invitations/${encodeURIComponent(accessLogSentinel)}`,
+  );
+  expect(invitationLanding.status()).toBe(200);
+  expect(invitationLanding.headers()['content-type']).toContain('text/html');
 
   const proxiedApiError = await page.request.get('/api/v1/static-host-probe-error');
   expect(proxiedApiError.status()).toBe(403);
