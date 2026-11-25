@@ -12,6 +12,17 @@ export const test = base.extend<BrowserFixtures>({
     async ({ page }, use) => {
       const errors: string[] = [];
       page.on('pageerror', (error) => errors.push(error.message));
+      // Existing authoring journeys run with collaboration disabled by default.
+      // Match the API's explicit disabled response so owner pages can load while
+      // feature-specific tests register their own route for this endpoint.
+      await page.route('**/api/v1/authoring/collaborations', (route) =>
+        route.fulfill({
+          status: 503,
+          contentType: 'application/problem+json',
+          headers: { 'Cache-Control': 'no-store', Pragma: 'no-cache' },
+          body: JSON.stringify({ code: 'MANUSCRIPT_COLLABORATION_UNAVAILABLE' }),
+        }),
+      );
       await use(errors);
       expect(errors).toEqual([]);
     },
