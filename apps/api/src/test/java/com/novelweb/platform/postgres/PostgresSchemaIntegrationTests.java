@@ -68,6 +68,7 @@ import com.novelweb.payment.vnpay.VnPayTestGatewaySettings;
 import com.novelweb.payment.vnpay.VnPayTestIpnService;
 import com.novelweb.payment.vnpay.VnPayTestOrderReconciliationService;
 import com.novelweb.payment.vnpay.VnPayTestQueryDrClient;
+import com.novelweb.payment.vnpay.VnPayTestQueryDrTransport;
 import com.novelweb.payment.vnpay.VnPayTestSignatureCodec;
 import com.novelweb.progression.cultivation.CultivationRepository;
 import com.novelweb.progression.cultivation.CultivationService;
@@ -83,6 +84,7 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.net.InetAddress;
+import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -21577,6 +21579,71 @@ class PostgresSchemaIntegrationTests {
       assertEquals(100, creditProjectedBalance(userId, "PAID"));
       assertEquals(0, creditSourceEntryCount("PAYMENT_ORDER", unresolvedOrder.id()));
       assertEquals(0, exhaustedWorker.reconcileDueBatch());
+    } finally {
+      deleteSessionTestUser(userId);
+    }
+  }
+
+  @Test
+  void vnpayQueryTimeoutKeepsTopUpUncreditedUntilAVerifiedRetrySucceeds() throws Exception {
+    UUID userId = createSessionTestUser("VNPAY timeout recovery owner");
+    try {
+      CreditTopUpOrderService.TopUpOrder order = createPendingVnPayTestTopUp(userId);
+      AtomicInteger timeoutRequests = new AtomicInteger();
+      VnPayTestQueryDrClient timeoutClient =
+          new VnPayTestQueryDrClient(
+              vnPayTestGatewaySettings,
+              objectMapper,
+              (endpoint, body, timeout) -> {
+                assertEquals(VnPayTestQueryDrTransport.QUERY_ENDPOINT, endpoint);
+                assertEquals(java.time.Duration.ofSeconds(35), timeout);
+                timeoutRequests.incrementAndGet();
+                throw new HttpTimeoutException("synthetic sandbox timeout");
+              });
+      VnPayTestOrderReconciliationService timeoutWorker =
+          new VnPayTestOrderReconciliationService(
+              dataSource,
+              creditLedgerService,
+              vnPayTestGatewaySettings.tmnCode(),
+              "127.0.0.1",
+              timeoutClient::query,
+              5);
+
+      assertEquals(1, timeoutWorker.reconcileDueBatch());
+      assertEquals(CreditTopUpOrderService.OrderStatus.UNKNOWN, topUpOrderStatus(order.id()));
+      assertEquals("UNKNOWN", latestVnPayReconciliationOutcome(order.id()));
+      assertNull(topUpReconciliationReviewCode(order.id()));
+      assertEquals(1, vnpayReconciliationEventCount(order.id()));
+      assertEquals(0, creditProjectedBalance(userId, "PAID"));
+      assertEquals(0, creditSourceEntryCount("PAYMENT_ORDER", order.id()));
+
+      // The claim schedules the next attempt with backoff; it must not immediately repeat.
+      assertEquals(0, timeoutWorker.reconcileDueBatch());
+      assertEquals(1, timeoutRequests.get());
+
+      // Move the retry deadline forward in the test fixture to avoid waiting for the 60s backoff.
+      setTopUpReconciliationDue(order.id(), 1);
+      VnPayTestOrderReconciliationService verifiedRetryWorker =
+          new VnPayTestOrderReconciliationService(
+              dataSource,
+              creditLedgerService,
+              vnPayTestGatewaySettings.tmnCode(),
+              "127.0.0.1",
+              request ->
+                  new VnPayTestQueryDrClient.QueryResult(
+                      VnPayTestQueryDrClient.Outcome.SUCCEEDED,
+                      8_777_000_021L,
+                      VnPayTestQueryDrClient.FailureCode.NONE),
+              5);
+
+      assertEquals(1, verifiedRetryWorker.reconcileDueBatch());
+      assertEquals(CreditTopUpOrderService.OrderStatus.SUCCEEDED, topUpOrderStatus(order.id()));
+      assertEquals("SUCCEEDED", latestVnPayReconciliationOutcome(order.id()));
+      assertEquals(2, vnpayReconciliationEventCount(order.id()));
+      assertEquals(100, creditProjectedBalance(userId, "PAID"));
+      assertEquals(1, creditSourceEntryCount("PAYMENT_ORDER", order.id()));
+      assertEquals(0, verifiedRetryWorker.reconcileDueBatch());
+      assertEquals(1, creditSourceEntryCount("PAYMENT_ORDER", order.id()));
     } finally {
       deleteSessionTestUser(userId);
     }

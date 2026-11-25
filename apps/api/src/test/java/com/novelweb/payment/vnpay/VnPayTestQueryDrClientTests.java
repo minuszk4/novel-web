@@ -3,10 +3,12 @@ package com.novelweb.payment.vnpay;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.net.URI;
+import java.net.http.HttpTimeoutException;
 import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.ObjectMapper;
@@ -74,6 +76,27 @@ class VnPayTestQueryDrClientTests {
                 transport.post(
                     URI.create("https://example.com/query"), new byte[0], Duration.ofSeconds(35)))
         .isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
+  void classifiesProviderTimeoutAsUnknownAndDoesNotRetryTheAmbiguousQuery() {
+    AtomicInteger requests = new AtomicInteger();
+    VnPayTestQueryDrClient client =
+        new VnPayTestQueryDrClient(
+            settings(),
+            JSON,
+            (endpoint, body, timeout) -> {
+              assertThat(endpoint).isEqualTo(VnPayTestQueryDrTransport.QUERY_ENDPOINT);
+              assertThat(timeout).isEqualTo(Duration.ofSeconds(35));
+              requests.incrementAndGet();
+              throw new HttpTimeoutException("synthetic provider timeout");
+            });
+
+    VnPayTestQueryDrClient.QueryResult result = client.query(request());
+
+    assertThat(result.outcome()).isEqualTo(VnPayTestQueryDrClient.Outcome.UNKNOWN);
+    assertThat(result.failureCode()).isEqualTo(VnPayTestQueryDrClient.FailureCode.TRANSPORT);
+    assertThat(requests).hasValue(1);
   }
 
   @Test
