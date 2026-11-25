@@ -138,6 +138,7 @@ public final class VnPayTestIpnService {
         }
 
         if (notification.transactionNo() > 0) {
+          VnPayProviderTransactionLock.acquire(connection, notification.transactionNo());
           Optional<UUID> transactionOwner =
               findTransactionOrder(connection, notification.transactionNo());
           if (transactionOwner.isPresent() && !transactionOwner.orElseThrow().equals(orderId)) {

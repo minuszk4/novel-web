@@ -66,6 +66,8 @@ import com.novelweb.payment.vnpay.VnPayTestCheckoutUrlPolicy;
 import com.novelweb.payment.vnpay.VnPayTestGatewayClient;
 import com.novelweb.payment.vnpay.VnPayTestGatewaySettings;
 import com.novelweb.payment.vnpay.VnPayTestIpnService;
+import com.novelweb.payment.vnpay.VnPayTestOrderReconciliationService;
+import com.novelweb.payment.vnpay.VnPayTestQueryDrClient;
 import com.novelweb.payment.vnpay.VnPayTestSignatureCodec;
 import com.novelweb.progression.cultivation.CultivationRepository;
 import com.novelweb.progression.cultivation.CultivationService;
@@ -321,6 +323,7 @@ class PostgresSchemaIntegrationTests {
           "credit_top_up_orders",
           "momo_test_ipn_events",
           "vnpay_test_ipn_events",
+          "vnpay_test_reconciliation_events",
           "momo_test_reconciliation_events",
           "content_entitlements",
           "public_catalog_rate_limits",
@@ -529,7 +532,7 @@ class PostgresSchemaIntegrationTests {
             connection.prepareStatement("SELECT COUNT(*) FROM databasechangelog");
         ResultSet changesets = changesetCount.executeQuery()) {
       changesets.next();
-      assertEquals(190, changesets.getInt(1), "unexpected number of applied changesets");
+      assertEquals(192, changesets.getInt(1), "unexpected number of applied changesets");
     }
 
     Set<String> actualTables = new HashSet<>();
@@ -20822,6 +20825,136 @@ class PostgresSchemaIntegrationTests {
   }
 
   @Test
+  void vnpayTestReconciliationSettlesVerifiedOrdersAndQuarantinesExhaustedRetries()
+      throws Exception {
+    UUID userId = createSessionTestUser("VNPAY reconciliation owner");
+    try {
+      CreditTopUpOrderService.TopUpOrder paidOrder = createPendingVnPayTestTopUp(userId);
+      AtomicInteger successfulQueries = new AtomicInteger();
+      VnPayTestOrderReconciliationService secondWorker =
+          new VnPayTestOrderReconciliationService(
+              dataSource,
+              creditLedgerService,
+              vnPayTestGatewaySettings.tmnCode(),
+              "127.0.0.1",
+              request -> {
+                throw new AssertionError("lease should prevent a second VNPAY query");
+              },
+              5);
+      VnPayTestOrderReconciliationService successWorker =
+          new VnPayTestOrderReconciliationService(
+              dataSource,
+              creditLedgerService,
+              vnPayTestGatewaySettings.tmnCode(),
+              "127.0.0.1",
+              request -> {
+                successfulQueries.incrementAndGet();
+                assertEquals(vnPayTestGatewaySettings.tmnCode(), request.tmnCode());
+                assertEquals(paidOrder.id(), request.orderId());
+                assertEquals(1_000, request.amountVnd());
+                assertEquals(
+                    com.novelweb.payment.vnpay.VnPayTestGatewayClient.formatVnPayDate(
+                        paidOrder.createdAt()),
+                    request.transactionDate());
+                assertEquals("127.0.0.1", request.serverIpAddress());
+                assertEquals(0, secondWorker.reconcileDueBatch());
+                return new VnPayTestQueryDrClient.QueryResult(
+                    VnPayTestQueryDrClient.Outcome.SUCCEEDED,
+                    8_777_000_011L,
+                    VnPayTestQueryDrClient.FailureCode.NONE);
+              },
+              5);
+
+      assertEquals(1, successWorker.reconcileDueBatch());
+      assertEquals(0, successWorker.reconcileDueBatch());
+      assertEquals(1, successfulQueries.get());
+      assertEquals(CreditTopUpOrderService.OrderStatus.SUCCEEDED, topUpOrderStatus(paidOrder.id()));
+      assertEquals(100, creditProjectedBalance(userId, "PAID"));
+      assertEquals(1, creditSourceEntryCount("PAYMENT_ORDER", paidOrder.id()));
+      assertEquals(1, vnpayReconciliationEventCount(paidOrder.id()));
+
+      CreditTopUpOrderService.TopUpOrder unresolvedOrder = createPendingVnPayTestTopUp(userId);
+      VnPayTestOrderReconciliationService pendingWorker =
+          new VnPayTestOrderReconciliationService(
+              dataSource,
+              creditLedgerService,
+              vnPayTestGatewaySettings.tmnCode(),
+              "127.0.0.1",
+              request ->
+                  new VnPayTestQueryDrClient.QueryResult(
+                      VnPayTestQueryDrClient.Outcome.PENDING,
+                      null,
+                      VnPayTestQueryDrClient.FailureCode.NONE),
+              5);
+      assertEquals(1, pendingWorker.reconcileDueBatch());
+      assertEquals(
+          CreditTopUpOrderService.OrderStatus.PENDING, topUpOrderStatus(unresolvedOrder.id()));
+      assertEquals("PENDING", latestVnPayReconciliationOutcome(unresolvedOrder.id()));
+      setTopUpReconciliationDue(unresolvedOrder.id(), 7);
+
+      VnPayTestOrderReconciliationService exhaustedWorker =
+          new VnPayTestOrderReconciliationService(
+              dataSource,
+              creditLedgerService,
+              vnPayTestGatewaySettings.tmnCode(),
+              "127.0.0.1",
+              request ->
+                  new VnPayTestQueryDrClient.QueryResult(
+                      VnPayTestQueryDrClient.Outcome.UNKNOWN,
+                      null,
+                      VnPayTestQueryDrClient.FailureCode.TRANSPORT),
+              5);
+      assertEquals(1, exhaustedWorker.reconcileDueBatch());
+      assertEquals(
+          CreditTopUpOrderService.OrderStatus.UNKNOWN, topUpOrderStatus(unresolvedOrder.id()));
+      assertEquals("ATTEMPTS_EXHAUSTED", topUpReconciliationReviewCode(unresolvedOrder.id()));
+      assertEquals(2, vnpayReconciliationEventCount(unresolvedOrder.id()));
+      assertEquals(100, creditProjectedBalance(userId, "PAID"));
+      assertEquals(0, creditSourceEntryCount("PAYMENT_ORDER", unresolvedOrder.id()));
+      assertEquals(0, exhaustedWorker.reconcileDueBatch());
+    } finally {
+      deleteSessionTestUser(userId);
+    }
+  }
+
+  @Test
+  void vnpayTestReconciliationQuarantinesReusedTransactionIds() throws Exception {
+    UUID userId = createSessionTestUser("VNPAY reconciliation collision owner");
+    try {
+      CreditTopUpOrderService.TopUpOrder firstOrder = createPendingVnPayTestTopUp(userId);
+      CreditTopUpOrderService.TopUpOrder collisionOrder = createPendingVnPayTestTopUp(userId);
+      long reusedTransactionId = 8_777_000_012L;
+      assertEquals(
+          CreditTopUpOrderService.OrderStatus.SUCCEEDED,
+          settleVnPayOrderThroughIpn(firstOrder, reusedTransactionId));
+
+      VnPayTestOrderReconciliationService worker =
+          new VnPayTestOrderReconciliationService(
+              dataSource,
+              creditLedgerService,
+              vnPayTestGatewaySettings.tmnCode(),
+              "127.0.0.1",
+              request ->
+                  new VnPayTestQueryDrClient.QueryResult(
+                      VnPayTestQueryDrClient.Outcome.SUCCEEDED,
+                      reusedTransactionId,
+                      VnPayTestQueryDrClient.FailureCode.NONE),
+              5);
+      assertEquals(1, worker.reconcileDueBatch());
+      assertEquals(
+          CreditTopUpOrderService.OrderStatus.PENDING, topUpOrderStatus(collisionOrder.id()));
+      assertEquals("TRANSACTION_ID_REUSED", topUpReconciliationReviewCode(collisionOrder.id()));
+      assertEquals("QUARANTINED", latestVnPayReconciliationOutcome(collisionOrder.id()));
+      assertEquals(100, creditProjectedBalance(userId, "PAID"));
+      assertEquals(1, creditSourceEntryCount("PAYMENT_ORDER", firstOrder.id()));
+      assertEquals(0, creditSourceEntryCount("PAYMENT_ORDER", collisionOrder.id()));
+      assertEquals(1, vnpayReconciliationEventCount(collisionOrder.id()));
+    } finally {
+      deleteSessionTestUser(userId);
+    }
+  }
+
+  @Test
   void momoTestReconciliationSettlesVerifiedOrdersAndBoundsRetriesAcrossWorkers() throws Exception {
     UUID userId = createSessionTestUser("MoMo reconciliation owner");
     try {
@@ -21797,6 +21930,54 @@ class PostgresSchemaIntegrationTests {
     return result.order();
   }
 
+  private CreditTopUpOrderService.TopUpOrder createPendingVnPayTestTopUp(UUID userId)
+      throws SQLException {
+    CreditTopUpOrderService.TopUpOrder created =
+        creditTopUpOrderService
+            .createOrReplay(
+                userId,
+                "vnpay-reconciliation-" + UUID.randomUUID(),
+                CreditPackCatalog.vnPayTestFixture(),
+                "vnpay-test-credits-100",
+                1,
+                CreditTopUpOrderService.Provider.VNPAY)
+            .order();
+    assertEquals(
+        CreditTopUpOrderService.CheckoutOutcome.CLAIMED,
+        creditTopUpOrderService.claimProviderCreate(userId, created.id()).outcome());
+    String checkoutUrl =
+        "https://sandbox.vnpayment.vn/paymentv2/vpcpay.html?vnp_SecureHash=" + "a".repeat(128);
+    CreditTopUpOrderService.CheckoutClaim finished =
+        creditTopUpOrderService.finishProviderCreate(
+            userId, created.id(), checkoutUrl, VnPayTestCheckoutUrlPolicy::allows);
+    assertEquals(CreditTopUpOrderService.CheckoutOutcome.READY, finished.outcome());
+    assertEquals(CreditTopUpOrderService.OrderStatus.PENDING, finished.order().status());
+    assertEquals(1_000, finished.order().quote().amountVnd());
+    assertEquals(100, finished.order().quote().paidCredits());
+    return finished.order();
+  }
+
+  private CreditTopUpOrderService.OrderStatus settleVnPayOrderThroughIpn(
+      CreditTopUpOrderService.TopUpOrder order, long transactionNo) throws SQLException {
+    String txnRef =
+        com.novelweb.payment.vnpay.VnPayTestGatewayClient.compactOrderReference(order.id());
+    Map<String, String> callback = new HashMap<>();
+    callback.put("vnp_TmnCode", vnPayTestGatewaySettings.tmnCode());
+    callback.put("vnp_CurrCode", "VND");
+    callback.put("vnp_TxnRef", txnRef);
+    callback.put("vnp_OrderInfo", "Nap credit " + txnRef);
+    callback.put("vnp_Amount", "100000");
+    callback.put("vnp_TransactionNo", Long.toString(transactionNo));
+    callback.put("vnp_ResponseCode", "00");
+    callback.put("vnp_TransactionStatus", "00");
+    callback.put(
+        "vnp_SecureHash",
+        VnPayTestSignatureCodec.sign(callback, vnPayTestGatewaySettings.hashSecret()));
+    VnPayTestIpnService.Acknowledgement acknowledgement = vnPayTestIpnService.process(callback);
+    assertEquals("00", acknowledgement.rspCode());
+    return topUpOrderStatus(order.id());
+  }
+
   private boolean topUpAutoCapture(UUID orderId) throws SQLException {
     try (Connection connection = dataSource.getConnection();
         PreparedStatement select =
@@ -21844,6 +22025,36 @@ class PostgresSchemaIntegrationTests {
       try (ResultSet row = select.executeQuery()) {
         assertTrue(row.next());
         return row.getLong(1);
+      }
+    }
+  }
+
+  private long vnpayReconciliationEventCount(UUID orderId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                "SELECT COUNT(*) FROM vnpay_test_reconciliation_events WHERE credit_top_up_order_id = ?")) {
+      select.setObject(1, orderId);
+      try (ResultSet row = select.executeQuery()) {
+        assertTrue(row.next());
+        return row.getLong(1);
+      }
+    }
+  }
+
+  private String latestVnPayReconciliationOutcome(UUID orderId) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        PreparedStatement select =
+            connection.prepareStatement(
+                """
+                    SELECT outcome FROM vnpay_test_reconciliation_events
+                    WHERE credit_top_up_order_id = ?
+                    ORDER BY queried_at DESC, query_request_id DESC
+                    LIMIT 1
+                    """)) {
+      select.setObject(1, orderId);
+      try (ResultSet row = select.executeQuery()) {
+        return row.next() ? row.getString("outcome") : null;
       }
     }
   }

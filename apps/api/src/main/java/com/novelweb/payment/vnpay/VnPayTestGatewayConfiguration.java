@@ -16,7 +16,10 @@ import tools.jackson.databind.ObjectMapper;
 
 /** Installs the VNPAY sandbox adapter only after explicit opt-in and complete TEST settings. */
 @Configuration(proxyBeanMethods = false)
-@EnableConfigurationProperties(VnPayTestGatewayProperties.class)
+@EnableConfigurationProperties({
+  VnPayTestGatewayProperties.class,
+  VnPayTestReconciliationProperties.class
+})
 @ConditionalOnProperty(prefix = "novel.payment.vnpay.test", name = "enabled", havingValue = "true")
 public class VnPayTestGatewayConfiguration {
 
@@ -66,5 +69,26 @@ public class VnPayTestGatewayConfiguration {
   VnPayTestIpnService vnPayTestIpnService(
       DataSource dataSource, CreditLedgerService creditLedger, VnPayTestGatewaySettings settings) {
     return new VnPayTestIpnService(dataSource, creditLedger, settings);
+  }
+
+  @Bean
+  @Profile("postgres")
+  @ConditionalOnProperty(
+      prefix = "novel.payment.vnpay.test.reconciliation",
+      name = "enabled",
+      havingValue = "true")
+  VnPayTestOrderReconciliationService vnPayTestOrderReconciliationService(
+      DataSource dataSource,
+      CreditLedgerService creditLedger,
+      VnPayTestGatewaySettings settings,
+      VnPayTestQueryDrClient queryDrClient,
+      VnPayTestReconciliationProperties reconciliationProperties) {
+    return new VnPayTestOrderReconciliationService(
+        dataSource,
+        creditLedger,
+        settings.tmnCode(),
+        reconciliationProperties.serverIpAddress(),
+        queryDrClient::query,
+        reconciliationProperties.batchSize());
   }
 }

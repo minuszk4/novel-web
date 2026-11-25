@@ -59,6 +59,19 @@ public class OperationalQueueMetrics {
         registry,
         "novel.momo.reconciliation.oldest.due.seconds",
         QueueMetricsSnapshot::oldestDueMomoOrderSeconds);
+    registerGauge(
+        registry,
+        "novel.vnpay.reconciliation.unresolved",
+        QueueMetricsSnapshot::unresolvedVnPayOrders);
+    registerGauge(registry, "novel.vnpay.reconciliation.due", QueueMetricsSnapshot::dueVnPayOrders);
+    registerGauge(
+        registry,
+        "novel.vnpay.reconciliation.review.required",
+        QueueMetricsSnapshot::reviewRequiredVnPayOrders);
+    registerGauge(
+        registry,
+        "novel.vnpay.reconciliation.oldest.due.seconds",
+        QueueMetricsSnapshot::oldestDueVnPayOrderSeconds);
     Gauge.builder(
             "novel.queue.snapshot.last.success.epoch.seconds",
             lastSuccessfulRefreshEpochSeconds,

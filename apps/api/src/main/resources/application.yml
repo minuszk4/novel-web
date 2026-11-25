@@ -88,6 +88,11 @@ novel:
         enabled: ${NOVEL_VNPAY_TEST_ENABLED:false}
         tmn-code: ${VNPAY_TEST_TMN_CODE:}
         hash-secret: ${VNPAY_TEST_HASH_SECRET:}
+        reconciliation:
+          enabled: ${NOVEL_VNPAY_TEST_RECONCILIATION_ENABLED:false}
+          poll-delay: ${NOVEL_VNPAY_TEST_RECONCILIATION_POLL_DELAY:30s}
+          batch-size: ${NOVEL_VNPAY_TEST_RECONCILIATION_BATCH_SIZE:5}
+          server-ip-address: ${NOVEL_VNPAY_TEST_SERVER_IP:127.0.0.1}
   account-data-export:
     enabled: ${NOVEL_ACCOUNT_DATA_EXPORT_ENABLED:false}
     worker-enabled: ${NOVEL_ACCOUNT_DATA_EXPORT_WORKER_ENABLED:false}

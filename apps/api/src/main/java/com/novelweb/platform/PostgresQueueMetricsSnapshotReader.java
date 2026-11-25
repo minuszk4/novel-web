@@ -33,9 +33,11 @@ public class PostgresQueueMetricsSnapshotReader implements QueueMetricsSnapshotR
              FROM translation_jobs WHERE status IN ('queued', 'preparing', 'retry_wait'))
                  AS oldest_pending_translation_seconds,
             (SELECT count(*) FROM credit_top_up_orders
-             WHERE status IN ('PENDING', 'UNKNOWN', 'INITIATING')) AS unresolved_momo_orders,
+             WHERE provider = 'MOMO' AND environment = 'TEST'
+               AND status IN ('PENDING', 'UNKNOWN', 'INITIATING')) AS unresolved_momo_orders,
             (SELECT count(*) FROM credit_top_up_orders
-             WHERE status IN ('PENDING', 'UNKNOWN', 'INITIATING')
+             WHERE provider = 'MOMO' AND environment = 'TEST'
+               AND status IN ('PENDING', 'UNKNOWN', 'INITIATING')
                AND (status <> 'INITIATING'
                     OR updated_at <= clock_timestamp() - INTERVAL '120 seconds')
                AND reconciliation_review_required_at IS NULL
@@ -45,7 +47,8 @@ public class PostgresQueueMetricsSnapshotReader implements QueueMetricsSnapshotR
                AND (next_reconciliation_at IS NULL
                     OR next_reconciliation_at <= clock_timestamp())) AS due_momo_orders,
             (SELECT count(*) FROM credit_top_up_orders
-             WHERE reconciliation_review_required_at IS NOT NULL) AS review_required_momo_orders,
+             WHERE provider = 'MOMO' AND environment = 'TEST'
+               AND reconciliation_review_required_at IS NOT NULL) AS review_required_momo_orders,
             (SELECT COALESCE(EXTRACT(EPOCH FROM clock_timestamp() - min(due_at))::bigint, 0)
              FROM (
                SELECT CASE WHEN status = 'INITIATING'
@@ -53,7 +56,8 @@ public class PostgresQueueMetricsSnapshotReader implements QueueMetricsSnapshotR
                            ELSE COALESCE(next_reconciliation_at, updated_at)
                       END AS due_at
                FROM credit_top_up_orders
-               WHERE status IN ('PENDING', 'UNKNOWN', 'INITIATING')
+               WHERE provider = 'MOMO' AND environment = 'TEST'
+                 AND status IN ('PENDING', 'UNKNOWN', 'INITIATING')
                  AND (status <> 'INITIATING'
                       OR updated_at <= clock_timestamp() - INTERVAL '120 seconds')
                  AND reconciliation_review_required_at IS NULL
@@ -62,7 +66,42 @@ public class PostgresQueueMetricsSnapshotReader implements QueueMetricsSnapshotR
                       OR reconciliation_lease_until <= clock_timestamp())
                  AND (next_reconciliation_at IS NULL
                       OR next_reconciliation_at <= clock_timestamp())
-             ) AS due_orders) AS oldest_due_momo_order_seconds
+             ) AS due_orders) AS oldest_due_momo_order_seconds,
+            (SELECT count(*) FROM credit_top_up_orders
+             WHERE provider = 'VNPAY' AND environment = 'TEST'
+               AND status IN ('PENDING', 'UNKNOWN', 'INITIATING')) AS unresolved_vnpay_orders,
+            (SELECT count(*) FROM credit_top_up_orders
+             WHERE provider = 'VNPAY' AND environment = 'TEST'
+               AND status IN ('PENDING', 'UNKNOWN', 'INITIATING')
+               AND (status <> 'INITIATING'
+                    OR updated_at <= clock_timestamp() - INTERVAL '120 seconds')
+               AND reconciliation_review_required_at IS NULL
+               AND reconciliation_attempt_count < 8
+               AND (reconciliation_lease_until IS NULL
+                    OR reconciliation_lease_until <= clock_timestamp())
+               AND (next_reconciliation_at IS NULL
+                    OR next_reconciliation_at <= clock_timestamp())) AS due_vnpay_orders,
+            (SELECT count(*) FROM credit_top_up_orders
+             WHERE provider = 'VNPAY' AND environment = 'TEST'
+               AND reconciliation_review_required_at IS NOT NULL) AS review_required_vnpay_orders,
+            (SELECT COALESCE(EXTRACT(EPOCH FROM clock_timestamp() - min(due_at))::bigint, 0)
+             FROM (
+               SELECT CASE WHEN status = 'INITIATING'
+                           THEN updated_at + INTERVAL '120 seconds'
+                           ELSE COALESCE(next_reconciliation_at, updated_at)
+                      END AS due_at
+               FROM credit_top_up_orders
+               WHERE provider = 'VNPAY' AND environment = 'TEST'
+                 AND status IN ('PENDING', 'UNKNOWN', 'INITIATING')
+                 AND (status <> 'INITIATING'
+                      OR updated_at <= clock_timestamp() - INTERVAL '120 seconds')
+                 AND reconciliation_review_required_at IS NULL
+                 AND reconciliation_attempt_count < 8
+                 AND (reconciliation_lease_until IS NULL
+                      OR reconciliation_lease_until <= clock_timestamp())
+                 AND (next_reconciliation_at IS NULL
+                      OR next_reconciliation_at <= clock_timestamp())
+             ) AS vnpay_due_orders) AS oldest_due_vnpay_order_seconds
           """;
 
   private final DataSource dataSource;
@@ -88,7 +127,11 @@ public class PostgresQueueMetricsSnapshotReader implements QueueMetricsSnapshotR
           row.getLong("unresolved_momo_orders"),
           row.getLong("due_momo_orders"),
           row.getLong("review_required_momo_orders"),
-          row.getLong("oldest_due_momo_order_seconds"));
+          row.getLong("oldest_due_momo_order_seconds"),
+          row.getLong("unresolved_vnpay_orders"),
+          row.getLong("due_vnpay_orders"),
+          row.getLong("review_required_vnpay_orders"),
+          row.getLong("oldest_due_vnpay_order_seconds"));
     } catch (SQLException exception) {
       throw new IllegalStateException("Unable to read operational queue metrics", exception);
     }

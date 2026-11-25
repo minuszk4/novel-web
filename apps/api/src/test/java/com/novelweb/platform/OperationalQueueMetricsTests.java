@@ -13,7 +13,8 @@ class OperationalQueueMetricsTests {
   void refreshPublishesOnlyFixedAggregateMetricsAndRetainsLastGoodSnapshotOnFailure() {
     SimpleMeterRegistry registry = new SimpleMeterRegistry();
     AtomicInteger reads = new AtomicInteger();
-    QueueMetricsSnapshot expected = new QueueMetricsSnapshot(2, 3, 1, 17, 5, 2, 31, 4, 1, 1, 90);
+    QueueMetricsSnapshot expected =
+        new QueueMetricsSnapshot(2, 3, 1, 17, 5, 2, 31, 4, 1, 1, 90, 3, 2, 1, 45);
     QueueMetricsSnapshotReader reader =
         () -> {
           if (reads.incrementAndGet() == 1) return expected;
@@ -36,6 +37,11 @@ class OperationalQueueMetricsTests {
     assertEquals(1.0, registry.get("novel.momo.reconciliation.review.required").gauge().value());
     assertEquals(
         90.0, registry.get("novel.momo.reconciliation.oldest.due.seconds").gauge().value());
+    assertEquals(3.0, registry.get("novel.vnpay.reconciliation.unresolved").gauge().value());
+    assertEquals(2.0, registry.get("novel.vnpay.reconciliation.due").gauge().value());
+    assertEquals(1.0, registry.get("novel.vnpay.reconciliation.review.required").gauge().value());
+    assertEquals(
+        45.0, registry.get("novel.vnpay.reconciliation.oldest.due.seconds").gauge().value());
     assertEquals(1.0, registry.get("novel.queue.snapshot.last.refresh.succeeded").gauge().value());
     assertTrue(registry.get("novel.queue.snapshot.last.success.epoch.seconds").gauge().value() > 0);
 

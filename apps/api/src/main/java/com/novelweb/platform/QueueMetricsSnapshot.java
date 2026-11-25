@@ -12,9 +12,13 @@ public record QueueMetricsSnapshot(
     long unresolvedMomoOrders,
     long dueMomoOrders,
     long reviewRequiredMomoOrders,
-    long oldestDueMomoOrderSeconds) {
+    long oldestDueMomoOrderSeconds,
+    long unresolvedVnPayOrders,
+    long dueVnPayOrders,
+    long reviewRequiredVnPayOrders,
+    long oldestDueVnPayOrderSeconds) {
 
   public static QueueMetricsSnapshot empty() {
-    return new QueueMetricsSnapshot(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    return new QueueMetricsSnapshot(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
   }
 }

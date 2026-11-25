@@ -505,6 +505,24 @@ public class AccountDataExportArchiveWriter {
               e.credit_top_up_order_id WHERE o.user_id = ? ORDER BY e.queried_at, e.query_request_id
             """),
         dataset(
+            "vnpay_test_settlement_events",
+            """
+              SELECT jsonb_build_object('orderId', e.credit_top_up_order_id, 'transactionNo' , e.transaction_no,
+              'amountVnd' , e.amount_vnd, 'responseCode' , e.response_code, 'transactionStatus' , e.transaction_status,
+              'processingOutcome' , e.processing_outcome, 'receivedAt' , e.received_at, 'environment' , 'TEST' )::text
+              AS record_json FROM vnpay_test_ipn_events e JOIN credit_top_up_orders o ON o.id = e.credit_top_up_order_id
+              WHERE o.user_id = ? ORDER BY e.received_at, e.event_hash
+            """),
+        dataset(
+            "vnpay_test_reconciliation_events",
+            """
+              SELECT jsonb_build_object('orderId', e.credit_top_up_order_id, 'attempt' , e.attempt_number,
+              'outcome' , e.outcome, 'providerTransactionId' , e.provider_transaction_id, 'reviewCode' , e.review_code,
+              'queriedAt' , e.queried_at, 'environment' , 'TEST' )::text AS record_json
+              FROM vnpay_test_reconciliation_events e JOIN credit_top_up_orders o ON o.id = e.credit_top_up_order_id
+              WHERE o.user_id = ? ORDER BY e.queried_at, e.query_request_id
+            """),
+        dataset(
             "publication_rights_acceptances",
             """
               SELECT (to_jsonb(a) - 'idempotency_key' - 'policy_sha256' )::text AS record_json FROM publication_rights_policy_acceptances
