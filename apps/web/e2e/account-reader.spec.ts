@@ -1846,6 +1846,119 @@ test('account Reader starts and tracks a clearly fake local translation preview'
   expect(dimensions.document).toBeLessThanOrEqual(dimensions.viewport);
 });
 
+test('public Reader pairs matching anchors and rejects a mismatched released translation', async ({
+  page,
+}) => {
+  const sourceContentRequests: string[] = [];
+  page.on('request', (request) => {
+    const pathname = new URL(request.url()).pathname;
+    if (pathname === `/api/v1/chapters/${chapterIds[0]}/content`) {
+      sourceContentRequests.push(request.url());
+    }
+  });
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await installReaderRoutes(page, 200, false);
+  await installPublicLockedManifest(page, false);
+  await page.unroute('**/api/v1/system/status');
+  await page.route('**/api/v1/system/status', (route) =>
+    json(route, {
+      apiVersion: '4.2.1',
+      environment: 'test',
+      integrations: {
+        googleOidcEnabled: false,
+        vnpayTestEnabled: false,
+        vnpayEnvironment: 'disabled',
+      },
+      features: {
+        importProcessingEnabled: false,
+        cultivationEnabled: false,
+        commerceSandboxEnabled: false,
+        translationFakePreviewEnabled: false,
+        translationPublicationEnabled: true,
+      },
+    }),
+  );
+  await page.route(`**/api/v1/chapters/${chapterIds[0]}/translations`, (route) =>
+    json(route, { languages: ['en', 'fr'] }),
+  );
+  await page.route(`**/api/v1/chapters/${chapterIds[0]}/translations/en/content**`, (route) =>
+    json(route, {
+      chapterId: chapterIds[0],
+      workId,
+      sourceRevisionId: revisionId,
+      translationVersionId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      translationVersionNo: 3,
+      sourceLanguage: 'vi',
+      targetLanguage: 'en',
+      segments: [
+        { anchor: 'ch1-h1', type: 'heading', translatedText: 'The First Day' },
+        { anchor: 'ch1-p1', type: 'paragraph', translatedText: 'A private paragraph.' },
+        { anchor: 'ch1-p2', type: 'paragraph', translatedText: 'The wind grew quiet.' },
+      ],
+      nextSegmentCursor: null,
+    }),
+  );
+  await page.route(`**/api/v1/chapters/${chapterIds[0]}/translations/fr/content**`, (route) =>
+    json(route, {
+      chapterId: chapterIds[0],
+      workId,
+      sourceRevisionId: revisionId,
+      translationVersionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      translationVersionNo: 1,
+      sourceLanguage: 'vi',
+      targetLanguage: 'fr',
+      segments: [
+        { anchor: 'incorrect-anchor', type: 'heading', translatedText: 'Le premier jour' },
+        { anchor: 'ch1-p1', type: 'paragraph', translatedText: 'Un paragraphe privé.' },
+        { anchor: 'ch1-p2', type: 'paragraph', translatedText: 'Le vent s’est calmé.' },
+      ],
+      nextSegmentCursor: null,
+    }),
+  );
+
+  await page.goto(`/app/reader/${workId}/${chapterIds[0]}`);
+  await expect(page.getByRole('heading', { name: 'Cánh cửa mở' })).toBeVisible();
+  const languagePicker = page.getByLabel('Ngôn ngữ');
+  await expect(languagePicker).toBeVisible();
+  await languagePicker.selectOption('en');
+  await expect(page.getByText('The First Day', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Đọc song ngữ' }).click();
+
+  const sourceGroup = page.getByRole('group', { name: 'Nguyên tác · vi · đoạn 1' });
+  const translationGroup = page.getByRole('group', { name: 'Bản dịch · en · đoạn 1' });
+  await expect(sourceGroup).toContainText('Ngày đầu tiên');
+  await expect(translationGroup).toContainText('The First Day');
+  const desktopColumns = await Promise.all([
+    sourceGroup.boundingBox(),
+    translationGroup.boundingBox(),
+  ]);
+  expect(desktopColumns[0]?.x).toBeLessThan(desktopColumns[1]?.x ?? 0);
+  await expectNoAxeViolations(page);
+
+  await page.setViewportSize({ width: 360, height: 800 });
+  await expect(sourceGroup).toBeVisible();
+  await expect(translationGroup).toBeVisible();
+  const mobileColumns = await Promise.all([
+    sourceGroup.boundingBox(),
+    translationGroup.boundingBox(),
+  ]);
+  expect(mobileColumns[1]?.y).toBeGreaterThan(mobileColumns[0]?.y ?? 0);
+  const dimensions = await page.evaluate(() => ({
+    document: document.documentElement.scrollWidth,
+    viewport: document.documentElement.clientWidth,
+  }));
+  expect(dimensions.document).toBeLessThanOrEqual(dimensions.viewport);
+  await expectNoAxeViolations(page);
+
+  await expect(page.getByRole('button', { name: 'Chỉ đọc bản dịch' })).toBeVisible();
+  await languagePicker.selectOption('fr');
+  await expect(page.getByText('Le premier jour', { exact: true })).toBeVisible();
+  expect(sourceContentRequests).toHaveLength(3);
+  await expect(page.locator('.reader-paired-error')).toBeVisible();
+  await expect(page.locator('.reader-paired-segment')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Đọc song ngữ' })).toBeVisible();
+});
+
 test('account Reader hides the local translation preview unless the API opt-in is active', async ({
   page,
 }) => {

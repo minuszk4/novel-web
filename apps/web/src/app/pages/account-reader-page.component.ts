@@ -71,6 +71,12 @@ interface ReaderRenderedSegment extends ReaderSourceSegment {
   pieces: ReaderTextPiece[];
 }
 
+interface ReaderPairedSegment {
+  anchor: string;
+  source: ReaderSourceSegment;
+  translation: ReaderSourceSegment;
+}
+
 interface ReaderAnnotationConflict {
   annotationId: string;
   latest: ReaderAnnotation;
@@ -127,6 +133,26 @@ export class AccountReaderPageComponent {
   protected readonly chapters = signal<ReaderChapter[]>([]);
   protected readonly activeChapter = signal<ReaderChapter | null>(null);
   protected readonly segments = signal<ReaderSourceSegment[]>([]);
+  protected readonly pairedSourceSegments = signal<ReaderSourceSegment[]>([]);
+  protected readonly pairedMode = signal(false);
+  protected readonly pairedSourceState = signal<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  protected readonly pairedSourceError = signal<ReaderApiError | null>(null);
+  protected readonly canTogglePairedMode = computed(
+    () =>
+      this.canChooseTranslation() &&
+      this.selectedReaderLanguage().length > 0 &&
+      this.contentState() === 'ready',
+  );
+  protected readonly pairedSegments = computed<ReaderPairedSegment[]>(() => {
+    const sources = this.pairedSourceSegments();
+    const translations = this.segments();
+    if (sources.length !== translations.length) return [];
+    return sources.map((source, index) => ({
+      anchor: source.anchor ?? `paired-${index + 1}`,
+      source,
+      translation: translations[index],
+    }));
+  });
   protected readonly availableTranslationLanguages = signal<string[]>([]);
   protected readonly selectedReaderLanguage = signal('');
   protected readonly canChooseTranslation = computed(
@@ -524,11 +550,46 @@ export class AccountReaderPageComponent {
     const language = (event.target as HTMLSelectElement).value;
     if (language && !this.availableTranslationLanguages().includes(language)) return;
     if (language === this.selectedReaderLanguage()) return;
+    const preservePairedMode = this.pairedMode();
     this.closePanel(false);
     this.selectedReaderLanguage.set(language);
+    this.pairedMode.set(preservePairedMode && language.length > 0);
     const token = ++this.loadToken;
     this.contentState.set('loading');
-    await this.activateChapter(chapter, token, undefined, true);
+    await this.activateChapter(chapter, token, undefined, true, preservePairedMode && !!language);
+  }
+
+  protected async togglePairedMode(): Promise<void> {
+    if (!this.canTogglePairedMode() || this.pairedSourceState() === 'loading') return;
+    const anchor = this.currentVisibleReaderAnchor();
+    if (this.pairedMode()) {
+      this.pairedMode.set(false);
+      this.restoreReaderAnchor(anchor);
+      return;
+    }
+    if (this.pairedSourceState() === 'ready') {
+      this.pairedMode.set(true);
+      this.restoreReaderAnchor(anchor);
+      return;
+    }
+    const chapter = this.activeChapter();
+    const revisionId = this.sourceRevisionId();
+    const token = this.loadToken;
+    if (!chapter || !revisionId) return;
+    this.pairedSourceState.set('loading');
+    this.pairedSourceError.set(null);
+    try {
+      const sourceSegments = await this.loadPairedSourceSegments(chapter, revisionId, token);
+      if (token !== this.loadToken) return;
+      this.pairedSourceSegments.set(sourceSegments);
+      this.pairedSourceState.set('ready');
+      this.pairedMode.set(true);
+      this.restoreReaderAnchor(anchor);
+    } catch (error) {
+      if (token !== this.loadToken) return;
+      this.pairedSourceError.set(asReaderApiError(error));
+      this.pairedSourceState.set('error');
+    }
   }
 
   protected beginUnlockConfirmation(): void {
@@ -1279,12 +1340,18 @@ export class AccountReaderPageComponent {
     token: number,
     restoreProgress: ReaderProgress | null = null,
     preserveLanguage = false,
+    restorePairedModeOnLoad = false,
   ): Promise<void> {
+    const restorePairedMode = preserveLanguage && restorePairedModeOnLoad;
     if (this.activeChapter() && this.activeChapter()?.id !== chapter.id) {
       void this.flushProgress();
     }
     this.pendingTextSelection = null;
     if (!preserveLanguage) this.selectedReaderLanguage.set('');
+    this.pairedMode.set(false);
+    this.pairedSourceSegments.set([]);
+    this.pairedSourceState.set('idle');
+    this.pairedSourceError.set(null);
     this.availableTranslationLanguages.set([]);
     this.activeChapter.set(chapter);
     this.segments.set([]);
@@ -1412,6 +1479,20 @@ export class AccountReaderPageComponent {
       if (!targetLanguage && accessState === 'readable') {
         void this.loadChapterAnnotations(workId, chapter.id, token);
       } else this.chapterAnnotations.set([]);
+      if (restorePairedMode && targetLanguage && chapter.accessState === 'readable') {
+        this.pairedSourceState.set('loading');
+        try {
+          const sourceSegments = await this.loadPairedSourceSegments(chapter, revisionId, token);
+          if (token !== this.loadToken) return;
+          this.pairedSourceSegments.set(sourceSegments);
+          this.pairedSourceState.set('ready');
+          this.pairedMode.set(true);
+        } catch (error) {
+          if (token !== this.loadToken) return;
+          this.pairedSourceError.set(asReaderApiError(error));
+          this.pairedSourceState.set('error');
+        }
+      }
       if (restoreProgress?.chapterId === chapter.id) {
         this.restoreProgressPosition(restoreProgress);
       } else if (this.pendingBookmarkPosition?.chapterId === chapter.id) {
@@ -1446,6 +1527,88 @@ export class AccountReaderPageComponent {
       // Translation availability is optional; source reading remains available.
       this.availableTranslationLanguages.set([]);
     }
+  }
+
+  private async loadPairedSourceSegments(
+    chapter: ReaderChapter,
+    expectedRevisionId: string,
+    token: number,
+  ): Promise<ReaderSourceSegment[]> {
+    let cursor: string | undefined;
+    const segments: ReaderSourceSegment[] = [];
+    for (let pageIndex = 0; pageIndex < maxContentPages; pageIndex += 1) {
+      const page = await this.api.getContentPage(
+        chapter.id,
+        expectedRevisionId,
+        cursor,
+        contentPageSize,
+      );
+      if (token !== this.loadToken) return [];
+      if (
+        page.chapterId !== chapter.id ||
+        page.workId !== this.work()?.id ||
+        page.sourceRevisionId !== expectedRevisionId ||
+        page.sourceLanguage !== this.work()?.language ||
+        page.accessState !== 'readable' ||
+        page.previewPercent !== null
+      ) {
+        throw new ReaderApiError('INVALID_READER_RESPONSE', 502, 'INVALID_READER_RESPONSE');
+      }
+      segments.push(...page.segments);
+      if (segments.length > maxSegmentsPerChapter) {
+        throw new ReaderApiError(
+          'READER_CONTENT_LIMIT_EXCEEDED',
+          502,
+          'READER_CONTENT_LIMIT_EXCEEDED',
+        );
+      }
+      if (!page.nextSegmentCursor) break;
+      if (pageIndex === maxContentPages - 1) {
+        throw new ReaderApiError(
+          'READER_CONTENT_LIMIT_EXCEEDED',
+          502,
+          'READER_CONTENT_LIMIT_EXCEEDED',
+        );
+      }
+      cursor = page.nextSegmentCursor;
+    }
+    if (token !== this.loadToken) return [];
+    const translatedSegments = this.segments();
+    if (
+      segments.length !== translatedSegments.length ||
+      segments.some(
+        (segment, index) =>
+          !segment.anchor ||
+          segment.anchor !== translatedSegments[index]?.anchor ||
+          segment.type !== translatedSegments[index]?.type,
+      )
+    ) {
+      throw new ReaderApiError('INVALID_READER_RESPONSE', 502, 'INVALID_READER_RESPONSE');
+    }
+    return segments;
+  }
+
+  private currentVisibleReaderAnchor(): string | null {
+    const elements = document.querySelectorAll<HTMLElement>(
+      '.account-reader-content [data-source-anchor]',
+    );
+    for (const element of elements) {
+      if (element.getBoundingClientRect().bottom > 0) {
+        return element.dataset['sourceAnchor'] ?? null;
+      }
+    }
+    return null;
+  }
+
+  private restoreReaderAnchor(anchor: string | null): void {
+    if (!anchor) return;
+    requestAnimationFrame(() => {
+      const elements = document.querySelectorAll<HTMLElement>(
+        '.account-reader-content [data-source-anchor]',
+      );
+      const element = [...elements].find((item) => item.dataset['sourceAnchor'] === anchor);
+      element?.scrollIntoView({ block: 'start', behavior: 'auto' });
+    });
   }
 
   private async loadChapterUnlock(chapter: ReaderChapter, token: number): Promise<void> {

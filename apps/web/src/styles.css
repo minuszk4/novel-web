@@ -4362,6 +4362,109 @@ label:has(input:focus-visible) {
   outline: 3px solid var(--focus-ring);
   outline-offset: 2px;
 }
+.reader-paired-toggle {
+  min-height: 44px;
+  padding: 6px 12px;
+  border: 1px solid #b8b9b5;
+  border-radius: 8px;
+  color: #32353a;
+  background: #fff;
+  font: inherit;
+  cursor: pointer;
+}
+.reader-paired-toggle[aria-pressed='true'] {
+  border-color: #92784e;
+  color: #624e2f;
+  background: #f5f0e6;
+}
+.reader-paired-toggle:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.reader-paired-toggle:disabled {
+  cursor: wait;
+}
+.reader-paired-error {
+  flex-basis: 100%;
+  color: #a13030;
+  font-size: 0.85rem;
+}
+.account-reader-app .reader-article.reader-paired-article {
+  max-width: min(1120px, 100%);
+}
+.reader-paired-segment {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: clamp(16px, 3vw, 36px);
+  padding-block: 18px;
+  border-bottom: 1px solid #e5e2dc;
+  scroll-margin-block: 12px;
+}
+.reader-paired-cell {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.reader-paired-label {
+  display: block;
+  margin-bottom: 8px;
+  color: #69665f;
+  font-family: var(--font-ui);
+  font-size: 0.52em;
+  font-weight: 700;
+  letter-spacing: 0.035em;
+  line-height: 1.4;
+}
+.reader-paired-cell h2,
+.reader-paired-cell p,
+.reader-paired-cell blockquote {
+  margin-block: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.reader-paired-cell h2 {
+  font-family: inherit;
+  font-size: 1.12em;
+  font-weight: 600;
+  line-height: 1.45;
+}
+.reader-paired-cell p {
+  text-indent: 0;
+}
+.reader-paired-cell blockquote {
+  padding-left: 0.8em;
+}
+.reader-dark .reader-paired-segment {
+  border-color: #494b4d;
+}
+.reader-dark .reader-paired-label {
+  color: #c3bba9;
+}
+.reader-dark .reader-paired-toggle {
+  border-color: #77766f;
+  color: #f0ede6;
+  background: #292a2b;
+}
+.reader-dark .reader-paired-toggle[aria-pressed='true'] {
+  border-color: #c7a96f;
+  color: #ffe4ad;
+  background: #3a3429;
+}
+.reader-dark .reader-paired-error {
+  color: #ffb1aa;
+}
+.reader-sepia .reader-paired-segment {
+  border-color: #ddd1b9;
+}
+.reader-sepia .reader-paired-label {
+  color: #746548;
+}
+@media (max-width: 640px) {
+  .reader-paired-segment {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+    padding-block: 14px;
+  }
+}
 .reader-account-sync {
   color: #626871;
 }

@@ -116,6 +116,23 @@
           </select>
         </label>
       }
+      @if (canTogglePairedMode()) {
+        <button
+          class="reader-paired-toggle"
+          type="button"
+          [attr.aria-pressed]="pairedMode()"
+          [disabled]="pairedSourceState() === 'loading'"
+          (click)="togglePairedMode()"
+        >
+          {{
+            pairedSourceState() === 'loading'
+              ? 'Đang tải nguyên tác…'
+              : pairedMode()
+                ? 'Chỉ đọc bản dịch'
+                : 'Đọc song ngữ'
+          }}
+        </button>
+      }
     }
     <span class="reader-account-sync" role="status" aria-live="polite"
       >{{ progressStatusLabel() }} · {{ bookmarkStatusLabel() }}</span
@@ -127,6 +144,12 @@
         aria-live="polite"
       >
         {{ bookmarkMessage() }}
+      </span>
+    }
+    @if (pairedSourceError()) {
+      <span class="reader-paired-error" role="alert">
+        Không tải được nguyên tác để đối chiếu. Bản dịch vẫn đọc được; hãy thử lại bằng nút Đọc song
+        ngữ.
       </span>
     }
   </div>
@@ -925,6 +948,7 @@
       >
         <article
           class="reader-article"
+          [class.reader-paired-article]="pairedMode()"
           [style.font-size.px]="fontSize()"
           aria-labelledby="account-reader-title"
         >
@@ -933,9 +957,11 @@
           <p class="reader-byline">
             Chương {{ chapter.ordinal }} ·
             {{
-              selectedReaderLanguage()
-                ? 'Bản dịch đã được duyệt · ' + selectedReaderLanguage()
-                : 'Nội dung gốc'
+              pairedMode()
+                ? 'Song ngữ · ' + work()?.language + ' / ' + selectedReaderLanguage()
+                : selectedReaderLanguage()
+                  ? 'Bản dịch đã được duyệt · ' + selectedReaderLanguage()
+                  : 'Nội dung gốc'
             }}
           </p>
           @if (isPreview()) {
@@ -955,60 +981,113 @@
               </button>
             </aside>
           }
-          <div class="reader-body account-reader-body">
-            @for (segment of renderedSegments(); track $index) {
-              @switch (segment.type) {
-                @case ('heading') {
-                  <h2 [attr.data-source-anchor]="segment.anchor || null">
-                    @for (piece of segment.pieces; track $index) {
-                      @if (piece.annotationId) {
-                        <mark
-                          class="reader-account-highlight"
-                          [attr.data-highlight-color]="piece.color"
-                          [attr.data-annotation-id]="piece.annotationId"
-                          >{{ piece.text }}</mark
-                        >
-                      } @else {
-                        <span>{{ piece.text }}</span>
+          @if (pairedMode()) {
+            <div class="reader-body account-reader-body reader-paired-body">
+              @for (pair of pairedSegments(); track pair.anchor; let index = $index) {
+                <section class="reader-paired-segment" [attr.data-source-anchor]="pair.anchor">
+                  <div
+                    class="reader-paired-cell"
+                    role="group"
+                    [attr.lang]="work()?.language"
+                    [attr.aria-label]="
+                      'Nguyên tác · ' + work()?.language + ' · đoạn ' + (index + 1)
+                    "
+                  >
+                    <span class="reader-paired-label">Nguyên tác · {{ work()?.language }}</span>
+                    @switch (pair.source.type) {
+                      @case ('heading') {
+                        <h2>{{ pair.source.sourceText }}</h2>
+                      }
+                      @case ('quote') {
+                        <blockquote>{{ pair.source.sourceText }}</blockquote>
+                      }
+                      @default {
+                        <p>{{ pair.source.sourceText }}</p>
                       }
                     }
-                  </h2>
-                }
-                @case ('quote') {
-                  <blockquote [attr.data-source-anchor]="segment.anchor || null">
-                    @for (piece of segment.pieces; track $index) {
-                      @if (piece.annotationId) {
-                        <mark
-                          class="reader-account-highlight"
-                          [attr.data-highlight-color]="piece.color"
-                          [attr.data-annotation-id]="piece.annotationId"
-                          >{{ piece.text }}</mark
-                        >
-                      } @else {
-                        <span>{{ piece.text }}</span>
+                  </div>
+                  <div
+                    class="reader-paired-cell"
+                    role="group"
+                    [attr.lang]="selectedReaderLanguage()"
+                    [attr.aria-label]="
+                      'Bản dịch · ' + selectedReaderLanguage() + ' · đoạn ' + (index + 1)
+                    "
+                  >
+                    <span class="reader-paired-label"
+                      >Bản dịch · {{ selectedReaderLanguage() }}</span
+                    >
+                    @switch (pair.translation.type) {
+                      @case ('heading') {
+                        <h2>{{ pair.translation.sourceText }}</h2>
+                      }
+                      @case ('quote') {
+                        <blockquote>{{ pair.translation.sourceText }}</blockquote>
+                      }
+                      @default {
+                        <p>{{ pair.translation.sourceText }}</p>
                       }
                     }
-                  </blockquote>
-                }
-                @default {
-                  <p [attr.data-source-anchor]="segment.anchor || null">
-                    @for (piece of segment.pieces; track $index) {
-                      @if (piece.annotationId) {
-                        <mark
-                          class="reader-account-highlight"
-                          [attr.data-highlight-color]="piece.color"
-                          [attr.data-annotation-id]="piece.annotationId"
-                          >{{ piece.text }}</mark
-                        >
-                      } @else {
-                        <span>{{ piece.text }}</span>
+                  </div>
+                </section>
+              }
+            </div>
+          } @else {
+            <div class="reader-body account-reader-body">
+              @for (segment of renderedSegments(); track $index) {
+                @switch (segment.type) {
+                  @case ('heading') {
+                    <h2 [attr.data-source-anchor]="segment.anchor || null">
+                      @for (piece of segment.pieces; track $index) {
+                        @if (piece.annotationId) {
+                          <mark
+                            class="reader-account-highlight"
+                            [attr.data-highlight-color]="piece.color"
+                            [attr.data-annotation-id]="piece.annotationId"
+                            >{{ piece.text }}</mark
+                          >
+                        } @else {
+                          <span>{{ piece.text }}</span>
+                        }
                       }
-                    }
-                  </p>
+                    </h2>
+                  }
+                  @case ('quote') {
+                    <blockquote [attr.data-source-anchor]="segment.anchor || null">
+                      @for (piece of segment.pieces; track $index) {
+                        @if (piece.annotationId) {
+                          <mark
+                            class="reader-account-highlight"
+                            [attr.data-highlight-color]="piece.color"
+                            [attr.data-annotation-id]="piece.annotationId"
+                            >{{ piece.text }}</mark
+                          >
+                        } @else {
+                          <span>{{ piece.text }}</span>
+                        }
+                      }
+                    </blockquote>
+                  }
+                  @default {
+                    <p [attr.data-source-anchor]="segment.anchor || null">
+                      @for (piece of segment.pieces; track $index) {
+                        @if (piece.annotationId) {
+                          <mark
+                            class="reader-account-highlight"
+                            [attr.data-highlight-color]="piece.color"
+                            [attr.data-annotation-id]="piece.annotationId"
+                            >{{ piece.text }}</mark
+                          >
+                        } @else {
+                          <span>{{ piece.text }}</span>
+                        }
+                      }
+                    </p>
+                  }
                 }
               }
-            }
-          </div>
+            </div>
+          }
           @if (!segments().length) {
             <p class="account-reader-no-segments">
               Chương này chưa có đoạn văn bản được hỗ trợ để hiển thị.
