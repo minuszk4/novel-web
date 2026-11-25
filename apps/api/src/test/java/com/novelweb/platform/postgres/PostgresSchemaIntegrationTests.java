@@ -511,7 +511,7 @@ class PostgresSchemaIntegrationTests {
             connection.prepareStatement("SELECT COUNT(*) FROM databasechangelog");
         ResultSet changesets = changesetCount.executeQuery()) {
       changesets.next();
-      assertEquals(188, changesets.getInt(1), "unexpected number of applied changesets");
+      assertEquals(189, changesets.getInt(1), "unexpected number of applied changesets");
     }
 
     Set<String> actualTables = new HashSet<>();
@@ -2066,7 +2066,8 @@ class PostgresSchemaIntegrationTests {
                           "scopeCode",
                           "TRANSLATION_ADAPTATION",
                           "rightsBasisCode",
-                          "LICENSE_OR_PERMISSION"))));
+                          "LICENSE_OR_PERMISSION"),
+                      Map.of("scopeCode", "FREE_PREVIEW", "rightsBasisCode", "ORIGINAL_WORK"))));
 
       assertEquals(401, mockMvc.perform(get(path)).andReturn().getResponse().getStatus());
       MvcResult foreign = mockMvc.perform(get(path).cookie(outsiderCookie)).andReturn();
@@ -2263,7 +2264,7 @@ class PostgresSchemaIntegrationTests {
       assertTrue(readyBody.path("canSubmit").asBoolean());
       assertEquals(1, readyBody.path("readyChapterCount").asInt());
       assertTrue(readyBody.path("blockerCodes").isEmpty());
-      assertEquals(4, readyBody.path("scopes").size());
+      assertEquals(5, readyBody.path("scopes").size());
       assertTrue(
           java.util.stream.StreamSupport.stream(readyBody.path("scopes").spliterator(), false)
               .anyMatch(
@@ -2341,8 +2342,9 @@ class PostgresSchemaIntegrationTests {
       JsonNode receipt = objectMapper.readTree(submitted.getResponse().getContentAsString());
       assertEquals(1, receipt.path("requestVersion").asInt());
       assertEquals("PENDING_REVIEW", receipt.path("state").asText());
-      assertEquals(4, receipt.path("scopeCodes").size());
+      assertEquals(5, receipt.path("scopeCodes").size());
       assertTrue(receipt.path("scopeCodes").toString().contains("TRANSLATION_ADAPTATION"));
+      assertTrue(receipt.path("scopeCodes").toString().contains("FREE_PREVIEW"));
       assertFalse(submitted.getResponse().getContentAsString().contains("Private chapter prose"));
       assertEquals(1, publicationRequestCount(workId));
       assertEquals(1, publicationReviewEventCount(workId));
@@ -20006,6 +20008,135 @@ class PostgresSchemaIntegrationTests {
     } finally {
       deleteSessionTestUser(ownerId);
       deleteSessionTestUser(foreignId);
+    }
+  }
+
+  @Test
+  void paidPublicChapterServesOnlyTenPercentUnicodePreviewWithoutEntitlement() throws Exception {
+    UUID authorId = createSessionTestUser("Free Preview Author");
+    UUID readerId = createSessionTestUser("Free Preview Reader");
+    SyntheticPublicationScopeFixture publicationFixture = null;
+    try {
+      addCurrentPolicyAcceptances(authorId);
+      addCurrentPolicyAcceptances(readerId);
+      LibraryRepository.LibraryRecord library =
+          libraryService.createLibrary(authorId, "Free Preview Shelf");
+      LibraryRepository.WorkRecord work =
+          libraryService.createPrivateImportedWork(
+              authorId,
+              library.id(),
+              "Free Preview Story",
+              "Synthetic Author",
+              "vi",
+              sha256("free-preview-public-fixture"));
+      LibraryRepository.VolumeRecord volume =
+          libraryService.createVolume(authorId, work.id(), 1, "Volume 1");
+      LibraryRepository.ChapterRecord chapter =
+          libraryService.createChapter(authorId, work.id(), volume.id(), 1, "Chapter 1", "vi");
+      String firstSegment = "悟".repeat(6);
+      String secondSegment = "🧘".repeat(94);
+      libraryService.appendChapterRevision(
+          authorId,
+          chapter.id(),
+          "plain_text",
+          firstSegment + secondSegment,
+          List.of(
+              new LibraryService.NewSegment(1, "paragraph", firstSegment, "preview-c1-s1"),
+              new LibraryService.NewSegment(2, "paragraph", secondSegment, "preview-c1-s2")));
+      publicationFixture =
+          approveSyntheticPublicationScopes(
+              authorId,
+              work.id(),
+              "PUBLIC_METADATA",
+              "CHAPTER_TEXT",
+              "COMMERCIAL_SALE",
+              "FREE_PREVIEW");
+
+      SessionService.IssuedSession readerSession = sessionService.create(readerId).orElseThrow();
+      jakarta.servlet.http.Cookie readerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", readerSession.cookieValue());
+
+      MvcResult manifestResponse =
+          mockMvc
+              .perform(
+                  get("/api/v1/works/{workId}/reader-manifest", work.id()).cookie(readerCookie))
+              .andReturn();
+      assertEquals(200, manifestResponse.getResponse().getStatus());
+      JsonNode manifest =
+          objectMapper.readTree(manifestResponse.getResponse().getContentAsString());
+      assertEquals("preview", manifest.path("chapters").get(0).path("accessState").asText());
+      assertEquals(0, contentEntitlementCount(readerId));
+
+      MvcResult firstPageResponse =
+          mockMvc
+              .perform(
+                  get("/api/v1/chapters/{chapterId}/content", chapter.id())
+                      .param("limit", "1")
+                      .cookie(readerCookie))
+              .andReturn();
+      assertEquals(200, firstPageResponse.getResponse().getStatus());
+      assertTrue(firstPageResponse.getResponse().getHeader("Cache-Control").contains("no-store"));
+      JsonNode firstPage =
+          objectMapper.readTree(firstPageResponse.getResponse().getContentAsString());
+      assertEquals("preview", firstPage.path("accessState").asText());
+      assertEquals(10, firstPage.path("previewPercent").asInt());
+      assertEquals(firstSegment, firstPage.path("segments").get(0).path("sourceText").asText());
+      assertTrue(firstPage.hasNonNull("nextSegmentCursor"));
+
+      String previewCursor = firstPage.path("nextSegmentCursor").asText();
+      MvcResult boundaryPageResponse =
+          mockMvc
+              .perform(
+                  get("/api/v1/chapters/{chapterId}/content", chapter.id())
+                      .param("limit", "1")
+                      .param("cursor", previewCursor)
+                      .cookie(readerCookie))
+              .andReturn();
+      assertEquals(200, boundaryPageResponse.getResponse().getStatus());
+      JsonNode boundaryPage =
+          objectMapper.readTree(boundaryPageResponse.getResponse().getContentAsString());
+      String clippedUnicode = boundaryPage.path("segments").get(0).path("sourceText").asText();
+      assertEquals("🧘".repeat(4), clippedUnicode);
+      assertEquals(4, clippedUnicode.codePointCount(0, clippedUnicode.length()));
+      assertTrue(boundaryPage.path("nextSegmentCursor").isNull());
+
+      MvcResult replayedCursorResponse =
+          mockMvc
+              .perform(
+                  get("/api/v1/chapters/{chapterId}/content", chapter.id())
+                      .param("limit", "1")
+                      .param("cursor", previewCursor)
+                      .cookie(readerCookie))
+              .andReturn();
+      JsonNode replayedCursor =
+          objectMapper.readTree(replayedCursorResponse.getResponse().getContentAsString());
+      assertEquals(
+          "🧘".repeat(4), replayedCursor.path("segments").get(0).path("sourceText").asText());
+      assertTrue(replayedCursor.path("nextSegmentCursor").isNull());
+      assertEquals(0, contentEntitlementCount(readerId));
+
+      revokeSyntheticPublicationScope(work.id(), publicationFixture, "FREE_PREVIEW");
+      JsonNode revokedManifest =
+          objectMapper.readTree(
+              mockMvc
+                  .perform(
+                      get("/api/v1/works/{workId}/reader-manifest", work.id()).cookie(readerCookie))
+                  .andReturn()
+                  .getResponse()
+                  .getContentAsString());
+      assertEquals("locked", revokedManifest.path("chapters").get(0).path("accessState").asText());
+      MvcResult revokedContent =
+          mockMvc
+              .perform(
+                  get("/api/v1/chapters/{chapterId}/content", chapter.id()).cookie(readerCookie))
+              .andReturn();
+      assertEquals(404, revokedContent.getResponse().getStatus());
+      assertFalse(revokedContent.getResponse().getContentAsString().contains(firstSegment));
+    } finally {
+      deleteSessionTestUser(readerId);
+      deleteLibraryTestData(authorId);
+      cleanupSyntheticPublicationScopeFixture(publicationFixture);
+      deleteSessionTestUser(authorId);
     }
   }
 

@@ -77,6 +77,8 @@ public class ReaderService {
         chapter.workId(),
         chapter.revisionId(),
         chapter.language(),
+        chapter.accessState(),
+        chapter.previewPercent(),
         page.items().stream()
             .map(
                 segment ->
@@ -118,6 +120,8 @@ public class ReaderService {
       UUID workId,
       UUID sourceRevisionId,
       String sourceLanguage,
+      String accessState,
+      Integer previewPercent,
       List<SourceSegment> segments,
       String nextSegmentCursor) {
     public ChapterContent {

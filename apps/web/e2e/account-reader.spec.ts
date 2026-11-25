@@ -417,6 +417,8 @@ async function installReaderRoutes(
         workId,
         sourceRevisionId: revisionId,
         sourceLanguage: 'vi',
+        accessState: 'readable',
+        previewPercent: null,
         segments,
         nextSegmentCursor: null,
       });
@@ -426,6 +428,8 @@ async function installReaderRoutes(
       workId,
       sourceRevisionId: revisionId,
       sourceLanguage: 'vi',
+      accessState: 'readable',
+      previewPercent: null,
       segments: longThirdChapter
         ? Array.from({ length: 20 }, (_, index) => ({
             anchor: `ch3-p${index + 1}`,
@@ -681,6 +685,64 @@ for (const viewport of viewports) {
     expect(dimensions.document).toBeLessThanOrEqual(dimensions.viewport);
   });
 }
+
+test('approved paid-chapter preview explains its limit and skips private Reader writes', async ({
+  page,
+}) => {
+  const progressWrites: MockProgressWrite[] = [];
+  const optionalFeatureRequests: string[] = [];
+  await installReaderRoutes(page, 200, false, 200, false, undefined, (write) => {
+    progressWrites.push(write);
+  });
+  await page.route(`**/api/v1/works/${workId}/reader-manifest**`, (route) =>
+    json(route, {
+      work: { ...work, visibility: 'public' },
+      sourceLanguage: 'vi',
+      chapters: [{ ...chapters[0], accessState: 'preview' }],
+      nextCursor: null,
+    }),
+  );
+  await page.route(`**/api/v1/chapters/${chapterIds[0]}/content**`, (route) =>
+    json(route, {
+      chapterId: chapterIds[0],
+      workId,
+      sourceRevisionId: revisionId,
+      sourceLanguage: 'vi',
+      accessState: 'preview',
+      previewPercent: 10,
+      segments: [{ anchor: 'preview-p1', type: 'paragraph', sourceText: 'Bản đọc thử.' }],
+      nextSegmentCursor: null,
+    }),
+  );
+  page.on('request', (request) => {
+    const pathname = new URL(request.url()).pathname;
+    if (pathname.includes('/reading-sessions') || pathname.includes('/annotations')) {
+      optionalFeatureRequests.push(`${request.method()} ${pathname}`);
+    }
+  });
+
+  await page.goto(`/app/reader/${workId}/${chapterIds[0]}`);
+
+  await expect(page.getByRole('heading', { name: 'Cánh cửa mở' })).toBeVisible();
+  await expect(page.getByText('BẢN ĐỌC THỬ · 10%')).toBeVisible();
+  await expect(page.getByText('Bạn đang xem 10% đầu chương.', { exact: false })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Dấu trang' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Ghi chú' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Xem giá và mở toàn chương' })).toBeVisible();
+  await page.locator('.account-reader-content').evaluate((element) => {
+    element.dispatchEvent(new Event('scroll'));
+  });
+  await page.waitForTimeout(900);
+  expect(progressWrites).toEqual([]);
+  expect(optionalFeatureRequests).toEqual([]);
+  await expectNoAxeViolations(page);
+
+  await page.getByRole('button', { name: 'Xem giá và mở toàn chương' }).click();
+  await expect(page.getByText('CHƯƠNG TRẢ PHÍ · MÔI TRƯỜNG TEST')).toBeVisible();
+  await expect(page.getByText('Quay lại bản đọc thử')).toBeVisible();
+  await page.getByRole('button', { name: 'Quay lại bản đọc thử' }).click();
+  await expect(page.getByText('Bản đọc thử.', { exact: true })).toBeVisible();
+});
 
 test('cultivation Reader sessions follow content, focus, chapter changes, and server policy', async ({
   page,

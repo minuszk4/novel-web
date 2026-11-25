@@ -4664,6 +4664,35 @@ button.reader-chapter-nav {
   line-height: 1.35;
   white-space: normal;
 }
+.account-reader-preview-note {
+  display: grid;
+  gap: 10px;
+  margin: 18px 0 24px;
+  padding: 16px;
+  border: 1px solid #dfd8c6;
+  border-left: 4px solid #987a3f;
+  border-radius: 10px;
+  color: #34343a;
+  background: #faf7ef;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.account-reader-preview-note p {
+  margin: 0;
+}
+.account-reader-preview-note .eyebrow {
+  color: #75613b;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+.account-reader-preview-note .button {
+  min-height: 44px;
+  height: auto;
+  padding-block: 10px;
+  line-height: 1.35;
+  white-space: normal;
+}
 .reader-app:has(.account-reader-paywall) .reader-tools,
 .reader-app:has(.account-reader-paywall) .reader-account-bar,
 .reader-app:has(.account-reader-paywall) .account-reader-bottom {
@@ -4795,6 +4824,10 @@ button.reader-chapter-nav {
   border-color: #d9cbb5;
   background: #fffaf0;
 }
+.reader-sepia .account-reader-preview-note {
+  border-color: #d9cbb5;
+  background: #f1e8d7;
+}
 .reader-dark .reader-account-bar {
   border-color: #3a3b40;
   color: #c4c5c8;
@@ -4831,9 +4864,16 @@ button.reader-chapter-nav {
   color: #eeeae1;
 }
 .reader-dark .account-reader-paywall,
+.reader-dark .account-reader-preview-note,
 .reader-dark .account-reader-paywall-facts > div {
   border-color: #45464d;
   background: #26272d;
+}
+.reader-dark .account-reader-preview-note {
+  color: #eeeae1;
+}
+.reader-dark .account-reader-preview-note .eyebrow {
+  color: #e2c98a;
 }
 .reader-dark .account-reader-paywall-facts dd {
   color: #eeeae1;

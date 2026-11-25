@@ -154,6 +154,12 @@
                 basisLabel(claimFor(scope.scopeCode)!.rightsBasisCode)
               }}</span>
             </div>
+            @if (scope.scopeCode === 'FREE_PREVIEW') {
+              <p class="section-intro">
+                Bản đọc thử: {{ scope.previewPercent }}% đầu chương, tính theo Unicode code point.
+                Chính sách snapshot: {{ scope.previewPolicyVersion }}.
+              </p>
+            }
             <details class="snapshot-digest">
               <summary>Mã kiểm tra snapshot</summary>
               <code>{{ scope.snapshotSha256 }}</code>

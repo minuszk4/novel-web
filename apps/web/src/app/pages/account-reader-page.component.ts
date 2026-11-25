@@ -132,11 +132,19 @@ export class AccountReaderPageComponent {
   protected readonly canChooseTranslation = computed(
     () =>
       this.work()?.visibility === 'public' &&
+      !this.isPreview() &&
       this.systemStatus.status()?.features.translationPublicationEnabled === true &&
       this.availableTranslationLanguages().length > 0,
   );
   protected readonly renderedSegments = computed(() => this.buildRenderedSegments());
   protected readonly sourceRevisionId = signal<string | null>(null);
+  protected readonly previewPercent = signal<number | null>(null);
+  protected readonly isPreview = computed(
+    () => this.activeChapter()?.accessState === 'preview' || this.previewPercent() !== null,
+  );
+  protected readonly personalReaderFeaturesAvailable = computed(
+    () => this.activeChapter()?.accessState === 'readable' && !this.isPreview(),
+  );
   protected readonly manifestState = signal<'loading' | 'ready' | 'error'>('loading');
   protected readonly contentState = signal<
     'idle' | 'loading' | 'ready' | 'empty' | 'unavailable' | 'locked' | 'error'
@@ -507,7 +515,12 @@ export class AccountReaderPageComponent {
 
   protected async changeReaderLanguage(event: Event): Promise<void> {
     const chapter = this.activeChapter();
-    if (!chapter || ['loading', 'locked', 'unavailable'].includes(this.contentState())) return;
+    if (
+      !chapter ||
+      this.isPreview() ||
+      ['loading', 'locked', 'unavailable'].includes(this.contentState())
+    )
+      return;
     const language = (event.target as HTMLSelectElement).value;
     if (language && !this.availableTranslationLanguages().includes(language)) return;
     if (language === this.selectedReaderLanguage()) return;
@@ -594,6 +607,20 @@ export class AccountReaderPageComponent {
     }
   }
 
+  protected openFullChapterPaywall(): void {
+    const chapter = this.activeChapter();
+    if (!chapter || !this.isPreview() || this.contentState() !== 'ready') return;
+    this.contentState.set('locked');
+    void this.loadChapterUnlock(chapter, this.loadToken);
+  }
+
+  protected returnToChapterPreview(): void {
+    if (this.activeChapter()?.accessState !== 'preview' || !this.isPreview()) return;
+    this.unlockConfirming.set(false);
+    this.contentState.set('ready');
+    this.focusReaderHeading();
+  }
+
   protected async retryUnlockQuote(): Promise<void> {
     const chapter = this.activeChapter();
     if (chapter?.accessState === 'locked') await this.loadChapterUnlock(chapter, this.loadToken);
@@ -632,6 +659,7 @@ export class AccountReaderPageComponent {
   }
 
   protected toggleBookmarks(event?: Event): void {
+    if (!this.personalReaderFeaturesAvailable()) return;
     if (this.bookmarksOpen()) {
       this.closePanel();
       return;
@@ -673,7 +701,7 @@ export class AccountReaderPageComponent {
   }
 
   protected toggleAnnotations(event?: Event): void {
-    if (this.selectedReaderLanguage()) return;
+    if (this.selectedReaderLanguage() || !this.personalReaderFeaturesAvailable()) return;
     if (this.annotationsOpen()) {
       this.closePanel();
       return;
@@ -702,7 +730,8 @@ export class AccountReaderPageComponent {
   protected async saveAnnotationDraft(): Promise<void> {
     const draft = this.annotationDraft();
     const work = this.work();
-    if (!draft || !work || !this.sourceRevisionId()) return;
+    if (!draft || !work || !this.sourceRevisionId() || !this.personalReaderFeaturesAvailable())
+      return;
     this.annotationError.set(null);
     this.annotationMessage.set('Đang lưu ghi chú và đánh dấu…');
     try {
@@ -906,6 +935,7 @@ export class AccountReaderPageComponent {
       !work ||
       !chapter ||
       this.contentState() !== 'ready' ||
+      !this.personalReaderFeaturesAvailable() ||
       this.bookmarkSyncState() === 'saving'
     ) {
       return;
@@ -1259,6 +1289,7 @@ export class AccountReaderPageComponent {
     this.activeChapter.set(chapter);
     this.segments.set([]);
     this.sourceRevisionId.set(null);
+    this.previewPercent.set(null);
     this.chapterAnnotations.set([]);
     this.contentError.set(null);
     this.manifestError.set(null);
@@ -1277,7 +1308,7 @@ export class AccountReaderPageComponent {
       void this.loadChapterUnlock(chapter, token);
       return;
     }
-    if (chapter.accessState !== 'readable') {
+    if (chapter.accessState !== 'readable' && chapter.accessState !== 'preview') {
       this.contentState.set('unavailable');
       this.focusReaderHeading();
       return;
@@ -1307,6 +1338,8 @@ export class AccountReaderPageComponent {
       let revisionId: string | undefined;
       let workId: string | null = null;
       let translationVersionId: string | null = null;
+      let accessState: ReaderContentPage['accessState'] | null = null;
+      let responsePreviewPercent: number | null = null;
       const segments: ReaderSourceSegment[] = [];
       for (let pageIndex = 0; pageIndex < maxContentPages; pageIndex += 1) {
         const page: ReaderContentPage | ReaderTranslationContentPage = targetLanguage
@@ -1322,6 +1355,18 @@ export class AccountReaderPageComponent {
           throw new ReaderApiError('INVALID_READER_RESPONSE', 502, 'INVALID_READER_RESPONSE');
         if (revisionId && page.sourceRevisionId !== revisionId) {
           throw new ReaderApiError('INVALID_READER_RESPONSE', 502, 'INVALID_READER_RESPONSE');
+        }
+        if ('accessState' in page) {
+          if (accessState !== null && accessState !== page.accessState) {
+            throw new ReaderApiError('INVALID_READER_RESPONSE', 502, 'INVALID_READER_RESPONSE');
+          }
+          accessState = page.accessState;
+          if (page.accessState === 'preview') {
+            if (responsePreviewPercent !== null && responsePreviewPercent !== page.previewPercent) {
+              throw new ReaderApiError('INVALID_READER_RESPONSE', 502, 'INVALID_READER_RESPONSE');
+            }
+            responsePreviewPercent = page.previewPercent;
+          }
         }
         if ('translationVersionId' in page && typeof page.translationVersionId === 'string') {
           if (translationVersionId && page.translationVersionId !== translationVersionId) {
@@ -1358,10 +1403,15 @@ export class AccountReaderPageComponent {
       }
       this.segments.set(segments);
       this.sourceRevisionId.set(revisionId);
+      if (targetLanguage && accessState === 'preview') {
+        throw new ReaderApiError('TRANSLATION_NOT_AVAILABLE', 404, 'TRANSLATION_NOT_AVAILABLE');
+      }
+      this.previewPercent.set(accessState === 'preview' ? responsePreviewPercent : null);
       this.contentState.set('ready');
-      this.startCultivationSession(workId, chapter.id, token);
-      if (!targetLanguage) void this.loadChapterAnnotations(workId, chapter.id, token);
-      else this.chapterAnnotations.set([]);
+      if (accessState === 'readable') this.startCultivationSession(workId, chapter.id, token);
+      if (!targetLanguage && accessState === 'readable') {
+        void this.loadChapterAnnotations(workId, chapter.id, token);
+      } else this.chapterAnnotations.set([]);
       if (restoreProgress?.chapterId === chapter.id) {
         this.restoreProgressPosition(restoreProgress);
       } else if (this.pendingBookmarkPosition?.chapterId === chapter.id) {
@@ -1470,6 +1520,7 @@ export class AccountReaderPageComponent {
   protected canOpenChapter(chapter: ReaderChapter): boolean {
     return (
       chapter.accessState === 'readable' ||
+      chapter.accessState === 'preview' ||
       (chapter.accessState === 'locked' && this.work()?.visibility === 'public')
     );
   }
@@ -2231,7 +2282,7 @@ export class AccountReaderPageComponent {
     }
     const workId = this.work()?.id;
     const chapter = this.activeChapter();
-    if (workId && chapter && this.contentState() === 'ready') {
+    if (workId && chapter && this.contentState() === 'ready' && !this.isPreview()) {
       const container = document.querySelector<HTMLElement>('.account-reader-content');
       if (container) {
         const availableScroll = Math.max(0, container.scrollHeight - container.clientHeight);

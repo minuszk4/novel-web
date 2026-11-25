@@ -85,6 +85,8 @@ export class PublicationRequestFormComponent implements OnChanges, OnDestroy {
   protected readonly commercialSaleBasis = signal<PublicationRightsBasisCode | ''>('');
   protected readonly includeTranslationAdaptation = signal(false);
   protected readonly translationAdaptationBasis = signal<PublicationRightsBasisCode | ''>('');
+  protected readonly includeFreePreview = signal(false);
+  protected readonly freePreviewBasis = signal<PublicationRightsBasisCode | ''>('');
   protected readonly declarationConfirmed = signal(false);
   protected readonly submitting = signal(false);
   protected readonly uncertain = signal(false);
@@ -181,6 +183,8 @@ export class PublicationRequestFormComponent implements OnChanges, OnDestroy {
       this.chapterTextBasis() !== '' &&
       (!this.includeCommercialSale() || this.commercialSaleBasis() !== '') &&
       (!this.includeTranslationAdaptation() || this.translationAdaptationBasis() !== '') &&
+      (!this.includeFreePreview() ||
+        (this.includeCommercialSale() && this.freePreviewBasis() !== '')) &&
       this.declarationConfirmed() &&
       !this.isBusy &&
       !this.uncertain() &&
@@ -269,7 +273,11 @@ export class PublicationRequestFormComponent implements OnChanges, OnDestroy {
   protected toggleCommercialSale(event: Event): void {
     const checked = (event.currentTarget as HTMLInputElement).checked;
     this.includeCommercialSale.set(checked);
-    if (!checked) this.commercialSaleBasis.set('');
+    if (!checked) {
+      this.commercialSaleBasis.set('');
+      this.includeFreePreview.set(false);
+      this.freePreviewBasis.set('');
+    }
     this.resetDeclarationConfirmation();
   }
 
@@ -282,6 +290,18 @@ export class PublicationRequestFormComponent implements OnChanges, OnDestroy {
     const checked = (event.currentTarget as HTMLInputElement).checked;
     this.includeTranslationAdaptation.set(checked);
     if (!checked) this.translationAdaptationBasis.set('');
+    this.resetDeclarationConfirmation();
+  }
+
+  protected changeFreePreviewBasis(event: Event): void {
+    this.freePreviewBasis.set(readBasisValue(event));
+    this.resetDeclarationConfirmation();
+  }
+
+  protected toggleFreePreview(event: Event): void {
+    const checked = (event.currentTarget as HTMLInputElement).checked;
+    this.includeFreePreview.set(checked);
+    if (!checked) this.freePreviewBasis.set('');
     this.resetDeclarationConfirmation();
   }
 
@@ -358,6 +378,8 @@ export class PublicationRequestFormComponent implements OnChanges, OnDestroy {
         return 'Quyền thương mại';
       case 'TRANSLATION_ADAPTATION':
         return 'Quyền chuyển ngữ/thích nghi';
+      case 'FREE_PREVIEW':
+        return 'Quyền hiển thị bản đọc thử';
     }
   }
 
@@ -439,6 +461,10 @@ export class PublicationRequestFormComponent implements OnChanges, OnDestroy {
         scopeCode: 'TRANSLATION_ADAPTATION',
         rightsBasisCode: translationAdaptationBasis,
       });
+    }
+    const freePreviewBasis = this.freePreviewBasis();
+    if (this.includeFreePreview() && freePreviewBasis) {
+      scopeClaims.push({ scopeCode: 'FREE_PREVIEW', rightsBasisCode: freePreviewBasis });
     }
     const submission: PublicationRequestSubmission = { policyVersion, scopeClaims };
     return {
@@ -579,6 +605,8 @@ export class PublicationRequestFormComponent implements OnChanges, OnDestroy {
     this.commercialSaleBasis.set('');
     this.includeTranslationAdaptation.set(false);
     this.translationAdaptationBasis.set('');
+    this.includeFreePreview.set(false);
+    this.freePreviewBasis.set('');
     this.declarationConfirmed.set(false);
     this.submitting.set(false);
     this.uncertain.set(false);

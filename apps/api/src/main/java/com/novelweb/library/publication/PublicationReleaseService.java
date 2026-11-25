@@ -674,6 +674,8 @@ public class PublicationReleaseService {
                                AS chapter_text_snapshot,
                            publication_work_scope_snapshot(work.id, 'COMMERCIAL_SALE')::text
                                AS commercial_sale_snapshot,
+                           publication_work_scope_snapshot(work.id, 'FREE_PREVIEW')::text
+                               AS free_preview_snapshot,
                            publication_work_scope_snapshot(work.id, 'TRANSLATION_ADAPTATION')::text
                                AS translation_adaptation_snapshot,
                            (SELECT state.current_state
@@ -694,6 +696,7 @@ public class PublicationReleaseService {
             row.getString("metadata_snapshot"),
             row.getString("chapter_text_snapshot"),
             row.getString("commercial_sale_snapshot"),
+            row.getString("free_preview_snapshot"),
             row.getString("translation_adaptation_snapshot"),
             row.getString("current_request_state"));
       }
@@ -716,6 +719,8 @@ public class PublicationReleaseService {
                            AS chapter_text_snapshot,
                        publication_work_scope_snapshot_for_chapter(work.id, 'COMMERCIAL_SALE', ?)::text
                            AS commercial_sale_snapshot,
+                       publication_work_scope_snapshot_for_chapter(work.id, 'FREE_PREVIEW', ?)::text
+                           AS free_preview_snapshot,
                        publication_work_scope_snapshot_for_chapter(work.id, 'TRANSLATION_ADAPTATION', ?)::text
                            AS translation_adaptation_snapshot,
                        (SELECT state.current_state FROM publication_requests request
@@ -725,8 +730,8 @@ public class PublicationReleaseService {
                            AS current_request_state
                   FROM works work WHERE work.id = ?
                 """)) {
-      for (int parameter = 1; parameter <= 4; parameter++) select.setObject(parameter, chapterId);
-      select.setObject(5, workId);
+      for (int parameter = 1; parameter <= 5; parameter++) select.setObject(parameter, chapterId);
+      select.setObject(6, workId);
       try (ResultSet row = select.executeQuery()) {
         if (!row.next()) throw new SQLException("The locked public work disappeared");
         return new ReadinessSnapshot(
@@ -735,6 +740,7 @@ public class PublicationReleaseService {
             row.getString("metadata_snapshot"),
             row.getString("chapter_text_snapshot"),
             row.getString("commercial_sale_snapshot"),
+            row.getString("free_preview_snapshot"),
             row.getString("translation_adaptation_snapshot"),
             row.getString("current_request_state"));
       }
@@ -1294,6 +1300,7 @@ public class PublicationReleaseService {
       String metadataSnapshot,
       String chapterTextSnapshot,
       String commercialSaleSnapshot,
+      String freePreviewSnapshot,
       String translationAdaptationSnapshot,
       String currentRequestState) {
     private String etag(UUID workId, CurrentPolicy policy, Instant acceptedAt) {
@@ -1309,6 +1316,7 @@ public class PublicationReleaseService {
               PublicationSnapshotEtags.scope("PUBLIC_METADATA", metadataSnapshot),
               PublicationSnapshotEtags.scope("CHAPTER_TEXT", chapterTextSnapshot),
               PublicationSnapshotEtags.scope("COMMERCIAL_SALE", commercialSaleSnapshot),
+              PublicationSnapshotEtags.scope("FREE_PREVIEW", freePreviewSnapshot),
               PublicationSnapshotEtags.scope(
                   "TRANSLATION_ADAPTATION", translationAdaptationSnapshot)));
     }

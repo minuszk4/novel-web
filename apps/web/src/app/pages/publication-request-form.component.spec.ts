@@ -58,6 +58,11 @@ function readyState(overrides: Partial<PublicationReadiness> = {}): PublicationR
         ready: true,
         snapshotEtag: `"publication-scope-${'e'.repeat(64)}"`,
       },
+      {
+        scopeCode: 'FREE_PREVIEW',
+        ready: true,
+        snapshotEtag: `"publication-scope-${'f'.repeat(64)}"`,
+      },
     ],
     blockerCodes: [],
     ...overrides,

@@ -353,7 +353,7 @@ public class PublicationReviewDecisionService {
              WHERE scope.request_id = ?
              ORDER BY CASE scope.scope_code WHEN 'PUBLIC_METADATA' THEN 0
                   WHEN 'CHAPTER_TEXT' THEN 1 WHEN 'COMMERCIAL_SALE' THEN 2
-                  WHEN 'TRANSLATION_ADAPTATION' THEN 3 ELSE 4 END
+                  WHEN 'FREE_PREVIEW' THEN 3 WHEN 'TRANSLATION_ADAPTATION' THEN 4 ELSE 5 END
             """
             .formatted(snapshotExpression);
     try (PreparedStatement select = connection.prepareStatement(sql)) {
@@ -524,8 +524,9 @@ public class PublicationReviewDecisionService {
       case "PUBLIC_METADATA" -> 0;
       case "CHAPTER_TEXT" -> 1;
       case "COMMERCIAL_SALE" -> 2;
-      case "TRANSLATION_ADAPTATION" -> 3;
-      default -> 4;
+      case "FREE_PREVIEW" -> 3;
+      case "TRANSLATION_ADAPTATION" -> 4;
+      default -> 5;
     };
   }
 

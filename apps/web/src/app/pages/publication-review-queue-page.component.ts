@@ -53,6 +53,8 @@ export class PublicationReviewQueuePageComponent implements OnInit {
         return 'Quyền thương mại';
       case 'TRANSLATION_ADAPTATION':
         return 'Quyền chuyển ngữ';
+      case 'FREE_PREVIEW':
+        return 'Bản đọc thử 10%';
     }
   }
 

@@ -58,7 +58,7 @@
           aria-haspopup="dialog"
           title="Dấu trang của tác phẩm"
           [attr.aria-expanded]="bookmarksOpen()"
-          [disabled]="!work()"
+          [disabled]="!work() || !personalReaderFeaturesAvailable()"
         >
           <span aria-hidden="true">♧</span><span>Dấu trang</span>
         </button>
@@ -71,7 +71,7 @@
           aria-haspopup="dialog"
           title="Ghi chú riêng tư và tô sáng"
           [attr.aria-expanded]="annotationsOpen()"
-          [disabled]="!work()"
+          [disabled]="!work() || !personalReaderFeaturesAvailable()"
         >
           <span aria-hidden="true">▧</span><span>Ghi chú</span>
         </button>
@@ -79,7 +79,7 @@
     </div>
   </header>
 
-  @if (!selectedReaderLanguage()) {
+  @if (!selectedReaderLanguage() && !isPreview()) {
     <app-translation-preview-action
       [chapterId]="activeChapter()?.id ?? null"
       [sourceRevisionId]="sourceRevisionId()"
@@ -157,7 +157,7 @@
             class="toc-chapter account-toc-chapter"
             type="button"
             [class.current]="chapter.id === activeChapter()?.id"
-            [class.unavailable]="chapter.accessState !== 'readable'"
+            [class.unavailable]="chapter.accessState === 'unavailable'"
             [class.account-toc-locked]="chapter.accessState === 'locked'"
             [attr.aria-current]="chapter.id === activeChapter()?.id ? 'page' : null"
             [attr.data-reader-chapter-id]="chapter.id"
@@ -168,6 +168,8 @@
             <strong>{{ chapter.title || 'Chưa có tiêu đề' }}</strong>
             @if (chapter.accessState === 'locked') {
               <span class="account-toc-status">Cần mở khóa</span>
+            } @else if (chapter.accessState === 'preview') {
+              <span class="account-toc-status">Đọc thử 10%</span>
             } @else if (chapter.accessState !== 'readable') {
               <span class="account-toc-status">Chưa sẵn sàng</span>
             }
@@ -757,6 +759,11 @@
           Chương chưa được gửi xuống trình đọc. Xem giá và số credit đã mua cần dùng trước khi xác
           nhận mở. Thưởng credit không dùng cho thao tác này.
         </p>
+        @if (activeChapter()?.accessState === 'preview') {
+          <button class="button button-outline" type="button" (click)="returnToChapterPreview()">
+            Quay lại bản đọc thử
+          </button>
+        }
 
         @if (unlockQuoteState() === 'disabled') {
           <p class="account-reader-paywall-notice" role="status">
@@ -931,6 +938,23 @@
                 : 'Nội dung gốc'
             }}
           </p>
+          @if (isPreview()) {
+            <aside class="account-reader-preview-note" role="note">
+              <p class="eyebrow">BẢN ĐỌC THỬ · {{ previewPercent() }}%</p>
+              <p>
+                Bạn đang xem {{ previewPercent() }}% đầu chương. Phần còn lại chỉ mở sau khi dùng
+                credit để mở khóa.
+              </p>
+              <p>Bản đọc thử không lưu tiến độ, dấu trang, ghi chú và không cộng điểm tu luyện.</p>
+              <button
+                class="button button-primary"
+                type="button"
+                (click)="openFullChapterPaywall()"
+              >
+                Xem giá và mở toàn chương
+              </button>
+            </aside>
+          }
           <div class="reader-body account-reader-body">
             @for (segment of renderedSegments(); track $index) {
               @switch (segment.type) {

@@ -155,6 +155,8 @@ export class PublicationReviewDetailPageComponent implements OnInit {
         return 'Quyền thương mại';
       case 'TRANSLATION_ADAPTATION':
         return 'Quyền chuyển ngữ/thích nghi';
+      case 'FREE_PREVIEW':
+        return 'Quyền hiển thị bản đọc thử';
     }
   }
 

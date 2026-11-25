@@ -47,8 +47,8 @@
         </div>
         <p class="account-work-detail-description">
           @if (currentWork.visibility === 'public') {
-            Chương miễn phí và quyền mở chương được xác nhận từ máy chủ. Nội dung chưa được cấp
-            quyền sẽ không tải vào trình đọc.
+            Chương miễn phí, bản đọc thử 10% đã duyệt và quyền mở chương được xác nhận từ máy chủ.
+            Phần nội dung vượt quyền hiện tại sẽ không tải vào trình đọc.
           } @else {
             Tác phẩm thuộc thư viện tài khoản của bạn. Novel chỉ hiển thị chương mà phiên hiện tại
             có quyền đọc.
@@ -114,7 +114,11 @@
                   <span class="chapter-ordinal">Chương {{ chapter.ordinal }}</span>
                   <span class="chapter-name">{{ chapter.title }}</span>
                   <span class="chapter-read-label">{{
-                    chapter.accessState === 'locked' ? 'Xem giá & mở →' : 'Đọc →'
+                    chapter.accessState === 'locked'
+                      ? 'Xem giá & mở →'
+                      : chapter.accessState === 'preview'
+                        ? 'Đọc thử 10% →'
+                        : 'Đọc →'
                   }}</span>
                 </a>
               } @else {

@@ -44,6 +44,7 @@ export class AccountWorkDetailPageComponent {
   protected readonly canOpenReader = computed(
     () =>
       this.readableCount() > 0 ||
+      this.chapters().some(({ accessState }) => accessState === 'preview') ||
       (this.work()?.visibility === 'public' &&
         this.chapters().some(({ accessState }) => accessState === 'locked')) ||
       !!this.nextCursor(),
@@ -252,6 +253,7 @@ export class AccountWorkDetailPageComponent {
   protected canReadOrUnlock(chapter: ReaderChapter | null): boolean {
     return (
       chapter?.accessState === 'readable' ||
+      chapter?.accessState === 'preview' ||
       (chapter?.accessState === 'locked' && this.work()?.visibility === 'public')
     );
   }

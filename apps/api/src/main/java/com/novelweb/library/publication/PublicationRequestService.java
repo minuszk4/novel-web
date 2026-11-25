@@ -165,6 +165,8 @@ public class PublicationRequestService {
         String translationAdaptationEtag =
             PublicationSnapshotEtags.scope(
                 "TRANSLATION_ADAPTATION", workSnapshot.translationAdaptationSnapshot());
+        String freePreviewEtag =
+            PublicationSnapshotEtags.scope("FREE_PREVIEW", workSnapshot.freePreviewSnapshot());
         String currentEtag =
             PublicationSnapshotEtags.readiness(
                 workId,
@@ -175,7 +177,11 @@ public class PublicationRequestService {
                 acceptance.orElseThrow().acceptedAt(),
                 currentRequestState,
                 List.of(
-                    metadataEtag, chapterTextEtag, commercialSaleEtag, translationAdaptationEtag));
+                    metadataEtag,
+                    chapterTextEtag,
+                    commercialSaleEtag,
+                    freePreviewEtag,
+                    translationAdaptationEtag));
         if (!currentEtag.equals(expectedSnapshotEtag)) {
           connection.commit();
           return SubmitResult.staleSnapshot(currentEtag);
@@ -188,7 +194,8 @@ public class PublicationRequestService {
                 metadataEtag,
                 chapterTextEtag,
                 commercialSaleEtag,
-                translationAdaptationEtag);
+                translationAdaptationEtag,
+                freePreviewEtag);
         byte[] snapshotDigest = snapshotDigest(selectedSnapshots);
         PublicationRequestRateLimiter.Decision rateDecision =
             rateLimiter.acquire(connection, userId);
@@ -303,6 +310,8 @@ public class PublicationRequestService {
         String translationAdaptationEtag =
             PublicationSnapshotEtags.scope(
                 "TRANSLATION_ADAPTATION", workSnapshot.translationAdaptationSnapshot());
+        String freePreviewEtag =
+            PublicationSnapshotEtags.scope("FREE_PREVIEW", workSnapshot.freePreviewSnapshot());
         String currentEtag =
             PublicationSnapshotEtags.readiness(
                 workId,
@@ -315,7 +324,11 @@ public class PublicationRequestService {
                 acceptance == null ? null : acceptance.acceptedAt(),
                 currentState,
                 List.of(
-                    metadataEtag, chapterTextEtag, commercialSaleEtag, translationAdaptationEtag));
+                    metadataEtag,
+                    chapterTextEtag,
+                    commercialSaleEtag,
+                    freePreviewEtag,
+                    translationAdaptationEtag));
         if (!currentEtag.equals(expectedSnapshotEtag)) {
           connection.commit();
           return WithdrawalResult.staleSnapshot(currentEtag);
@@ -437,7 +450,7 @@ public class PublicationRequestService {
             "SELECT scope_code FROM publication_request_scope_snapshots WHERE request_id = ?"
                 + " ORDER BY CASE scope_code WHEN 'PUBLIC_METADATA' THEN 0"
                 + " WHEN 'CHAPTER_TEXT' THEN 1 WHEN 'COMMERCIAL_SALE' THEN 2"
-                + " WHEN 'TRANSLATION_ADAPTATION' THEN 3 ELSE 4 END")) {
+                + " WHEN 'FREE_PREVIEW' THEN 3 WHEN 'TRANSLATION_ADAPTATION' THEN 4 ELSE 5 END")) {
       select.setObject(1, requestId);
       try (ResultSet rows = select.executeQuery()) {
         while (rows.next()) scopeCodes.add(rows.getString(1));
@@ -508,7 +521,8 @@ public class PublicationRequestService {
                    %s::text AS metadata_snapshot,
                    %s::text AS chapter_text_snapshot,
                    %s::text AS commercial_sale_snapshot,
-                   %s::text AS translation_adaptation_snapshot
+                   %s::text AS translation_adaptation_snapshot,
+                   %s::text AS free_preview_snapshot
               FROM works w WHERE w.id = ?
             """
             .formatted(
@@ -516,11 +530,12 @@ public class PublicationRequestService {
                 scopeSnapshotFunction.formatted("PUBLIC_METADATA"),
                 scopeSnapshotFunction.formatted("CHAPTER_TEXT"),
                 scopeSnapshotFunction.formatted("COMMERCIAL_SALE"),
-                scopeSnapshotFunction.formatted("TRANSLATION_ADAPTATION"));
+                scopeSnapshotFunction.formatted("TRANSLATION_ADAPTATION"),
+                scopeSnapshotFunction.formatted("FREE_PREVIEW"));
     try (PreparedStatement select = connection.prepareStatement(query)) {
       int parameter = 1;
       if (targetChapterId != null) {
-        for (int i = 0; i < 4; i++) select.setObject(parameter++, targetChapterId);
+        for (int i = 0; i < 5; i++) select.setObject(parameter++, targetChapterId);
       }
       select.setObject(parameter, workId);
       try (ResultSet row = select.executeQuery()) {
@@ -532,7 +547,8 @@ public class PublicationRequestService {
             row.getString("metadata_snapshot"),
             row.getString("chapter_text_snapshot"),
             row.getString("commercial_sale_snapshot"),
-            row.getString("translation_adaptation_snapshot"));
+            row.getString("translation_adaptation_snapshot"),
+            row.getString("free_preview_snapshot"));
       }
     }
   }
@@ -585,7 +601,8 @@ public class PublicationRequestService {
       String metadataEtag,
       String chapterTextEtag,
       String commercialSaleEtag,
-      String translationAdaptationEtag) {
+      String translationAdaptationEtag,
+      String freePreviewEtag) {
     List<ScopeSnapshot> snapshots = new ArrayList<>();
     for (ScopeClaim claim : claims) {
       String json =
@@ -594,6 +611,7 @@ public class PublicationRequestService {
             case "CHAPTER_TEXT" -> workSnapshot.chapterTextSnapshot();
             case "COMMERCIAL_SALE" -> workSnapshot.commercialSaleSnapshot();
             case "TRANSLATION_ADAPTATION" -> workSnapshot.translationAdaptationSnapshot();
+            case "FREE_PREVIEW" -> workSnapshot.freePreviewSnapshot();
             default -> throw new IllegalArgumentException("Unsupported publication scope");
           };
       String etag =
@@ -602,6 +620,7 @@ public class PublicationRequestService {
             case "CHAPTER_TEXT" -> chapterTextEtag;
             case "COMMERCIAL_SALE" -> commercialSaleEtag;
             case "TRANSLATION_ADAPTATION" -> translationAdaptationEtag;
+            case "FREE_PREVIEW" -> freePreviewEtag;
             default -> throw new IllegalArgumentException("Unsupported publication scope");
           };
       snapshots.add(new ScopeSnapshot(claim.scopeCode(), json, sha256(json), etag));
@@ -625,8 +644,9 @@ public class PublicationRequestService {
       case "PUBLIC_METADATA" -> 0;
       case "CHAPTER_TEXT" -> 1;
       case "COMMERCIAL_SALE" -> 2;
-      case "TRANSLATION_ADAPTATION" -> 3;
-      default -> 4;
+      case "FREE_PREVIEW" -> 3;
+      case "TRANSLATION_ADAPTATION" -> 4;
+      default -> 5;
     };
   }
 
@@ -939,7 +959,8 @@ public class PublicationRequestService {
       String metadataSnapshot,
       String chapterTextSnapshot,
       String commercialSaleSnapshot,
-      String translationAdaptationSnapshot) {}
+      String translationAdaptationSnapshot,
+      String freePreviewSnapshot) {}
 
   private record RequestHistory(
       UUID id, int requestVersion, byte[] snapshotDigest, String state, int eventSequence) {

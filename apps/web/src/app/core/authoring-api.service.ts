@@ -72,7 +72,11 @@ export type PublicationRequestState =
   | 'WITHDRAWN';
 
 export type PublicationScopeCode =
-  'PUBLIC_METADATA' | 'CHAPTER_TEXT' | 'COMMERCIAL_SALE' | 'TRANSLATION_ADAPTATION';
+  | 'PUBLIC_METADATA'
+  | 'CHAPTER_TEXT'
+  | 'COMMERCIAL_SALE'
+  | 'TRANSLATION_ADAPTATION'
+  | 'FREE_PREVIEW';
 
 export interface PublicationScopeReadiness {
   scopeCode: PublicationScopeCode;
@@ -1337,7 +1341,7 @@ function parsePublicationReadiness(
     !isPublicationReadinessEtag(etag) ||
     etag !== value['snapshotEtag'] ||
     !Array.isArray(value['scopes']) ||
-    value['scopes'].length !== 4 ||
+    value['scopes'].length !== 5 ||
     !Array.isArray(value['blockerCodes']) ||
     value['blockerCodes'].length > 4 ||
     value['blockerCodes'].some((code) => !isPublicationReadinessBlocker(code)) ||
@@ -1363,6 +1367,7 @@ function parsePublicationReadiness(
     'CHAPTER_TEXT',
     'COMMERCIAL_SALE',
     'TRANSLATION_ADAPTATION',
+    'FREE_PREVIEW',
   ];
   if (
     scopes.length !== parsedScopes.length ||
@@ -1541,7 +1546,7 @@ function parsePublicationRequestReceipt(
     !isSha256(value['snapshotSha256']) ||
     !Array.isArray(value['scopeCodes']) ||
     value['scopeCodes'].length < 2 ||
-    value['scopeCodes'].length > 4 ||
+    value['scopeCodes'].length > 5 ||
     value['scopeCodes'].some((scope) => !isPublicationScopeCode(scope)) ||
     new Set(value['scopeCodes']).size !== value['scopeCodes'].length ||
     !value['scopeCodes'].includes('PUBLIC_METADATA') ||
@@ -2016,7 +2021,8 @@ function isPublicationScopeCode(value: unknown): value is PublicationScopeCode {
     value === 'PUBLIC_METADATA' ||
     value === 'CHAPTER_TEXT' ||
     value === 'COMMERCIAL_SALE' ||
-    value === 'TRANSLATION_ADAPTATION'
+    value === 'TRANSLATION_ADAPTATION' ||
+    value === 'FREE_PREVIEW'
   );
 }
 
@@ -2039,7 +2045,7 @@ function isValidPublicationRequestSubmission(
     !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value['policyVersion']) ||
     !Array.isArray(value['scopeClaims']) ||
     value['scopeClaims'].length < 2 ||
-    value['scopeClaims'].length > 4
+    value['scopeClaims'].length > 5
   ) {
     return false;
   }
@@ -2059,7 +2065,8 @@ function isValidPublicationRequestSubmission(
   return (
     new Set(scopeCodes).size === scopeCodes.length &&
     scopeCodes.includes('PUBLIC_METADATA') &&
-    scopeCodes.includes('CHAPTER_TEXT')
+    scopeCodes.includes('CHAPTER_TEXT') &&
+    (!scopeCodes.includes('FREE_PREVIEW') || scopeCodes.includes('COMMERCIAL_SALE'))
   );
 }
 

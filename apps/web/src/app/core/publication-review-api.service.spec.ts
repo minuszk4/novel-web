@@ -22,7 +22,13 @@ const queueItem = {
   title: 'The Quiet Mountain',
   author: 'An Example',
   sourceLanguage: 'vi',
-  scopeCodes: ['PUBLIC_METADATA', 'CHAPTER_TEXT', 'COMMERCIAL_SALE', 'TRANSLATION_ADAPTATION'],
+  scopeCodes: [
+    'PUBLIC_METADATA',
+    'CHAPTER_TEXT',
+    'COMMERCIAL_SALE',
+    'FREE_PREVIEW',
+    'TRANSLATION_ADAPTATION',
+  ],
 };
 
 const detail = {
@@ -37,12 +43,18 @@ const detail = {
     {
       scopeCode: 'PUBLIC_METADATA',
       snapshotSha256: sha256,
+      previewPolicyVersion: null,
+      previewPercent: null,
+      measurement: null,
       work: { title: 'The Quiet Mountain', author: 'An Example', sourceLanguage: 'vi' },
       chapters: [],
     },
     {
       scopeCode: 'CHAPTER_TEXT',
       snapshotSha256: sha256,
+      previewPolicyVersion: null,
+      previewPercent: null,
+      measurement: null,
       work: { title: 'The Quiet Mountain', author: 'An Example', sourceLanguage: 'vi' },
       chapters: [
         {
@@ -58,12 +70,36 @@ const detail = {
     {
       scopeCode: 'COMMERCIAL_SALE',
       snapshotSha256: sha256,
+      previewPolicyVersion: null,
+      previewPercent: null,
+      measurement: null,
       work: { title: 'The Quiet Mountain', author: 'An Example', sourceLanguage: 'vi' },
       chapters: [],
     },
     {
       scopeCode: 'TRANSLATION_ADAPTATION',
       snapshotSha256: sha256,
+      previewPolicyVersion: null,
+      previewPercent: null,
+      measurement: null,
+      work: { title: 'The Quiet Mountain', author: 'An Example', sourceLanguage: 'vi' },
+      chapters: [
+        {
+          chapterId: '22222222-2222-4222-8222-222222222222',
+          ordinal: 1,
+          title: 'First Steps',
+          sourceLanguage: 'vi',
+          contentHash: sha256,
+          segmentCount: 8,
+        },
+      ],
+    },
+    {
+      scopeCode: 'FREE_PREVIEW',
+      snapshotSha256: sha256,
+      previewPolicyVersion: 'free-preview-v1',
+      previewPercent: 10,
+      measurement: 'UNICODE_CODE_POINTS',
       work: { title: 'The Quiet Mountain', author: 'An Example', sourceLanguage: 'vi' },
       chapters: [
         {
@@ -81,6 +117,7 @@ const detail = {
     { scopeCode: 'PUBLIC_METADATA', rightsBasisCode: 'ORIGINAL_WORK' },
     { scopeCode: 'CHAPTER_TEXT', rightsBasisCode: 'ORIGINAL_WORK' },
     { scopeCode: 'COMMERCIAL_SALE', rightsBasisCode: 'ORIGINAL_WORK' },
+    { scopeCode: 'FREE_PREVIEW', rightsBasisCode: 'ORIGINAL_WORK' },
     { scopeCode: 'TRANSLATION_ADAPTATION', rightsBasisCode: 'ORIGINAL_WORK' },
   ],
   events: [

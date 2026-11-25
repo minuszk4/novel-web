@@ -42,6 +42,7 @@ const publicationReadiness = {
     { scopeCode: 'PUBLIC_METADATA', ready: true, snapshotEtag: publicationScopeEtag },
     { scopeCode: 'CHAPTER_TEXT', ready: true, snapshotEtag: publicationScopeEtag },
     { scopeCode: 'COMMERCIAL_SALE', ready: true, snapshotEtag: publicationScopeEtag },
+    { scopeCode: 'FREE_PREVIEW', ready: true, snapshotEtag: publicationScopeEtag },
     { scopeCode: 'TRANSLATION_ADAPTATION', ready: true, snapshotEtag: publicationScopeEtag },
   ],
   blockerCodes: [],
@@ -61,6 +62,7 @@ const publicationRequest: PublicationRequestSubmission = {
     { scopeCode: 'PUBLIC_METADATA', rightsBasisCode: 'ORIGINAL_WORK' },
     { scopeCode: 'CHAPTER_TEXT', rightsBasisCode: 'LICENSE_OR_PERMISSION' },
     { scopeCode: 'COMMERCIAL_SALE', rightsBasisCode: 'NEEDS_REVIEW' },
+    { scopeCode: 'FREE_PREVIEW', rightsBasisCode: 'ORIGINAL_WORK' },
     { scopeCode: 'TRANSLATION_ADAPTATION', rightsBasisCode: 'ORIGINAL_WORK' },
   ],
 };
@@ -69,7 +71,13 @@ const publicationRequestReceipt = {
   requestVersion: 2,
   policyVersion: 'rights-v1',
   snapshotSha256: 'c'.repeat(64),
-  scopeCodes: ['PUBLIC_METADATA', 'CHAPTER_TEXT', 'COMMERCIAL_SALE', 'TRANSLATION_ADAPTATION'],
+  scopeCodes: [
+    'PUBLIC_METADATA',
+    'CHAPTER_TEXT',
+    'COMMERCIAL_SALE',
+    'FREE_PREVIEW',
+    'TRANSLATION_ADAPTATION',
+  ],
   submittedAt: '2026-11-17T04:00:00Z',
   state: 'PENDING_REVIEW',
 };

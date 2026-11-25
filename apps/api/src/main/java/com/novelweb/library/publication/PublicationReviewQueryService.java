@@ -207,7 +207,8 @@ public class PublicationReviewQueryService {
                    (SELECT jsonb_agg(scope.scope_code ORDER BY
                            CASE scope.scope_code WHEN 'PUBLIC_METADATA' THEN 0
                                 WHEN 'CHAPTER_TEXT' THEN 1
-                                WHEN 'COMMERCIAL_SALE' THEN 2 ELSE 3 END)::text
+                                WHEN 'COMMERCIAL_SALE' THEN 2
+                                WHEN 'FREE_PREVIEW' THEN 3 ELSE 4 END)::text
                       FROM publication_request_scope_snapshots scope
                      WHERE scope.request_id = request.id) AS scope_codes
               FROM publication_requests request
@@ -330,7 +331,8 @@ public class PublicationReviewQueryService {
                   FROM publication_request_scope_snapshots
                  WHERE request_id = ?
                  ORDER BY CASE scope_code WHEN 'PUBLIC_METADATA' THEN 0
-                      WHEN 'CHAPTER_TEXT' THEN 1 WHEN 'COMMERCIAL_SALE' THEN 2 ELSE 3 END
+                      WHEN 'CHAPTER_TEXT' THEN 1 WHEN 'COMMERCIAL_SALE' THEN 2
+                      WHEN 'FREE_PREVIEW' THEN 3 ELSE 4 END
                 """)) {
       select.setObject(1, requestId);
       try (ResultSet rows = select.executeQuery()) {
@@ -367,9 +369,25 @@ public class PublicationReviewQueryService {
                 nullableTextValue(chapter, "contentHash"),
                 segments != null && segments.isArray() ? segments.size() : null));
       }
+      String previewPolicyVersion = null;
+      Integer previewPercent = null;
+      String measurement = null;
+      if ("FREE_PREVIEW".equals(scopeCode)) {
+        previewPolicyVersion = textValue(root, "previewPolicyVersion");
+        previewPercent = integerValue(root, "previewPercent");
+        measurement = textValue(root, "measurement");
+        if (!"free-preview-v1".equals(previewPolicyVersion)
+            || previewPercent != 10
+            || !"UNICODE_CODE_POINTS".equals(measurement)) {
+          throw new IllegalStateException("Stored free-preview policy snapshot is unsupported");
+        }
+      }
       return new ScopePreview(
           scopeCode,
           digest,
+          previewPolicyVersion,
+          previewPercent,
+          measurement,
           new WorkPreview(
               textValue(work, "title"),
               textValue(work, "author"),
@@ -411,7 +429,7 @@ public class PublicationReviewQueryService {
             "SELECT scope_code, rights_basis_code FROM publication_request_scope_claims"
                 + " WHERE request_id = ? ORDER BY CASE scope_code WHEN 'PUBLIC_METADATA' THEN 0"
                 + " WHEN 'CHAPTER_TEXT' THEN 1 WHEN 'COMMERCIAL_SALE' THEN 2"
-                + " WHEN 'TRANSLATION_ADAPTATION' THEN 3 ELSE 4 END")) {
+                + " WHEN 'FREE_PREVIEW' THEN 3 WHEN 'TRANSLATION_ADAPTATION' THEN 4 ELSE 5 END")) {
       select.setObject(1, requestId);
       try (ResultSet rows = select.executeQuery()) {
         List<Claim> claims = new ArrayList<>();
@@ -541,7 +559,13 @@ public class PublicationReviewQueryService {
       Integer segmentCount) {}
 
   public record ScopePreview(
-      String scopeCode, String snapshotSha256, WorkPreview work, List<ChapterPreview> chapters) {
+      String scopeCode,
+      String snapshotSha256,
+      String previewPolicyVersion,
+      Integer previewPercent,
+      String measurement,
+      WorkPreview work,
+      List<ChapterPreview> chapters) {
     public ScopePreview {
       chapters = List.copyOf(chapters);
     }

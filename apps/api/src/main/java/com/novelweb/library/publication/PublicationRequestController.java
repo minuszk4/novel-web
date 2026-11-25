@@ -41,7 +41,7 @@ public class PublicationRequestController {
   private static final Set<String> CLAIM_FIELDS = Set.of("scopeCode", "rightsBasisCode");
   private static final Set<String> REQUIRED_SCOPES = Set.of("PUBLIC_METADATA", "CHAPTER_TEXT");
   private static final Set<String> OPTIONAL_SCOPES =
-      Set.of("COMMERCIAL_SALE", "TRANSLATION_ADAPTATION");
+      Set.of("COMMERCIAL_SALE", "TRANSLATION_ADAPTATION", "FREE_PREVIEW");
   private static final Set<String> RIGHTS_BASES =
       Set.of("ORIGINAL_WORK", "LICENSE_OR_PERMISSION", "PUBLIC_DOMAIN", "NEEDS_REVIEW");
 
@@ -151,7 +151,7 @@ public class PublicationRequestController {
       return problem(
           HttpStatus.BAD_REQUEST,
           "PUBLICATION_REQUEST_INVALID",
-          "Provide a current policy version and one declaration for metadata, chapter text and optionally commercial sale.",
+          "Provide current policy and metadata/chapter-text rights claims. FREE_PREVIEW requires COMMERCIAL_SALE.",
           correlationId);
     }
 
@@ -211,6 +211,7 @@ public class PublicationRequestController {
         claims.add(new PublicationRequestService.ScopeClaim(scope, basis));
       }
       if (!seen.containsAll(REQUIRED_SCOPES)) return null;
+      if (seen.contains("FREE_PREVIEW") && !seen.contains("COMMERCIAL_SALE")) return null;
       return new PublicationRequestService.Submission(policyVersion.textValue(), claims);
     } catch (JacksonException exception) {
       return null;

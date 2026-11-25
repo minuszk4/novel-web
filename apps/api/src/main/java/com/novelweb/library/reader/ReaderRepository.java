@@ -80,6 +80,18 @@ public class ReaderRepository {
                                       w.id, 'PUBLIC_METADATA')
                                   AND publication_scope_access_is_current(w.id, 'CHAPTER_TEXT')
                                   AND publication_scope_access_is_current(w.id, 'COMMERCIAL_SALE')
+                                  AND publication_scope_access_is_current(w.id, 'FREE_PREVIEW')
+                                  AND c.status = 'ready'
+                                  AND c.source_revision_id IS NOT NULL
+                                  AND NOT EXISTS (
+                                      SELECT 1 FROM content_entitlements e
+                                      WHERE e.user_id = ? AND e.chapter_id = c.id)
+                               THEN 'preview'
+                             WHEN w.visibility = 'public'
+                                  AND publication_scope_access_is_current(
+                                      w.id, 'PUBLIC_METADATA')
+                                  AND publication_scope_access_is_current(w.id, 'CHAPTER_TEXT')
+                                  AND publication_scope_access_is_current(w.id, 'COMMERCIAL_SALE')
                                   AND c.status = 'ready'
                                   AND c.source_revision_id IS NOT NULL
                                THEN 'locked'
@@ -97,10 +109,11 @@ public class ReaderRepository {
                     """)) {
       select.setObject(1, actorUserId);
       select.setObject(2, actorUserId);
-      select.setObject(3, workId);
-      select.setInt(4, afterOrdinal);
-      select.setObject(5, actorUserId);
-      select.setInt(6, limit + 1);
+      select.setObject(3, actorUserId);
+      select.setObject(4, workId);
+      select.setInt(5, afterOrdinal);
+      select.setObject(6, actorUserId);
+      select.setInt(7, limit + 1);
       try (ResultSet rows = select.executeQuery()) {
         List<ReaderChapter> chapters = new ArrayList<>(limit + 1);
         while (rows.next()) chapters.add(readerChapter(rows));
@@ -119,27 +132,44 @@ public class ReaderRepository {
         PreparedStatement select =
             connection.prepareStatement(
                 """
-                    SELECT c.id, c.work_id, c.source_language, r.id AS revision_id
+                    SELECT c.id, c.work_id, c.source_language, r.id AS revision_id,
+                           access.access_state,
+                           CASE WHEN access.access_state = 'preview' THEN 10 ELSE NULL END
+                               AS preview_percent
                     FROM chapters c
                     JOIN works w ON w.id = c.work_id
                     JOIN chapter_revisions r
                       ON r.chapter_id = c.id
                      AND r.id = COALESCE(CAST(? AS UUID), c.source_revision_id)
+                    CROSS JOIN LATERAL (
+                        SELECT CASE
+                            WHEN can_access_library(w.library_id, ?, FALSE)
+                                THEN 'readable'
+                            WHEN w.visibility = 'public'
+                                 AND r.id = c.source_revision_id
+                                 AND publication_scope_access_is_current(w.id, 'PUBLIC_METADATA')
+                                 AND publication_scope_access_is_current(w.id, 'CHAPTER_TEXT')
+                                 AND EXISTS (
+                                     SELECT 1 FROM content_entitlements e
+                                     WHERE e.user_id = ? AND e.chapter_id = c.id)
+                                THEN 'readable'
+                            WHEN w.visibility = 'public'
+                                 AND r.id = c.source_revision_id
+                                 AND publication_scope_access_is_current(w.id, 'PUBLIC_METADATA')
+                                 AND publication_scope_access_is_current(w.id, 'CHAPTER_TEXT')
+                                 AND publication_scope_access_is_current(w.id, 'COMMERCIAL_SALE')
+                                 AND publication_scope_access_is_current(w.id, 'FREE_PREVIEW')
+                                THEN 'preview'
+                        END AS access_state
+                    ) access
                     WHERE c.id = ? AND c.status = 'ready' AND c.deleted_at IS NULL
                       AND w.deleted_at IS NULL
-                      AND (can_access_library(w.library_id, ?, FALSE)
-                           OR (w.visibility = 'public'
-                               AND r.id = c.source_revision_id
-                               AND publication_scope_access_is_current(w.id, 'PUBLIC_METADATA')
-                               AND publication_scope_access_is_current(w.id, 'CHAPTER_TEXT')
-                               AND EXISTS (
-                                   SELECT 1 FROM content_entitlements e
-                                   WHERE e.user_id = ? AND e.chapter_id = c.id)))
+                      AND access.access_state IS NOT NULL
                     """)) {
       select.setObject(1, requestedRevisionId);
-      select.setObject(2, chapterId);
+      select.setObject(2, actorUserId);
       select.setObject(3, actorUserId);
-      select.setObject(4, actorUserId);
+      select.setObject(4, chapterId);
       try (ResultSet row = select.executeQuery()) {
         return row.next() ? Optional.of(readableChapter(row)) : Optional.empty();
       }
@@ -158,30 +188,70 @@ public class ReaderRepository {
         PreparedStatement select =
             connection.prepareStatement(
                 """
-                    SELECT s.ordinal, s.segment_type, s.stable_anchor, s.source_text
-                    FROM segments s
-                    JOIN chapter_revisions r ON r.id = s.chapter_revision_id
-                    JOIN chapters c ON c.id = r.chapter_id
-                    JOIN works w ON w.id = c.work_id
-                    WHERE c.id = ? AND r.id = ? AND s.ordinal > ?
-                      AND c.status = 'ready' AND c.deleted_at IS NULL AND w.deleted_at IS NULL
-                      AND (can_access_library(w.library_id, ?, FALSE)
-                           OR (w.visibility = 'public'
-                               AND r.id = c.source_revision_id
-                               AND publication_scope_access_is_current(w.id, 'PUBLIC_METADATA')
-                               AND publication_scope_access_is_current(w.id, 'CHAPTER_TEXT')
-                               AND EXISTS (
-                                   SELECT 1 FROM content_entitlements e
-                                   WHERE e.user_id = ? AND e.chapter_id = c.id)))
-                      AND s.segment_type IN ('paragraph', 'heading', 'quote')
-                    ORDER BY s.ordinal ASC
+                    WITH eligible AS (
+                        SELECT s.ordinal, s.segment_type, s.stable_anchor, s.source_text,
+                               CASE
+                                   WHEN can_access_library(w.library_id, ?, FALSE)
+                                       THEN 'readable'
+                                   WHEN w.visibility = 'public'
+                                        AND r.id = c.source_revision_id
+                                        AND publication_scope_access_is_current(
+                                            w.id, 'PUBLIC_METADATA')
+                                        AND publication_scope_access_is_current(
+                                            w.id, 'CHAPTER_TEXT')
+                                        AND EXISTS (
+                                            SELECT 1 FROM content_entitlements e
+                                            WHERE e.user_id = ? AND e.chapter_id = c.id)
+                                       THEN 'readable'
+                                   WHEN w.visibility = 'public'
+                                        AND r.id = c.source_revision_id
+                                        AND publication_scope_access_is_current(
+                                            w.id, 'PUBLIC_METADATA')
+                                        AND publication_scope_access_is_current(
+                                            w.id, 'CHAPTER_TEXT')
+                                        AND publication_scope_access_is_current(
+                                            w.id, 'COMMERCIAL_SALE')
+                                        AND publication_scope_access_is_current(
+                                            w.id, 'FREE_PREVIEW')
+                                       THEN 'preview'
+                               END AS access_state
+                        FROM segments s
+                        JOIN chapter_revisions r ON r.id = s.chapter_revision_id
+                        JOIN chapters c ON c.id = r.chapter_id
+                        JOIN works w ON w.id = c.work_id
+                        WHERE c.id = ? AND r.id = ?
+                          AND c.status = 'ready' AND c.deleted_at IS NULL
+                          AND w.deleted_at IS NULL
+                          AND s.segment_type IN ('paragraph', 'heading', 'quote')
+                    ), measured AS (
+                        SELECT eligible.*,
+                               SUM(char_length(source_text)) OVER (
+                                   ORDER BY ordinal ROWS BETWEEN UNBOUNDED PRECEDING
+                                   AND CURRENT ROW) AS cumulative_chars,
+                               SUM(char_length(source_text)) OVER () AS total_chars
+                        FROM eligible
+                        WHERE access_state IS NOT NULL
+                    )
+                    SELECT ordinal, segment_type, stable_anchor,
+                           CASE WHEN access_state = 'preview' THEN
+                               left(source_text, greatest(0, least(
+                                   char_length(source_text),
+                                   greatest(1, (total_chars + 9) / 10)
+                                     - (cumulative_chars - char_length(source_text))))::integer)
+                           ELSE source_text END AS source_text
+                    FROM measured
+                    WHERE ordinal > ?
+                      AND (access_state <> 'preview'
+                           OR cumulative_chars - char_length(source_text)
+                                < greatest(1, (total_chars + 9) / 10))
+                    ORDER BY ordinal ASC
                     LIMIT ?
                     """)) {
-      select.setObject(1, chapterId);
-      select.setObject(2, revisionId);
-      select.setInt(3, afterOrdinal);
-      select.setObject(4, actorUserId);
-      select.setObject(5, actorUserId);
+      select.setObject(1, actorUserId);
+      select.setObject(2, actorUserId);
+      select.setObject(3, chapterId);
+      select.setObject(4, revisionId);
+      select.setInt(5, afterOrdinal);
       select.setInt(6, limit + 1);
       try (ResultSet rows = select.executeQuery()) {
         List<SourceSegment> segments = new ArrayList<>(limit + 1);
@@ -218,7 +288,9 @@ public class ReaderRepository {
         row.getObject("id", UUID.class),
         row.getObject("work_id", UUID.class),
         row.getString("source_language"),
-        row.getObject("revision_id", UUID.class));
+        row.getObject("revision_id", UUID.class),
+        row.getString("access_state"),
+        row.getObject("preview_percent", Integer.class));
   }
 
   private static SourceSegment sourceSegment(ResultSet row) throws SQLException {
@@ -258,7 +330,13 @@ public class ReaderRepository {
 
   public record ReaderChapter(UUID id, int ordinal, String title, String accessState) {}
 
-  public record ReadableChapter(UUID id, UUID workId, String language, UUID revisionId) {}
+  public record ReadableChapter(
+      UUID id,
+      UUID workId,
+      String language,
+      UUID revisionId,
+      String accessState,
+      Integer previewPercent) {}
 
   public record SourceSegment(int ordinal, String type, String anchor, String sourceText) {}
 

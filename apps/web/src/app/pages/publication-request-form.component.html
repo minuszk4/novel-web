@@ -204,6 +204,39 @@
           <label class="publication-request-commercial-toggle">
             <input
               type="checkbox"
+              [checked]="includeFreePreview()"
+              [disabled]="formLocked || !includeCommercialSale()"
+              (change)="toggleFreePreview($event)"
+            />
+            <span>
+              Tôi cũng yêu cầu duyệt quyền hiển thị 10% đầu mỗi chương trả phí làm bản đọc thử.
+            </span>
+          </label>
+          @if (includeFreePreview()) {
+            <label for="publication-request-free-preview-basis">
+              <span>Quyền hiển thị bản đọc thử · bắt buộc khi chọn</span>
+              <select
+                id="publication-request-free-preview-basis"
+                [value]="freePreviewBasis()"
+                [disabled]="isBusy || uncertain()"
+                (change)="changeFreePreviewBasis($event)"
+              >
+                <option value="">Chọn căn cứ bạn khai báo</option>
+                @for (option of basisOptions; track option.code) {
+                  <option [value]="option.code">{{ option.label }}</option>
+                }
+              </select>
+            </label>
+            <p class="publication-request-inline-note">
+              Bản đọc thử được tính trên số Unicode code point của nội dung chương đã lưu. Tác phẩm
+              chỉ hiện bản đọc thử khi quyền thương mại và quyền đọc thử cùng được duyệt, còn hiệu
+              lực.
+            </p>
+          }
+
+          <label class="publication-request-commercial-toggle">
+            <input
+              type="checkbox"
               [checked]="includeTranslationAdaptation()"
               [disabled]="formLocked"
               (change)="toggleTranslationAdaptation($event)"
@@ -232,8 +265,8 @@
 
           <ul class="publication-request-disclosures">
             <li>
-              Thông tin công khai, nội dung chương, quyền bán và quyền chuyển ngữ/thích nghi là các
-              phạm vi tách biệt.
+              Thông tin công khai, nội dung chương, quyền bán, quyền đọc thử và quyền chuyển
+              ngữ/thích nghi là các phạm vi tách biệt.
             </li>
             <li>
               Chọn “Cần người duyệt xem xét” thì yêu cầu chưa thể được chấp thuận cho đến khi làm

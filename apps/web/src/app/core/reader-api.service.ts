@@ -41,6 +41,8 @@ export interface ReaderContentPage {
   workId: string;
   sourceRevisionId: string;
   sourceLanguage: string;
+  accessState: 'readable' | 'preview';
+  previewPercent: number | null;
   segments: ReaderSourceSegment[];
   nextSegmentCursor: string | null;
 }
@@ -1155,6 +1157,9 @@ function parseContentPage(
     !isUuid(value['workId']) ||
     !isUuid(value['sourceRevisionId']) ||
     !isLanguage(value['sourceLanguage']) ||
+    (value['accessState'] !== 'readable' && value['accessState'] !== 'preview') ||
+    (value['accessState'] === 'preview' && value['previewPercent'] !== 10) ||
+    (value['accessState'] === 'readable' && value['previewPercent'] !== null) ||
     !Array.isArray(value['segments']) ||
     value['segments'].length > limit ||
     !isCursor(value['nextSegmentCursor'])
@@ -1173,6 +1178,8 @@ function parseContentPage(
     workId: value['workId'],
     sourceRevisionId: value['sourceRevisionId'],
     sourceLanguage: value['sourceLanguage'],
+    accessState: value['accessState'],
+    previewPercent: value['previewPercent'] as number | null,
     segments,
     nextSegmentCursor: value['nextSegmentCursor'],
   };

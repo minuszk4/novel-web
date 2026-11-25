@@ -160,6 +160,8 @@ public class PublicationRightsPolicyService {
         String translationAdaptationEtag =
             PublicationSnapshotEtags.scope(
                 "TRANSLATION_ADAPTATION", snapshot.translationAdaptationSnapshot());
+        String freePreviewEtag =
+            PublicationSnapshotEtags.scope("FREE_PREVIEW", snapshot.freePreviewSnapshot());
         String snapshotEtag =
             PublicationSnapshotEtags.readiness(
                 workId,
@@ -170,7 +172,11 @@ public class PublicationRightsPolicyService {
                 acceptedAt,
                 snapshot.currentRequestState(),
                 List.of(
-                    metadataEtag, chapterTextEtag, commercialSaleEtag, translationAdaptationEtag));
+                    metadataEtag,
+                    chapterTextEtag,
+                    commercialSaleEtag,
+                    freePreviewEtag,
+                    translationAdaptationEtag));
         return ReadinessResult.available(
             new PublicationReadiness(
                 workId,
@@ -189,6 +195,8 @@ public class PublicationRightsPolicyService {
                         "CHAPTER_TEXT", snapshot.readyChapterCount() > 0, chapterTextEtag),
                     new ScopeReadiness(
                         "COMMERCIAL_SALE", snapshot.readyChapterCount() > 0, commercialSaleEtag),
+                    new ScopeReadiness(
+                        "FREE_PREVIEW", snapshot.readyChapterCount() > 0, freePreviewEtag),
                     new ScopeReadiness(
                         "TRANSLATION_ADAPTATION",
                         snapshot.readyChapterCount() > 0,
@@ -358,6 +366,7 @@ public class PublicationRightsPolicyService {
                    %s::text AS chapter_text_snapshot,
                    %s::text AS commercial_sale_snapshot,
                    %s::text AS translation_adaptation_snapshot,
+                   %s::text AS free_preview_snapshot,
                    (SELECT state.current_state FROM publication_requests request
                      JOIN publication_request_current_state state ON state.request_id = request.id
                     WHERE request.work_id = w.id
@@ -370,11 +379,12 @@ public class PublicationRightsPolicyService {
                 scopeSnapshotFunction.formatted("PUBLIC_METADATA"),
                 scopeSnapshotFunction.formatted("CHAPTER_TEXT"),
                 scopeSnapshotFunction.formatted("COMMERCIAL_SALE"),
-                scopeSnapshotFunction.formatted("TRANSLATION_ADAPTATION"));
+                scopeSnapshotFunction.formatted("TRANSLATION_ADAPTATION"),
+                scopeSnapshotFunction.formatted("FREE_PREVIEW"));
     try (PreparedStatement select = connection.prepareStatement(query)) {
       int parameter = 1;
       if (targetChapterId != null) {
-        for (int i = 0; i < 4; i++) select.setObject(parameter++, targetChapterId);
+        for (int i = 0; i < 5; i++) select.setObject(parameter++, targetChapterId);
       }
       select.setObject(parameter++, targetChapterId);
       select.setObject(parameter, workId);
@@ -389,6 +399,7 @@ public class PublicationRightsPolicyService {
             row.getString("chapter_text_snapshot"),
             row.getString("commercial_sale_snapshot"),
             row.getString("translation_adaptation_snapshot"),
+            row.getString("free_preview_snapshot"),
             row.getString("current_request_state"));
       }
     }
@@ -588,6 +599,7 @@ public class PublicationRightsPolicyService {
       String chapterTextSnapshot,
       String commercialSaleSnapshot,
       String translationAdaptationSnapshot,
+      String freePreviewSnapshot,
       String currentRequestState) {}
 
   public record CurrentPolicy(

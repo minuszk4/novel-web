@@ -9,7 +9,11 @@ import { Injectable, inject } from '@angular/core';
 import { firstValueFrom, timeout } from 'rxjs';
 
 export type PublicationReviewScope =
-  'PUBLIC_METADATA' | 'CHAPTER_TEXT' | 'COMMERCIAL_SALE' | 'TRANSLATION_ADAPTATION';
+  | 'PUBLIC_METADATA'
+  | 'CHAPTER_TEXT'
+  | 'COMMERCIAL_SALE'
+  | 'TRANSLATION_ADAPTATION'
+  | 'FREE_PREVIEW';
 export type PublicationRightsBasis =
   'ORIGINAL_WORK' | 'LICENSE_OR_PERMISSION' | 'PUBLIC_DOMAIN' | 'NEEDS_REVIEW';
 export type PublicationReviewState =
@@ -71,6 +75,9 @@ export interface PublicationReviewChapterPreview {
 export interface PublicationReviewScopePreview {
   scopeCode: PublicationReviewScope;
   snapshotSha256: string;
+  previewPolicyVersion: string | null;
+  previewPercent: number | null;
+  measurement: 'UNICODE_CODE_POINTS' | null;
   work: PublicationReviewWorkPreview;
   chapters: PublicationReviewChapterPreview[];
 }
@@ -285,10 +292,10 @@ function parseDetail(value: unknown): PublicationReviewDetail {
     !isSha256(value['snapshotSha256']) ||
     !Array.isArray(value['scopes']) ||
     value['scopes'].length < 2 ||
-    value['scopes'].length > 4 ||
+    value['scopes'].length > 5 ||
     !Array.isArray(value['claims']) ||
     value['claims'].length < 2 ||
-    value['claims'].length > 4 ||
+    value['claims'].length > 5 ||
     !Array.isArray(value['events']) ||
     value['events'].length < 1 ||
     value['events'].length > maxReviewEvents
@@ -322,9 +329,19 @@ function parseDetail(value: unknown): PublicationReviewDetail {
 
 function parseScopePreview(value: unknown): PublicationReviewScopePreview {
   if (
-    !hasExactKeys(value, 'chapters,scopeCode,snapshotSha256,work') ||
+    !hasExactKeys(
+      value,
+      'chapters,measurement,previewPercent,previewPolicyVersion,scopeCode,snapshotSha256,work',
+    ) ||
     !isScope(value['scopeCode']) ||
     !isSha256(value['snapshotSha256']) ||
+    !(value['scopeCode'] === 'FREE_PREVIEW'
+      ? value['previewPolicyVersion'] === 'free-preview-v1' &&
+        value['previewPercent'] === 10 &&
+        value['measurement'] === 'UNICODE_CODE_POINTS'
+      : value['previewPolicyVersion'] === null &&
+        value['previewPercent'] === null &&
+        value['measurement'] === null) ||
     !hasExactKeys(value['work'], 'author,sourceLanguage,title') ||
     !isText(value['work']['title'], 500) ||
     !isText(value['work']['author'], 200) ||
@@ -337,6 +354,9 @@ function parseScopePreview(value: unknown): PublicationReviewScopePreview {
   return {
     scopeCode: value['scopeCode'],
     snapshotSha256: value['snapshotSha256'],
+    previewPolicyVersion: value['previewPolicyVersion'],
+    previewPercent: value['previewPercent'],
+    measurement: value['measurement'],
     work: {
       title: value['work']['title'],
       author: value['work']['author'],
@@ -474,7 +494,8 @@ function isScope(value: unknown): value is PublicationReviewScope {
     value === 'PUBLIC_METADATA' ||
     value === 'CHAPTER_TEXT' ||
     value === 'COMMERCIAL_SALE' ||
-    value === 'TRANSLATION_ADAPTATION'
+    value === 'TRANSLATION_ADAPTATION' ||
+    value === 'FREE_PREVIEW'
   );
 }
 
@@ -482,7 +503,7 @@ function isScopeList(value: unknown): value is PublicationReviewScope[] {
   return (
     Array.isArray(value) &&
     value.length >= 2 &&
-    value.length <= 4 &&
+    value.length <= 5 &&
     value.every(isScope) &&
     new Set(value).size === value.length
   );

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Novel Web API
-  version: 10.17.0
+  version: 11.0.0
   description: >-
     Contract for the Novel Web API. System status and health are implemented in the local foundation.
     Google sign-in/session, policy-document/acceptance, library/work list and personal library-state routes are
@@ -6004,9 +6004,10 @@ paths:
       summary: Get source-only content for an authorized chapter
       description: >-
         Requires an authenticated actor with current Terms/Privacy acceptance and rechecks current personal-library,
-        workspace, or public-chapter entitlement access on every page. Returns bounded normalized source segments only
-        for readable revisions; draft, missing, locked or inaccessible chapter body is never returned. A public paid
-        chapter becomes readable only after its paid-credit debit and entitlement commit atomically.
+        workspace, entitlement, publication and preview rights on every page. A current FREE_PREVIEW approval plus
+        metadata, text and commercial-sale approvals permits only the first 10 percent of eligible source text, measured
+        as Unicode code points. The server clips the final segment and prevents cursors from crossing the boundary.
+        A public paid chapter becomes fully readable only after its paid-credit debit and entitlement commit atomically.
       security:
         - appSession: []
       parameters:
@@ -6037,7 +6038,7 @@ paths:
             default: 250
       responses:
         '200':
-          description: Sanitized source-only chapter content
+          description: Sanitized source-only content, capped to the approved 10 percent when accessState is preview.
           content:
             application/json:
               schema:
@@ -11457,7 +11458,7 @@ components:
     ChapterContent:
       type: object
       additionalProperties: false
-      required: [chapterId, workId, sourceRevisionId, sourceLanguage, segments, nextSegmentCursor]
+      required: [chapterId, workId, sourceRevisionId, sourceLanguage, accessState, previewPercent, segments, nextSegmentCursor]
       properties:
         chapterId:
           type: string
@@ -11471,6 +11472,13 @@ components:
         sourceLanguage:
           type: string
           maxLength: 35
+        accessState:
+          type: string
+          enum: [readable, preview]
+        previewPercent:
+          type: [integer, 'null']
+          enum: [10, null]
+          description: 10 for an approved free preview; null for full authorized content.
         segments:
           type: array
           maxItems: 1000
@@ -11787,7 +11795,7 @@ components:
       properties:
         scopeCode:
           type: string
-          enum: [PUBLIC_METADATA, CHAPTER_TEXT, COMMERCIAL_SALE, TRANSLATION_ADAPTATION]
+          enum: [PUBLIC_METADATA, CHAPTER_TEXT, COMMERCIAL_SALE, TRANSLATION_ADAPTATION, FREE_PREVIEW]
         ready:
           type: boolean
         snapshotEtag:
@@ -11806,8 +11814,8 @@ components:
         scopeClaims:
           type: array
           minItems: 2
-          maxItems: 4
-          description: Metadata and chapter text are required; commercial sale and translation/adaptation are separate optional scopes.
+          maxItems: 5
+          description: Metadata and chapter text are required. Commercial sale and translation/adaptation are optional. FREE_PREVIEW is an optional 10 percent source-text preview scope and requires COMMERCIAL_SALE.
           items:
             $ref: '#/components/schemas/PublicationRequestScopeClaim'
     PublicationRequestScopeClaim:
@@ -11817,7 +11825,7 @@ components:
       properties:
         scopeCode:
           type: string
-          enum: [PUBLIC_METADATA, CHAPTER_TEXT, COMMERCIAL_SALE, TRANSLATION_ADAPTATION]
+          enum: [PUBLIC_METADATA, CHAPTER_TEXT, COMMERCIAL_SALE, TRANSLATION_ADAPTATION, FREE_PREVIEW]
         rightsBasisCode:
           type: string
           enum: [ORIGINAL_WORK, LICENSE_OR_PERMISSION, PUBLIC_DOMAIN, NEEDS_REVIEW]
@@ -11841,11 +11849,11 @@ components:
         scopeCodes:
           type: array
           minItems: 2
-          maxItems: 4
+          maxItems: 5
           uniqueItems: true
           items:
             type: string
-            enum: [PUBLIC_METADATA, CHAPTER_TEXT, COMMERCIAL_SALE, TRANSLATION_ADAPTATION]
+            enum: [PUBLIC_METADATA, CHAPTER_TEXT, COMMERCIAL_SALE, TRANSLATION_ADAPTATION, FREE_PREVIEW]
         submittedAt:
           type: string
           format: date-time
@@ -11989,11 +11997,11 @@ components:
         scopeCodes:
           type: array
           minItems: 2
-          maxItems: 4
+          maxItems: 5
           uniqueItems: true
           items:
             type: string
-            enum: [PUBLIC_METADATA, CHAPTER_TEXT, COMMERCIAL_SALE, TRANSLATION_ADAPTATION]
+            enum: [PUBLIC_METADATA, CHAPTER_TEXT, COMMERCIAL_SALE, TRANSLATION_ADAPTATION, FREE_PREVIEW]
     PublicationReviewDetail:
       type: object
       additionalProperties: false
@@ -12039,13 +12047,13 @@ components:
         scopes:
           type: array
           minItems: 2
-          maxItems: 4
+          maxItems: 5
           items:
             $ref: '#/components/schemas/PublicationReviewScopePreview'
         claims:
           type: array
           minItems: 2
-          maxItems: 4
+          maxItems: 5
           items:
             $ref: '#/components/schemas/PublicationReviewClaim'
         events:
@@ -12130,14 +12138,23 @@ components:
     PublicationReviewScopePreview:
       type: object
       additionalProperties: false
-      required: [scopeCode, snapshotSha256, work, chapters]
+      required: [scopeCode, snapshotSha256, previewPolicyVersion, previewPercent, measurement, work, chapters]
       properties:
         scopeCode:
           type: string
-          enum: [PUBLIC_METADATA, CHAPTER_TEXT, COMMERCIAL_SALE, TRANSLATION_ADAPTATION]
+          enum: [PUBLIC_METADATA, CHAPTER_TEXT, COMMERCIAL_SALE, TRANSLATION_ADAPTATION, FREE_PREVIEW]
         snapshotSha256:
           type: string
           pattern: '^[a-f0-9]{64}$'
+        previewPolicyVersion:
+          type: [string, 'null']
+          enum: [free-preview-v1, null]
+        previewPercent:
+          type: [integer, 'null']
+          enum: [10, null]
+        measurement:
+          type: [string, 'null']
+          enum: [UNICODE_CODE_POINTS, null]
         work:
           $ref: '#/components/schemas/PublicationReviewWorkPreview'
         chapters:
@@ -12188,7 +12205,7 @@ components:
       properties:
         scopeCode:
           type: string
-          enum: [PUBLIC_METADATA, CHAPTER_TEXT, COMMERCIAL_SALE, TRANSLATION_ADAPTATION]
+          enum: [PUBLIC_METADATA, CHAPTER_TEXT, COMMERCIAL_SALE, TRANSLATION_ADAPTATION, FREE_PREVIEW]
         rightsBasisCode:
           type: string
           enum: [ORIGINAL_WORK, LICENSE_OR_PERMISSION, PUBLIC_DOMAIN, NEEDS_REVIEW]

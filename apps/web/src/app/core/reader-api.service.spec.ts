@@ -129,6 +129,8 @@ describe('ReaderApiService', () => {
       workId,
       sourceRevisionId: revisionId,
       sourceLanguage: 'vi',
+      accessState: 'readable',
+      previewPercent: null,
       segments: [
         { anchor: 'chapter-1-p1', type: 'paragraph', sourceText: 'Một đoạn văn bản.' },
         { anchor: 'chapter-1-q1', type: 'quote', sourceText: '<em>An toàn như văn bản.</em>' },
@@ -140,10 +142,61 @@ describe('ReaderApiService', () => {
       chapterId,
       workId,
       sourceRevisionId: revisionId,
+      accessState: 'readable',
+      previewPercent: null,
       segments: [
         { type: 'paragraph', sourceText: 'Một đoạn văn bản.' },
         { type: 'quote', sourceText: '<em>An toàn như văn bản.</em>' },
       ],
+    });
+  });
+
+  it('validates the server preview marker and fixed 10 percent policy', async () => {
+    const result = service.getContentPage(chapterId);
+    http
+      .expectOne(
+        (request) =>
+          request.method === 'GET' &&
+          request.url === `/api/v1/chapters/${chapterId}/content` &&
+          request.params.get('limit') === '1000',
+      )
+      .flush({
+        chapterId,
+        workId,
+        sourceRevisionId: revisionId,
+        sourceLanguage: 'vi',
+        accessState: 'preview',
+        previewPercent: 10,
+        segments: [{ anchor: 'chapter-1-p1', type: 'paragraph', sourceText: 'Mẫu 10%.' }],
+        nextSegmentCursor: null,
+      });
+    await expect(result).resolves.toMatchObject({
+      accessState: 'preview',
+      previewPercent: 10,
+      segments: [{ sourceText: 'Mẫu 10%.' }],
+    });
+
+    const malformed = service.getContentPage(chapterId);
+    http
+      .expectOne(
+        (request) =>
+          request.method === 'GET' &&
+          request.url === `/api/v1/chapters/${chapterId}/content` &&
+          request.params.get('limit') === '1000',
+      )
+      .flush({
+        chapterId,
+        workId,
+        sourceRevisionId: revisionId,
+        sourceLanguage: 'vi',
+        accessState: 'preview',
+        previewPercent: 100,
+        segments: [],
+        nextSegmentCursor: null,
+      });
+    await expect(malformed).rejects.toMatchObject({
+      status: 502,
+      code: 'INVALID_READER_RESPONSE',
     });
   });
 

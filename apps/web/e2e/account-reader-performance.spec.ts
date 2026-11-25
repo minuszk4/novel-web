@@ -347,6 +347,8 @@ async function installPerformanceRoutes(page: Page): Promise<{
         workId,
         sourceRevisionId: revisionId,
         sourceLanguage: 'vi',
+        accessState: 'readable',
+        previewPercent: null,
         segments: page,
         nextSegmentCursor: end < segments.length ? String(end) : null,
       });
