@@ -16203,6 +16203,72 @@ class PostgresSchemaIntegrationTests {
   }
 
   @Test
+  void suspendedSessionCannotReadReaderManifestOrChapterContent() throws Exception {
+    UUID ownerId = createSessionTestUser("Suspended Reader Owner");
+    try {
+      LibraryRepository.LibraryRecord library =
+          libraryService.createLibrary(ownerId, "Private Shelf");
+      LibraryRepository.WorkRecord work =
+          libraryService.createPrivateImportedWork(
+              ownerId,
+              library.id(),
+              "Suspended Private Story Sentinel",
+              "Synthetic Author",
+              "vi",
+              sha256("suspended-reader-work"));
+      LibraryRepository.VolumeRecord volume =
+          libraryService.createVolume(ownerId, work.id(), 1, "Volume 1");
+      LibraryRepository.ChapterRecord chapter =
+          libraryService.createChapter(ownerId, work.id(), volume.id(), 1, "Chapter 1", "vi");
+      libraryService.appendChapterRevision(
+          ownerId,
+          chapter.id(),
+          "epub_xhtml",
+          "Private body sentinel must stay hidden.",
+          List.of(
+              new LibraryService.NewSegment(
+                  1,
+                  "paragraph",
+                  "Private body sentinel must stay hidden.",
+                  "suspended-reader-1")));
+      addCurrentPolicyAcceptances(ownerId);
+
+      SessionService.IssuedSession ownerSession = sessionService.create(ownerId).orElseThrow();
+      jakarta.servlet.http.Cookie ownerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", ownerSession.cookieValue());
+
+      setTestUserStatus(ownerId, "suspended");
+
+      MvcResult suspendedManifest =
+          mockMvc
+              .perform(get("/api/v1/works/{workId}/reader-manifest", work.id()).cookie(ownerCookie))
+              .andReturn();
+      assertEquals(401, suspendedManifest.getResponse().getStatus());
+      assertTrue(suspendedManifest.getResponse().getHeader("Cache-Control").contains("no-store"));
+      assertTrue(suspendedManifest.getResponse().getContentAsString().contains("UNAUTHENTICATED"));
+      assertFalse(
+          suspendedManifest
+              .getResponse()
+              .getContentAsString()
+              .contains("Suspended Private Story Sentinel"));
+
+      MvcResult suspendedContent =
+          mockMvc
+              .perform(
+                  get("/api/v1/chapters/{chapterId}/content", chapter.id()).cookie(ownerCookie))
+              .andReturn();
+      assertEquals(401, suspendedContent.getResponse().getStatus());
+      assertTrue(suspendedContent.getResponse().getHeader("Cache-Control").contains("no-store"));
+      assertTrue(suspendedContent.getResponse().getContentAsString().contains("UNAUTHENTICATED"));
+      assertFalse(
+          suspendedContent.getResponse().getContentAsString().contains("Private body sentinel"));
+    } finally {
+      deleteLibraryTestData(ownerId);
+      deleteSessionTestUser(ownerId);
+    }
+  }
+
+  @Test
   void sourceOnlyReaderRechecksOwnerPaginatesAndNeverPutsBodyInManifest() throws Exception {
     UUID ownerId = createSessionTestUser("Reader API Owner");
     UUID outsiderId = createSessionTestUser("Reader API Outsider");
