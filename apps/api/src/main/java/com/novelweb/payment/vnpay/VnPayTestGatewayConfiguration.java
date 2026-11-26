@@ -1,5 +1,6 @@
 package com.novelweb.payment.vnpay;
 
+import com.novelweb.payment.SandboxPaymentEnvironmentGuard;
 import com.novelweb.payment.credit.CreditLedgerService;
 import com.novelweb.payment.credit.CreditPackCatalog;
 import com.novelweb.payment.credit.CreditTopUpCheckoutService;
@@ -12,6 +13,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
+import org.springframework.core.env.Environment;
 import tools.jackson.databind.ObjectMapper;
 
 /** Installs the VNPAY sandbox adapter only after explicit opt-in and complete TEST settings. */
@@ -26,7 +28,11 @@ public class VnPayTestGatewayConfiguration {
   @Bean
   VnPayTestGatewaySettings vnPayTestGatewaySettings(
       VnPayTestGatewayProperties properties,
-      @Value("${NOVEL_APP_BASE_URL:http://localhost:4200}") String publicAppOrigin) {
+      @Value("${NOVEL_APP_BASE_URL:http://localhost:4200}") String publicAppOrigin,
+      @Value("${novel.environment:local}") String applicationEnvironment,
+      Environment springEnvironment) {
+    SandboxPaymentEnvironmentGuard.requireNonProduction(
+        "VNPAY", applicationEnvironment, springEnvironment);
     return VnPayTestGatewaySettings.fromProperties(properties, publicAppOrigin);
   }
 

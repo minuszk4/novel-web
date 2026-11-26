@@ -1,5 +1,6 @@
 package com.novelweb.payment.momo;
 
+import com.novelweb.payment.SandboxPaymentEnvironmentGuard;
 import com.novelweb.payment.credit.CreditLedgerService;
 import com.novelweb.payment.credit.CreditPackCatalog;
 import com.novelweb.platform.ProviderCallMetrics;
@@ -7,11 +8,13 @@ import java.util.Map;
 import java.util.Objects;
 import javax.sql.DataSource;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
+import org.springframework.core.env.Environment;
 import tools.jackson.databind.ObjectMapper;
 
 /** Installs MoMo TEST adapter beans only after an explicit environment opt-in. */
@@ -24,7 +27,12 @@ import tools.jackson.databind.ObjectMapper;
 public class MomoTestGatewayConfiguration {
 
   @Bean
-  MomoTestGatewaySettings momoTestGatewaySettings(MomoTestGatewayProperties properties) {
+  MomoTestGatewaySettings momoTestGatewaySettings(
+      MomoTestGatewayProperties properties,
+      @Value("${novel.environment:local}") String applicationEnvironment,
+      Environment springEnvironment) {
+    SandboxPaymentEnvironmentGuard.requireNonProduction(
+        "MoMo", applicationEnvironment, springEnvironment);
     return MomoTestGatewaySettings.fromEnvironment(
         Map.of(
             "MOMO_ENV",

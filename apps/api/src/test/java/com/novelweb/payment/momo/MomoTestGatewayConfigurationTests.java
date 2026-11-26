@@ -50,6 +50,38 @@ class MomoTestGatewayConfigurationTests {
   }
 
   @Test
+  void rejectsTestAdapterWhenTheApplicationEnvironmentIsProduction() {
+    contextRunner
+        .withPropertyValues(validProperties())
+        .withPropertyValues("novel.environment=production")
+        .run(
+            context -> {
+              assertThat(context).hasFailed();
+              StringWriter trace = new StringWriter();
+              context.getStartupFailure().printStackTrace(new PrintWriter(trace));
+              assertThat(trace.toString())
+                  .contains("MoMo TEST payment integration is forbidden in production")
+                  .doesNotContain(ACCESS_KEY, SECRET_KEY);
+            });
+  }
+
+  @Test
+  void rejectsTestAdapterWhenTheProductionSpringProfileIsActive() {
+    contextRunner
+        .withPropertyValues(validProperties())
+        .withPropertyValues("spring.profiles.active=production", "novel.environment=local")
+        .run(
+            context -> {
+              assertThat(context).hasFailed();
+              StringWriter trace = new StringWriter();
+              context.getStartupFailure().printStackTrace(new PrintWriter(trace));
+              assertThat(trace.toString())
+                  .contains("MoMo TEST payment integration is forbidden in production")
+                  .doesNotContain(ACCESS_KEY, SECRET_KEY);
+            });
+  }
+
+  @Test
   void createsTheClientOnlyFromACompleteTestConfigurationAndRedactsItsProperties() {
     contextRunner
         .withPropertyValues(validProperties())
