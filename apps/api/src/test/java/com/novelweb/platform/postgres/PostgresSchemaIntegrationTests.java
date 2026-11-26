@@ -18278,6 +18278,40 @@ class PostgresSchemaIntegrationTests {
               List.of(
                   new LibraryService.NewSegment(1, "paragraph", "Shared chapter content.", "p1")));
       assertEquals(1, revision.revisionNo());
+
+      addCurrentPolicyAcceptances(readerId);
+      SessionService.IssuedSession readerSession = sessionService.create(readerId).orElseThrow();
+      jakarta.servlet.http.Cookie readerCookie =
+          new jakarta.servlet.http.Cookie("__Host-novel_session", readerSession.cookieValue());
+      MvcResult activeMemberManifest =
+          mockMvc
+              .perform(
+                  get("/api/v1/works/{workId}/reader-manifest", ownerWork.id())
+                      .cookie(readerCookie))
+              .andReturn();
+      assertEquals(200, activeMemberManifest.getResponse().getStatus());
+      assertTrue(
+          activeMemberManifest.getResponse().getHeader("Cache-Control").contains("no-store"));
+      assertEquals(
+          "readable",
+          objectMapper
+              .readTree(activeMemberManifest.getResponse().getContentAsString())
+              .path("chapters")
+              .get(0)
+              .path("accessState")
+              .asText());
+      MvcResult activeMemberContent =
+          mockMvc
+              .perform(
+                  get("/api/v1/chapters/{chapterId}/content", chapter.id()).cookie(readerCookie))
+              .andReturn();
+      assertEquals(200, activeMemberContent.getResponse().getStatus());
+      assertTrue(
+          activeMemberContent
+              .getResponse()
+              .getContentAsString()
+              .contains("Shared chapter content."));
+
       assertTrue(libraryService.findOwnedChapter(readerId, chapter.id()).isPresent());
       LibraryRepository.AssetRecord asset =
           libraryService.registerAsset(
@@ -18368,6 +18402,33 @@ class PostgresSchemaIntegrationTests {
       assertFalse(
           libraryService.listLibraries(readerId).stream()
               .anyMatch(library -> library.id().equals(workspaceLibrary.id())));
+      MvcResult revokedMemberManifest =
+          mockMvc
+              .perform(
+                  get("/api/v1/works/{workId}/reader-manifest", ownerWork.id())
+                      .cookie(readerCookie))
+              .andReturn();
+      assertEquals(404, revokedMemberManifest.getResponse().getStatus());
+      assertTrue(
+          revokedMemberManifest.getResponse().getHeader("Cache-Control").contains("no-store"));
+      assertFalse(
+          revokedMemberManifest
+              .getResponse()
+              .getContentAsString()
+              .contains("Shared chapter content."));
+      MvcResult revokedMemberContent =
+          mockMvc
+              .perform(
+                  get("/api/v1/chapters/{chapterId}/content", chapter.id()).cookie(readerCookie))
+              .andReturn();
+      assertEquals(404, revokedMemberContent.getResponse().getStatus());
+      assertTrue(
+          revokedMemberContent.getResponse().getHeader("Cache-Control").contains("no-store"));
+      assertFalse(
+          revokedMemberContent
+              .getResponse()
+              .getContentAsString()
+              .contains("Shared chapter content."));
     } finally {
       deleteLibraryTestData(ownerId);
       deleteLibraryTestData(adminId);
