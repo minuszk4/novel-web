@@ -18324,6 +18324,21 @@ class PostgresSchemaIntegrationTests {
               "shared-cover.webp");
       assertEquals(ownerId, asset.ownerUserId());
 
+      WorkspaceRepository.MemberRecord demotedEditor =
+          workspaceService.changeMemberRole(
+              ownerId, createdWorkspaceId, editorId, WorkspaceRepository.Role.READER);
+      assertEquals(WorkspaceRepository.Role.READER, demotedEditor.role());
+      assertTrue(
+          libraryService.findOwnedWork(editorId, ownerWork.id()).isPresent(),
+          "an active reader keeps read access to shared work after an editor is demoted");
+      assertThrows(
+          LibraryRepository.WorkNotFoundException.class,
+          () -> libraryService.addTagToWork(editorId, ownerWork.id(), "after-demotion"),
+          "a role change must remove editor write access immediately for the existing session");
+      assertThrows(
+          LibraryRepository.WorkNotFoundException.class,
+          () -> libraryService.createVolume(editorId, ownerWork.id(), 2, "Forbidden Volume"));
+
       assertThrows(
           LibraryRepository.LibraryNotFoundException.class,
           () ->
