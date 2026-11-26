@@ -1,11 +1,11 @@
 package com.novelweb.payment.vnpay;
 
-import com.novelweb.payment.SandboxPaymentEnvironmentGuard;
 import com.novelweb.payment.credit.CreditLedgerService;
 import com.novelweb.payment.credit.CreditPackCatalog;
 import com.novelweb.payment.credit.CreditTopUpCheckoutService;
 import com.novelweb.payment.credit.CreditTopUpOrderService;
 import com.novelweb.payment.credit.CreditTopUpOrderService.Provider;
+import com.novelweb.platform.NonProductionIntegrationGuard;
 import javax.sql.DataSource;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -31,7 +31,7 @@ public class VnPayTestGatewayConfiguration {
       @Value("${NOVEL_APP_BASE_URL:http://localhost:4200}") String publicAppOrigin,
       @Value("${novel.environment:local}") String applicationEnvironment,
       Environment springEnvironment) {
-    SandboxPaymentEnvironmentGuard.requireNonProduction(
+    NonProductionIntegrationGuard.requireNonProduction(
         "VNPAY", applicationEnvironment, springEnvironment);
     return VnPayTestGatewaySettings.fromProperties(properties, publicAppOrigin);
   }

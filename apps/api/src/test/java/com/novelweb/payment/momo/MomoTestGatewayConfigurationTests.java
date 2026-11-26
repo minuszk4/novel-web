@@ -60,7 +60,7 @@ class MomoTestGatewayConfigurationTests {
               StringWriter trace = new StringWriter();
               context.getStartupFailure().printStackTrace(new PrintWriter(trace));
               assertThat(trace.toString())
-                  .contains("MoMo TEST payment integration is forbidden in production")
+                  .contains("MoMo TEST/development integration is forbidden in production")
                   .doesNotContain(ACCESS_KEY, SECRET_KEY);
             });
   }
@@ -76,7 +76,7 @@ class MomoTestGatewayConfigurationTests {
               StringWriter trace = new StringWriter();
               context.getStartupFailure().printStackTrace(new PrintWriter(trace));
               assertThat(trace.toString())
-                  .contains("MoMo TEST payment integration is forbidden in production")
+                  .contains("MoMo TEST/development integration is forbidden in production")
                   .doesNotContain(ACCESS_KEY, SECRET_KEY);
             });
   }

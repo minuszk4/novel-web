@@ -1,13 +1,16 @@
 package com.novelweb.translation.provider;
 
+import com.novelweb.platform.NonProductionIntegrationGuard;
 import com.novelweb.platform.ProviderCallMetrics;
 import java.math.BigDecimal;
 import java.time.Duration;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
+import org.springframework.core.env.Environment;
 
 /** Supplies an execution gate only for the explicitly enabled offline fake provider. */
 @Configuration(proxyBeanMethods = false)
@@ -17,7 +20,12 @@ public class FakeTranslationExecutionConfiguration {
 
   @Bean(destroyMethod = "close")
   TranslationProviderExecutionGate fakeTranslationProviderExecutionGate(
-      FakeTranslationProvider provider, ObjectProvider<ProviderCallMetrics> metricsProvider) {
+      FakeTranslationProvider provider,
+      ObjectProvider<ProviderCallMetrics> metricsProvider,
+      @Value("${novel.environment:local}") String applicationEnvironment,
+      Environment springEnvironment) {
+    NonProductionIntegrationGuard.requireNonProduction(
+        "Fake translation", applicationEnvironment, springEnvironment);
     TranslationProviderExecutionPolicy policy =
         new TranslationProviderExecutionPolicy(
             100,

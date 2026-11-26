@@ -1,8 +1,8 @@
 package com.novelweb.payment.momo;
 
-import com.novelweb.payment.SandboxPaymentEnvironmentGuard;
 import com.novelweb.payment.credit.CreditLedgerService;
 import com.novelweb.payment.credit.CreditPackCatalog;
+import com.novelweb.platform.NonProductionIntegrationGuard;
 import com.novelweb.platform.ProviderCallMetrics;
 import java.util.Map;
 import java.util.Objects;
@@ -31,7 +31,7 @@ public class MomoTestGatewayConfiguration {
       MomoTestGatewayProperties properties,
       @Value("${novel.environment:local}") String applicationEnvironment,
       Environment springEnvironment) {
-    SandboxPaymentEnvironmentGuard.requireNonProduction(
+    NonProductionIntegrationGuard.requireNonProduction(
         "MoMo", applicationEnvironment, springEnvironment);
     return MomoTestGatewaySettings.fromEnvironment(
         Map.of(

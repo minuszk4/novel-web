@@ -1,4 +1,4 @@
-package com.novelweb.payment;
+package com.novelweb.platform;
 
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -7,17 +7,17 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.env.MockEnvironment;
 
-class SandboxPaymentEnvironmentGuardTests {
+class NonProductionIntegrationGuardTests {
 
   @Test
   void rejectsEveryProductionEnvironmentAliasRegardlessOfCaseOrWhitespace() {
     for (String environment : List.of("prod", "production", "live", " Production ")) {
       assertThatThrownBy(
               () ->
-                  SandboxPaymentEnvironmentGuard.requireNonProduction(
+                  NonProductionIntegrationGuard.requireNonProduction(
                       "VNPAY", environment, new MockEnvironment()))
           .isInstanceOf(IllegalStateException.class)
-          .hasMessage("VNPAY TEST payment integration is forbidden in production");
+          .hasMessage("VNPAY TEST/development integration is forbidden in production");
     }
   }
 
@@ -26,7 +26,7 @@ class SandboxPaymentEnvironmentGuardTests {
     for (String environment : List.of("local", "local-docker", "test", "staging")) {
       assertThatCode(
               () ->
-                  SandboxPaymentEnvironmentGuard.requireNonProduction(
+                  NonProductionIntegrationGuard.requireNonProduction(
                       "VNPAY", environment, new MockEnvironment()))
           .doesNotThrowAnyException();
     }
@@ -38,8 +38,8 @@ class SandboxPaymentEnvironmentGuardTests {
     environment.setActiveProfiles("postgres", "prod");
 
     assertThatThrownBy(
-            () -> SandboxPaymentEnvironmentGuard.requireNonProduction("MoMo", "local", environment))
+            () -> NonProductionIntegrationGuard.requireNonProduction("MoMo", "local", environment))
         .isInstanceOf(IllegalStateException.class)
-        .hasMessage("MoMo TEST payment integration is forbidden in production");
+        .hasMessage("MoMo TEST/development integration is forbidden in production");
   }
 }

@@ -69,7 +69,7 @@ class VnPayTestGatewayConfigurationTests {
               StringWriter trace = new StringWriter();
               context.getStartupFailure().printStackTrace(new PrintWriter(trace));
               assertThat(trace.toString())
-                  .contains("VNPAY TEST payment integration is forbidden in production")
+                  .contains("VNPAY TEST/development integration is forbidden in production")
                   .doesNotContain(HASH_SECRET);
             });
   }
