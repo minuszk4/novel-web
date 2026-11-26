@@ -94,8 +94,6 @@ jobs:
           java-version: "21"
           cache: maven
       - run: bash ./mvnw -B -ntp verify
-      - name: Resolve optional PostgreSQL dependencies for offline scan
-        run: bash ./mvnw -B -ntp -Ppostgres dependency:resolve
       - name: Generate API SBOM including test-scoped dependencies
         run: >
           bash ./mvnw -B -ntp -Ppostgres
