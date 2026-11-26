@@ -159,3 +159,36 @@ for (const viewport of [
     await expectNoAxeViolations(page);
   });
 }
+
+for (const viewport of [
+  { name: 'effective 200% zoom proxy 360×800 → 180×400 CSS', width: 180, height: 400 },
+  { name: 'mobile 360×800', width: 360, height: 800 },
+] as const) {
+  test(`validation moves keyboard focus to the first invalid field at ${viewport.name}`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    await installAccount(page);
+    await page.goto('/app/authoring/new');
+
+    await page.getByRole('button', { name: 'Tạo bản thảo riêng tư' }).click();
+    const title = page.getByLabel('Tên tác phẩm');
+    await expect(title).toBeFocused();
+    await expect(title).toHaveAttribute('aria-invalid', 'true');
+    await expect(title).toHaveAttribute('aria-errormessage', 'manuscript-title-error');
+    await expect(page.locator('#manuscript-title-error')).toBeVisible();
+    await expect(title).toBeInViewport();
+    await expectNoAxeViolations(page);
+
+    await title.fill('Bản thảo hợp lệ');
+    const language = page.getByLabel('Ngôn ngữ sáng tác');
+    await language.fill('x');
+    await page.getByRole('button', { name: 'Tạo bản thảo riêng tư' }).click();
+    await expect(language).toBeFocused();
+    await expect(language).toHaveAttribute('aria-invalid', 'true');
+    await expect(language).toHaveAttribute('aria-errormessage', 'manuscript-language-error');
+    await expect(page.locator('#manuscript-language-error')).toBeVisible();
+    await expect(language).toBeInViewport();
+    await expectNoAxeViolations(page);
+  });
+}

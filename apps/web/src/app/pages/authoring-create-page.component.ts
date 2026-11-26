@@ -1,4 +1,4 @@
-import { Component, computed, inject, signal } from '@angular/core';
+import { Component, ElementRef, ViewChild, computed, inject, signal } from '@angular/core';
 import { RouterLink } from '@angular/router';
 import {
   AuthoringApiError,
@@ -22,6 +22,10 @@ interface CreateAttempt {
   styleUrl: './authoring-create-page.component.css',
 })
 export class AuthoringCreatePageComponent {
+  @ViewChild('titleField') private titleField?: ElementRef<HTMLInputElement>;
+  @ViewChild('authorField') private authorField?: ElementRef<HTMLInputElement>;
+  @ViewChild('languageField') private languageField?: ElementRef<HTMLInputElement>;
+
   protected readonly policy = inject(PolicyOnboardingService);
   private readonly api = inject(AuthoringApiService);
   protected readonly title = signal('');
@@ -84,7 +88,10 @@ export class AuthoringCreatePageComponent {
       const title = this.title().trim();
       const author = this.author().trim();
       const language = this.language().trim();
-      if (!this.validate(title, author, language)) return;
+      if (!this.validate(title, author, language)) {
+        this.focusFirstInvalidField();
+        return;
+      }
       attempt = {
         title,
         author,
@@ -151,6 +158,17 @@ export class AuthoringCreatePageComponent {
     this.authorError.set(null);
     this.languageError.set(null);
     this.createError.set(null);
+  }
+
+  private focusFirstInvalidField(): void {
+    const field = this.titleError()
+      ? this.titleField?.nativeElement
+      : this.authorError()
+        ? this.authorField?.nativeElement
+        : this.languageField?.nativeElement;
+    if (!field) return;
+    field.scrollIntoView?.({ block: 'center', behavior: 'auto' });
+    field.focus({ preventScroll: true });
   }
 }
 

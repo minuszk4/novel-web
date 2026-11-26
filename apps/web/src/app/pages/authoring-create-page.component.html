@@ -63,6 +63,7 @@
           <label for="manuscript-title">
             <span>Tên tác phẩm <span aria-hidden="true">*</span></span>
             <input
+              #titleField
               id="manuscript-title"
               type="text"
               autocomplete="off"
@@ -71,7 +72,11 @@
               [value]="title()"
               [disabled]="isLocked()"
               [attr.aria-invalid]="titleError() ? 'true' : null"
-              aria-describedby="manuscript-title-help"
+              [attr.aria-describedby]="
+                titleError()
+                  ? 'manuscript-title-help manuscript-title-error'
+                  : 'manuscript-title-help'
+              "
               [attr.aria-errormessage]="titleError() ? 'manuscript-title-error' : null"
               (input)="updateTitle($event)"
               placeholder="Ví dụ: Trăng trên đỉnh Vân Sơn"
@@ -81,13 +86,16 @@
               sung.
             </span>
             @if (titleError(); as error) {
-              <span id="manuscript-title-error" class="authoring-field-error">{{ error }}</span>
+              <span id="manuscript-title-error" class="authoring-field-error" aria-live="polite">{{
+                error
+              }}</span>
             }
           </label>
 
           <label for="manuscript-author">
             <span>Bút danh <span class="authoring-optional">· không bắt buộc</span></span>
             <input
+              #authorField
               id="manuscript-author"
               type="text"
               autocomplete="nickname"
@@ -95,7 +103,11 @@
               [value]="author()"
               [disabled]="isLocked()"
               [attr.aria-invalid]="authorError() ? 'true' : null"
-              aria-describedby="manuscript-author-help"
+              [attr.aria-describedby]="
+                authorError()
+                  ? 'manuscript-author-help manuscript-author-error'
+                  : 'manuscript-author-help'
+              "
               [attr.aria-errormessage]="authorError() ? 'manuscript-author-error' : null"
               (input)="updateAuthor($event)"
               placeholder="Tên hiển thị trên tác phẩm"
@@ -104,13 +116,16 @@
               Để trống nếu bạn chưa muốn đặt bút danh.
             </span>
             @if (authorError(); as error) {
-              <span id="manuscript-author-error" class="authoring-field-error">{{ error }}</span>
+              <span id="manuscript-author-error" class="authoring-field-error" aria-live="polite">{{
+                error
+              }}</span>
             }
           </label>
 
           <label for="manuscript-language">
             <span>Ngôn ngữ sáng tác <span aria-hidden="true">*</span></span>
             <input
+              #languageField
               id="manuscript-language"
               type="text"
               autocomplete="off"
@@ -119,7 +134,11 @@
               [value]="language()"
               [disabled]="isLocked()"
               [attr.aria-invalid]="languageError() ? 'true' : null"
-              aria-describedby="manuscript-language-help"
+              [attr.aria-describedby]="
+                languageError()
+                  ? 'manuscript-language-help manuscript-language-error'
+                  : 'manuscript-language-help'
+              "
               [attr.aria-errormessage]="languageError() ? 'manuscript-language-error' : null"
               (input)="updateLanguage($event)"
               placeholder="vi"
@@ -128,7 +147,12 @@
               Dùng mã ngôn ngữ như vi, en, zh-Hans hoặc zh-Hant.
             </span>
             @if (languageError(); as error) {
-              <span id="manuscript-language-error" class="authoring-field-error">{{ error }}</span>
+              <span
+                id="manuscript-language-error"
+                class="authoring-field-error"
+                aria-live="polite"
+                >{{ error }}</span
+              >
             }
           </label>
 
